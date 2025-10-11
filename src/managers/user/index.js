@@ -457,7 +457,7 @@ class UserManager extends EventEmitter {
 
         // Resolve home path
         const userHomePath = path.resolve(homePath);
-        debug(`Creating user home (Universe workspace) at: ${userHomePath} for userID: ${userId}, email: ${userEmail}`);
+        debug(`Creating user home directory at: ${userHomePath} for userID: ${userId}, email: ${userEmail}`);
 
         // Check if home path exists
         if (existsSync(userHomePath)) {
@@ -465,13 +465,11 @@ class UserManager extends EventEmitter {
         }
 
         try {
-            await this.#workspaceManager.createWorkspace(userId, 'universe', {
-                workspacePath: userHomePath,
-                type: 'universe',
-                owner: userId,
-            });
+            // Create universe workspace in workspaces subdirectory
+            const universeWorkspacePath = path.join(userHomePath, 'workspaces', 'universe');
+            await this.#workspaceManager.createUniverseWorkspace(userId, userEmail, universeWorkspacePath);
 
-            debug(`User Home Directory created for user: ${userEmail} (ID: ${userId})`);
+            debug(`User Home Directory and Universe workspace created for user: ${userEmail} (ID: ${userId})`);
             return userHomePath;
         } catch (error) {
             debug(`Error creating user home: ${error.message}`);

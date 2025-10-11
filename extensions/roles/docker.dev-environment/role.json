@@ -1,0 +1,121 @@
+{
+  "id": "dev-environment",
+  "name": "Development Environment",
+  "description": "Workspace-specific development container with tools and dependencies",
+  "version": "1.0.0",
+  "type": "workspace",
+  "category": "development",
+  "tags": ["dev", "coding", "tools", "workspace"],
+
+  "container": {
+    "image": "canvas/dev-env:latest",
+    "healthcheck": {
+      "test": ["CMD", "test", "-S", "/var/run/sockets/api.sock"],
+      "interval": "30s",
+      "timeout": "5s",
+      "retries": 3
+    },
+    "restart": "unless-stopped"
+  },
+
+  "volumes": [
+    {
+      "host": "workspace:/",
+      "container": "/workspace",
+      "mode": "rw"
+    },
+    {
+      "host": "workspace:/.devcontainer",
+      "container": "/opt/devcontainer",
+      "mode": "ro"
+    },
+    {
+      "host": "workspace:/roles/dev-env/cache",
+      "container": "/home/developer/.cache",
+      "mode": "rw"
+    }
+  ],
+
+  "environment": {
+    "WORKSPACE_PATH": "/workspace",
+    "USER": "developer",
+    "HOME": "/home/developer",
+    "SHELL": "/bin/bash",
+    "SOCKET_PATH": "/var/run/sockets/api.sock",
+    "DEV_SOCKET": "/var/run/sockets/dev.sock"
+  },
+
+  "networks": [],
+
+  "lifecycle": {
+    "autoStart": false,
+    "dependencies": [],
+    "hooks": {
+      "preStart": {
+        "command": ["sh", "-c", "mkdir -p /home/developer/.cache"],
+        "timeout": "10s"
+      },
+      "postStart": {
+        "command": ["sh", "-c", "cd /workspace && npm install || true"],
+        "timeout": "300s"
+      },
+      "preStop": null,
+      "postStop": null
+    }
+  },
+
+  "configuration": {
+    "schema": {
+      "type": "object",
+      "properties": {
+        "nodeVersion": {
+          "type": "string",
+          "default": "20",
+          "description": "Node.js version to use"
+        },
+        "pythonVersion": {
+          "type": "string",
+          "default": "3.11",
+          "description": "Python version to use"
+        },
+        "devPort": {
+          "type": "string",
+          "default": "/var/run/sockets/dev.sock",
+          "description": "Development server socket path"
+        },
+        "tools": {
+          "type": "array",
+          "items": {"type": "string"},
+          "default": ["git", "docker", "kubectl"],
+          "description": "Additional development tools to install"
+        }
+      }
+    }
+  },
+
+  "permissions": {
+    "workspace": {
+      "read": true,
+      "write": true,
+      "execute": true
+    },
+    "network": {
+      "outbound": true,
+      "inbound": true
+    }
+  },
+
+  "resources": {
+    "cpu": "2.0",
+    "memory": "4Gi",
+    "storage": "2Gi"
+  },
+
+  "documentation": {
+    "readme": "Isolated development environment for workspace projects. Includes common development tools and can be customized per workspace.",
+    "urls": {
+      "socket": "unix:/var/run/sockets/api.sock",
+      "dev": "unix:/var/run/sockets/dev.sock"
+    }
+  }
+}

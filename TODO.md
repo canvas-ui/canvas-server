@@ -1,3 +1,18 @@
+# Roaming home profiles / local file backend
+
+- Each workspace should have a "home" folder
+- This home folder should be used as a standard remote drive, users will be able to mount their "home" for each workspace and manage files as they would in onedrive/googledrive & co.
+- This home folder should therefor be accessible using a separate apache2 based webdav "canvas role" (we wont implement it yet) and our REST API, endpoint /workspaces/workspace.name/home.
+At some point we will have to rewrite our API+synapsd backend to have a common pattern, but for now lets create a simple API in ./api/routes/workspaces/
+
+# Add support for hooks
+
+- We **need** to support hooks for all canvas actions, for example I want to run a hook that automatically sorts all URLs I throw into the to-sort context. qwen3:latest is really good at this (give it context paths or the whole tree, url title and a few simple instructions how the tree is structures and done)
+- I want to run my youtube downloader whenever a youtube link is thrown into home://downloads and download videos to either my S3 or workspace home file backends
+- Same for website backups/analytics, file postprocessing etc
+
+# Import/export workspace(s)
+
 We need to reintroduce the importWorkspace(workspacePath, destroyExisting = bool) and exportWorkspace(nameOrID, destinationPath) methods in our workspace manager.
 
 The design should be as follows(I'm open to suggestsions here):
@@ -6,8 +21,31 @@ ID, update rootPath, configPath and the updatedAt timestamp. store the original 
 
 - exportWorkspace(nameOrId, dstPath, format = zip|tar|gzip) would first stop the workspace, then create a archive - again question is where to store it, "cache" folder which would be excluded from zip
 
+# Config file search paths for workspaces
 
-Add Canvas support
+```text
+Workspace config paths
+    $WORKSPACE_ROOT/.canvas/config/workspace.json
+    $WORKSPACE_ROOT/.canvas/workspace.json
+    $WORKSPACE_ROOT/.workspace.json
+    $WORKSPACE_ROOT/workspace.json
+
+    workspace directories relative to the workspace.json location
+```
+
+# Extend workspaces API (partly blocked by synapsd)
+
+- Add a workspaces/:workspace_id/db endpoint
+  - /stats
+  - /status
+  - /dump
+  - /snapshots
+    - /timestamp
+      - /dump
+      - /restore
+
+# Add Canvas support
+
   GET /contexts/:cid/canvases/foo  will create a context-bound canvas within context cid(cid.url) with ID foo
   GET /workspaces/:wid/canvases/foo will create a unbound canvas with contextPath / (or ?contextPath=/foo/bar/baz) with ID "foo"
   
@@ -46,9 +84,7 @@ ctx dotfiles // ctx = /work/mb
 
 We need to change the interface for Tree operations in
 
-# Server
-
-## Sharing functionality
+# Fix Sharing functionality
 
 Sharing functionality for Workspaces and Contexts is no longer working, we will need a 2 punch process, one for the backend implementation and one for the webui. Lets start with the backend (phase #1).
 
@@ -75,132 +111,7 @@ The following sharing options should be updated/implemented, please do not imple
 Sharing a workspace or a context this way makes them available to the target user right away due to the way the backend is implemented. As mentioned above, this type of sharing is not portable - iow - if a workspace gets exported, email based permissions would have to be recreated (this may change in the future)
 
 
-## API
-
-- Add a workspaces/:workspace_id/db endpoint
-  - /stats
-  - /status
-  - /dump
-  - /snapshots
-    - /timestamp
-      - /dump
-      - /restore
-
-## Dotfile Manager
-
-Lets go over our dotfile management solution and check if the below design is kept:
-
-- Dotfiles are managed in git, a bare git repo is initialized in user@canvas-remote:workspace under the workspace root /dotfiles.git, preseeded with a few handy hook scripts, but adding a dotfile to the repo MUST create a JSON document in canvas-db with schema 'data/abstraction/dotfile'
-
-- To init such a repo, we use 
-  $ dot init user@remote:workspace or just $ dot init workspace # for bound remotes
-  DB is the authoritative source with files stored/available in the cloned git repo (~/.canvas/data/.../dotfiles/). 
-  
-- To sync a repo localy, we use
-  $ dot sync user@remote:workspace
-  
-  Sync should git clone the repo and fetch all dotfiles from the workspace, we can use the default documents route with featureArray ['data/abstraction/dotfile'] but even better, this handy endpoint (see example below with a test token)
-  $ export TOKEN=canvas-8f45742561402be03bdb91f3cd167fc4dfec1e04a06402ee
-  $ curl -sH  "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" https://canvas.idnc.sk/rest/v2/workspaces/universe/dotfiles  | jq .
-{
-  "status": "success",
-  "statusCode": 200,
-  "message": "Dotfiles retrieved successfully",
-  "payload": [
-    {
-      "id": 100354,
-      "schema": "data/abstraction/dotfile",
-      "schemaVersion": "2.0",
-      "data": {
-        "localPath": "$HOME/.sampledotfile",
-        "repoPath": "shell/custom/sampledot.txt",
-        "type": "file",
-        "priority": 0
-      },
-      "metadata": {
-        "contentType": "application/json",
-        "contentEncoding": "utf8",
-        "dataPaths": [],
-        "contextUUIDs": [],
-        "contextPath": [],
-        "features": [
-          "data/abstraction/dotfile"
-        ]
-      },
-      "indexOptions": {
-        "checksumAlgorithms": [
-          "sha1",
-          "sha256"
-        ],
-        "primaryChecksumAlgorithm": "sha1",
-        "checksumFields": [
-          "data.localPath",
-          "data.repoPath"
-        ],
-        "ftsSearchFields": [
-          "data.localPath",
-          "data.repoPath"
-        ],
-        "vectorEmbeddingFields": [
-          "data.localPath",
-          "data.repoPath"
-        ],
-        "embeddingOptions": {
-          "embeddingModel": "text-embedding-3-small",
-          "embeddingDimensions": 1536,
-          "embeddingProvider": "openai",
-          "embeddingProviderOptions": {},
-          "chunking": {
-            "type": "sentence",
-            "chunkSize": 1000,
-            "chunkOverlap": 200
-          }
-        }
-      },
-      "createdAt": "2025-08-28T19:12:54.854Z",
-      "updatedAt": "2025-08-28T19:12:54.854Z",
-      "checksumArray": [
-        "sha1/6b7982e1a86be35e46c97d8b5edf84d6a2ed05c6",
-        "sha256/6b3bd4aac2e219c03101021e8ead3347771966b9ed1a78f04132ec6c9cbd909d"
-      ],
-      "embeddingsArray": [],
-      "parentId": null,
-      "versions": [],
-      "versionNumber": 1,
-      "latestVersion": 1
-    }
-  ],
-  "count": 1,
-  "totalCount": 1
-}
-  
-  - Runtime State (per-host index) → lives in ~/.canvas/db/dotfiles.json. Each sync should update this index(same as we do for workspaces, contexts, agents etc), always unless canvas-server is not available
-  One question to solve for sync, should we decrypt all files marked as encrypted(we have a git hook for that) - asking the user for a decryption password during the process and store the result in the local index too(preventing activatetion if we failed to decrypt a dotfile)
-  
-- To activate a dotfile, user runs 
-  $ dot activate workspace/dotfile or $ canvas context set /foo/bar/baz --activate-dotfiles (which will process only dotfiles relevant to the context, replacing existing symlinks with the ones supplied by the context)
-  On success, we need to update the local index
-
-- To add a dotfile
-  $ dot add ~/.bashrc user@remote:universe/shell/bashrc --encrypt (optional) --context foo/bar/baz(optional) --priority 123 (we should support a optional positive number here)
-  This should
-    - Copy the file into the local repo
-    - Create a document in canvas (this is critical hence we should revert the op above on error)
-    - Commit + push the changes
-    - Update our local index (we index all dotfiles regardless of the context
-    
-Please review the current codebase and propose updates/changes both in code or in design in general
-A proper local index structure has to be devised to accomodate the above use-codebase
-As a use-case example, a shorthand command
-$ ctx set /work/mb --update-dotfiles 
-should link my ~/.ssh dotfiles from universe/mb/ssh
-$ ctx set /work/wipro --update-dotfiles
-should override them and replace the ~/.ssh symlink from universe/wipro/ssh
-$ ctx set /work or / with --update-dotfiles
-would take the dotfile with the highest priority, in my case from universe/common/ssh, otherwise would print the candidates and tell the user to explicitly apply one from the list
-
-
-## Architectural changes
+# Architectural changes
 
 ## Utils/config
 
@@ -215,18 +126,3 @@ would take the dotfile with the highest priority, in my case from universe/commo
   - Context layers will get locked when open in a context
   - Layers will need to have a in-memory map of userid/contextid locks - brrr complexity
 
-## Workspaces
-
-- Add back import/export functionality
-  - add support for documents, bitmaps, agents, roles, dotfiles
-
-- Config file search paths?
-```text
-Workspace config paths
-    $WORKSPACE_ROOT/.canvas/config/workspace.json
-    $WORKSPACE_ROOT/.canvas/workspace.json
-    $WORKSPACE_ROOT/.workspace.json
-    $WORKSPACE_ROOT/workspace.json
-
-    workspace directories relative to the workspace.json location
-```

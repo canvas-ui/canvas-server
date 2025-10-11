@@ -158,3 +158,6 @@ Canvas Server supports two types of authentication:
 - https://jsonjoy.com/
 - https://docs.yjs.dev/
 
+---
+This project is funded by [Augmentd Labs](https://augmentd.eu/en/labs)
+

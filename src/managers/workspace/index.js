@@ -35,13 +35,9 @@ const WORKSPACE_CONFIG_FILENAME = 'workspace.json';
 const WORKSPACE_DIRECTORIES = {
     db: 'db',
     config: 'config',
-    //data: 'Data',
-    //cache: 'Cache',
     home: 'home',
-    //agents: 'Agents',
-    //minions: 'Minions',
-    //roles: 'Roles',
-    workspaces: 'workspaces',
+    roles: 'roles',
+    var: 'var', // For Unix sockets
 };
 
 const WORKSPACE_STATUS_CODES = {
@@ -67,6 +63,7 @@ const DEFAULT_WORKSPACE_CONFIG = {
     acl: {
         tokens: {} // Token-based ACL: { "sha256:hash": { permissions: [], description: "", createdAt: "", expiresAt: null } }
     },
+    roles: [], // Associated role IDs
     created: null,
     updated: null,
 };
@@ -202,6 +199,7 @@ class WorkspaceManager extends EventEmitter {
     #nameIndex;         // Secondary index for name lookups (key: userId@host:workspaceName -> workspace.id)
     #referenceIndex;    // Tertiary index for full reference lookups (key: userIdentifier@host:workspaceName -> workspace.id)
     #userManager;       // UserManager instance for resolving user identifiers
+    #roleManager;       // RoleManager instance for role management
 
     // Runtime
     #workspaces = new Map(); // Cache for loaded Workspace instances (key: workspace.id -> Workspace)
@@ -213,6 +211,7 @@ class WorkspaceManager extends EventEmitter {
      * @param {string} options.defaultRootPath - Root path where user workspace directories are stored
      * @param {Object} options.indexStore - Initialized Conf instance for the workspace index
      * @param {Object} options.userManager - Initialized UserManager instance
+     * @param {Object} [options.roleManager] - RoleManager instance for role integration
      * @param {Object} [options.eventEmitterOptions] - Options for EventEmitter2
      */
     constructor(options = {}) {
@@ -233,6 +232,7 @@ class WorkspaceManager extends EventEmitter {
         this.#defaultRootPath = path.resolve(options.defaultRootPath); // Ensure absolute path
         this.#indexStore = options.indexStore;
         this.#userManager = options.userManager; // Store userManager instance
+        this.#roleManager = options.roleManager; // Store roleManager instance
         this.#nameIndex = new Map(); // In-memory secondary index for name lookups
         this.#referenceIndex = new Map(); // In-memory tertiary index for reference lookups
 
@@ -244,6 +244,7 @@ class WorkspaceManager extends EventEmitter {
      */
 
     get userManager() { return this.#userManager; }
+    get roleManager() { return this.#roleManager; }
 
     /**
      * Private helper to construct workspace index key
@@ -356,10 +357,19 @@ class WorkspaceManager extends EventEmitter {
             throw new Error(`Workspace with name "${workspaceName}" already exists for user ${userId} on host ${host}.`);
         }
 
-        // Determine workspace directory path (using name for filesystem)
-        const workspaceDir = options.workspacePath ||
-                            (options.rootPath ? path.join(options.rootPath, workspaceName) :
-                            path.join(this.#defaultRootPath, ownerId, WORKSPACE_DIRECTORIES.workspaces, workspaceName));
+        // Determine workspace directory path
+        let workspaceDir;
+        if (options.workspacePath) {
+            // Explicit path provided (used for universe and specific cases)
+            workspaceDir = options.workspacePath;
+        } else {
+            // For regular workspaces, place them in user's workspaces subdirectory
+            const user = await this.#userManager.getUser(ownerId);
+            if (!user || !user.homePath) {
+                throw new Error(`Could not determine home path for user ${ownerId}`);
+            }
+            workspaceDir = path.join(user.homePath, 'workspaces', workspaceName);
+        }
         debug(`Using workspace path: ${workspaceDir} for workspace ${workspaceId}`);
 
         // Validate and create workspace
@@ -390,6 +400,7 @@ class WorkspaceManager extends EventEmitter {
             host: host, // Add host field to workspace data
             rootPath: workspaceDir,
             configPath: workspaceConfigPath,
+            roles: options.roles || [], // Initialize roles array
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
             metadata: options.metadata || {},
@@ -428,6 +439,27 @@ class WorkspaceManager extends EventEmitter {
         this.emit('workspace.created', { userId: ownerId, workspaceId, workspaceName, workspace: indexEntry });
         debug(`Workspace created: ${workspaceId} (name: ${workspaceName}) for user ${ownerId} on host ${host}`);
         return indexEntry;
+    }
+
+    /**
+     * Create universe workspace for a user (special application-level workspace)
+     * @param {string} userId - User ID
+     * @param {string} userEmail - User email
+     * @param {string} universeWorkspacePath - Full path to universe workspace location
+     * @returns {Promise<Object>} Created universe workspace
+     */
+    async createUniverseWorkspace(userId, userEmail, universeWorkspacePath) {
+        if (!this.#initialized) throw new Error('WorkspaceManager not initialized');
+
+        debug(`Creating universe workspace for user ${userId} at ${universeWorkspacePath}`);
+
+        return await this.createWorkspace(userId, 'universe', {
+            type: 'universe',
+            label: 'Universe',
+            description: `Personal workspace for ${userEmail}`,
+            workspacePath: universeWorkspacePath,
+            color: '#ffffff'
+        });
     }
 
     /**
@@ -650,6 +682,20 @@ class WorkspaceManager extends EventEmitter {
             await workspace.start();
             const indexKey = this.#constructWorkspaceIndexKey(ownerId, workspaceId);
             this.#updateWorkspaceIndexEntry(indexKey, { status: WORKSPACE_STATUS_CODES.ACTIVE, lastAccessed: new Date().toISOString() });
+
+            // Start associated roles
+            if (this.#roleManager) {
+                try {
+                    const roleResults = await this.startWorkspaceRoles(ownerId, workspaceIdentifier, requestingUserId);
+                    if (roleResults.length > 0) {
+                        debug(`Started ${roleResults.filter(r => r.status === 'started').length}/${roleResults.length} roles for workspace ${workspaceId}`);
+                    }
+                } catch (roleError) {
+                    debug(`Failed to start some workspace roles: ${roleError.message}`);
+                    // Don't fail workspace start if roles fail
+                }
+            }
+
             debug(`Workspace ${workspaceId} started successfully.`);
             this.emit('workspace.started', { workspaceId, workspace: workspace.toJSON() });
             return workspace;
@@ -728,6 +774,19 @@ class WorkspaceManager extends EventEmitter {
 
         debug(`Stopping workspace ${workspaceId}...`);
         try {
+            // Stop associated roles first
+            if (this.#roleManager) {
+                try {
+                    const roleResults = await this.stopWorkspaceRoles(ownerId, workspaceIdentifier, requestingUserId);
+                    if (roleResults.length > 0) {
+                        debug(`Stopped ${roleResults.filter(r => r.status === 'stopped').length}/${roleResults.length} roles for workspace ${workspaceId}`);
+                    }
+                } catch (roleError) {
+                    debug(`Failed to stop some workspace roles: ${roleError.message}`);
+                    // Continue with workspace stop even if roles fail
+                }
+            }
+
             await workspace.stop();
             const indexKey = this.#constructWorkspaceIndexKey(ownerId, workspaceId);
             this.#updateWorkspaceIndexEntry(indexKey, { status: WORKSPACE_STATUS_CODES.INACTIVE }, requestingUserId);
@@ -1376,6 +1435,7 @@ class WorkspaceManager extends EventEmitter {
                 if (validUpdates.label !== undefined) indexUpdates.label = validUpdates.label;
                 if (validUpdates.color !== undefined && WorkspaceManager.validateWorkspaceColor(validUpdates.color)) indexUpdates.color = validUpdates.color;
                 if (validUpdates.description !== undefined) indexUpdates.description = validUpdates.description;
+                if (validUpdates.roles !== undefined && Array.isArray(validUpdates.roles)) indexUpdates.roles = validUpdates.roles;
                 if (validUpdates.acl !== undefined) indexUpdates.acl = validUpdates.acl; // Assuming ACL structure is validated elsewhere or trusted
 
                 this.#updateWorkspaceIndexEntry(workspaceKey, indexUpdates);
@@ -1387,6 +1447,191 @@ class WorkspaceManager extends EventEmitter {
             console.error(`Failed to load/update workspace config for ${workspaceKey} at ${entry.configPath}: ${err.message}`);
             return false;
         }
+    }
+
+    /**
+     * Role Management Methods
+     */
+
+    /**
+     * Associate a role with this workspace
+     * @param {string} userId - User ID
+     * @param {string} workspaceId - Workspace ID
+     * @param {string} roleId - Role ID to associate
+     * @param {string} requestingUserId - User making the request
+     * @returns {Promise<boolean>} Success status
+     */
+    async associateRole(userId, workspaceId, roleId, requestingUserId) {
+        if (!this.#roleManager) {
+            throw new Error('RoleManager not available for role association');
+        }
+
+        const ownerId = await this.#userManager.resolveToUserId(userId);
+        if (!ownerId) {
+            throw new Error(`Could not resolve user identifier: "${userId}"`);
+        }
+
+        // Check workspace ownership
+        const indexKey = this.#constructWorkspaceIndexKey(ownerId, workspaceId);
+        const entry = this.#indexStore.get(indexKey);
+        if (!entry || entry.owner !== requestingUserId) {
+            throw new Error('Permission denied to associate role with workspace');
+        }
+
+        // Initialize roles array if not exists
+        if (!entry.roles) {
+            entry.roles = [];
+        }
+
+        // Check if already associated
+        if (entry.roles.includes(roleId)) {
+            debug(`Role ${roleId} already associated with workspace ${workspaceId}`);
+            return true;
+        }
+
+        // Add role association
+        entry.roles.push(roleId);
+        entry.updatedAt = new Date().toISOString();
+        this.#indexStore.set(indexKey, entry);
+
+        this.emit('workspace.role.associated', { workspaceId, roleId, userId: ownerId });
+        debug(`Role ${roleId} associated with workspace ${workspaceId}`);
+        return true;
+    }
+
+    /**
+     * Disassociate a role from this workspace
+     * @param {string} userId - User ID
+     * @param {string} workspaceId - Workspace ID
+     * @param {string} roleId - Role ID to disassociate
+     * @param {string} requestingUserId - User making the request
+     * @returns {Promise<boolean>} Success status
+     */
+    async disassociateRole(userId, workspaceId, roleId, requestingUserId) {
+        const ownerId = await this.#userManager.resolveToUserId(userId);
+        if (!ownerId) {
+            throw new Error(`Could not resolve user identifier: "${userId}"`);
+        }
+
+        // Check workspace ownership
+        const indexKey = this.#constructWorkspaceIndexKey(ownerId, workspaceId);
+        const entry = this.#indexStore.get(indexKey);
+        if (!entry || entry.owner !== requestingUserId) {
+            throw new Error('Permission denied to disassociate role from workspace');
+        }
+
+        if (!entry.roles || !entry.roles.includes(roleId)) {
+            debug(`Role ${roleId} not associated with workspace ${workspaceId}`);
+            return true;
+        }
+
+        // Remove role association
+        entry.roles = entry.roles.filter(id => id !== roleId);
+        entry.updatedAt = new Date().toISOString();
+        this.#indexStore.set(indexKey, entry);
+
+        this.emit('workspace.role.disassociated', { workspaceId, roleId, userId: ownerId });
+        debug(`Role ${roleId} disassociated from workspace ${workspaceId}`);
+        return true;
+    }
+
+    /**
+     * Get roles associated with a workspace
+     * @param {string} userId - User ID
+     * @param {string} workspaceId - Workspace ID
+     * @param {string} requestingUserId - User making the request
+     * @returns {Promise<Array>} Array of role IDs
+     */
+    async getWorkspaceRoles(userId, workspaceId, requestingUserId) {
+        const ownerId = await this.#userManager.resolveToUserId(userId);
+        if (!ownerId) return [];
+
+        const indexKey = this.#constructWorkspaceIndexKey(ownerId, workspaceId);
+        const entry = this.#indexStore.get(indexKey);
+
+        if (!entry || entry.owner !== requestingUserId) {
+            return [];
+        }
+
+        return entry.roles || [];
+    }
+
+    /**
+     * Start all roles associated with a workspace
+     * @param {string} userId - User ID
+     * @param {string} workspaceId - Workspace ID
+     * @param {string} requestingUserId - User making the request
+     * @returns {Promise<Array>} Array of started role results
+     */
+    async startWorkspaceRoles(userId, workspaceId, requestingUserId) {
+        if (!this.#roleManager) {
+            debug('RoleManager not available, skipping role start');
+            return [];
+        }
+
+        const roleIds = await this.getWorkspaceRoles(userId, workspaceId, requestingUserId);
+        const results = [];
+
+        for (const roleId of roleIds) {
+            try {
+                const role = await this.#roleManager.startRole(roleId, requestingUserId);
+                results.push({ roleId, status: 'started', role });
+                debug(`Started role ${roleId} for workspace ${workspaceId}`);
+            } catch (error) {
+                results.push({ roleId, status: 'failed', error: error.message });
+                debug(`Failed to start role ${roleId} for workspace ${workspaceId}: ${error.message}`);
+            }
+        }
+
+        return results;
+    }
+
+    /**
+     * Stop all roles associated with a workspace
+     * @param {string} userId - User ID
+     * @param {string} workspaceId - Workspace ID
+     * @param {string} requestingUserId - User making the request
+     * @returns {Promise<Array>} Array of stopped role results
+     */
+    async stopWorkspaceRoles(userId, workspaceId, requestingUserId) {
+        if (!this.#roleManager) {
+            debug('RoleManager not available, skipping role stop');
+            return [];
+        }
+
+        const roleIds = await this.getWorkspaceRoles(userId, workspaceId, requestingUserId);
+        const results = [];
+
+        for (const roleId of roleIds) {
+            try {
+                await this.#roleManager.stopRole(roleId, requestingUserId);
+                results.push({ roleId, status: 'stopped' });
+                debug(`Stopped role ${roleId} for workspace ${workspaceId}`);
+            } catch (error) {
+                results.push({ roleId, status: 'failed', error: error.message });
+                debug(`Failed to stop role ${roleId} for workspace ${workspaceId}: ${error.message}`);
+            }
+        }
+
+        return results;
+    }
+
+    /**
+     * Get role mount path for workspace
+     * @param {string} userId - User ID
+     * @param {string} workspaceId - Workspace ID
+     * @returns {Promise<string|null>} Role mount path or null
+     */
+    async getWorkspaceRolePath(userId, workspaceId) {
+        const ownerId = await this.#userManager.resolveToUserId(userId);
+        if (!ownerId) return null;
+
+        const indexKey = this.#constructWorkspaceIndexKey(ownerId, workspaceId);
+        const entry = this.#indexStore.get(indexKey);
+
+        if (!entry) return null;
+
+        return path.join(entry.rootPath, WORKSPACE_DIRECTORIES.roles);
     }
 
     /**
@@ -1559,13 +1804,17 @@ class WorkspaceManager extends EventEmitter {
     async #createWorkspaceSubdirectories(workspaceDir) {
         debug(`Creating subdirectories for workspace at ${workspaceDir}`);
         for (const subdirKey in WORKSPACE_DIRECTORIES) {
-            // Avoid creating 'workspaces' subdir inside a workspace dir itself.
-            if (subdirKey === 'workspaces') continue;
-
             const subdirPath = path.join(workspaceDir, WORKSPACE_DIRECTORIES[subdirKey]);
             try {
                 await fsPromises.mkdir(subdirPath, { recursive: true });
                 debug(`Created subdirectory: ${subdirPath}`);
+
+                // Create run directory for Unix sockets in var directory
+                if (subdirKey === 'var') {
+                    const runPath = path.join(subdirPath, 'run');
+                    await fsPromises.mkdir(runPath, { recursive: true });
+                    debug(`Created socket directory: ${runPath}`);
+                }
             } catch (err) {
                 // Log error but don't necessarily fail the whole workspace creation
                 console.error(`Failed to create subdirectory ${subdirPath}: ${err.message}`);
@@ -1575,14 +1824,15 @@ class WorkspaceManager extends EventEmitter {
 
     /**
      * Performs the initial scan of workspaces listed in the index.
-     * Updates statuses (NOT_FOUND, ERROR, AVAILABLE).
+     * Re-validates all workspace paths and updates statuses accordingly.
+     * Recovers workspaces that were NOT_FOUND or ERROR if paths are now valid.
      * Does NOT load workspaces into memory.
      * @private
      */
     async #scanIndexedWorkspaces() {
         debug('Performing initial workspace scan...');
         const allWorkspaces = this.#indexStore.store;
-        let requiresSave = false; // To track if any changes were made to the index
+        let statusChanges = 0;
 
         for (const indexKey in allWorkspaces) {
             const workspaceEntry = allWorkspaces[indexKey];
@@ -1595,43 +1845,56 @@ class WorkspaceManager extends EventEmitter {
             }
 
             const workspaceId = parsed.workspaceId;
-            debug(`Scanning workspace ${workspaceId} (Name: ${workspaceEntry.name}, Owner: ${workspaceEntry.owner})`);
-            let currentStatus = workspaceEntry.status;
-            let newStatus = currentStatus;
+            const currentStatus = workspaceEntry.status;
 
-            // Skip already processed states unless we need to re-validate
+            // Skip permanently removed/destroyed workspaces
             if ([WORKSPACE_STATUS_CODES.REMOVED, WORKSPACE_STATUS_CODES.DESTROYED].includes(currentStatus)) {
-                debug(`Workspace ${workspaceId} is in status ${currentStatus}, skipping.`);
+                debug(`Workspace ${workspaceId} is ${currentStatus}, skipping scan.`);
                 continue;
             }
 
-            if (!workspaceEntry.rootPath || !existsSync(workspaceEntry.rootPath)) {
-                debug(`Workspace path not found for ${workspaceId} at path ${workspaceEntry.rootPath}, marking as NOT_FOUND`);
+            debug(`Scanning workspace ${workspaceId} (Name: ${workspaceEntry.name}, Status: ${currentStatus})`);
+
+            // Determine new status based on filesystem state
+            let newStatus;
+            const rootPathExists = workspaceEntry.rootPath && existsSync(workspaceEntry.rootPath);
+            const configPathExists = workspaceEntry.configPath && existsSync(workspaceEntry.configPath);
+
+            if (!rootPathExists) {
+                // Workspace directory missing
                 newStatus = WORKSPACE_STATUS_CODES.NOT_FOUND;
-            } else if (!workspaceEntry.configPath || !existsSync(workspaceEntry.configPath)) {
-                debug(`Workspace config not found for ${workspaceId} at path ${workspaceEntry.configPath}, marking as ERROR`);
+                debug(`Workspace ${workspaceId} path not found: ${workspaceEntry.rootPath}`);
+            } else if (!configPathExists) {
+                // Workspace directory exists but config missing
                 newStatus = WORKSPACE_STATUS_CODES.ERROR;
-            } else if (![WORKSPACE_STATUS_CODES.ACTIVE, WORKSPACE_STATUS_CODES.INACTIVE, WORKSPACE_STATUS_CODES.ERROR, WORKSPACE_STATUS_CODES.NOT_FOUND].includes(currentStatus)) {
-                // If it's not in a definitive error/active/inactive state, mark as available (implies it passed path checks)
-                newStatus = WORKSPACE_STATUS_CODES.AVAILABLE;
-            } else if (newStatus === WORKSPACE_STATUS_CODES.ERROR && existsSync(workspaceEntry.rootPath) && existsSync(workspaceEntry.configPath)){
-                // If it was in ERROR but paths are now fine, it could become AVAILABLE (unless it's meant to be ACTIVE/INACTIVE)
-                 if (![WORKSPACE_STATUS_CODES.ACTIVE, WORKSPACE_STATUS_CODES.INACTIVE].includes(workspaceEntry.status)) {
+                debug(`Workspace ${workspaceId} config not found: ${workspaceEntry.configPath}`);
+            } else {
+                // Both paths exist - workspace is valid
+                // Preserve ACTIVE/INACTIVE status if set, otherwise mark as AVAILABLE
+                if ([WORKSPACE_STATUS_CODES.ACTIVE, WORKSPACE_STATUS_CODES.INACTIVE].includes(currentStatus)) {
+                    newStatus = WORKSPACE_STATUS_CODES.INACTIVE; // Reset ACTIVE to INACTIVE on startup
+                } else {
                     newStatus = WORKSPACE_STATUS_CODES.AVAILABLE;
-                 }
+                }
+
+                // Log recovery if workspace was previously in error state
+                if ([WORKSPACE_STATUS_CODES.NOT_FOUND, WORKSPACE_STATUS_CODES.ERROR].includes(currentStatus)) {
+                    debug(`Workspace ${workspaceId} recovered: ${currentStatus} -> ${newStatus}`);
+                }
             }
 
+            // Update status if changed
             if (newStatus !== currentStatus) {
                 this.#updateWorkspaceIndexEntry(indexKey, { status: newStatus });
-                requiresSave = true; // Conf usually saves on set, but this flag is for conceptual grouping.
-                debug(`Updated status for ${workspaceId} from ${currentStatus} to ${newStatus}`);
+                statusChanges++;
+                debug(`Updated workspace ${workspaceId} status: ${currentStatus} -> ${newStatus}`);
             }
         }
 
-        if (requiresSave) {
-             debug('Workspace scan complete. Index potentially updated.');
+        if (statusChanges > 0) {
+            debug(`Workspace scan complete. Updated ${statusChanges} workspace status(es).`);
         } else {
-            debug('Workspace scan complete. No changes required to the index.');
+            debug('Workspace scan complete. No status changes needed.');
         }
     }
 
@@ -1755,6 +2018,16 @@ class WorkspaceManager extends EventEmitter {
             }
         }
         return false;
+    }
+
+    /**
+     * Get universe workspace for a user
+     * @param {string} userId - User ID
+     * @returns {Promise<Object|null>} Universe workspace or null
+     */
+    async getUniverseWorkspace(userId) {
+        const workspaces = await this.listUserWorkspaces(userId);
+        return workspaces.find(ws => ws.type === 'universe') || null;
     }
 }
 

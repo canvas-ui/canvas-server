@@ -1,0 +1,101 @@
+{
+  "id": "minio-s3",
+  "name": "MinIO S3 Storage",
+  "description": "Self-hosted S3-compatible object storage service",
+  "version": "1.0.0",
+  "type": "global",
+  "category": "storage",
+  "tags": ["s3", "storage", "object-storage"],
+
+  "container": {
+    "image": "minio/minio:latest",
+    "command": ["server", "/data", "--address", ":9000", "--console-address", ":9001"],
+    "ports": {
+      "9000": "9000",
+      "9001": "9001"
+    },
+    "healthcheck": {
+      "test": ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"],
+      "interval": "30s",
+      "timeout": "10s",
+      "retries": 3,
+      "start_period": "10s"
+    },
+    "restart": "unless-stopped"
+  },
+
+  "volumes": [
+    {
+      "host": "server:/data/minio",
+      "container": "/data",
+      "mode": "rw"
+    },
+    {
+      "host": "server:/config/minio",
+      "container": "/root/.minio",
+      "mode": "rw"
+    }
+  ],
+
+  "environment": {
+    "MINIO_ROOT_USER": "canvas-admin",
+    "MINIO_ROOT_PASSWORD": "canvas-admin-password",
+    "MINIO_BROWSER_REDIRECT_URL": "http://localhost:9001",
+    "MINIO_SERVER_URL": "http://localhost:9000"
+  },
+
+  "networks": ["canvas-global"],
+
+  "lifecycle": {
+    "autoStart": true,
+    "dependencies": [],
+    "hooks": {
+      "preStart": null,
+      "postStart": null,
+      "preStop": null,
+      "postStop": null
+    }
+  },
+
+  "configuration": {
+    "schema": {
+      "type": "object",
+      "properties": {
+        "rootUser": {
+          "type": "string",
+          "default": "canvas-admin",
+          "description": "MinIO root user"
+        },
+        "rootPassword": {
+          "type": "string",
+          "default": "canvas-admin-password",
+          "description": "MinIO root password"
+        },
+        "apiPort": {
+          "type": "integer",
+          "default": 9000,
+          "description": "MinIO API port"
+        },
+        "consolePort": {
+          "type": "integer",
+          "default": 9001,
+          "description": "MinIO console port"
+        }
+      }
+    }
+  },
+
+  "resources": {
+    "cpu": "0.5",
+    "memory": "512Mi",
+    "storage": "10Gi"
+  },
+
+  "documentation": {
+    "readme": "MinIO is a high-performance, S3 compatible object store. This role provides centralized object storage for all Canvas users.",
+    "urls": {
+      "homepage": "https://min.io",
+      "documentation": "https://docs.min.io"
+    }
+  }
+}

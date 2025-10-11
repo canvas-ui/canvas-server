@@ -1,0 +1,121 @@
+{
+  "id": "llm-agent",
+  "name": "LLM Agent",
+  "description": "Personal AI agent with workspace access",
+  "version": "1.0.0",
+  "type": "workspace",
+  "category": "ai",
+  "tags": ["llm", "ai", "agent", "assistant"],
+
+  "container": {
+    "image": "canvas/llm-agent:latest",
+    "healthcheck": {
+      "test": ["CMD", "test", "-S", "/var/run/sockets/api.sock"],
+      "interval": "30s",
+      "timeout": "10s",
+      "retries": 3,
+      "start_period": "30s"
+    },
+    "restart": "unless-stopped"
+  },
+
+  "volumes": [
+    {
+      "host": "workspace:/roles/llm-agent",
+      "container": "/app/data",
+      "mode": "rw"
+    },
+    {
+      "host": "workspace:/",
+      "container": "/workspace",
+      "mode": "rw"
+    },
+    {
+      "host": "server:/models",
+      "container": "/models",
+      "mode": "ro"
+    }
+  ],
+
+  "environment": {
+    "AGENT_MODE": "workspace",
+    "WORKSPACE_ACCESS": "true",
+    "MODEL_PATH": "/models",
+    "DATA_PATH": "/app/data",
+    "SOCKET_PATH": "/var/run/sockets/api.sock",
+    "COMMUNICATION_MODE": "unix_socket"
+  },
+
+  "networks": [],
+
+  "lifecycle": {
+    "autoStart": false,
+    "dependencies": [],
+    "hooks": {
+      "preStart": null,
+      "postStart": {
+        "command": ["test", "-S", "/var/run/sockets/api.sock"],
+        "timeout": "30s"
+      },
+      "preStop": {
+        "command": ["rm", "-f", "/var/run/sockets/api.sock"],
+        "timeout": "10s"
+      },
+      "postStop": null
+    }
+  },
+
+  "configuration": {
+    "schema": {
+      "type": "object",
+      "properties": {
+        "modelName": {
+          "type": "string",
+          "default": "llama2",
+          "description": "LLM model to use"
+        },
+        "maxTokens": {
+          "type": "integer",
+          "default": 2048,
+          "description": "Maximum tokens per response"
+        },
+        "temperature": {
+          "type": "number",
+          "default": 0.7,
+          "description": "Sampling temperature"
+        },
+        "workspaceAccess": {
+          "type": "boolean",
+          "default": true,
+          "description": "Allow agent to access workspace files"
+        }
+      }
+    }
+  },
+
+  "permissions": {
+    "workspace": {
+      "read": true,
+      "write": true,
+      "execute": false
+    },
+    "network": {
+      "outbound": true,
+      "inbound": false
+    }
+  },
+
+  "resources": {
+    "cpu": "1.0",
+    "memory": "2Gi",
+    "storage": "1Gi",
+    "gpu": "optional"
+  },
+
+  "documentation": {
+    "readme": "Personal AI agent that can access and work with your workspace files. Provides intelligent assistance for coding, writing, and research tasks.",
+    "urls": {
+      "socket": "unix:/var/run/sockets/api.sock"
+    }
+  }
+}

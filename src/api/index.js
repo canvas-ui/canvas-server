@@ -28,6 +28,7 @@ import pubRoutes from './routes/pub/index.js';
 import pingRoute from './routes/ping.js';
 import schemaRoutes from './routes/schemas.js';
 import adminRoutes from './routes/admin/index.js';
+import webdavRoutes from './routes/webdav.js';
 import { mcpPlugin } from './mcp/index.js';
 
 // WebSocket handlers
@@ -139,10 +140,10 @@ export async function createServer(options = {}) {
   // Register plugins
   await server.register(fastifyCors, {
     origin: options.corsOrigin || true, // Default to allowing all origins, customize in production
-    methods: ['GET', 'PUT', 'POST', 'DELETE', 'PATCH', 'OPTIONS'],
+    methods: ['GET', 'PUT', 'POST', 'DELETE', 'PATCH', 'OPTIONS', 'HEAD', 'PROPFIND', 'PROPPATCH', 'MKCOL', 'COPY', 'MOVE', 'LOCK', 'UNLOCK'],
     credentials: true,
-    allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-App-Name', 'X-Selected-Session', 'Cache-Control'],
-    exposedHeaders: ['Authorization', 'Content-Type'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-App-Name', 'X-Selected-Session', 'Cache-Control', 'Depth', 'If', 'Overwrite', 'Destination'],
+    exposedHeaders: ['Authorization', 'Content-Type', 'DAV', 'ETag', 'Lock-Token'],
     maxAge: 86400 // 24 hours
   });
 
@@ -245,6 +246,7 @@ export async function createServer(options = {}) {
   server.register(pubRoutes, { prefix: '/rest/v2/pub' });
   server.register(schemaRoutes, { prefix: '/rest/v2/schemas' });
   server.register(adminRoutes, { prefix: '/rest/v2/admin' });
+  server.register(webdavRoutes); // WebDAV access to workspace home folders
   server.register(mcpPlugin); // TODO: Draft/test only!!!
 
   // Global 404 handler
@@ -253,6 +255,11 @@ export async function createServer(options = {}) {
     if (request.url.startsWith('/rest/v2/')) {
       const response = new ResponseObject().notFound(`Route ${request.method}:${request.url} not found`);
       return reply.code(response.statusCode).send(response.getResponse());
+    }
+
+    // For WebDAV routes, return a proper WebDAV 404 response
+    if (request.url.startsWith('/webdav/')) {
+      return reply.code(404).send('Not Found');
     }
 
     // For all other routes (UI routes), serve the index.html

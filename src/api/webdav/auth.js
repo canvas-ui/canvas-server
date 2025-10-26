@@ -1,6 +1,7 @@
 'use strict';
 
-import { HTTPAuthentication } from 'webdav-server';
+import webdavServer from 'webdav-server';
+const { HTTPBasicAuthentication } = webdavServer;
 import { authService } from '../auth/strategies.js';
 import { createDebug } from '../../utils/log/index.js';
 
@@ -10,7 +11,7 @@ const debug = createDebug('webdav:auth');
  * Canvas WebDAV Authentication Manager
  * Integrates WebDAV authentication with Canvas auth system (JWT/API tokens)
  */
-export class CanvasWebDAVAuthentication extends HTTPAuthentication {
+export class CanvasWebDAVAuthentication extends HTTPBasicAuthentication {
   constructor(userManager, workspaceManager) {
     super(userManager, 'Canvas WebDAV');
     this.userManager = userManager;
@@ -27,6 +28,8 @@ export class CanvasWebDAVAuthentication extends HTTPAuthentication {
 
       if (!authHeader) {
         debug('No authorization header provided');
+        // Set WWW-Authenticate header for Windows WebDAV clients
+        ctx.response.setHeader('WWW-Authenticate', 'Basic realm="Canvas WebDAV", Bearer realm="Canvas WebDAV"');
         return callback(null, null);
       }
 
@@ -43,11 +46,39 @@ export class CanvasWebDAVAuthentication extends HTTPAuthentication {
           const base64Credentials = authHeader.substring(6);
           const credentials = Buffer.from(base64Credentials, 'base64').toString('utf-8');
           const [username, password] = credentials.split(':');
-
-          // For Basic Auth, we use the password field as the token
-          // Username can be anything (typically email or username)
-          token = password;
           debug(`Basic auth detected for user: ${username}`);
+
+          // Check if password is an API token (starts with canvas-)
+          if (password.startsWith('canvas-')) {
+            token = password;
+            debug('Using password as API token');
+          } else {
+            // Try to authenticate with username/password
+            debug('Attempting username/password authentication');
+            try {
+              const user = await this.userManager.getUserByEmail(username);
+
+              // Verify password
+              const passwordValid = await authService.verifyPassword(user.id, password);
+              if (!passwordValid) {
+                debug(`Invalid password for user: ${username}`);
+                return callback(null, null);
+              }
+
+              debug(`Password authentication successful for user: ${username}`);
+              // Return user object directly
+              return callback(null, {
+                uid: user.id,
+                username: user.name || user.email,
+                email: user.email,
+                isDefaultUser: false,
+                isAdministrator: user.userType === 'admin'
+              });
+            } catch (userError) {
+              debug(`User not found or error: ${userError.message}`);
+              return callback(null, null);
+            }
+          }
         } catch (e) {
           debug(`Failed to parse Basic auth: ${e.message}`);
           return callback(null, null);

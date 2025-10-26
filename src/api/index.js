@@ -29,7 +29,7 @@ import pingRoute from './routes/ping.js';
 import schemaRoutes from './routes/schemas.js';
 import adminRoutes from './routes/admin/index.js';
 import webdavRoutes from './routes/webdav.js';
-import { mcpPlugin } from './mcp/index.js';
+// import { mcpPlugin } from './mcp/index.js'; // DISABLED for now
 
 // WebSocket handlers
 import setupWebSocketHandlers from './websocket/index.js';
@@ -137,6 +137,23 @@ export async function createServer(options = {}) {
   if (options.dotfileManager) server.decorate('dotfileManager', options.dotfileManager);
   if (options.authService) server.decorate('authService', options.authService);
 
+  // Add hook to handle WebDAV OPTIONS requests before CORS plugin intercepts them
+  server.addHook('onRequest', async (request, reply) => {
+    if (request.url.startsWith('/webdav/') && request.method === 'OPTIONS') {
+      // Handle WebDAV OPTIONS directly
+      reply.header('DAV', '1, 2');
+      reply.header('MS-Author-Via', 'DAV');
+      reply.header('Allow', 'OPTIONS, GET, HEAD, POST, PUT, DELETE, PROPFIND, PROPPATCH, MKCOL, COPY, MOVE, LOCK, UNLOCK');
+      reply.header('Access-Control-Allow-Origin', '*');
+      reply.header('Access-Control-Allow-Methods', 'OPTIONS, GET, HEAD, POST, PUT, DELETE, PROPFIND, PROPPATCH, MKCOL, COPY, MOVE, LOCK, UNLOCK');
+      reply.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept, X-App-Name, X-Selected-Session, Cache-Control, Depth, If, Overwrite, Destination');
+      reply.header('Access-Control-Expose-Headers', 'Authorization, Content-Type, DAV, ETag, Lock-Token');
+      reply.header('Access-Control-Allow-Credentials', 'true');
+      reply.header('Access-Control-Max-Age', '86400');
+      return reply.code(200).send();
+    }
+  });
+
   // Register plugins
   await server.register(fastifyCors, {
     origin: options.corsOrigin || true, // Default to allowing all origins, customize in production
@@ -146,6 +163,9 @@ export async function createServer(options = {}) {
     exposedHeaders: ['Authorization', 'Content-Type', 'DAV', 'ETag', 'Lock-Token'],
     maxAge: 86400 // 24 hours
   });
+
+  // Register WebDAV routes AFTER CORS
+  server.register(webdavRoutes); // WebDAV access to workspace home folders
 
   // Add security headers including CSP for browser extension compatibility
   server.addHook('onSend', async (request, reply, payload) => {
@@ -246,8 +266,7 @@ export async function createServer(options = {}) {
   server.register(pubRoutes, { prefix: '/rest/v2/pub' });
   server.register(schemaRoutes, { prefix: '/rest/v2/schemas' });
   server.register(adminRoutes, { prefix: '/rest/v2/admin' });
-  server.register(webdavRoutes); // WebDAV access to workspace home folders
-  server.register(mcpPlugin); // TODO: Draft/test only!!!
+  // server.register(mcpPlugin); // TODO: Draft/test only!!! - DISABLED for now
 
   // Global 404 handler
   server.setNotFoundHandler((request, reply) => {

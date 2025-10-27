@@ -45,7 +45,7 @@ export class CanvasWebDAVAuthentication extends HTTPBasicAuthentication {
         try {
           const base64Credentials = authHeader.substring(6);
           const credentials = Buffer.from(base64Credentials, 'base64').toString('utf-8');
-          const [username, password] = credentials.split(':');
+          const [username, password] = credentials.split(':', 2);
           debug(`Basic auth detected for user: ${username}`);
 
           // Check if password is an API token (starts with canvas-)

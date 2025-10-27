@@ -124,6 +124,30 @@ Canvas Server supports two types of authentication:
 1. **JWT Token Authentication**: Used for web UI login and normal user sessions, see 
 2. **[API Token Authentication](docs/api-token-auth.md)**: Used for programmatic access (CLI, Electron, browser extensions, curl-based scripts)
 
+## WebDAV Access
+
+Canvas Server provides WebDAV access to workspace home directories, enabling native file manager integration across Windows, macOS, and Linux. Mount workspace folders as network drives and work with them using your operating system's native file manager.
+
+**Quick Start:**
+```bash
+# Connection URL format
+http(s)://[server]/webdav/[workspace-name]/home
+
+# Mount on Windows
+net use W: http://localhost:3334/webdav/my-workspace/home /user:email
+
+# Mount on macOS
+mount_webdav -S http://localhost:3334/webdav/my-workspace/home ~/mount-point
+
+# Mount on Linux (davfs2)
+mount.davfs http://localhost:3334/webdav/my-workspace/home ~/mount-point
+```
+
+**Documentation:**
+- [WebDAV Access Guide](docs/webdav-access.md) - Complete setup instructions for all platforms
+- [WebDAV Testing Guide](docs/webdav-testing.md) - Testing and verification procedures
+- [WebDAV Quick Reference](docs/webdav-quick-reference.md) - Command reference and examples
+
 ## References
 
 ### API Documentation

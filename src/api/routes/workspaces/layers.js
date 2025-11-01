@@ -31,7 +31,7 @@ export default async function workspaceLayerRoutes(fastify, options) {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return;
-      const layers = await workspace.tree.listAllLayers();
+      const layers = await workspace.tree.listLayers();
       const payload = layers.map(l => l.toJSON ? l.toJSON() : l);
       const responseObject = new ResponseObject().found(payload, 'Layers retrieved successfully');
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());

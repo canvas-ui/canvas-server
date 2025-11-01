@@ -8,65 +8,23 @@ import { existsSync } from 'fs';
 import EventEmitter from 'eventemitter2';
 import Conf from 'conf';
 import { generateUUID } from '../../utils/id.js';
-// import AdmZip from 'adm-zip';
+//import AdmZip from 'adm-zip';
 
 // Logging
 import logger, { createDebug } from '../../utils/log/index.js';
 const debug = createDebug('workspace-manager');
 
 // Includes
-import Workspace from './lib/Workspace.js';
+import Workspace from './Workspace.js';
 
-/**
- * Constants
- */
+// Constants
+import {
+    WORKSPACE_DEFAULT_HOST,
+    WORKSPACE_CONFIG_FILENAME,
+    WORKSPACE_DIRECTORIES,
+    WORKSPACE_STATUS_CODES,
+} from '../workspaced/constants.js';
 
-// Default host for local workspaces
-const DEFAULT_HOST = 'canvas.local';
-
-// Workspace reference format: [user_identifier]@[host]:[workspace_slug][/optional_path...]
-// Examples:
-// - user.id@canvas.local:my-project
-// - user.name@canvas.local:my-project
-// - user.email@remote.server.com:shared-workspace/subfolder
-const WORKSPACE_CONFIG_FILENAME = 'workspace.json';
-
-// Lets adhere to the "You aint gonna need it (YAGNI)" principle here
-const WORKSPACE_DIRECTORIES = {
-    db: 'db',
-    config: 'config',
-    home: 'home',
-    roles: 'roles',
-    var: 'var', // For Unix sockets
-};
-
-const WORKSPACE_STATUS_CODES = {
-    AVAILABLE: 'available', // Workspace dir exists, config readable
-    NOT_FOUND: 'not_found', // Workspace dir/config specified in index not found
-    ERROR: 'error', // Config invalid, FS issues, etc.
-    ACTIVE: 'active', // Workspace is loaded and started (db connected)
-    INACTIVE: 'inactive', // Workspace is loaded but not started
-    REMOVED: 'removed', // Marked for removal, ignored on scan
-    DESTROYED: 'destroyed', // Workspace dir deleted by user
-};
-
-// Default configuration template for a new workspace's workspace.json
-// Using token-based ACLs for portable workspace sharing
-const DEFAULT_WORKSPACE_CONFIG = {
-    id: null, // Set to 12-char nanoid (opaque identifier)
-    name: null, // User-defined slug-like name
-    owner: null, // User ID (email)
-    type: 'workspace', // "workspace" or "universe" (user home directory)
-    label: 'Workspace',
-    color: null,
-    description: '',
-    acl: {
-        tokens: {} // Token-based ACL: { "sha256:hash": { permissions: [], description: "", createdAt: "", expiresAt: null } }
-    },
-    roles: [], // Associated role IDs
-    created: null,
-    updated: null,
-};
 
 /**
  * Workspace Reference Utilities
@@ -136,8 +94,8 @@ function parseWorkspaceReference(workspaceRef) {
         workspaceSlug: workspaceSlug.trim(),
         path: optionalPath || '',
         full: workspaceRef,
-        isLocal: host === DEFAULT_HOST,
-        isRemote: host !== DEFAULT_HOST
+        isLocal: host === WORKSPACE_DEFAULT_HOST,
+        isRemote: host !== WORKSPACE_DEFAULT_HOST
     };
 }
 
@@ -145,11 +103,11 @@ function parseWorkspaceReference(workspaceRef) {
  * Construct workspace reference string
  * @param {string} userIdentifier - User ID, name, or email
  * @param {string} workspaceSlug - Workspace slug/name
- * @param {string} [host=DEFAULT_HOST] - Host (defaults to canvas.local)
+ * @param {string} [host=WORKSPACE_DEFAULT_HOST] - Host (defaults to canvas.local)
  * @param {string} [path=''] - Optional path within workspace
  * @returns {string} Workspace reference string
  */
-function constructWorkspaceReference(userIdentifier, workspaceSlug, host = DEFAULT_HOST, path = '') {
+function constructWorkspaceReference(userIdentifier, workspaceSlug, host = WORKSPACE_DEFAULT_HOST, path = '') {
     if (!userIdentifier || !workspaceSlug) {
         throw new Error('userIdentifier and workspaceSlug are required to construct a workspace reference.');
     }
@@ -289,11 +247,11 @@ class WorkspaceManager extends EventEmitter {
      * Construct workspace reference string
      * @param {string} userIdentifier - User ID, name, or email
      * @param {string} workspaceSlug - Workspace slug/name
-     * @param {string} [host=DEFAULT_HOST] - Host (defaults to canvas.local)
+     * @param {string} [host=WORKSPACE_DEFAULT_HOST] - Host (defaults to canvas.local)
      * @param {string} [path=''] - Optional path within workspace
      * @returns {string} Workspace reference string
      */
-    constructWorkspaceReference(userIdentifier, workspaceSlug, host = DEFAULT_HOST, path = '') {
+    constructWorkspaceReference(userIdentifier, workspaceSlug, host = WORKSPACE_DEFAULT_HOST, path = '') {
         return constructWorkspaceReference(userIdentifier, workspaceSlug, host, path);
     }
 
@@ -330,7 +288,7 @@ class WorkspaceManager extends EventEmitter {
      * @param {string} [options.rootPath] - Custom root for this workspace path.
      * @param {string} [options.workspacePath] - Absolute path for out-of-tree workspace.
      * @param {string} [options.type='workspace'] - Type of workspace.
-     * @param {string} [options.host=DEFAULT_HOST] - Host for the workspace reference.
+     * @param {string} [options.host=WORKSPACE_DEFAULT_HOST] - Host for the workspace reference.
      * @returns {Promise<Object>} The index entry of the newly created workspace.
      */
     async createWorkspace(userId, workspaceName, options = {}) {
@@ -346,7 +304,7 @@ class WorkspaceManager extends EventEmitter {
 
         // Sanitize the workspace name
         workspaceName = this.#sanitizeWorkspaceName(workspaceName);
-        const host = options.host || DEFAULT_HOST;
+        const host = options.host || WORKSPACE_DEFAULT_HOST;
 
         // Generate unique workspace ID
         const workspaceId = options.id || generateUUID();
@@ -905,7 +863,7 @@ class WorkspaceManager extends EventEmitter {
         }
 
         // Remove from name index
-        const nameKey = `${userId}@${entry.host || DEFAULT_HOST}:${entry.name}`;
+        const nameKey = `${userId}@${entry.host || WORKSPACE_DEFAULT_HOST}:${entry.name}`;
         this.#nameIndex.delete(nameKey);
 
         // Remove from index store using the correct key
@@ -958,10 +916,10 @@ class WorkspaceManager extends EventEmitter {
      * Resolves a workspace ID from a workspace name and user identifier
      * @param {string} userIdentifier - The user ID, name, or email
      * @param {string} workspaceName - The workspace name
-     * @param {string} [host=DEFAULT_HOST] - Host (defaults to canvas.local)
+     * @param {string} [host=WORKSPACE_DEFAULT_HOST] - Host (defaults to canvas.local)
      * @returns {string|null} The workspace ID if found, null otherwise
      */
-    resolveWorkspaceId(userIdentifier, workspaceName, host = DEFAULT_HOST) {
+    resolveWorkspaceId(userIdentifier, workspaceName, host = WORKSPACE_DEFAULT_HOST) {
         const nameKey = `${userIdentifier}@${host}:${workspaceName}`;
         return this.#nameIndex.get(nameKey) || null;
     }
@@ -1173,10 +1131,10 @@ class WorkspaceManager extends EventEmitter {
     /**
      * Lists all workspaces for a given userId
      * @param {string} userId - The user ID
-     * @param {string} [host=DEFAULT_HOST] - Host to filter by (defaults to canvas.local)
+     * @param {string} [host=WORKSPACE_DEFAULT_HOST] - Host to filter by (defaults to canvas.local)
      * @returns {Promise<Array<Object>>} An array of workspace index entry objects.
      */
-    async listUserWorkspaces(userId, host = DEFAULT_HOST) {
+    async listUserWorkspaces(userId, host = WORKSPACE_DEFAULT_HOST) {
         if (!this.#initialized) throw new Error('WorkspaceManager not initialized');
         if (!userId) return [];
 
@@ -1194,7 +1152,7 @@ class WorkspaceManager extends EventEmitter {
                 const workspaceEntry = allWorkspaces[key];
                 if (workspaceEntry && typeof workspaceEntry === 'object' && workspaceEntry.id) {
                     // More flexible host filtering - if workspace has no host field, assume it's the default host
-                    const workspaceHost = workspaceEntry.host || DEFAULT_HOST;
+                    const workspaceHost = workspaceEntry.host || WORKSPACE_DEFAULT_HOST;
                     if (!host || workspaceHost === host) {
                         // Resolve owner ID to user email
                         try {
@@ -1408,8 +1366,8 @@ class WorkspaceManager extends EventEmitter {
                 }
                 if (key === 'name' && validUpdates[key]) {
                     // If name is changing, we need to update the indexes
-                    const oldNameKey = `${entry.owner}@${entry.host || DEFAULT_HOST}:${entry.name}`;
-                    const newNameKey = `${entry.owner}@${entry.host || DEFAULT_HOST}:${validUpdates[key]}`;
+                    const oldNameKey = `${entry.owner}@${entry.host || WORKSPACE_DEFAULT_HOST}:${entry.name}`;
+                    const newNameKey = `${entry.owner}@${entry.host || WORKSPACE_DEFAULT_HOST}:${validUpdates[key]}`;
                     const oldRefKey = entry.reference;
                     const newRefKey = this.constructWorkspaceReference(entry.owner, validUpdates[key], entry.host);
 
@@ -1760,7 +1718,7 @@ class WorkspaceManager extends EventEmitter {
         for (const [indexKey, workspaceEntry] of Object.entries(allWorkspaces)) {
             const parsed = this.#parseWorkspaceIndexKey(indexKey);
             if (workspaceEntry && workspaceEntry.name && parsed) {
-                const host = workspaceEntry.host || DEFAULT_HOST;
+                const host = workspaceEntry.host || WORKSPACE_DEFAULT_HOST;
                 const ownerId = parsed.userId; // This is the actual user ID
 
                 const nameKey = `${ownerId}@${host}:${workspaceEntry.name}`;

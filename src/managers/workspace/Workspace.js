@@ -5,18 +5,18 @@ import path from 'path';
 import EventEmitter from 'eventemitter2';
 
 // Logging
-import logger, { createDebug } from '../../../utils/log/index.js';
+import logger, { createDebug } from '../../utils/log/index.js';
 const debug = createDebug('workspace-manager:workspace');
 
 // Includes
-import Db from '../../../services/synapsd/src/index.js';
-import { parseDocumentId, parseDocumentIdArray } from '../../../utils/documentId.js';
+import Db from '../../services/synapsd/src/index.js';
+import { parseDocumentId, parseDocumentIdArray } from '../../utils/documentId.js';
 
 // Constants
 import {
     WORKSPACE_STATUS_CODES,
     WORKSPACE_DIRECTORIES,
-} from '../index.js';
+} from './lib/constants.js';
 
 /**
  * Canvas Workspace

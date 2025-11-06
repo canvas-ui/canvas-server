@@ -217,6 +217,33 @@ class Context extends EventEmitter {
     get filterArray() { return this.#filterArray; }
 
     /**
+     * Helper Methods
+     */
+
+    /**
+     * Convert context array to path string for SynapsD query operations
+     * @param {Array<string>} contextArray - Array of context layers like ['/', 'foo', 'bar']
+     * @returns {string} Path string like '/foo/bar' or '/' for root
+     * @private
+     */
+    #convertContextArrayToPath(contextArray) {
+        if (!Array.isArray(contextArray) || contextArray.length === 0) {
+            return '/';
+        }
+
+        // Filter out root '/' and empty strings
+        const pathParts = contextArray.filter(part => part && part !== '/');
+
+        // If no parts remain, return root
+        if (pathParts.length === 0) {
+            return '/';
+        }
+
+        // Join parts with '/' and ensure leading slash
+        return '/' + pathParts.join('/');
+    }
+
+    /**
      * Context API
      */
 
@@ -990,8 +1017,13 @@ class Context extends EventEmitter {
         // Combine them into a flat array
         const contextArray = [...new Set([...baseContexts, ...serverContexts, ...clientContexts])];
 
+        // Convert context array to path string for query operations
+        // SynapsD query operations expect a single path string, not an array
+        const contextSpec = this.#convertContextArrayToPath(contextArray);
+        debug('#listDocuments: Converted contextSpec:', contextSpec);
+
         // Pass options through to enable pagination
-        const documents = await this.#db.findDocuments(contextArray, featureArray, filterArray, options);
+        const documents = await this.#db.findDocuments(contextSpec, featureArray, filterArray, options);
         return documents;
     }
 
@@ -1017,7 +1049,11 @@ class Context extends EventEmitter {
         }
 
         // Combine them into a flat array
-        const contextSpec = [...new Set([...baseContexts, ...serverContexts, ...clientContexts])];
+        const contextArray = [...new Set([...baseContexts, ...serverContexts, ...clientContexts])];
+
+        // Convert context array to path string for query operations
+        const contextSpec = this.#convertContextArrayToPath(contextArray);
+        debug('#ftsQuery: Converted contextSpec:', contextSpec);
 
         const documents = await this.#db.ftsQuery(queryString, contextSpec, featureArray, filterArray, options);
         return documents;

@@ -171,7 +171,7 @@ class ContextManager extends EventEmitter {
             throw new Error('User ID (accessing user) is required');
         }
 
-        const { ownerUserId, contextId } = this.#parseContextIdentifier(contextIdOrFullIdentifier, userId);
+        let { ownerUserId, contextId } = this.#parseContextIdentifier(contextIdOrFullIdentifier, userId);
 
         // Auto-creation should only happen if the accessing user is the owner.
         // And if the contextId is not a shared context identifier.
@@ -179,7 +179,30 @@ class ContextManager extends EventEmitter {
             && ownerUserId === userId &&
             !contextIdOrFullIdentifier.toString().includes('/');
 
-        const contextKey = this.#constructContextKey(ownerUserId, contextId);
+        let contextKey = this.#constructContextKey(ownerUserId, contextId);
+
+        // If context not found with the parsed owner, check if user is trying to access via their own path
+        // but it's actually a shared context owned by someone else
+        if (ownerUserId === userId && !this.#contexts.has(contextKey) && !this.#indexStore.has(contextKey)) {
+            debug(`📋 ContextManager: Context not found at ${contextKey}, searching for shared contexts with id ${contextId}`);
+            // Search all contexts to find one with this contextId that's shared with this user
+            const allContexts = this.#indexStore.store || {};
+            for (const [key, contextData] of Object.entries(allContexts)) {
+                if (contextData.id === contextId && contextData.userId !== userId) {
+                    // Found a context with this ID owned by someone else
+                    // Check if it's shared with the accessing user
+                    const hasAccess = await this.#checkContextAccess(contextData, userId);
+                    if (hasAccess) {
+                        debug(`📋 ContextManager: Found shared context ${key} for context ID ${contextId}`);
+                        contextKey = key; // Use the actual owner's context key
+                        ownerUserId = contextData.userId; // Update ownerUserId to the actual owner
+                        debug(`📋 ContextManager: Updated ownerUserId to ${ownerUserId}`);
+                        break;
+                    }
+                }
+            }
+        }
+
         try {
             let contextInstance = null;
             // Check in-memory cache first
@@ -191,15 +214,18 @@ class ContextManager extends EventEmitter {
                 const storedContextData = this.#indexStore.get(contextKey);
                 if (storedContextData) {
                     debug(`📋 ContextManager: Context with key "${contextKey}" found in store, loading into memory.`);
+                    debug(`📋 ContextManager: Accessing user: ${userId}, Context owner: ${ownerUserId}`);
                     if (storedContextData.userId !== ownerUserId) {
                         // This should ideally not happen if contextKey is correct, but good for sanity.
                         throw new Error(`Mismatch in owner user ID. Expected ${ownerUserId}, found ${storedContextData.userId} in stored data for key ${contextKey}`);
                     }
 
+                    // When loading workspace for a shared context, use owner's permissions
+                    // The context's own ACL will control what the accessing user can do
                     const workspace = await this.#workspaceManager.getWorkspace(
                         ownerUserId, // Use ownerUserId to load the workspace
                         storedContextData.workspaceId,
-                        ownerUserId  // And ownerUserId for permission to access the workspace
+                        ownerUserId  // Use owner's permissions to load workspace (context ACL controls actual access)
                     );
 
                     if (!workspace) {
@@ -341,6 +367,7 @@ class ContextManager extends EventEmitter {
 
         try {
             const accessingUserId = userId; // Alias for clarity
+            debug(`📋 listUserContexts: Listing contexts for user ${accessingUserId}`);
             const userContextsArray = [];
             const processedKeys = new Set();
 
@@ -411,10 +438,13 @@ class ContextManager extends EventEmitter {
 
                         // Check new format: acl.users[email] where userId matches
                         if (!hasAccess && storedContextData.acl && storedContextData.acl.users) {
+                            debug(`Checking ACL users for context ${storedContextData.id}, accessingUserId: ${accessingUserId}`);
                             for (const [email, shareData] of Object.entries(storedContextData.acl.users)) {
+                                debug(`  - Checking share with ${email}, shareData.userId: ${shareData.userId}`);
                                 if (shareData.userId === accessingUserId) {
                                     hasAccess = true;
                                     accessInfo = shareData.accessLevel || shareData;
+                                    debug(`  ✓ Match found! User ${accessingUserId} has access via ${email}`);
                                     break;
                                 }
                             }
@@ -591,6 +621,27 @@ class ContextManager extends EventEmitter {
         return { ownerUserId: defaultUserId, contextId: this.#sanitizeContextId(idStr) };
     }
 
+    async #checkContextAccess(contextData, accessingUserId) {
+        // Check if user has access to this context via ACL
+        if (!contextData || !contextData.acl) return false;
+
+        // Check old format: acl[userId]
+        if (contextData.acl[accessingUserId]) {
+            return true;
+        }
+
+        // Check new format: acl.users[email] where userId matches
+        if (contextData.acl.users) {
+            for (const [email, shareData] of Object.entries(contextData.acl.users)) {
+                if (shareData.userId === accessingUserId) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
         /**
      * Resolves a context ID from a simple context identifier
      * @param {string} contextIdentifier - Simple identifier in format user.name/context.name
@@ -650,7 +701,7 @@ class ContextManager extends EventEmitter {
         if (!this.#initialized) throw new Error('ContextManager not initialized');
         if (!requestingUserId) throw new Error('Requesting User ID is required.');
         if (!targetContextIdentifier) throw new Error('Target Context Identifier is required.');
-        if (!sharedWithUserId) throw new Error('User ID to share with is required.');
+        if (!sharedWithUserId) throw new Error('User ID or email to share with is required.');
         if (!accessLevel) throw new Error('Access level is required.');
 
         const { ownerUserId, contextId: actualContextId } = this.#parseContextIdentifier(targetContextIdentifier, requestingUserId);
@@ -662,7 +713,23 @@ class ContextManager extends EventEmitter {
         try {
             // Get the context - this uses the owner's ID to fetch
             const context = await this.getContext(ownerUserId, actualContextId); // Pass ownerUserId as accessing user for this internal step
-            await context.grantAccess(sharedWithUserId, accessLevel);
+
+            // Check if sharedWithUserId is an email address (contains @)
+            const isEmail = sharedWithUserId.includes('@');
+
+            if (isEmail) {
+                // Use new email-based sharing method
+                debug(`Using email-based sharing for ${sharedWithUserId}`);
+                await context.grantAccessByEmail(sharedWithUserId, accessLevel, {
+                    description: `Shared context access for ${sharedWithUserId}`,
+                    grantedBy: requestingUserId
+                });
+            } else {
+                // Use old userId-based sharing method (for backward compatibility)
+                debug(`Using userId-based sharing for ${sharedWithUserId}`);
+                await context.grantAccess(sharedWithUserId, accessLevel);
+            }
+
             debug(`Access granted to ${sharedWithUserId} for context ${targetContextIdentifier} with level ${accessLevel} by ${requestingUserId}`);
             return true;
         } catch (error) {
@@ -675,7 +742,7 @@ class ContextManager extends EventEmitter {
         if (!this.#initialized) throw new Error('ContextManager not initialized');
         if (!requestingUserId) throw new Error('Requesting User ID is required.');
         if (!targetContextIdentifier) throw new Error('Target Context Identifier is required.');
-        if (!sharedWithUserId) throw new Error('User ID to revoke access from is required.');
+        if (!sharedWithUserId) throw new Error('User ID or email to revoke access from is required.');
 
         const { ownerUserId, contextId: actualContextId } = this.#parseContextIdentifier(targetContextIdentifier, requestingUserId);
 
@@ -686,7 +753,20 @@ class ContextManager extends EventEmitter {
         try {
             // Get the context - this uses the owner's ID to fetch
             const context = await this.getContext(ownerUserId, actualContextId); // Pass ownerUserId as accessing user for this internal step
-            await context.revokeAccess(sharedWithUserId);
+
+            // Check if sharedWithUserId is an email address (contains @)
+            const isEmail = sharedWithUserId.includes('@');
+
+            if (isEmail) {
+                // Use new email-based revocation method
+                debug(`Using email-based revocation for ${sharedWithUserId}`);
+                await context.revokeAccessByEmail(sharedWithUserId);
+            } else {
+                // Use old userId-based revocation method (for backward compatibility)
+                debug(`Using userId-based revocation for ${sharedWithUserId}`);
+                await context.revokeAccess(sharedWithUserId);
+            }
+
             debug(`Access revoked from ${sharedWithUserId} for context ${targetContextIdentifier} by ${requestingUserId}`);
             return true;
         } catch (error) {

@@ -326,6 +326,8 @@ class Context extends EventEmitter {
             throw new Error(`User with email ${userEmail} not found`);
         }
 
+        debug(`grantAccessByEmail: Resolved ${userEmail} to userId: ${targetUser.id}`);
+
         if (targetUser.id === this.#userId) {
             debug(`User ${userEmail} is the owner, no need to grant explicit access.`);
             return Promise.resolve(this); // Owner always has full access
@@ -345,11 +347,15 @@ class Context extends EventEmitter {
             grantedBy: options.grantedBy || this.#userId
         };
 
+        debug(`grantAccessByEmail: Stored share for ${userEmail} (userId: ${targetUser.id}) with accessLevel: ${accessLevel}`);
+        debug(`grantAccessByEmail: Context ACL users:`, JSON.stringify(this.#acl.users, null, 2));
+
         this.#updatedAt = new Date().toISOString();
         this.emit('context.acl.updated', { id: this.#id, userEmail, accessLevel });
 
         // Save changes to index
         await this.#contextManager.saveContext(this.#userId, this);
+        debug(`grantAccessByEmail: Context saved to index for context ${this.#id}`);
         return Promise.resolve(this);
     }
 
@@ -448,8 +454,12 @@ class Context extends EventEmitter {
             return false;
         }
 
+        debug(`🔒 checkPermission: Checking if user ${accessingUserId} has ${requiredAccessLevel} for context ${this.#id}`);
+        debug(`🔒 checkPermission: Context owner: ${this.#userId}`);
+
         // Owner always has full permission
         if (accessingUserId === this.#userId) {
+            debug(`🔒 checkPermission: User is owner, granting full access`);
             return true;
         }
 
@@ -458,20 +468,25 @@ class Context extends EventEmitter {
         // Try old format first (acl[userId])
         if (this.#acl[accessingUserId]) {
             grantedAccessLevel = this.#acl[accessingUserId];
+            debug(`🔒 checkPermission: Found permission in old format: ${grantedAccessLevel}`);
         }
 
         // Try new format (acl.users[email] where we need to match by userId)
         if (!grantedAccessLevel && this.#acl.users) {
+            debug(`🔒 checkPermission: Checking new ACL format, found ${Object.keys(this.#acl.users).length} email entries`);
             for (const [email, shareData] of Object.entries(this.#acl.users)) {
+                debug(`🔒 checkPermission: Checking ${email} with userId ${shareData.userId}`);
                 if (shareData.userId === accessingUserId) {
                     grantedAccessLevel = shareData.accessLevel;
+                    debug(`🔒 checkPermission: ✓ Found match! User ${accessingUserId} has ${grantedAccessLevel} via ${email}`);
                     break;
                 }
             }
         }
 
         if (!grantedAccessLevel) {
-            debug(`User ${accessingUserId} has no explicit permissions granted for context ${this.#id}.`);
+            debug(`🔒 checkPermission: ✗ User ${accessingUserId} has no explicit permissions granted for context ${this.#id}.`);
+            debug(`🔒 checkPermission: ACL contents:`, JSON.stringify(this.#acl, null, 2));
             return false;
         }
 

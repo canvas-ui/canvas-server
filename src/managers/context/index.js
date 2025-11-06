@@ -399,17 +399,37 @@ class ContextManager extends EventEmitter {
                         // 3. Check if it's a context shared with the accessingUserId
                         // The storedContextData.userId is the owner of this context.
                         // We need to check storedContextData.acl for the accessingUserId.
+
+                        let hasAccess = false;
+                        let accessInfo = null;
+
+                        // Check old format: acl[userId]
                         if (storedContextData.acl && typeof storedContextData.acl === 'object' && storedContextData.acl[accessingUserId]) {
+                            hasAccess = true;
+                            accessInfo = storedContextData.acl[accessingUserId];
+                        }
+
+                        // Check new format: acl.users[email] where userId matches
+                        if (!hasAccess && storedContextData.acl && storedContextData.acl.users) {
+                            for (const [email, shareData] of Object.entries(storedContextData.acl.users)) {
+                                if (shareData.userId === accessingUserId) {
+                                    hasAccess = true;
+                                    accessInfo = shareData.accessLevel || shareData;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (hasAccess) {
                             // The accessingUserId has some level of access to this context.
-                            // We can add a flag or modify the data slightly if needed to indicate it's a shared context.
-                            // For now, just add the raw data.
                             try {
                                 const ownerUser = await this.#workspaceManager.userManager.getUser(storedContextData.userId);
                                 const contextWithOwnerEmail = {
                                     ...storedContextData,
                                     ownerEmail: ownerUser.email,
+                                    type: 'shared', // Mark as shared type
                                     isShared: true, // Indicate that this context is accessed via a share
-                                    sharedVia: storedContextData.acl[accessingUserId] // Optionally show the permission level
+                                    sharedVia: accessInfo // Optionally show the permission level
                                 };
                                 userContextsArray.push(contextWithOwnerEmail);
                             } catch (error) {
@@ -417,8 +437,9 @@ class ContextManager extends EventEmitter {
                                 // Fallback to original entry if user resolution fails
                                 userContextsArray.push({
                                     ...storedContextData,
+                                    type: 'shared', // Mark as shared type
                                     isShared: true, // Indicate that this context is accessed via a share
-                                    sharedVia: storedContextData.acl[accessingUserId] // Optionally show the permission level
+                                    sharedVia: accessInfo // Optionally show the permission level
                                 });
                             }
                             processedKeys.add(key); // Mark as processed to avoid duplicates if logic changes

@@ -1129,7 +1129,7 @@ class WorkspaceManager extends EventEmitter {
     }
 
     /**
-     * Lists all workspaces for a given userId
+     * Lists all workspaces for a given userId (owned and shared)
      * @param {string} userId - The user ID
      * @param {string} [host=WORKSPACE_DEFAULT_HOST] - Host to filter by (defaults to canvas.local)
      * @returns {Promise<Array<Object>>} An array of workspace index entry objects.
@@ -1138,15 +1138,26 @@ class WorkspaceManager extends EventEmitter {
         if (!this.#initialized) throw new Error('WorkspaceManager not initialized');
         if (!userId) return [];
 
-        const ownerId = await this.#userManager.resolveToUserId(userId);
-        if (!ownerId) return [];
+        const accessingUserId = await this.#userManager.resolveToUserId(userId);
+        if (!accessingUserId) return [];
 
-        const prefix = `${ownerId}/`;
-        debug(`Listing workspaces for userId ${ownerId} on host ${host}`);
+        // Get the user's email for checking shared workspaces
+        let userEmail = null;
+        try {
+            const user = await this.#userManager.getUser(accessingUserId);
+            userEmail = user.email;
+        } catch (error) {
+            debug(`Failed to resolve user email for ${accessingUserId}: ${error.message}`);
+        }
 
-                const allWorkspaces = this.#indexStore.store;
+        const prefix = `${accessingUserId}/`;
+        debug(`Listing workspaces for userId ${accessingUserId} on host ${host}`);
+
+        const allWorkspaces = this.#indexStore.store;
         const userWorkspaceEntries = [];
+        const processedWorkspaceIds = new Set();
 
+        // 1. Get owned workspaces
         for (const key in allWorkspaces) {
             if (key.startsWith(prefix)) {
                 const workspaceEntry = allWorkspaces[key];
@@ -1162,16 +1173,66 @@ class WorkspaceManager extends EventEmitter {
                                 ownerEmail: ownerUser.email
                             };
                             userWorkspaceEntries.push(workspaceWithOwnerEmail);
+                            processedWorkspaceIds.add(workspaceEntry.id);
                         } catch (error) {
                             debug(`Failed to resolve owner email for workspace ${workspaceEntry.id}: ${error.message}`);
                             // Fallback to original entry if user resolution fails
                             userWorkspaceEntries.push(workspaceEntry);
+                            processedWorkspaceIds.add(workspaceEntry.id);
                         }
                     }
                 }
             }
         }
-        debug(`Found ${userWorkspaceEntries.length} workspaces for userId ${ownerId} on host ${host}`);
+
+        // 2. Get shared workspaces (if we have user's email)
+        if (userEmail) {
+            for (const key in allWorkspaces) {
+                // Skip already processed workspaces (owned ones)
+                if (key.startsWith(prefix)) continue;
+
+                const workspaceEntry = allWorkspaces[key];
+                if (workspaceEntry && typeof workspaceEntry === 'object' && workspaceEntry.id) {
+                    // Skip if already processed
+                    if (processedWorkspaceIds.has(workspaceEntry.id)) continue;
+
+                    // Check if this workspace is shared with the user via email
+                    const acl = workspaceEntry.acl || {};
+                    const users = acl.users || {};
+
+                    if (users[userEmail]) {
+                        // More flexible host filtering
+                        const workspaceHost = workspaceEntry.host || WORKSPACE_DEFAULT_HOST;
+                        if (!host || workspaceHost === host) {
+                            try {
+                                const ownerUser = await this.#userManager.getUser(workspaceEntry.owner);
+                                const sharedWorkspace = {
+                                    ...workspaceEntry,
+                                    ownerEmail: ownerUser.email,
+                                    type: 'shared', // Mark as shared type
+                                    isShared: true,
+                                    sharedVia: users[userEmail]
+                                };
+                                userWorkspaceEntries.push(sharedWorkspace);
+                                processedWorkspaceIds.add(workspaceEntry.id);
+                            } catch (error) {
+                                debug(`Failed to resolve owner email for shared workspace ${workspaceEntry.id}: ${error.message}`);
+                                // Fallback to original entry if user resolution fails
+                                userWorkspaceEntries.push({
+                                    ...workspaceEntry,
+                                    type: 'shared',
+                                    isShared: true,
+                                    sharedVia: users[userEmail]
+                                });
+                                processedWorkspaceIds.add(workspaceEntry.id);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        debug(`Found ${userWorkspaceEntries.length} workspaces for userId ${accessingUserId} on host ${host} (owned and shared)`);
         return userWorkspaceEntries;
     }
 

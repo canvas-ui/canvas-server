@@ -4,6 +4,7 @@ import lifecycleRoutes from './lifecycle.js';
 import documentRoutes from './documents.js';
 import treeRoutes from './tree.js';
 import tokenRoutes from './tokens.js';
+import shareRoutes from './shares.js';
 import { resolveContextAddress } from '../../middleware/address-resolver.js';
 
 /**
@@ -28,6 +29,11 @@ export default async function contextRoutes(fastify, options) {
   });
 
   fastify.register(tokenRoutes, {
+    prefix: '/',
+    onRequest: [resolveContextAddress]
+  });
+
+  fastify.register(shareRoutes, {
     prefix: '/',
     onRequest: [resolveContextAddress]
   });

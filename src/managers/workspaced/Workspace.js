@@ -19,15 +19,50 @@ import {
 
 class Workspace extends EventEmitter {
 
-    #index = null;
+    #rootPath = null;
+    #configStore = null;
+
+    #db = null;
     #tree = null;
+
+    #storageManager = null;
+    #roleManager = null;
 
     constructor(options) {
         this.options = options;
 
-        this.#index = null;
+        this.#db = null;
         this.#tree = null;
 
+        if (!options.rootPath) {
+            throw new Error('Root path is required');
+        }
+
+        this.#rootPath = options.rootPath;
+
+        if (!options.configStore) {
+            throw new Error('Config store is required');
+        }
+
+        this.#configStore = options.configStore;
+
+        if (!options.db) {
+            throw new Error('DB is required');
+        }
+
+        this.#db = options.db;
+
+        if (!options.storageManager) {
+            throw new Error('Storage manager is required');
+        }
+
+        this.#storageManager = options.storageManager;
+
+        if (!options.roleManager) {
+            throw new Error('Role manager is required');
+        }
+
+        this.#roleManager = options.roleManager;
     }
 
     /*
@@ -60,6 +95,19 @@ class Workspace extends EventEmitter {
      */
 
     insert(data, metadata, options) {
+        if (!data) {
+            throw new Error('Data is required');
+        }
+
+        if (!metadata) {
+            throw new Error('Metadata is required');
+        }
+
+        if (!options) {
+            throw new Error('Options is required');
+        }
+
+        
 
     }
 
@@ -86,6 +134,10 @@ class Workspace extends EventEmitter {
     search(query, options) {
 
     }
+
+    /**
+     * Private Methods
+     */
 
 }
 

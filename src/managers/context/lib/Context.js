@@ -276,6 +276,120 @@ class Context extends EventEmitter {
     }
 
     /**
+     * Grant access to this context to another user by email (recommended method).
+     * This uses the new ACL structure: acl.users[email] with metadata.
+     * @param {string} userEmail - The email of the user to grant access to.
+     * @param {'documentRead' | 'documentWrite' | 'documentReadWrite'} accessLevel - The level of access to grant.
+     * @param {Object} options - Additional options
+     * @param {string} [options.description] - Description of the share
+     * @param {string} [options.grantedBy] - User ID who granted access
+     */
+    async grantAccessByEmail(userEmail, accessLevel, options = {}) {
+        if (!userEmail || typeof userEmail !== 'string') {
+            throw new Error('Invalid userEmail provided.');
+        }
+        const validAccessLevels = ['documentRead', 'documentWrite', 'documentReadWrite'];
+        if (!validAccessLevels.includes(accessLevel)) {
+            throw new Error(`Invalid accessLevel: ${accessLevel}. Must be one of ${validAccessLevels.join(', ')}`);
+        }
+
+        // Resolve email to userId for owner check
+        const targetUser = await this.#workspaceManager.userManager.getUserByEmail(userEmail);
+        if (!targetUser) {
+            throw new Error(`User with email ${userEmail} not found`);
+        }
+
+        if (targetUser.id === this.#userId) {
+            debug(`User ${userEmail} is the owner, no need to grant explicit access.`);
+            return Promise.resolve(this); // Owner always has full access
+        }
+
+        // Initialize users object if it doesn't exist
+        if (!this.#acl.users) {
+            this.#acl.users = {};
+        }
+
+        // Store by email with metadata
+        this.#acl.users[userEmail] = {
+            accessLevel,
+            userId: targetUser.id, // Store userId for backward compatibility
+            description: options.description || `Shared context access for ${userEmail}`,
+            grantedAt: new Date().toISOString(),
+            grantedBy: options.grantedBy || this.#userId
+        };
+
+        this.#updatedAt = new Date().toISOString();
+        this.emit('context.acl.updated', { id: this.#id, userEmail, accessLevel });
+
+        // Save changes to index
+        await this.#contextManager.saveContext(this.#userId, this);
+        return Promise.resolve(this);
+    }
+
+    /**
+     * Revoke access to this context from another user by email.
+     * @param {string} userEmail - The email of the user whose access to revoke.
+     */
+    async revokeAccessByEmail(userEmail) {
+        if (!userEmail || typeof userEmail !== 'string') {
+            throw new Error('Invalid userEmail provided.');
+        }
+
+        // Check if users object exists
+        if (!this.#acl.users || !this.#acl.users[userEmail]) {
+            debug(`No explicit access found for ${userEmail} to revoke.`);
+            return Promise.resolve(this);
+        }
+
+        delete this.#acl.users[userEmail];
+        this.#updatedAt = new Date().toISOString();
+        this.emit('context.acl.revoked', { id: this.#id, userEmail });
+
+        // Save changes to index
+        await this.#contextManager.saveContext(this.#userId, this);
+        return Promise.resolve(this);
+    }
+
+    /**
+     * Update access level for a user by email.
+     * @param {string} userEmail - The email of the user to update.
+     * @param {'documentRead' | 'documentWrite' | 'documentReadWrite'} accessLevel - The new access level.
+     * @param {Object} options - Additional options
+     * @param {string} [options.description] - Updated description
+     * @param {string} [options.updatedBy] - User ID who updated access
+     */
+    async updateAccessByEmail(userEmail, accessLevel, options = {}) {
+        if (!userEmail || typeof userEmail !== 'string') {
+            throw new Error('Invalid userEmail provided.');
+        }
+        const validAccessLevels = ['documentRead', 'documentWrite', 'documentReadWrite'];
+        if (!validAccessLevels.includes(accessLevel)) {
+            throw new Error(`Invalid accessLevel: ${accessLevel}. Must be one of ${validAccessLevels.join(', ')}`);
+        }
+
+        // Check if users object exists
+        if (!this.#acl.users || !this.#acl.users[userEmail]) {
+            throw new Error(`No share found for ${userEmail}`);
+        }
+
+        // Update the share
+        this.#acl.users[userEmail] = {
+            ...this.#acl.users[userEmail],
+            accessLevel,
+            description: options.description !== undefined ? options.description : this.#acl.users[userEmail].description,
+            updatedAt: new Date().toISOString(),
+            updatedBy: options.updatedBy || this.#userId
+        };
+
+        this.#updatedAt = new Date().toISOString();
+        this.emit('context.acl.updated', { id: this.#id, userEmail, accessLevel });
+
+        // Save changes to index
+        await this.#contextManager.saveContext(this.#userId, this);
+        return Promise.resolve(this);
+    }
+
+    /**
      * Update the complete ACL for this context
      * @param {Object} newACL - The new ACL object
      */
@@ -296,6 +410,7 @@ class Context extends EventEmitter {
     /**
      * Check if a user has a specific permission level for this context.
      * The context owner always has all permissions.
+     * Supports both old format (acl[userId]) and new format (acl.users[email]).
      * @param {string} accessingUserId - The ID of the user attempting to access.
      * @param {'documentRead' | 'documentWrite' | 'documentReadWrite'} requiredAccessLevel - The minimum access level required.
      * @returns {boolean} - True if the user has the required permission, false otherwise.
@@ -311,7 +426,22 @@ class Context extends EventEmitter {
             return true;
         }
 
-        const grantedAccessLevel = this.#acl[accessingUserId];
+        let grantedAccessLevel = null;
+
+        // Try old format first (acl[userId])
+        if (this.#acl[accessingUserId]) {
+            grantedAccessLevel = this.#acl[accessingUserId];
+        }
+
+        // Try new format (acl.users[email] where we need to match by userId)
+        if (!grantedAccessLevel && this.#acl.users) {
+            for (const [email, shareData] of Object.entries(this.#acl.users)) {
+                if (shareData.userId === accessingUserId) {
+                    grantedAccessLevel = shareData.accessLevel;
+                    break;
+                }
+            }
+        }
 
         if (!grantedAccessLevel) {
             debug(`User ${accessingUserId} has no explicit permissions granted for context ${this.#id}.`);

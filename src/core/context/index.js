@@ -115,17 +115,24 @@ class ContextManager extends EventEmitter {
                 throw new Error(`Context with key ${contextKey} already exists`);
             }
 
-            debug(`Creating context with key ${contextKey} and URL: ${url} for user: ${userId}`);
             const parsed = new Url(url);
-            if (!parsed.workspaceID) {
-                parsed.workspaceID = DEFAULT_WORKSPACE_ID;
-                debug(`Relative URL provided, using default workspace: ${parsed.workspaceID} for user ${userId}`);
+
+            // Determine workspace ID
+            let workspaceId;
+
+            // If options.workspaceId is provided (from API), use it directly (it's already a UUID)
+            if (options.workspaceId) {
+                workspaceId = options.workspaceId;
+            }
+            // Otherwise, resolve from URL or default to universe
+            else if (parsed.workspaceID) {
+                workspaceId = this.#workspaceManager.resolveWorkspaceId(userId, parsed.workspaceID);
+            } else {
+                workspaceId = this.#workspaceManager.resolveWorkspaceId(userId, DEFAULT_WORKSPACE_ID);
             }
 
-            // Resolve workspace ID first
-            const workspaceId = this.#workspaceManager.resolveWorkspaceId(userId, parsed.workspaceID);
             if (!workspaceId) {
-                throw new Error(`Workspace not found (ID resolution failed): ${parsed.workspaceID} for user ${userId}`);
+                throw new Error(`Workspace not found for user ${userId}`);
             }
 
             const workspace = await this.#workspaceManager.getWorkspace(workspaceId, userId);

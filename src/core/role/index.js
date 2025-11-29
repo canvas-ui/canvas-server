@@ -127,16 +127,21 @@ class Roles extends EventEmitter {
 
         debug('Initializing Roles service...');
 
-        // Test Docker connection
+        // Test Docker connection (non-fatal)
         try {
             await this.#docker.ping();
             debug('Docker connection established');
         } catch (error) {
-            throw new Error(`Failed to connect to Docker: ${error.message}`);
+            console.warn(`Docker not available: ${error.message}. Role management features will be disabled.`);
+            // Continue initialization without Docker
         }
 
         // Scan existing roles
-        await this.#scanExistingRoles();
+        try {
+            await this.#scanExistingRoles();
+        } catch (error) {
+            console.warn(`Failed to scan existing roles: ${error.message}`);
+        }
 
         this.#initialized = true;
         debug(`Roles service initialized with ${this.#indexStore.size} role(s) in index`);

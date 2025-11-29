@@ -22,6 +22,7 @@ class User extends EventEmitter {
     #email;
     #userType;
     #authMethod;
+    #authMetadata;
     #homePath;
     #avatar;
 
@@ -35,7 +36,8 @@ class User extends EventEmitter {
      * @param {string} [options.id] - User ID (if not provided, generates 8-char lowercase nanoid)
      * @param {string} options.name - User nickname/display name (required)
      * @param {string} options.email - User email (required)
-     * @param {string} options.authMethod - User auth method (imap, local, etc.)
+     * @param {string} options.authMethod - User auth method (local, imap, ldap, oauth2, etc.)
+     * @param {Object} [options.authMetadata] - Additional auth metadata (server, domain, provider, etc.)
      * @param {string} options.homePath - User home path (Universe workspace)
      * @param {string} [options.userType='user'] - User type ('user' or 'admin')
      * @param {string} [options.status='inactive'] - User status
@@ -58,11 +60,12 @@ class User extends EventEmitter {
         this.#name = options.name;
         this.#email = options.email;
         this.#authMethod = options.authMethod || 'local';
+        this.#authMetadata = options.authMetadata || {};
         this.#avatar = options.avatar;
         this.#homePath = path.resolve(options.homePath); // Ensure absolute path
         this.#userType = options.userType || 'user';
         this.#status = options.status || 'inactive';
-        debug(`User instance created: ${this.#id} (${this.#name} - ${this.#email}) with home path: ${this.#homePath}`);
+        debug(`User instance created: ${this.#id} (${this.#name} - ${this.#email}) via ${this.#authMethod} with home path: ${this.#homePath}`);
     }
 
     /**
@@ -74,6 +77,7 @@ class User extends EventEmitter {
     get email() { return this.#email; }
     get userType() { return this.#userType; }
     get authMethod() { return this.#authMethod; }
+    get authMetadata() { return this.#authMetadata; }
     get homePath() { return this.#homePath; }
     get avatar() { return this.#avatar; }
     get status() { return this.#status; }
@@ -112,6 +116,26 @@ class User extends EventEmitter {
         return this.#authMethod === 'local';
     }
 
+    isExternal() {
+        return ['imap', 'ldap', 'oauth2'].includes(this.#authMethod);
+    }
+
+    /**
+     * Get authentication display info
+     * @returns {string} Human-readable auth method description
+     */
+    getAuthDisplay() {
+        const method = this.#authMethod.toUpperCase();
+        if (this.#authMetadata?.server || this.#authMetadata?.domain) {
+            const server = this.#authMetadata.server || this.#authMetadata.domain;
+            return `${method} (${server})`;
+        }
+        if (this.#authMetadata?.provider) {
+            return `${method} (${this.#authMetadata.provider})`;
+        }
+        return method;
+    }
+
     /**
      * Convert user to JSON
      * @returns {Object} User JSON representation
@@ -123,6 +147,7 @@ class User extends EventEmitter {
             email: this.#email,
             userType: this.#userType,
             authMethod: this.#authMethod,
+            authMetadata: this.#authMetadata,
             homePath: this.#homePath,
             avatar: this.#avatar,
             status: this.#status

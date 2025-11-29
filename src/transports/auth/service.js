@@ -239,9 +239,10 @@ class AuthService {
         enabled: false,
         host: 'smtp.example.com',
         port: 587,
-        secure: true,
+        secure: false,
         auth: { user: 'your-email@example.com', pass: 'your-password' },
-        from: { name: 'Canvas Server', email: 'noreply@example.com' }
+        from: { name: 'Canvas Server', email: 'noreply@example.com' },
+        tlsOptions: {}
       };
       fs.writeFileSync(smtpPath, JSON.stringify(defaultSmtp, null, 2), 'utf8');
       console.log('[AuthService] Default SMTP configuration created at:', smtpPath);
@@ -926,7 +927,8 @@ class AuthService {
           host: this.#smtpConfig.host,
           port: this.#smtpConfig.port || 587,
           secure: !!this.#smtpConfig.secure,
-          auth: this.#smtpConfig.auth || undefined
+          auth: this.#smtpConfig.auth || undefined,
+          tls: this.#smtpConfig.tlsOptions || undefined
         });
       } else {
         transporter = nodemailer.createTransport({ sendmail: true, newline: 'unix', path: '/usr/sbin/sendmail' });

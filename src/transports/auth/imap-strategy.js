@@ -206,8 +206,13 @@ class ImapAuthStrategy {
       userType: imapSettings.defaultUserType || 'user',
       status: imapSettings.defaultStatus || 'active',
       authMethod: 'imap',
-      // imapDomain: authResult.domain, // Not used yet
-      // imapServer: authResult.imapServer, // Not used yet
+      authMetadata: {
+        provider: 'imap',
+        server: authResult.imapServer,
+        domain: authResult.domain,
+        serverName: authResult.serverName,
+        authenticatedAt: new Date().toISOString()
+      },
       created: new Date().toISOString(),
       updated: new Date().toISOString()
     };

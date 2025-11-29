@@ -14,6 +14,9 @@
     "name": "Canvas Server",
     "email": "noreply@example.com"
   },
+  "tlsOptions": {
+    "_comment": "For self-signed certificates, set rejectUnauthorized: false"
+  },
 
   "_examples": {
     "gmail": {
@@ -89,7 +92,27 @@
       "from": {
         "name": "Your Company Name",
         "email": "noreply@yourdomain.com"
-      }
+      },
+      "tlsOptions": {}
+    },
+
+    "selfSignedCertificate": {
+      "enabled": true,
+      "host": "mail.example.local",
+      "port": 587,
+      "secure": false,
+      "auth": {
+        "user": "user@example.local",
+        "pass": "password"
+      },
+      "from": {
+        "name": "Canvas Server",
+        "email": "noreply@example.local"
+      },
+      "tlsOptions": {
+        "rejectUnauthorized": false
+      },
+      "_note": "Use tlsOptions.rejectUnauthorized: false for self-signed certificates"
     },
 
     "localSendmail": {
@@ -113,7 +136,8 @@
     "auth.user": "SMTP username (usually your email address)",
     "auth.pass": "SMTP password or app-specific password",
     "from.name": "Display name for outgoing emails",
-    "from.email": "Email address that emails will be sent from"
+    "from.email": "Email address that emails will be sent from",
+    "tlsOptions": "TLS/SSL options (e.g., {rejectUnauthorized: false} for self-signed certs)"
   },
 
   "_notes": {
@@ -126,6 +150,7 @@
     },
     "gmail": "Gmail requires 2FA and app-specific passwords",
     "office365": "Office 365 may require modern authentication",
+    "selfSignedCerts": "For self-signed certificates, add tlsOptions: { rejectUnauthorized: false }",
     "fallback": "If SMTP is disabled, emails will be logged but not sent"
   }
 }

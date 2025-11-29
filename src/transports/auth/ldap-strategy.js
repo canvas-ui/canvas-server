@@ -282,6 +282,13 @@ class LdapAuthStrategy {
       userType: ldapSettings.defaultUserType || 'user',
       status: ldapSettings.defaultStatus || 'active',
       authMethod: 'ldap',
+      authMetadata: {
+        provider: 'ldap',
+        dn: authResult.dn,
+        displayName: authResult.name,
+        attributes: authResult.attributes,
+        authenticatedAt: new Date().toISOString()
+      },
       created: new Date().toISOString(),
       updated: new Date().toISOString()
     };

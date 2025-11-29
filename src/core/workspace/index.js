@@ -37,8 +37,10 @@ class WorkspaceManager extends EventEmitter {
     // Runtime/state
     #initialized = false;
 
-    // Managers
-
+    // Data Sources
+    #db;
+    #tree;
+    #storage;
 
     constructor(options = {}) {
         super(options.eventEmitterOptions);
@@ -47,6 +49,18 @@ class WorkspaceManager extends EventEmitter {
 
     async initialize() {
         if (this.#initialized) { return true; }
+
+        // Managers
+        this.storageManager = null;
+        this.roleManager = null;
+        this.agentManager = null;
+        this.contextManager = null;
+        this.roleManager = null;
+
+        // Services
+        this.homeService = null;
+        this.dotfileService = null;
+        this.hookService = null;
 
         // Initialize the workspace manager
         this.#initialized = true;

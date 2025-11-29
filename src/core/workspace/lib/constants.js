@@ -19,6 +19,18 @@ const WORKSPACE_DIRECTORIES = {
     home: 'home',
     roles: 'roles',
     var: 'var', // For Unix sockets
+    dotfiles: 'dotfiles.git', // Bare git repository for dotfiles
+};
+
+// Available workspace services
+const WORKSPACE_SERVICES = {
+    dotfiles: {
+        enabled: false,
+    },
+    home: {
+        enabled: false,
+        transports: ['webdav'], // Available: 'webdav', 's3' (future)
+    },
 };
 
 const WORKSPACE_STATUS_CODES = {
@@ -43,6 +55,7 @@ const WORKSPACE_CONFIG_TEMPLATE = {
         tokens: {} // Token-based ACL: { "sha256:hash": { permissions: [], description: "", createdAt: "", expiresAt: null } }
     },
     roles: [], // Associated role IDs
+    services: { ...WORKSPACE_SERVICES }, // Feature toggles
     created: null,
     updated: null,
 };
@@ -52,4 +65,6 @@ export {
     WORKSPACE_CONFIG_FILENAME,
     WORKSPACE_DIRECTORIES,
     WORKSPACE_STATUS_CODES,
+    WORKSPACE_SERVICES,
+    WORKSPACE_CONFIG_TEMPLATE,
 };

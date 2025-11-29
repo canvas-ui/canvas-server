@@ -14,13 +14,15 @@ const debug = createDebug('workspace-manager');
 // Includes
 import Workspace from './Workspace.js';
 import DotfileManager from './services/dotfile/index.js';
+import HomeService from './services/home/index.js';
 
 // Constants
 import {
     WORKSPACE_STATUS_CODES,
     WORKSPACE_DIRECTORIES,
     WORKSPACE_CONFIG_FILENAME,
-    WORKSPACE_DEFAULT_HOST
+    WORKSPACE_DEFAULT_HOST,
+    WORKSPACE_SERVICES,
 } from './lib/constants.js';
 
 /**
@@ -110,6 +112,7 @@ class WorkspaceManager extends EventEmitter {
 
     // Services
     dotfileService = null;
+    homeService = null;
 
     constructor(options = {}) {
         super(options.eventEmitterOptions);
@@ -133,6 +136,12 @@ class WorkspaceManager extends EventEmitter {
         });
         await this.dotfileService.initialize();
 
+        // Initialize Home Service
+        this.homeService = new HomeService({
+            workspaceManager: this
+        });
+        await this.homeService.initialize();
+
         // Scan/Validate index and rebuild lookups
         await this.#scanWorkspaces();
         await this.#rebuildIndexes();
@@ -140,6 +149,81 @@ class WorkspaceManager extends EventEmitter {
         this.#initialized = true;
         debug('WorkspaceManager initialized');
         return this;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Service Management
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Enable a service for a workspace
+     */
+    async enableService(workspaceId, userId, serviceName) {
+        const workspace = await this.getWorkspace(workspaceId, userId);
+        if (!workspace) throw new Error('Workspace not found');
+
+        let result;
+        switch (serviceName) {
+            case 'dotfiles':
+                result = await this.dotfileService.enable(workspace, userId);
+                break;
+            case 'home':
+                result = await this.homeService.enable(workspace);
+                break;
+            default:
+                throw new Error(`Unknown service: ${serviceName}`);
+        }
+
+        // Update workspace config
+        workspace.setServiceConfig(serviceName, { enabled: true });
+
+        return result;
+    }
+
+    /**
+     * Disable a service for a workspace
+     */
+    async disableService(workspaceId, userId, serviceName) {
+        const workspace = await this.getWorkspace(workspaceId, userId);
+        if (!workspace) throw new Error('Workspace not found');
+
+        let result;
+        switch (serviceName) {
+            case 'dotfiles':
+                result = await this.dotfileService.disable(workspace);
+                break;
+            case 'home':
+                result = await this.homeService.disable(workspace);
+                break;
+            default:
+                throw new Error(`Unknown service: ${serviceName}`);
+        }
+
+        // Update workspace config
+        workspace.setServiceConfig(serviceName, { enabled: false });
+
+        return result;
+    }
+
+    /**
+     * Get status of all services for a workspace
+     */
+    async getServicesStatus(workspaceId, userId) {
+        const workspace = await this.getWorkspace(workspaceId, userId);
+        if (!workspace) throw new Error('Workspace not found');
+
+        const config = workspace.services;
+
+        return {
+            dotfiles: {
+                ...config.dotfiles,
+                initialized: this.dotfileService.isEnabled(workspace),
+            },
+            home: {
+                ...config.home,
+                initialized: this.homeService.isEnabled(workspace.id),
+            },
+        };
     }
 
     /**

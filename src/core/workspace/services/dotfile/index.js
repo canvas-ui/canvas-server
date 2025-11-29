@@ -9,11 +9,20 @@ import { spawn } from 'child_process';
 import EventEmitter from 'eventemitter2';
 
 // Logging
-import logger, { createDebug } from '../../../../utils/log/index.js';
+import { createDebug } from '../../../../utils/log/index.js';
 const debug = createDebug('dotfile-manager');
 
 const DOTFILES_DIR = 'dotfiles.git';
 const TEMPLATE_DIRNAME = 'files'; // relative to this module directory
+
+/**
+ * DotfileManager - Manages workspace-based Git repositories for dotfiles
+ *
+ * When enabled for a workspace:
+ * - Creates {workspace}/dotfiles.git bare repository
+ * - Initializes with template files (.gitignore, .dot/ scripts)
+ * - Provides Git HTTP backend for clone/push/pull operations
+ */
 
 async function spawnPromise(command, args, options = {}) {
     return new Promise((resolve, reject) => {
@@ -90,6 +99,50 @@ class DotfileManager extends EventEmitter {
         }
         const repoPath = this.#getDotfilesRepoPath(workspace);
         return existsSync(repoPath);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Service Enable/Disable API
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Enable dotfiles service for a workspace (creates repo if needed)
+     */
+    async enable(workspace, userId) {
+        if (!workspace?.id) throw new Error('Invalid workspace');
+
+        const repoPath = this.#getDotfilesRepoPath(workspace);
+        const hasRepo = existsSync(repoPath);
+
+        if (!hasRepo) {
+            await this.initializeRepository(userId, workspace, userId);
+        }
+
+        this.emit('dotfiles.enabled', { workspaceId: workspace.id, path: repoPath });
+        debug(`Dotfiles service enabled for workspace ${workspace.id}`);
+
+        return { success: true, path: repoPath, initialized: !hasRepo };
+    }
+
+    /**
+     * Disable dotfiles service for a workspace
+     * Note: Does NOT delete the repository - just disables the service
+     */
+    async disable(workspace) {
+        if (!workspace?.id) return { success: true };
+
+        this.emit('dotfiles.disabled', { workspaceId: workspace.id });
+        debug(`Dotfiles service disabled for workspace ${workspace.id}`);
+
+        return { success: true };
+    }
+
+    /**
+     * Check if dotfiles service is enabled (repo exists)
+     */
+    isEnabled(workspace) {
+        if (!workspace?.rootPath) return false;
+        return existsSync(this.#getDotfilesRepoPath(workspace));
     }
 
     // Initialize Git repositories (bare and seed working repo)

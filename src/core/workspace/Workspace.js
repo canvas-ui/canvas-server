@@ -80,6 +80,34 @@ class Workspace extends EventEmitter {
     get config() { return this.#configStore.store; }
     get acl() { return this.#configStore.get('acl'); }
 
+    /**
+     * Get services configuration
+     */
+    get services() {
+        return this.#configStore.get('services') || {
+            dotfiles: { enabled: false },
+            home: { enabled: false, transports: ['webdav'] },
+        };
+    }
+
+    /**
+     * Check if a specific service is enabled
+     */
+    isServiceEnabled(serviceName) {
+        const services = this.services;
+        return services[serviceName]?.enabled === true;
+    }
+
+    /**
+     * Update service configuration
+     */
+    setServiceConfig(serviceName, config) {
+        const services = this.services;
+        services[serviceName] = { ...services[serviceName], ...config };
+        this.#configStore.set('services', services);
+        this.emit('services.changed', { service: serviceName, config: services[serviceName] });
+    }
+
     get db() {
         if (!this.#db) throw new Error('Database not initialized');
         return this.#db;

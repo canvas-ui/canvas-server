@@ -625,7 +625,7 @@ export default async function authRoutes(fastify, options) {
 
       // Get user data from database
       try {
-        userData = await fastify.users.getById(userId);
+        userData = await fastify.users.get(userId);
 
         if (!userData) {
           fastify.log.error(`[Auth/Me] User not found in database: ${userId}`);

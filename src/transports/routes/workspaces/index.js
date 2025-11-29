@@ -105,10 +105,9 @@ export default async function workspaceRoutes(fastify, options) {
     }
     try {
       const workspace = await fastify.workspaceManager.createWorkspace(
-        request.user.id,
         request.body.name,
+        request.user.id,
         {
-          owner: request.user.id,
           type: request.body.type || 'workspace',
           label: request.body.label || request.body.name,
           description: request.body.description || '',

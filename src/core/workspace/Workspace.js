@@ -76,6 +76,7 @@ class Workspace extends EventEmitter {
     get status() { return this.#status; }
     get isActive() { return this.#status === WORKSPACE_STATUS_CODES.ACTIVE; }
     get config() { return this.#configStore.store; }
+    get acl() { return this.#configStore.get('acl'); }
 
     get db() {
         if (!this.#db) throw new Error('Database not initialized');
@@ -85,6 +86,11 @@ class Workspace extends EventEmitter {
     get tree() {
         if (!this.isActive || !this.#db?.tree) throw new Error('Tree not available');
         return this.#db.tree;
+    }
+
+    get jsonTree() {
+        if (!this.isActive || !this.#db) { throw new Error('Workspace not active'); }
+        return this.#db.jsonTree;
     }
 
     /*
@@ -234,6 +240,11 @@ class Workspace extends EventEmitter {
         if (!this.isActive) throw new Error('Workspace not active');
         return await this.tree.copyPath(pathFrom, pathTo, recursive);
      }
+
+    clearDatabaseSync() {
+        if (!this.isActive) { throw new Error('Workspace not active'); }
+        return this.db.clearSync();
+    }
 
     toJSON() {
         return {

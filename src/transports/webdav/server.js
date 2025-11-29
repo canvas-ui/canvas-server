@@ -81,9 +81,15 @@ export class WebDAVServerManager {
    */
   async getWorkspaceHomePath(userId, workspaceName) {
     try {
-      // Get workspace for this user
-      const workspace = await this.#workspaceManager.getWorkspace(userId, workspaceName);
+      // Resolve workspace name to ID
+      const workspaceId = this.#workspaceManager.resolveWorkspaceId(userId, workspaceName);
+      if (!workspaceId) {
+        debug(`Workspace not found: ${workspaceName} for user ${userId}`);
+        return null;
+      }
 
+      // Get workspace for this user
+      const workspace = await this.#workspaceManager.getWorkspace(workspaceId, userId);
       if (!workspace) {
         debug(`Workspace not found: ${workspaceName} for user ${userId}`);
         return null;

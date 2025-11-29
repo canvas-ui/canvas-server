@@ -249,6 +249,15 @@ class Users extends EventEmitter {
         return this.get(id);
     }
 
+    // Aliases for backward compatibility
+    async getUserByEmail(email) {
+        return this.getByEmail(email);
+    }
+
+    async getUserById(id) {
+        return this.get(id);
+    }
+
     /**
      * Get a user by name
      * @param {string} name - User name

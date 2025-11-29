@@ -1,22 +1,43 @@
-OK lets refactor this :) module
+We need to start refactoring our application as follows:
 
-Workspace
-Data Sources
+#1 Auth:
+- We should support the following auth mechanisms (a more appropriate module may be needed)
+  - local user.email + password,
+  - access tokens a-la github
+  - IMAP based auth (we should be able to auto-create users based on authenticating against a remote mail server)
+  - LDAP
+  - oauth2 to integrate with google and microsofts o365 accounts
 
-In reality, most of the time spent on a project is in thinking mode, the limiting factor here is not the LLM but .. the HUMAN
-Additionally
-Lazy person + LLM == lazy person
-(replace "lazy" with a more appropriate term if you feel to do so)
+- Special consideration for access tokens:
+  - Users(user homes) should be movable between canvas-server instances, hence, access tokens should be placed within users home/config/user.json or acl.json or access.json or tokens.json whatever would be more appropriate
+  - Every resource the user creates(workspace, role, context, agent) should by default allow access using his auth token(question is whether to generate one per resource or use a global one, I'm more inclined to generate a per-resource token instead)
+  - Therefore, when a user moves his home to a different instance, he should still be able to access workspaces define in his ./config/workspaces.json since he took his tokens with him
+  - Auth module should therefore read out tokens for each initialized user from his home workspace
+
+- All auth mechanisms should have a example configuration in ./server/config
+- local user email + pass and tokens are default and can not be disabled
 
 
-
-Global
+#2 Core modules:
 - User manager
+  - Scope: Global
+  - UserManager should register a user and create a home drive for him
+  - Home drive path defaults to env.server.home/$user.email, we should require this parameter to be set by a higher-level module/Server.js, lets not do any guesswork / assumptions or use default paths in the core modules
+  - The actuall home drive should be a special workspace of type Universe (type: universe, color: #fff, name: Universe, description: "..and then there was geometry" that immutable in terms of name and parameters
+  - All user roles should be placed in the universe workspace in ./roles
+  - All user workspaces should be placed in the universe workspace in ./workspaces
+  - User config should be placed in ./config
+
 - Context manager
+  - Scope: User -> to move to src/core/user?
 - Workspace manager
+  - Scope: Global, User
 - Role manager
+  - Scope: Global, User, Workspace
 - Agent manager
+  - Scope: Global, User, Workspace
 - Device manager (to assess)
+  - Scope: User, Workspace
 
 Workspace Local
 - Services
@@ -24,9 +45,9 @@ Workspace Local
     - Dotfiles
     - Storage?
 
-- Linked services
-    - Roles
-    - Agents
+- Services
+    - Roles DI from User
+    - Agents DI from User
 
 - Managers
 
@@ -59,30 +80,3 @@ Workspace
 - dotfiles
 - home
 - agents
-
-
-
-Lets add a firefox sidebar / chrome side panel to our browser extension.
-The design should loosly copy our popup but implement the following changes:
-
-First tab would be a directory tree icon containing the context tree
-- Tree foders/nodes should have a small [+] sign, on click we should load the list of tabs intothe tree directly, the whole implementation should talk to the workspace REST API
-- User should be able to create a subfolder or to rename a folder using a context menu, API is implemented here: https://github.com/canvas-ai/canvas-server/blob/dev/src/api/routes/workspaces/tree.js
-- Same should be implemented in the popup for the Tree view
-
-browserToCanvasTab should group all tabs by window
-- We should additionally implement "Sync All" and "Close All" buttons for the windowsID titleto sync/close all tabs of a particular window
-
-canvasToBrowserTab works the same
-
-A workspace should manage the following:
-- JSON Documents/global index stored within its local LMDB database
-- JSON Documents for resources may point to other data backends like local files, S3, IMAP, remote github repos etc
-- Roles scoped for the workspace
-- Agents/Minions
-- Hooks
-- Dotfiles
-- Workspace-local roaming data (every workspace should have a WORKSPACE_ROOT/home folder that will be accessible over REST and apache2 based webdav)
-- Share options
-
-How should such a module be structured?

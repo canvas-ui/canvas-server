@@ -52,9 +52,9 @@ class TokenService {
    * Find workspace by token hash
    */
   async findWorkspaceByToken(tokenHash) {
-    const allWorkspaces = this.workspaceManager.getAllWorkspacesWithKeys();
+    const allWorkspaces = await this.workspaceManager.listWorkspaces();
 
-    for (const [indexKey, workspaceEntry] of Object.entries(allWorkspaces)) {
+    for (const workspaceEntry of allWorkspaces) {
       const tokenData = workspaceEntry.acl?.tokens?.[tokenHash];
       if (tokenData) {
         return {
@@ -142,8 +142,8 @@ class TokenService {
     const tokenHash = await this.hashToken(token);
 
     // Search user's workspaces
-    const allWorkspaces = this.workspaceManager.getAllWorkspacesWithKeys();
-    for (const [indexKey, workspaceEntry] of Object.entries(allWorkspaces)) {
+    const allWorkspaces = await this.workspaceManager.listWorkspaces(userId);
+    for (const workspaceEntry of allWorkspaces) {
       if (workspaceEntry.owner === userId && workspaceEntry.acl?.tokens?.[tokenHash]) {
         delete workspaceEntry.acl.tokens[tokenHash];
 

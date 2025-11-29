@@ -9,6 +9,19 @@ import { requireWorkspaceRead, requireWorkspaceWrite, requireWorkspaceAdmin } fr
  * @param {Object} options - Plugin options
  */
 export default async function workspaceLifecycleRoutes(fastify, options) {
+  async function resolveWorkspaceId(request, reply) {
+    const identifier = request.params.id;
+    const userId = request.user.id;
+    const isWorkspaceId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(identifier);
+    const workspaceId = isWorkspaceId ? identifier : fastify.workspaceManager.resolveWorkspaceId(userId, identifier);
+    if (!workspaceId) {
+      const responseObject = new ResponseObject().notFound(`Workspace with ID ${identifier} not found`);
+      reply.code(responseObject.statusCode).send(responseObject.getResponse());
+      return null;
+    }
+    return workspaceId;
+  }
+
   // Get workspace status
   fastify.get('/status', {
     onRequest: [fastify.authenticate, requireWorkspaceRead()],
@@ -56,12 +69,10 @@ export default async function workspaceLifecycleRoutes(fastify, options) {
     }
 
     try {
-      const workspace = await fastify.workspaceManager.openWorkspace(
-        request.user.id,
-        request.params.id,
-        request.user.id
-      );
+      const workspaceId = await resolveWorkspaceId(request, reply);
+      if (!workspaceId) return;
 
+      const workspace = await fastify.workspaceManager.startWorkspace(workspaceId, request.user.id);
       if (!workspace) {
         const responseObject = new ResponseObject().notFound(`Workspace with ID ${request.params.id} not found`);
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());
@@ -106,24 +117,18 @@ export default async function workspaceLifecycleRoutes(fastify, options) {
     }
   }, async (request, reply) => {
     try {
-      // First get the workspace object before closing it
-      const workspace = await fastify.workspaceManager.openWorkspace(
-        request.user.id,
-        request.params.id,
-        request.user.id
-      );
+      const workspaceId = await resolveWorkspaceId(request, reply);
+      if (!workspaceId) return;
 
+      // Get workspace before closing
+      const workspace = await fastify.workspaceManager.getWorkspace(workspaceId, request.user.id);
       if (!workspace) {
         const responseObject = new ResponseObject().notFound(`Workspace with ID ${request.params.id} not found`);
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());
       }
 
-      // Now close the workspace
-      const success = await fastify.workspaceManager.closeWorkspace(
-        request.user.id,
-        request.params.id,
-        request.user.id
-      );
+      // Now stop the workspace
+      const success = await fastify.workspaceManager.stopWorkspace(workspaceId, request.user.id);
 
       if (!success) {
         const responseObject = new ResponseObject().serverError('Failed to close workspace');
@@ -166,12 +171,10 @@ export default async function workspaceLifecycleRoutes(fastify, options) {
   }, async (request, reply) => {
     let workspace;
     try {
-      workspace = await fastify.workspaceManager.startWorkspace(
-        request.user.id,
-        request.params.id,
-        request.user.id
-      );
+      const workspaceId = await resolveWorkspaceId(request, reply);
+      if (!workspaceId) return;
 
+      workspace = await fastify.workspaceManager.startWorkspace(workspaceId, request.user.id);
       if (!workspace) {
         const responseObject = new ResponseObject().notFound(`Workspace with ID ${request.params.id} not found`);
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());
@@ -207,12 +210,10 @@ export default async function workspaceLifecycleRoutes(fastify, options) {
   }, async (request, reply) => {
     let success;
     try {
-      success = await fastify.workspaceManager.stopWorkspace(
-        request.user.id,
-        request.params.id,
-        request.user.id
-      );
+      const workspaceId = await resolveWorkspaceId(request, reply);
+      if (!workspaceId) return;
 
+      success = await fastify.workspaceManager.stopWorkspace(workspaceId, request.user.id);
       if (!success) {
         const responseObject = new ResponseObject().notFound(`Workspace with ID ${request.params.id} not found`);
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());

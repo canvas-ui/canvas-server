@@ -119,9 +119,15 @@ export class CanvasWebDAVAuthentication extends HTTPBasicAuthentication {
    */
   async checkWorkspaceAccess(userId, workspaceName) {
     try {
-      // Get workspace by name for this user
-      const workspace = await this.workspaceManager.getWorkspace(userId, workspaceName);
+      // Resolve workspace name to ID
+      const workspaceId = this.workspaceManager.resolveWorkspaceId(userId, workspaceName);
+      if (!workspaceId) {
+        debug(`Workspace not found: ${workspaceName} for user ${userId}`);
+        return false;
+      }
 
+      // Get workspace by ID for this user
+      const workspace = await this.workspaceManager.getWorkspace(workspaceId, userId);
       if (!workspace) {
         debug(`Workspace not found: ${workspaceName} for user ${userId}`);
         return false;

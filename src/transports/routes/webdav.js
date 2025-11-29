@@ -219,8 +219,14 @@ export default async function webdavRoutes(fastify, options) {
 
         // Verify workspace access
         const workspaceName = request.params.workspaceName;
-        const workspace = await fastify.workspaceManager.getWorkspace(request.user.id, workspaceName);
+        const workspaceId = fastify.workspaceManager.resolveWorkspaceId(request.user.id, workspaceName);
+        if (!workspaceId) {
+          debug(`Workspace not found: ${workspaceName}`);
+          const response = new ResponseObject().notFound(`Workspace not found: ${workspaceName}`);
+          return reply.code(response.statusCode).send(response.getResponse());
+        }
 
+        const workspace = await fastify.workspaceManager.getWorkspace(workspaceId, request.user.id);
         if (!workspace) {
           debug(`Workspace not found: ${workspaceName}`);
           const response = new ResponseObject().notFound(`Workspace not found: ${workspaceName}`);
@@ -443,8 +449,14 @@ export default async function webdavRoutes(fastify, options) {
 
         // Verify workspace access
         const workspaceName = request.params.workspaceName;
-        const workspace = await fastify.workspaceManager.getWorkspace(request.user.id, workspaceName);
+        const workspaceId = fastify.workspaceManager.resolveWorkspaceId(request.user.id, workspaceName);
+        if (!workspaceId) {
+          debug(`Workspace not found: ${workspaceName}`);
+          const response = new ResponseObject().notFound(`Workspace not found: ${workspaceName}`);
+          return reply.code(response.statusCode).send(response.getResponse());
+        }
 
+        const workspace = await fastify.workspaceManager.getWorkspace(workspaceId, request.user.id);
         if (!workspace) {
           debug(`Workspace not found: ${workspaceName}`);
           const response = new ResponseObject().notFound(`Workspace not found: ${workspaceName}`);

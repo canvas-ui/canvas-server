@@ -11,7 +11,6 @@ export default async function workspaceTreeRoutes(fastify, options) {
   // Helper to get workspace and handle common errors
   async function getWorkspaceInstance(request, reply) {
     const workspace = await fastify.workspaceManager.getWorkspace(
-      request.user.id, // Use user.id for consistency with new indexing system
       request.params.id,
       request.user.id
     );

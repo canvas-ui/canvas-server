@@ -178,11 +178,15 @@ async function tryOwnerAccess(workspaceManager, userId, workspaceIdentifier) {
 
     let workspace;
     if (isWorkspaceId) {
-      // Try to get workspace by ID
-      workspace = await workspaceManager.getWorkspace(userId, workspaceIdentifier, userId);
+      // Try to get workspace by ID using the new API (workspaceId, userId)
+      workspace = await workspaceManager.getWorkspace(workspaceIdentifier, userId);
     } else {
-      // Try to get workspace by name
-      workspace = await workspaceManager.getWorkspaceByName(userId, workspaceIdentifier, userId);
+      // Resolve workspace name to ID first, then load via new API
+      const resolvedId = workspaceManager.resolveWorkspaceId(userId, workspaceIdentifier);
+      if (!resolvedId) {
+        return null;
+      }
+      workspace = await workspaceManager.getWorkspace(resolvedId, userId);
     }
 
     return workspace;
@@ -259,48 +263,27 @@ async function findWorkspaceByTokenHash(workspaceManager, workspaceIdentifier, t
     // Workspace IDs are UUIDs like 7c84589b-9268-45e8-9b7c-85c29adc9bca
     const isWorkspaceId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(workspaceIdentifier);
 
+    const allWorkspaces = await workspaceManager.listWorkspaces();
+
     if (isWorkspaceId) {
       // Direct lookup by workspace ID
-      const allWorkspaces = workspaceManager.getAllWorkspacesWithKeys();
-      let workspaceEntry = null;
-
-      // Search for workspace by ID across all users
-      for (const [indexKey, entry] of Object.entries(allWorkspaces)) {
-        const parsed = workspaceManager.constructor.prototype.constructor.parseWorkspaceIndexKey?.(indexKey) ||
-                      (() => {
-                        const parts = indexKey.split('::');
-                        return parts.length === 2 ? { userId: parts[0], workspaceId: parts[1] } : null;
-                      })();
-
-        if (parsed && parsed.workspaceId === workspaceIdentifier) {
-          workspaceEntry = entry;
+      for (const workspaceEntry of allWorkspaces) {
+        if (workspaceEntry.id === workspaceIdentifier) {
+          const tokens = workspaceEntry.acl?.tokens || {};
+          if (tokens[tokenHash]) {
+            debug(`Found token in workspace ACL: ${workspaceIdentifier}`);
+            return workspaceEntry;
+          }
           break;
-        }
-      }
-
-      if (workspaceEntry) {
-        // Check if token exists in this workspace's ACL
-        const tokens = workspaceEntry.acl?.tokens || {};
-        if (tokens[tokenHash]) {
-          debug(`Found token in workspace ACL: ${workspaceIdentifier}`);
-          return workspaceEntry;
         }
       }
     } else {
       // Search through all workspaces for a matching name and token
-      const allWorkspaces = workspaceManager.getAllWorkspacesWithKeys();
-
-      for (const [indexKey, workspaceEntry] of Object.entries(allWorkspaces)) {
-        // Check if this workspace has the matching name and token
+      for (const workspaceEntry of allWorkspaces) {
         if (workspaceEntry.name === workspaceIdentifier) {
           const tokens = workspaceEntry.acl?.tokens || {};
           if (tokens[tokenHash]) {
-            const parsed = workspaceManager.constructor.prototype.constructor.parseWorkspaceIndexKey?.(indexKey) ||
-                          (() => {
-                            const parts = indexKey.split('::');
-                            return parts.length === 2 ? { userId: parts[0], workspaceId: parts[1] } : null;
-                          })();
-            debug(`Found token in workspace ACL: ${parsed?.workspaceId || 'unknown'} (name: ${workspaceIdentifier})`);
+            debug(`Found token in workspace ACL by name: ${workspaceIdentifier}`);
             return workspaceEntry;
           }
         }
@@ -401,14 +384,12 @@ async function findWorkspaceByUserEmail(workspaceManager, workspaceIdentifier, u
     // Check if workspaceIdentifier is a UUID (workspace ID)
     const isWorkspaceId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(workspaceIdentifier);
 
+    const allWorkspaces = await workspaceManager.listWorkspaces();
+
     if (isWorkspaceId) {
       // Direct lookup by workspace ID
-      const allWorkspaces = workspaceManager.getAllWorkspacesWithKeys();
-
-      // Search for workspace by ID across all users
-      for (const [indexKey, workspaceEntry] of Object.entries(allWorkspaces)) {
+      for (const workspaceEntry of allWorkspaces) {
         if (workspaceEntry.id === workspaceIdentifier) {
-          // Check if user email exists in this workspace's user ACL
           const users = workspaceEntry.acl?.users || {};
           if (users[userEmail]) {
             debug(`Found user ${userEmail} in workspace ACL: ${workspaceIdentifier}`);
@@ -418,10 +399,7 @@ async function findWorkspaceByUserEmail(workspaceManager, workspaceIdentifier, u
       }
     } else {
       // Search through all workspaces for a matching name and user email
-      const allWorkspaces = workspaceManager.getAllWorkspacesWithKeys();
-
-      for (const [indexKey, workspaceEntry] of Object.entries(allWorkspaces)) {
-        // Check if this workspace has the matching name and user email
+      for (const workspaceEntry of allWorkspaces) {
         if (workspaceEntry.name === workspaceIdentifier) {
           const users = workspaceEntry.acl?.users || {};
           if (users[userEmail]) {

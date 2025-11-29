@@ -9,6 +9,25 @@ import { parseDocumentId } from '../../../utils/documentId.js';
  * @param {Object} options - Plugin options
  */
 export default async function workspaceDocumentRoutes(fastify, options) {
+  async function getWorkspaceInstance(request, reply) {
+    const identifier = request.params.id;
+    const userId = request.user.id;
+    const isWorkspaceId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(identifier);
+    const workspaceId = isWorkspaceId ? identifier : await fastify.workspaceManager.resolveWorkspaceId(userId, identifier);
+    if (!workspaceId) {
+      const responseObject = new ResponseObject().notFound(`Workspace with ID ${identifier} not found`);
+      reply.code(responseObject.statusCode).send(responseObject.getResponse());
+      return null;
+    }
+    const workspace = await fastify.workspaceManager.getWorkspace(workspaceId, userId);
+    if (!workspace) {
+      const responseObject = new ResponseObject().notFound(`Workspace with ID ${identifier} not found`);
+      reply.code(responseObject.statusCode).send(responseObject.getResponse());
+      return null;
+    }
+    return workspace;
+  }
+
   // List documents in workspace
   fastify.get('/', {
     onRequest: [fastify.authenticate],
@@ -44,16 +63,8 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     }
   }, async (request, reply) => {
     try {
-      const workspace = await fastify.workspaceManager.getWorkspace(
-        request.user.id,
-        request.params.id,
-        request.user.id
-      );
-
-      if (!workspace) {
-        const responseObject = new ResponseObject().notFound(`Workspace with ID ${request.params.id} not found`);
-        return reply.code(responseObject.statusCode).send(responseObject.getResponse());
-      }
+      const workspace = await getWorkspaceInstance(request, reply);
+      if (!workspace) return;
 
       // Check if this is a search query
       const searchQuery = request.query.q || request.query.search;
@@ -152,16 +163,8 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     }
   }, async (request, reply) => {
     try {
-      const workspace = await fastify.workspaceManager.getWorkspace(
-        request.user.id,
-        request.params.id,
-        request.user.id
-      );
-
-      if (!workspace) {
-        const responseObject = new ResponseObject().notFound(`Workspace with ID ${request.params.id} not found`);
-        return reply.code(responseObject.statusCode).send(responseObject.getResponse());
-      }
+      const workspace = await getWorkspaceInstance(request, reply);
+      if (!workspace) return;
 
       // Normalize input: allow top-level array of IDs, or object with documentIds/documents
       const isTopLevelArray = Array.isArray(request.body);
@@ -220,16 +223,8 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     }
   }, async (request, reply) => {
     try {
-      const workspace = await fastify.workspaceManager.getWorkspace(
-        request.user.id,
-        request.params.id,
-        request.user.id
-      );
-
-      if (!workspace) {
-        const responseObject = new ResponseObject().notFound(`Workspace with ID ${request.params.id} not found`);
-        return reply.code(responseObject.statusCode).send(responseObject.getResponse());
-      }
+      const workspace = await getWorkspaceInstance(request, reply);
+      if (!workspace) return;
 
       const document = await workspace.getDocumentById(
         request.params.docId,
@@ -286,16 +281,8 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     }
   }, async (request, reply) => {
     try {
-      const workspace = await fastify.workspaceManager.getWorkspace(
-        request.user.id,
-        request.params.id,
-        request.user.id
-      );
-
-      if (!workspace) {
-        const responseObject = new ResponseObject().notFound(`Workspace with ID ${request.params.id} not found`);
-        return reply.code(responseObject.statusCode).send(responseObject.getResponse());
-      }
+      const workspace = await getWorkspaceInstance(request, reply);
+      if (!workspace) return;
 
       // Create derived feature array with abstraction path
       const derivedFeatureArray = [`data/abstraction/${request.params.abstraction}`, ...request.query.featureArray];
@@ -361,16 +348,8 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     }
   }, async (request, reply) => {
     try {
-      const workspace = await fastify.workspaceManager.getWorkspace(
-        request.user.id,
-        request.params.id,
-        request.user.id
-      );
-
-      if (!workspace) {
-        const responseObject = new ResponseObject().notFound(`Workspace with ID ${request.params.id} not found`);
-        return reply.code(responseObject.statusCode).send(responseObject.getResponse());
-      }
+      const workspace = await getWorkspaceInstance(request, reply);
+      if (!workspace) return;
 
       // Determine what to update: either documents or documentIds
       let itemsToUpdate;
@@ -434,16 +413,8 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     }
   }, async (request, reply) => {
     try {
-      const workspace = await fastify.workspaceManager.getWorkspace(
-        request.user.id,
-        request.params.id,
-        request.user.id
-      );
-
-      if (!workspace) {
-        const responseObject = new ResponseObject().notFound(`Workspace with ID ${request.params.id} not found`);
-        return reply.code(responseObject.statusCode).send(responseObject.getResponse());
-      }
+      const workspace = await getWorkspaceInstance(request, reply);
+      if (!workspace) return;
 
       // Convert array of IDs to the format workspace expects
       const documentIds = Array.isArray(request.body) ? request.body : [request.body];
@@ -500,16 +471,8 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     }
   }, async (request, reply) => {
     try {
-      const workspace = await fastify.workspaceManager.getWorkspace(
-        request.user.id,
-        request.params.id,
-        request.user.id
-      );
-
-      if (!workspace) {
-        const responseObject = new ResponseObject().notFound(`Workspace with ID ${request.params.id} not found`);
-        return reply.code(responseObject.statusCode).send(responseObject.getResponse());
-      }
+      const workspace = await getWorkspaceInstance(request, reply);
+      if (!workspace) return;
 
       // Convert array of IDs to the format workspace expects
       const documentIds = Array.isArray(request.body) ? request.body : [request.body];
@@ -560,16 +523,8 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     }
   }, async (request, reply) => {
     try {
-      const workspace = await fastify.workspaceManager.getWorkspace(
-        request.user.id,
-        request.params.id,
-        request.user.id
-      );
-
-      if (!workspace) {
-        const responseObject = new ResponseObject().notFound(`Workspace with ID ${request.params.id} not found`);
-        return reply.code(responseObject.statusCode).send(responseObject.getResponse());
-      }
+      const workspace = await getWorkspaceInstance(request, reply);
+      if (!workspace) return;
 
       // Parse and validate document ID
       let documentId;
@@ -629,16 +584,8 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     }
   }, async (request, reply) => {
     try {
-      const workspace = await fastify.workspaceManager.getWorkspace(
-        request.user.id,
-        request.params.id,
-        request.user.id
-      );
-
-      if (!workspace) {
-        const responseObject = new ResponseObject().notFound(`Workspace with ID ${request.params.id} not found`);
-        return reply.code(responseObject.statusCode).send(responseObject.getResponse());
-      }
+      const workspace = await getWorkspaceInstance(request, reply);
+      if (!workspace) return;
 
       const checksumString = `${request.params.algo}/${request.params.hash}`;
       const document = await workspace.getDocumentByChecksumString(checksumString);
@@ -676,16 +623,8 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     }
 
     try {
-      const workspace = await fastify.workspaceManager.getWorkspace(
-        request.user.id,
-        request.params.id,
-        request.user.id
-      );
-
-      if (!workspace) {
-        const responseObject = new ResponseObject().notFound(`Workspace with ID ${request.params.id} not found`);
-        return reply.code(responseObject.statusCode).send(responseObject.getResponse());
-      }
+      const workspace = await getWorkspaceInstance(request, reply);
+      if (!workspace) return;
 
       // Ensure workspace is active - start it if it's not
       if (!workspace.isActive) {

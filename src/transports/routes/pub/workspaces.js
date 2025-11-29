@@ -31,21 +31,21 @@ export default async function pubWorkspaceRoutes(fastify, options) {
    * @param {string} requiredPermission - Required permission level
    * @returns {Promise<Object|null>} Access info if valid, null otherwise
    */
-  const checkWorkspaceAccess = async (request, workspaceId, requiredPermission) => {
+  const checkWorkspaceAccess = async (request, workspaceIdentifier, requiredPermission) => {
     try {
       // First try token access
       const token = extractToken(request);
       if (token) {
         // Find workspace by searching all workspaces for this token
-        const allWorkspaces = fastify.workspaceManager.getAllWorkspacesWithKeys();
+        const allWorkspaces = await fastify.workspaceManager.listWorkspaces();
 
-        for (const [indexKey, workspaceEntry] of Object.entries(allWorkspaces)) {
-          const isMatch = (workspaceEntry.id === workspaceId) || (workspaceEntry.name === workspaceId);
+        for (const workspaceEntry of allWorkspaces) {
+          const isMatch = (workspaceEntry.id === workspaceIdentifier) || (workspaceEntry.name === workspaceIdentifier);
           if (isMatch) {
             const tokenAccess = checkTokenAccess(request, workspaceEntry.acl, requiredPermission);
             if (tokenAccess) {
               // Load the actual workspace instance
-              const workspace = await fastify.workspaceManager.getWorkspaceById(workspaceEntry.id);
+              const workspace = await fastify.workspaceManager.getWorkspace(workspaceEntry.id, workspaceEntry.owner);
               if (workspace) {
                 return {
                   workspace,
@@ -63,7 +63,11 @@ export default async function pubWorkspaceRoutes(fastify, options) {
       // Try user-based access if authenticated
       if (validateUser(request)) {
         const userId = request.user.id;
-        const workspace = await fastify.workspaceManager.getWorkspaceById(workspaceId, userId);
+        const isWorkspaceId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(workspaceIdentifier);
+        const resolvedId = isWorkspaceId ? workspaceIdentifier : fastify.workspaceManager.resolveWorkspaceId(userId, workspaceIdentifier);
+        if (!resolvedId) return null;
+
+        const workspace = await fastify.workspaceManager.getWorkspace(resolvedId, userId);
         if (workspace) {
           return {
             workspace,

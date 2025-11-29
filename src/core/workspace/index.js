@@ -287,6 +287,49 @@ class WorkspaceManager extends EventEmitter {
         return configData;
     }
 
+    /**
+     * Update workspace configuration (e.g., ACL, metadata)
+     * @param {string} ownerUserId
+     * @param {string} workspaceId
+     * @param {string} requestingUserId - currently unused (ACL enforced at route level)
+     * @param {Object} updates - partial config to merge
+     * @returns {Promise<boolean>}
+     */
+    async updateWorkspaceConfig(ownerUserId, workspaceId, requestingUserId, updates = {}) {
+        if (!this.#initialized) throw new Error('Not initialized');
+        if (!ownerUserId || !workspaceId || !updates || typeof updates !== 'object') {
+            return false;
+        }
+
+        const indexKey = `${ownerUserId}/${workspaceId}`;
+        const all = this.#indexStore.store || {};
+        const existing = all[indexKey];
+        if (!existing) {
+            return false;
+        }
+
+        const newConfig = {
+            ...existing,
+            ...updates,
+            updatedAt: new Date().toISOString()
+        };
+
+        try {
+            const conf = new Conf({
+                configName: path.basename(existing.configPath, '.json'),
+                cwd: path.dirname(existing.configPath),
+                accessPropertiesByDotNotation: false
+            });
+            conf.store = newConfig;
+        } catch (err) {
+            console.error(`Failed to persist workspace config for ${workspaceId}:`, err);
+            return false;
+        }
+
+        this.#indexStore.set(indexKey, newConfig);
+        return true;
+    }
+
     async createUniverseWorkspace(userId, userEmail, universeWorkspacePath) {
         return this.createWorkspace('universe', userId, {
             label: 'Universe',

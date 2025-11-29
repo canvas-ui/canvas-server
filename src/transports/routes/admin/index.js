@@ -281,8 +281,8 @@ export default async function adminRoutes(fastify, options) {
       await fastify.userManager.getUser(userId);
 
       const workspace = await fastify.workspaceManager.createWorkspace(
-        userId,
         name,
+        userId,
         {
           owner: userId,
           type,
@@ -316,11 +316,16 @@ export default async function adminRoutes(fastify, options) {
     }
   }, async (request, reply) => {
     try {
-      // Get workspace to verify it exists and get owner info
-      const workspace = await fastify.workspaceManager.getWorkspace(request.params.workspaceId);
+      // Find workspace in index to get owner info
+      const allWorkspaces = await fastify.workspaceManager.listWorkspaces();
+      const workspaceEntry = allWorkspaces.find(ws => ws.id === request.params.workspaceId);
+      if (!workspaceEntry) {
+        const response = new ResponseObject().notFound('Workspace not found');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
 
       // Delete the workspace
-      await fastify.workspaceManager.deleteWorkspace(workspace.owner, request.params.workspaceId);
+      await fastify.workspaceManager.removeWorkspace(workspaceEntry.id, workspaceEntry.owner, true);
 
       const response = new ResponseObject().success(true, 'Workspace deleted successfully');
       return reply.code(response.statusCode).send(response.getResponse());

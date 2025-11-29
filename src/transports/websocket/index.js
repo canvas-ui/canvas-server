@@ -211,15 +211,21 @@ export default function setupWebSocketHandlers(fastify) {
             return;
           }
         } else if (channel.startsWith('workspace:')) {
-          const workspaceId = channel.split(':')[1];
+          const identifier = channel.split(':')[1];
           try {
-            const workspace = await fastify.workspaceManager.getWorkspace(user.id, workspaceId, user.id);
+            const isWorkspaceId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(identifier);
+            const workspaceId = isWorkspaceId ? identifier : fastify.workspaceManager.resolveWorkspaceId(user.id, identifier);
+            if (!workspaceId) {
+              socket.emit('error', { message: `Access denied to workspace ${identifier}` });
+              return;
+            }
+            const workspace = await fastify.workspaceManager.getWorkspace(workspaceId, user.id);
             if (!workspace) {
-              socket.emit('error', { message: `Access denied to workspace ${workspaceId}` });
+              socket.emit('error', { message: `Access denied to workspace ${identifier}` });
               return;
             }
           } catch (err) {
-            socket.emit('error', { message: `Access denied to workspace ${workspaceId}` });
+            socket.emit('error', { message: `Access denied to workspace ${identifier}` });
             return;
           }
         }

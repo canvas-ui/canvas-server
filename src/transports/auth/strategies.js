@@ -123,9 +123,9 @@ export async function verifyJWT(request, reply) {
     throw error;
   }
 
-  const userManager = request.server.userManager;
-  if (!userManager) {
-    console.error('[Auth/JWT] userManager not available on server');
+  const users = request.server.users;
+  if (!users) {
+    console.error('[Auth/JWT] users manager not available on server');
     const error = new Error('User manager not initialized');
     error.statusCode = 500;
     throw error;
@@ -134,7 +134,7 @@ export async function verifyJWT(request, reply) {
   console.log(`[Auth/JWT] Getting user by ID: ${decoded.sub}`);
   let user;
   try {
-    user = await userManager.getUserById(decoded.sub);
+    user = await users.get(decoded.sub);
     console.log(`[Auth/JWT] User retrieved: ${!!user}, ID: ${user ? user.id : 'null'}`);
   } catch (userError) {
     console.error(`[Auth/JWT] Error retrieving user: ${userError.message}`);
@@ -246,9 +246,9 @@ export async function verifyApiToken(request, reply) {
   }
 
   // Load user from UserManager
-  const userManager = request.server.userManager;
-  if (!userManager) {
-    console.error('[Auth/API] userManager not available on server');
+  const users = request.server.users;
+  if (!users) {
+    console.error('[Auth/API] users manager not available on server');
     const error = new Error('User manager not initialized');
     error.statusCode = 500;
     throw error;
@@ -257,7 +257,7 @@ export async function verifyApiToken(request, reply) {
   console.log(`[Auth/API] Getting user with ID: ${tokenResult.userId}`);
   let user;
   try {
-    user = await userManager.getUserById(tokenResult.userId);
+    user = await users.get(tokenResult.userId);
     console.log(`[Auth/API] User found: ${!!user}, user ID: ${user ? user.id : 'null'}`);
   } catch (userError) {
     console.error(`[Auth/API] Error retrieving user: ${userError.message}`);

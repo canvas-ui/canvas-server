@@ -67,7 +67,7 @@ export default async function workspaceRoutes(fastify, options) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
-      const workspaces = await fastify.workspaceManager.listUserWorkspaces(request.user.id);
+      const workspaces = await fastify.workspaceManager.listWorkspaces(request.user.id);
 
       // Return consistent ResponseObject format
       const response = new ResponseObject();
@@ -216,8 +216,8 @@ export default async function workspaceRoutes(fastify, options) {
       }
 
       const success = await fastify.workspaceManager.updateWorkspaceConfig(
-        request.user.id,
-        request.params.id,
+        request.workspace.owner,
+        request.workspace.id,
         request.user.id,
         request.body
       );
@@ -266,8 +266,7 @@ export default async function workspaceRoutes(fastify, options) {
       }
 
       const success = await fastify.workspaceManager.removeWorkspace(
-        request.user.id,
-        request.params.id,
+        request.workspace.id,
         request.user.id,
         true // destroyData = true to actually delete the workspace files
       );

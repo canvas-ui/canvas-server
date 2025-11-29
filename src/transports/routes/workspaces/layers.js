@@ -5,7 +5,6 @@ import ResponseObject from '../../ResponseObject.js';
 export default async function workspaceLayerRoutes(fastify, options) {
   async function getWorkspaceInstance(request, reply) {
     const workspace = await fastify.workspaceManager.getWorkspace(
-      request.user.id,
       request.params.id,
       request.user.id
     );

@@ -117,23 +117,18 @@ async function validateWorkspaceAccess(socket, workspaceIdentifier) {
 
     // Try token-based access
     const tokenHash = `sha256:${crypto.createHash('sha256').update(token).digest('hex')}`;
-    const allWorkspaces = workspaceManager.getAllWorkspacesWithKeys();
+    const allWorkspaces = await workspaceManager.listWorkspaces();
 
-    // Check if identifier is a workspace ID (12 chars) or name
-    const isWorkspaceId = workspaceIdentifier.length === 12 && /^[a-zA-Z0-9]+$/.test(workspaceIdentifier);
+    // Check if identifier is a workspace ID (UUID format) or name
+    const isWorkspaceId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(workspaceIdentifier);
 
     if (isWorkspaceId) {
       // Direct lookup by workspace ID
       let workspaceEntry = null;
 
       // Search for workspace by ID across all users
-      for (const [indexKey, entry] of Object.entries(allWorkspaces)) {
-        const parsed = (() => {
-          const parts = indexKey.split('/');
-          return parts.length === 2 ? { userId: parts[0], workspaceId: parts[1] } : null;
-        })();
-
-        if (parsed && parsed.workspaceId === workspaceIdentifier) {
+      for (const entry of allWorkspaces) {
+        if (entry.id === workspaceIdentifier) {
           workspaceEntry = entry;
           break;
         }
@@ -159,7 +154,7 @@ async function validateWorkspaceAccess(socket, workspaceIdentifier) {
       }
     } else {
       // Search through all workspaces for a matching name and token
-      for (const [indexKey, workspaceEntry] of Object.entries(allWorkspaces)) {
+      for (const workspaceEntry of allWorkspaces) {
         if (workspaceEntry.name === workspaceIdentifier) {
           const tokens = workspaceEntry.acl?.tokens || {};
           const tokenData = tokens[tokenHash];

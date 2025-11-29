@@ -423,6 +423,12 @@ export async function login(email, password, userManager, strategy = 'auto') {
       // Get or create user
       const user = await ldapAuthStrategy.createUserFromLdapAuth(ldapResult, userManager);
 
+      // Ensure users "Universe" workspace is running
+      await userManager.ensureUserUniverseWorkspaceIsRunning(user.id);
+
+      // Ensure users default context exists
+      await userManager.ensureDefaultUserContextExists(user.id);
+
       console.log(`[Auth/Login] LDAP login successful for user: ${user.id}`);
       return { user, authMethod: 'ldap' };
     } catch (error) {
@@ -445,6 +451,12 @@ export async function login(email, password, userManager, strategy = 'auto') {
 
       // Get or create user
       const user = await imapAuthStrategy.createUserFromImapAuth(imapResult, userManager);
+
+      // Ensure users "Universe" workspace is running
+      await userManager.ensureUserUniverseWorkspaceIsRunning(user.id);
+
+      // Ensure users default context exists
+      await userManager.ensureDefaultUserContextExists(user.id);
 
       console.log(`[Auth/Login] IMAP login successful for user: ${user.id}`);
       return { user, authMethod: 'imap' };

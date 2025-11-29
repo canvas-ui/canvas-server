@@ -159,12 +159,21 @@ class WorkspaceManager extends EventEmitter {
         const all = this.#indexStore.store || {};
         const results = [];
 
-        // Basic listing filtering by owner
         for (const key in all) {
             const entry = all[key];
             if (userId && entry.owner !== userId) continue;
 
-            results.push(entry);
+            // If workspace is loaded, return runtime status
+            if (this.#workspaces.has(entry.id)) {
+                const ws = this.#workspaces.get(entry.id);
+                results.push({
+                    ...entry,
+                    status: ws.status,
+                    isActive: ws.isActive
+                });
+            } else {
+                results.push(entry);
+            }
         }
         return results;
     }

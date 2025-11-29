@@ -5,6 +5,7 @@ import { env } from './env.js';
 
 // Utils
 import path from 'path';
+import EventEmitter from 'eventemitter2';
 import Jim from './utils/jim/index.js';
 const jim = new Jim({
     rootPath: path.join(env.server.home, 'db'),
@@ -22,10 +23,10 @@ const debug = createDebug('canvas:server');
 import WorkspaceManager from './core/workspace/index.js';
 import Users from './core/user/index.js';
 import ContextManager from './core/context/index.js';
-// DotfileManager is now part of WorkspaceManager
 import Roles from './core/role/index.js';
 import Agents from './core/agent/index.js';
-import EventEmitter from 'eventemitter2';
+
+// Services
 import { authService } from './transports/auth/service.js';
 import { startTransportServer } from './transports/index.js';
 

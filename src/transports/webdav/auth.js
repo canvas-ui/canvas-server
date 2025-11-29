@@ -56,7 +56,7 @@ export class CanvasWebDAVAuthentication extends HTTPBasicAuthentication {
             // Try to authenticate with username/password
             debug('Attempting username/password authentication');
             try {
-              const user = await this.userManager.getUserByEmail(username);
+              const user = await this.userManager.getByEmail(username);
 
               // Verify password
               const passwordValid = await authService.verifyPassword(user.id, password);

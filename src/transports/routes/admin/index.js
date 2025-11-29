@@ -78,7 +78,7 @@ export default async function adminRoutes(fastify, options) {
       const { name, email, password, userType = 'user', status = 'active' } = request.body;
 
       // Create user
-      const user = await fastify.userManager.createUser({
+      const user = await fastify.users.create({
         name,
         email,
         userType,

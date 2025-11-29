@@ -48,7 +48,7 @@ export default async function workspaceShareRoutes(fastify, options) {
 
       // Verify the user exists on this server
       try {
-        const targetUser = await fastify.userManager.getUserByEmail(userEmail);
+        const targetUser = await fastify.users.getByEmail(userEmail);
         if (!targetUser) {
           const responseObject = new ResponseObject().notFound(`User with email '${userEmail}' not found on this server`);
           return reply.code(responseObject.statusCode).send(responseObject.getResponse());
@@ -123,7 +123,7 @@ export default async function workspaceShareRoutes(fastify, options) {
       const workspace = request.workspace;
       const acl = workspace.acl || {};
       const users = acl.users || {};
-      
+
       // Convert users to array format
       const shareList = Object.entries(users).map(([userEmail, shareData]) => ({
         userEmail,

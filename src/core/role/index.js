@@ -170,11 +170,7 @@ class Roles extends EventEmitter {
         const roleId = generateUUID();
         const timestamp = new Date().toISOString();
 
-        // Load role template
         const template = await this.#loadRoleTemplate(templateName);
-        if (!template) {
-            throw new Error(`Role template not found: ${templateName}`);
-        }
 
         // Validate role type and scope
         this.#validateRoleScope(options.type, options.workspaceId);
@@ -231,8 +227,7 @@ class Roles extends EventEmitter {
             throw new Error(`Role not found: ${roleId}`);
         }
 
-        // Check permissions
-        if (!await this.#checkRolePermissions(roleConfig, requestingUserId, 'start')) {
+        if (!this.#checkRolePermissions(roleConfig, requestingUserId)) {
             throw new Error(`Permission denied to start role: ${roleId}`);
         }
 
@@ -277,8 +272,7 @@ class Roles extends EventEmitter {
             throw new Error(`Role not found: ${roleId}`);
         }
 
-        // Check permissions
-        if (!await this.#checkRolePermissions(roleConfig, requestingUserId, 'stop')) {
+        if (!this.#checkRolePermissions(roleConfig, requestingUserId)) {
             throw new Error(`Permission denied to stop role: ${roleId}`);
         }
 
@@ -320,8 +314,7 @@ class Roles extends EventEmitter {
             throw new Error(`Role not found: ${roleId}`);
         }
 
-        // Check permissions
-        if (!await this.#checkRolePermissions(roleConfig, requestingUserId, 'remove')) {
+        if (!this.#checkRolePermissions(roleConfig, requestingUserId)) {
             throw new Error(`Permission denied to remove role: ${roleId}`);
         }
 
@@ -380,8 +373,7 @@ class Roles extends EventEmitter {
         const roleConfig = this.#indexStore.get(roleId);
         if (!roleConfig) return null;
 
-        // Check permissions
-        if (!await this.#checkRolePermissions(roleConfig, requestingUserId, 'read')) {
+        if (!this.#checkRolePermissions(roleConfig, requestingUserId)) {
             return null;
         }
 
@@ -401,23 +393,21 @@ class Roles extends EventEmitter {
     /**
      * Load role template from extensions/roles directory
      * @param {string} templateName - Template name
-     * @returns {Promise<Object|null>} Template configuration
+     * @returns {Promise<Object>} Template configuration
      * @private
      */
     async #loadRoleTemplate(templateName) {
         const templatePath = path.join(process.cwd(), 'extensions', 'roles', templateName, 'role.json');
 
         if (!existsSync(templatePath)) {
-            debug(`Role template not found: ${templatePath}`);
-            return null;
+            throw new Error(`Role template not found: ${templateName}`);
         }
 
         try {
             const templateData = await fsPromises.readFile(templatePath, 'utf8');
             return JSON.parse(templateData);
         } catch (error) {
-            debug(`Failed to load role template ${templateName}: ${error.message}`);
-            return null;
+            throw new Error(`Failed to load role template ${templateName}: ${error.message}`);
         }
     }
 
@@ -491,23 +481,21 @@ class Roles extends EventEmitter {
      * Check if user has permission to perform action on role
      * @param {Object} roleConfig - Role configuration
      * @param {string} userId - Requesting user ID
-     * @param {string} action - Action being performed
-     * @returns {Promise<boolean>} Permission granted
+     * @returns {boolean} Permission granted
      * @private
      */
-    async #checkRolePermissions(roleConfig, userId, action) {
-        // Global roles require admin permissions
+    #checkRolePermissions(roleConfig, userId) {
+        // Global roles - allow for now (admin check can be added later)
         if (roleConfig.type === ROLE_TYPES.GLOBAL) {
-            // TODO: Implement admin check
-            return true; // For now, allow all global role operations
+            return true;
         }
 
-        // User and workspace roles require ownership or permissions
+        // Workspace roles - check ownership
         if (roleConfig.userId) {
             return roleConfig.userId === userId;
         }
 
-        return true; // Default allow for now
+        return true;
     }
 
     /**

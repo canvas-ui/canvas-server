@@ -154,7 +154,7 @@ export default async function webdavRoutes(fastify, options) {
               // Try to authenticate with username/password
               debug('Attempting username/password authentication');
               try {
-                const user = await fastify.userManager.getUserByEmail(username);
+                const user = await fastify.users.getByEmail(username);
 
                 // Verify password
                 const passwordValid = await fastify.authService.verifyPassword(user.id, password);
@@ -384,7 +384,7 @@ export default async function webdavRoutes(fastify, options) {
               // Try to authenticate with username/password
               debug('Attempting username/password authentication');
               try {
-                const user = await fastify.userManager.getUserByEmail(username);
+                const user = await fastify.users.getByEmail(username);
 
                 // Verify password
                 const passwordValid = await fastify.authService.verifyPassword(user.id, password);

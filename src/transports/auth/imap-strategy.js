@@ -188,7 +188,7 @@ class ImapAuthStrategy {
     // Check if user already exists
     let existingUser;
     try {
-      existingUser = await userManager.getUserByEmail(authResult.email);
+      existingUser = await userManager.getByEmail(authResult.email);
     } catch (error) {
       // User doesn't exist, which is fine
     }
@@ -218,7 +218,7 @@ class ImapAuthStrategy {
     };
 
     try {
-      const newUser = await userManager.createUser(userData);
+      const newUser = await userManager.create(userData);
       console.log(`[IMAP] Successfully created user: ${newUser.id}`);
 
       // Ensure user's workspace and context are set up

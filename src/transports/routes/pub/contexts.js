@@ -55,7 +55,7 @@ export default async function pubContextRoutes(fastify, options) {
 
     try {
       // Try to find user by email
-      const user = await fastify.userManager.getUserByEmail(targetUserId);
+      const user = await fastify.users.getByEmail(targetUserId);
       if (user && user.id) {
         // Redirect to the user ID-based URL
         const originalUrl = request.url;

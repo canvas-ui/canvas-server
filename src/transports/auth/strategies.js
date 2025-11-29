@@ -379,7 +379,7 @@ export async function login(email, password, userManager, strategy = 'auto') {
     // First check if user exists locally
     let existingUser;
     try {
-      existingUser = await userManager.getUserByEmail(email);
+      existingUser = await userManager.getByEmail(email);
     } catch (error) {
       // User doesn't exist, which is fine for auto-detection
       existingUser = null;
@@ -462,7 +462,7 @@ export async function login(email, password, userManager, strategy = 'auto') {
     // Get user by email
     let user;
     try {
-      user = await userManager.getUserByEmail(email);
+      user = await userManager.getByEmail(email);
     } catch (error) {
       console.log(`[Auth/Login] User not found for email: ${email}`);
       throw new InvalidCredentialsError('Invalid email or password');
@@ -521,7 +521,7 @@ export async function register(userData, userManager) {
 
   // Create user
   const requireVerification = _authService.isEmailVerificationRequired();
-  const user = await userManager.createUser({
+  const user = await userManager.create({
     name: userData.name,
     email: userData.email,
     // firstName: userData.firstName,
@@ -583,7 +583,7 @@ export async function verifyEmail(token, userManager) {
   }
 
   // Get user
-  const user = await userManager.getUserById(tokenData.userId);
+  const user = await userManager.get(tokenData.userId);
   if (!user) {
     throw new Error('User not found');
   }
@@ -608,7 +608,7 @@ export async function requestEmailVerification(email, userManager) {
   if (!email) return null;
   let user;
   try {
-    user = await userManager.getUserByEmail(email);
+    user = await userManager.getByEmail(email);
   } catch (_) {
     // Do not reveal user existence
     return null;
@@ -638,7 +638,7 @@ export async function requestEmailVerification(email, userManager) {
  * @returns {Promise<Object>} - Reset token
  */
 export async function requestPasswordReset(email, userManager) {
-  const user = await userManager.getUserByEmail(email);
+  const user = await userManager.getByEmail(email);
   if (!user) {
     // Don't reveal if user exists, but don't create token either
     return null;
@@ -662,7 +662,7 @@ export async function resetPassword(token, newPassword, userManager) {
   }
 
   // Get user
-  const user = await userManager.getUserById(tokenData.userId);
+  const user = await userManager.get(tokenData.userId);
   if (!user) {
     throw new Error('User not found');
   }

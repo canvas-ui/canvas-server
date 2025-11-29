@@ -72,7 +72,7 @@ export default function setupWebSocketHandlers(fastify) {
           socket.disconnect(true);
           return;
         }
-        user = await fastify.userManager.getUserById(apiRes.userId);
+        user = await fastify.users.get(apiRes.userId);
       } else {
         debug(`🎫 Verifying JWT token for ${clientIp}`);
         // Use authService to verify JWT token consistently with REST API

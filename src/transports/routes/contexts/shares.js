@@ -55,7 +55,7 @@ export default async function contextShareRoutes(fastify, options) {
 
       // Verify the user exists on this server
       try {
-        const targetUser = await fastify.userManager.getUserByEmail(userEmail);
+        const targetUser = await fastify.users.getByEmail(userEmail);
         if (!targetUser) {
           const response = new ResponseObject().notFound(`User with email '${userEmail}' not found on this server`);
           return reply.code(response.statusCode).send(response.getResponse());

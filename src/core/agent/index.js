@@ -439,59 +439,30 @@ class Agents extends EventEmitter {
      * @returns {Promise<Agent|null>} The loaded Agent instance
      */
     async open(userId, agentIdentifier, requestingUserId) {
-        if (!this.#initialized) {
-            throw new Error('Agents service not initialized. Cannot open agent.');
-        }
-        if (!userId || !agentIdentifier) {
-            throw new Error(`userId and agentIdentifier are required to open an agent, got userId: ${userId}, agentIdentifier: ${agentIdentifier}`);
-        }
+        if (!this.#initialized) throw new Error('Agents service not initialized');
+        if (!userId || !agentIdentifier) throw new Error('userId and agentIdentifier required');
 
-        // Resolve the provided userId to an actual user ID
         const ownerId = await this.#users.resolveId(userId);
-        if (!ownerId) {
-            debug(`openAgent failed: Could not resolve user identifier "${userId}"`);
-            return null;
-        }
+        if (!ownerId) return null;
 
-        if (!requestingUserId) {
-            requestingUserId = ownerId;
-        }
+        requestingUserId = requestingUserId || ownerId;
 
         // Try to parse as agent reference first
         const parsedRef = this.parseAgentReference(agentIdentifier);
         let agentId;
 
         if (parsedRef) {
-            // Full reference format
             agentId = this.#referenceIndex.get(parsedRef.full.split('/')[0]);
-            if (!agentId) {
-                debug(`openAgent failed: No agent found with reference "${agentIdentifier}"`);
-                return null;
-            }
+            if (!agentId) return null;
         } else {
-            // Check if it's an agent ID or resolve as agent name
-            const isNewAgentId = agentIdentifier.length === 12 && /^[a-zA-Z0-9]+$/.test(agentIdentifier);
-            const isLegacyAgentId = agentIdentifier.length === 36 && /^[a-f0-9-]+$/.test(agentIdentifier);
-
-            if (isNewAgentId || isLegacyAgentId) {
-                agentId = agentIdentifier;
-            } else {
-                agentId = await this.resolveAgentId(userId, agentIdentifier);
-                if (!agentId) {
-                    debug(`openAgent failed: No agent found with name "${agentIdentifier}" for user ${userId}`);
-                    return null;
-                }
-            }
+            agentId = await this.#resolveAgentIdFromIdentifier(ownerId, agentIdentifier);
+            if (!agentId) return null;
         }
-
-        debug(`Opening agent: ${agentId} (identifier: ${agentIdentifier}) for requestingUser: ${requestingUserId}`);
 
         // Return from cache if available
         if (this.#agents.has(agentId)) {
-            debug(`Returning cached Agent instance for ${agentId}`);
             const cachedAgent = this.#agents.get(agentId);
             if (cachedAgent.owner !== requestingUserId) {
-                console.error(`Ownership mismatch for cached agent ${agentId}. Owner: ${cachedAgent.owner}, Requester: ${requestingUserId}`);
                 return null;
             }
             return cachedAgent;
@@ -500,6 +471,7 @@ class Agents extends EventEmitter {
         // Load from index
         const indexKey = this.#constructAgentIndexKey(ownerId, agentId);
         const entry = this.#indexStore.get(indexKey);
+
         if (!this.#validateAgentEntryForOpen(entry, agentId, requestingUserId)) {
             return null;
         }
@@ -522,11 +494,10 @@ class Agents extends EventEmitter {
             });
 
             this.#agents.set(agentId, agent);
-            debug(`Loaded and cached Agent instance for ${agentId}`);
             this.#updateAgentIndexEntry(indexKey, { lastAccessed: new Date().toISOString() });
             return agent;
         } catch (err) {
-            console.error(`openAgent failed: Could not load config or instantiate Agent for ${agentId}: ${err.message}`);
+            console.error(`Failed to load agent ${agentId}: ${err.message}`);
             return null;
         }
     }
@@ -540,62 +511,35 @@ class Agents extends EventEmitter {
      */
     async start(userId, agentIdentifier, requestingUserId) {
         if (!this.#initialized) throw new Error('Agents service not initialized');
-        if (!requestingUserId) {
-            requestingUserId = userId;
-        }
 
-        // Resolve the provided userId to an actual user ID
         const ownerId = await this.#users.resolveId(userId);
-        if (!ownerId) {
-            debug(`startAgent failed: Could not resolve user identifier "${userId}"`);
-            return null;
-        }
-        if (requestingUserId === userId) {
-            requestingUserId = ownerId;
-        }
+        if (!ownerId) return null;
 
-        // Resolve agent identifier to ID
-        let agentId;
-        const isNewAgentId = agentIdentifier.length === 12 && /^[a-zA-Z0-9]+$/.test(agentIdentifier);
-        const isLegacyAgentId = agentIdentifier.length === 36 && /^[a-f0-9-]+$/.test(agentIdentifier);
+        requestingUserId = requestingUserId === userId ? ownerId : (requestingUserId || ownerId);
 
-        if (isNewAgentId || isLegacyAgentId) {
-            agentId = agentIdentifier;
-        } else {
-            agentId = await this.resolveAgentId(userId, agentIdentifier);
-            if (!agentId) {
-                debug(`startAgent: No agent found with name "${agentIdentifier}" for user ${userId}`);
-                return null;
-            }
-        }
+        const agentId = await this.#resolveAgentIdFromIdentifier(ownerId, agentIdentifier);
+        if (!agentId) return null;
 
-        debug(`Starting agent ${agentId} (identifier: ${agentIdentifier}) for requestingUserId: ${requestingUserId}`);
         let agent = this.#agents.get(agentId);
-
         if (!agent) {
-            debug(`startAgent: Agent ${agentId} not found in memory, attempting to open...`);
-            agent = await this.openAgent(userId, agentIdentifier, requestingUserId);
-            if (!agent) {
-                debug(`startAgent: Could not open agent ${agentIdentifier} for user ${userId}.`);
-                return null;
-            }
+            agent = await this.open(userId, agentIdentifier, requestingUserId);
+            if (!agent) return null;
         }
 
         if (agent.status === AGENT_STATUS_CODES.ACTIVE) {
-            debug(`Agent ${agentId} is already active.`);
             return agent;
         }
 
-        debug(`Starting agent ${agentId}...`);
         try {
             await agent.start();
             const indexKey = this.#constructAgentIndexKey(ownerId, agentId);
-            this.#updateAgentIndexEntry(indexKey, { status: AGENT_STATUS_CODES.ACTIVE, lastAccessed: new Date().toISOString() });
-            debug(`Agent ${agentId} started successfully.`);
+            this.#updateAgentIndexEntry(indexKey, {
+                status: AGENT_STATUS_CODES.ACTIVE,
+                lastAccessed: new Date().toISOString()
+            });
             this.emit('agent.started', { agentId, agent: agent.toJSON() });
             return agent;
         } catch (err) {
-            console.error(`Failed to start agent ${agentId}: ${err.message}`);
             const indexKey = this.#constructAgentIndexKey(ownerId, agentId);
             this.#updateAgentIndexEntry(indexKey, { status: AGENT_STATUS_CODES.ERROR });
             this.emit('agent.startFailed', { agentId, error: err.message });
@@ -612,69 +556,40 @@ class Agents extends EventEmitter {
      */
     async stop(userId, agentIdentifier, requestingUserId) {
         if (!this.#initialized) throw Error('Agents service not initialized');
-        if (!requestingUserId) {
-            requestingUserId = userId;
-        }
 
-        // Resolve the provided userId to an actual user ID
         const ownerId = await this.#users.resolveId(userId);
-        if (!ownerId) {
-            debug(`stopAgent failed: Could not resolve user identifier "${userId}"`);
-            return false;
-        }
-        if (requestingUserId === userId) {
-            requestingUserId = ownerId;
-        }
+        if (!ownerId) return false;
 
-        // Resolve agent identifier to ID
-        let agentId;
-        const isNewAgentId = agentIdentifier.length === 12 && /^[a-zA-Z0-9]+$/.test(agentIdentifier);
-        const isLegacyAgentId = agentIdentifier.length === 36 && /^[a-f0-9-]+$/.test(agentIdentifier);
+        requestingUserId = requestingUserId === userId ? ownerId : (requestingUserId || ownerId);
 
-        if (isNewAgentId || isLegacyAgentId) {
-            agentId = agentIdentifier;
-        } else {
-            agentId = await this.resolveAgentId(userId, agentIdentifier);
-            if (!agentId) {
-                debug(`stopAgent: No agent found with name "${agentIdentifier}" for user ${userId}`);
-                return false;
-            }
-        }
+        const agentId = await this.#resolveAgentIdFromIdentifier(ownerId, agentIdentifier);
+        if (!agentId) return false;
 
         const agent = this.#agents.get(agentId);
+        const indexKey = this.#constructAgentIndexKey(ownerId, agentId);
 
         if (!agent) {
-            debug(`Agent ${agentId} is not loaded in memory, considered stopped.`);
-            const indexKey = this.#constructAgentIndexKey(ownerId, agentId);
             const entry = this.#indexStore.get(indexKey);
             if (entry && entry.owner === requestingUserId && entry.status === AGENT_STATUS_CODES.ACTIVE) {
                 this.#updateAgentIndexEntry(indexKey, { status: AGENT_STATUS_CODES.INACTIVE });
-                debug(`Marked agent ${agentId} (not in memory) as INACTIVE in index.`);
             }
             return true;
         }
 
         if (agent.owner !== requestingUserId) {
-            console.error(`stopAgent: User ${requestingUserId} not owner of ${agentId}. Agent owner: ${agent.owner}`);
             return false;
         }
 
         if ([AGENT_STATUS_CODES.INACTIVE, AGENT_STATUS_CODES.AVAILABLE].includes(agent.status)) {
-            debug(`Agent ${agentId} is already stopped (status: ${agent.status}).`);
             return true;
         }
 
-        debug(`Stopping agent ${agentId}...`);
         try {
             await agent.stop();
-            const indexKey = this.#constructAgentIndexKey(ownerId, agentId);
             this.#updateAgentIndexEntry(indexKey, { status: AGENT_STATUS_CODES.INACTIVE }, requestingUserId);
-            debug(`Agent ${agentId} stopped successfully.`);
             this.emit('agent.stopped', { agentId });
             return true;
         } catch (err) {
-            console.error(`Failed to stop agent ${agentId}: ${err.message}`);
-            const indexKey = this.#constructAgentIndexKey(ownerId, agentId);
             this.#updateAgentIndexEntry(indexKey, { status: AGENT_STATUS_CODES.ERROR }, requestingUserId);
             this.emit('agent.stopFailed', { agentId, error: err.message });
             return false;
@@ -691,100 +606,47 @@ class Agents extends EventEmitter {
      */
     async delete(userId, agentIdentifier, requestingUserId, removeFiles = true) {
         if (!this.#initialized) throw Error('Agents service not initialized');
-        if (!requestingUserId) {
-            requestingUserId = userId;
-        }
 
-        debug(`Attempting to delete agent "${agentIdentifier}" for user "${userId}"`);
-
-        // Resolve the provided userId to an actual user ID
         const ownerId = await this.#users.resolveId(userId);
-        if (!ownerId) {
-            debug(`deleteAgent failed: Could not resolve user identifier "${userId}"`);
-            return false;
-        }
-        if (requestingUserId === userId) {
-            requestingUserId = ownerId;
-        }
+        if (!ownerId) return false;
 
-        // Resolve agent identifier to ID
-        let agentId;
-        const isNewAgentId = agentIdentifier.length === 12 && /^[a-zA-Z0-9]+$/.test(agentIdentifier);
-        const isLegacyAgentId = agentIdentifier.length === 36 && /^[a-f0-9-]+$/.test(agentIdentifier);
+        requestingUserId = requestingUserId === userId ? ownerId : (requestingUserId || ownerId);
 
-        if (isNewAgentId || isLegacyAgentId) {
-            agentId = agentIdentifier;
-        } else {
-            agentId = await this.resolveAgentId(userId, agentIdentifier);
-            if (!agentId) {
-                debug(`deleteAgent: No agent found with name "${agentIdentifier}" for user ${userId}`);
-                return false;
-            }
-        }
+        const agentId = await this.#resolveAgentIdFromIdentifier(ownerId, agentIdentifier);
+        if (!agentId) return false;
 
-        // Get agent entry from index to verify ownership
         const indexKey = this.#constructAgentIndexKey(ownerId, agentId);
         const entry = this.#indexStore.get(indexKey);
 
-        if (!entry) {
-            debug(`deleteAgent: Agent ${agentId} not found in index`);
-            return false;
-        }
-
-        if (entry.owner !== requestingUserId) {
-            console.error(`deleteAgent: User ${requestingUserId} not owner of ${agentId}. Agent owner: ${entry.owner}`);
-            return false;
-        }
+        this.#validateOwnership(entry, requestingUserId, agentId);
 
         try {
-            // Stop the agent if it's running
             const agent = this.#agents.get(agentId);
             if (agent && agent.isActive) {
-                debug(`Stopping agent ${agentId} before deletion...`);
                 await agent.stop();
             }
 
-            // Remove from runtime cache
-            if (this.#agents.has(agentId)) {
-                this.#agents.delete(agentId);
-                debug(`Removed agent ${agentId} from runtime cache`);
-            }
-
-            // Remove from main index
+            this.#agents.delete(agentId);
             this.#indexStore.delete(indexKey);
-            debug(`Removed agent ${agentId} from main index`);
 
-            // Remove from name index
-            const nameIndexKey = `${ownerId}@${entry.host || 'localhost'}:${entry.name}`;
-            if (this.#nameIndex.has(nameIndexKey)) {
-                this.#nameIndex.delete(nameIndexKey);
-                debug(`Removed agent ${agentId} from name index`);
-            }
+            const nameIndexKey = `${ownerId}@${entry.host || DEFAULT_HOST}:${entry.name}`;
+            this.#nameIndex.delete(nameIndexKey);
 
-            // Remove from reference index
-            const referenceKey = this.constructAgentReference(ownerId, entry.name, entry.host || 'localhost');
-            if (this.#referenceIndex.has(referenceKey)) {
-                this.#referenceIndex.delete(referenceKey);
-                debug(`Removed agent ${agentId} from reference index`);
-            }
+            const referenceKey = this.constructAgentReference(ownerId, entry.name, entry.host || DEFAULT_HOST);
+            this.#referenceIndex.delete(referenceKey);
 
-            // Remove agent directory from filesystem if requested
             if (removeFiles && entry.rootPath) {
                 try {
-                    const fs = await import('fs');
-                    const fsPromises = fs.promises;
-
-                    if (fs.existsSync(entry.rootPath)) {
+                    const { existsSync } = await import('fs');
+                    const fsPromises = (await import('fs/promises'));
+                    if (existsSync(entry.rootPath)) {
                         await fsPromises.rm(entry.rootPath, { recursive: true, force: true });
-                        debug(`Removed agent directory: ${entry.rootPath}`);
                     }
                 } catch (fsErr) {
                     console.warn(`Failed to remove agent directory ${entry.rootPath}: ${fsErr.message}`);
-                    // Don't fail the entire deletion if filesystem cleanup fails
                 }
             }
 
-            debug(`Agent ${agentId} deleted successfully`);
             this.emit('agent.deleted', {
                 agentId,
                 userId: ownerId,
@@ -793,9 +655,7 @@ class Agents extends EventEmitter {
             });
 
             return true;
-
         } catch (err) {
-            console.error(`Failed to delete agent ${agentId}: ${err.message}`);
             this.emit('agent.deleteFailed', {
                 agentId,
                 userId: ownerId,
@@ -966,97 +826,51 @@ class Agents extends EventEmitter {
      */
     async update(userId, agentIdentifier, updateData, requestingUserId) {
         if (!this.#initialized) throw Error('Agents service not initialized');
-        if (!requestingUserId) {
-            requestingUserId = userId;
-        }
 
-        debug(`Attempting to update agent "${agentIdentifier}" for user "${userId}"`);
-
-        // Resolve the provided userId to an actual user ID
         const ownerId = await this.#users.resolveId(userId);
-        if (!ownerId) {
-            debug(`updateAgent failed: Could not resolve user identifier "${userId}"`);
-            return null;
-        }
-        if (requestingUserId === userId) {
-            requestingUserId = ownerId;
-        }
+        if (!ownerId) return null;
 
-        // Resolve agent identifier to ID
-        let agentId;
-        const isNewAgentId = agentIdentifier.length === 12 && /^[a-zA-Z0-9]+$/.test(agentIdentifier);
-        const isLegacyAgentId = agentIdentifier.length === 36 && /^[a-f0-9-]+$/.test(agentIdentifier);
+        requestingUserId = requestingUserId === userId ? ownerId : (requestingUserId || ownerId);
 
-        if (isNewAgentId || isLegacyAgentId) {
-            agentId = agentIdentifier;
-        } else {
-            agentId = await this.resolveAgentId(userId, agentIdentifier);
-            if (!agentId) {
-                debug(`updateAgent: No agent found with name "${agentIdentifier}" for user ${userId}`);
-                return null;
-            }
-        }
+        const agentId = await this.#resolveAgentIdFromIdentifier(ownerId, agentIdentifier);
+        if (!agentId) return null;
 
-        // Get agent entry from index to verify ownership
         const indexKey = this.#constructAgentIndexKey(ownerId, agentId);
         const entry = this.#indexStore.get(indexKey);
 
-        if (!entry) {
-            debug(`updateAgent: Agent ${agentId} not found in index`);
-            return null;
-        }
-
-        if (entry.owner !== requestingUserId) {
-            console.error(`updateAgent: User ${requestingUserId} not owner of ${agentId}. Agent owner: ${entry.owner}`);
-            return null;
-        }
+        this.#validateOwnership(entry, requestingUserId, agentId);
 
         try {
-            // Get the agent instance (load if not in cache)
             let agent = this.#agents.get(agentId);
             if (!agent) {
-                agent = await this.openAgent(userId, agentIdentifier, requestingUserId);
-                if (!agent) {
-                    debug(`updateAgent: Failed to load agent ${agentId}`);
-                    return null;
-                }
+                agent = await this.open(userId, agentIdentifier, requestingUserId);
+                if (!agent) return null;
             }
 
-            // Validate and apply updates to agent configuration
             const allowedKeys = ['label', 'description', 'color', 'llmProvider', 'model', 'metadata', 'config'];
             const updates = {};
 
             for (const [key, value] of Object.entries(updateData)) {
                 if (allowedKeys.includes(key) && value !== undefined) {
                     updates[key] = value;
+                    await agent.setConfigKey(key, value);
                 }
             }
 
-            // Apply updates to agent configuration
-            for (const [key, value] of Object.entries(updates)) {
-                await agent.setConfigKey(key, value);
-            }
-
-            // Update the index entry
-            const indexUpdates = {
+            this.#updateAgentIndexEntry(indexKey, {
                 ...updates,
                 updatedAt: new Date().toISOString()
-            };
+            }, requestingUserId);
 
-            this.#updateAgentIndexEntry(indexKey, indexUpdates, requestingUserId);
-
-            debug(`Agent ${agentId} updated successfully`);
             this.emit('agent.updated', {
                 agentId,
                 userId: ownerId,
-                updates: indexUpdates,
+                updates,
                 requestingUserId
             });
 
             return agent;
-
         } catch (err) {
-            console.error(`Failed to update agent ${agentId}: ${err.message}`);
             this.emit('agent.updateFailed', {
                 agentId,
                 userId: ownerId,
@@ -1068,28 +882,61 @@ class Agents extends EventEmitter {
     }
 
     /**
-     * Static Utility Methods
-     */
-
-    /**
      * Get a random color for agent
      * @returns {string} Random color
-     * @static
      */
-    static getRandomColor() {
+    getRandomColor() {
         return randomcolor({
             luminosity: 'light',
             format: 'hex',
         });
     }
 
-    getRandomColor() {
-        return AgentManager.getRandomColor();
-    }
-
     /**
      * Private Methods
      */
+
+    /**
+     * Resolve agent identifier to agent ID
+     * @param {string} userId - Owner user ID
+     * @param {string} identifier - Agent ID or name
+     * @returns {Promise<string|null>} Agent ID if found, null otherwise
+     * @private
+     */
+    async #resolveAgentIdFromIdentifier(userId, identifier) {
+        if (!identifier) return null;
+
+        // Check if it's already an agent ID (12-char nanoid or 36-char UUID)
+        const isNewAgentId = identifier.length === 12 && /^[a-zA-Z0-9]+$/.test(identifier);
+        const isLegacyAgentId = identifier.length === 36 && /^[a-f0-9-]+$/.test(identifier);
+
+        if (isNewAgentId || isLegacyAgentId) {
+            return identifier;
+        }
+
+        // Try to resolve as agent name
+        return await this.resolveAgentId(userId, identifier);
+    }
+
+    /**
+     * Validate ownership and entry status for agent operations
+     * @param {Object} entry - Agent index entry
+     * @param {string} requestingUserId - User making the request
+     * @param {string} agentId - Agent ID for error messages
+     * @returns {boolean} True if valid, throws error otherwise
+     * @private
+     */
+    #validateOwnership(entry, requestingUserId, agentId) {
+        if (!entry) {
+            throw new Error(`Agent not found: ${agentId}`);
+        }
+
+        if (entry.owner !== requestingUserId) {
+            throw new Error(`Permission denied: user ${requestingUserId} is not owner of agent ${agentId}`);
+        }
+
+        return true;
+    }
 
     /**
      * Rebuilds the name and reference indexes from existing agents in the index store
@@ -1102,23 +949,15 @@ class Agents extends EventEmitter {
 
         for (const [indexKey, agentEntry] of Object.entries(allAgents)) {
             const parsed = this.#parseAgentIndexKey(indexKey);
-            if (agentEntry && agentEntry.name && parsed) {
-                const host = agentEntry.host || DEFAULT_HOST;
-                const ownerId = parsed.userId;
+            if (!agentEntry || !agentEntry.name || !parsed) continue;
 
-                const nameKey = `${ownerId}@${host}:${agentEntry.name}`;
-                this.#nameIndex.set(nameKey, parsed.agentId);
+            const host = agentEntry.host || DEFAULT_HOST;
+            const nameKey = `${parsed.userId}@${host}:${agentEntry.name}`;
+            this.#nameIndex.set(nameKey, parsed.agentId);
 
-                if (agentEntry.reference) {
-                    this.#referenceIndex.set(agentEntry.reference, parsed.agentId);
-                } else {
-                    const reference = constructAgentReference(ownerId, agentEntry.name, host);
-                    this.#referenceIndex.set(reference, parsed.agentId);
-                }
-            }
+            const reference = agentEntry.reference || constructAgentReference(parsed.userId, agentEntry.name, host);
+            this.#referenceIndex.set(reference, parsed.agentId);
         }
-
-        debug(`Rebuilt name and reference indexes with ${this.#nameIndex.size} agent name mappings`);
     }
 
     #sanitizeAgentName(agentName) {
@@ -1153,49 +992,37 @@ class Agents extends EventEmitter {
      * @private
      */
     async #scanIndexedAgents() {
-        debug('Performing initial agent scan...');
         const allAgents = this.#indexStore.store;
 
         for (const indexKey in allAgents) {
             const agentEntry = allAgents[indexKey];
             const parsed = this.#parseAgentIndexKey(indexKey);
 
-            if (!agentEntry || typeof agentEntry !== 'object' || !agentEntry.id || !parsed) {
-                debug(`Skipping invalid or incomplete agent entry for key: ${indexKey}`);
+            if (!agentEntry || !agentEntry.id || !parsed) continue;
+
+            const currentStatus = agentEntry.status;
+            if ([AGENT_STATUS_CODES.REMOVED, AGENT_STATUS_CODES.DESTROYED].includes(currentStatus)) {
                 continue;
             }
 
-            const agentId = parsed.agentId;
-            debug(`Scanning agent ${agentId} (Name: ${agentEntry.name}, Owner: ${agentEntry.owner})`);
-            let currentStatus = agentEntry.status;
             let newStatus = currentStatus;
 
-            if ([AGENT_STATUS_CODES.REMOVED, AGENT_STATUS_CODES.DESTROYED].includes(currentStatus)) {
-                debug(`Agent ${agentId} is in status ${currentStatus}, skipping.`);
-                continue;
-            }
-
             if (!agentEntry.rootPath || !existsSync(agentEntry.rootPath)) {
-                debug(`Agent path not found for ${agentId} at path ${agentEntry.rootPath}, marking as NOT_FOUND`);
                 newStatus = AGENT_STATUS_CODES.NOT_FOUND;
             } else if (!agentEntry.configPath || !existsSync(agentEntry.configPath)) {
-                debug(`Agent config not found for ${agentId} at path ${agentEntry.configPath}, marking as ERROR`);
                 newStatus = AGENT_STATUS_CODES.ERROR;
             } else if (![AGENT_STATUS_CODES.ACTIVE, AGENT_STATUS_CODES.INACTIVE, AGENT_STATUS_CODES.ERROR, AGENT_STATUS_CODES.NOT_FOUND].includes(currentStatus)) {
                 newStatus = AGENT_STATUS_CODES.AVAILABLE;
-            } else if (newStatus === AGENT_STATUS_CODES.ERROR && existsSync(agentEntry.rootPath) && existsSync(agentEntry.configPath)){
-                 if (![AGENT_STATUS_CODES.ACTIVE, AGENT_STATUS_CODES.INACTIVE].includes(agentEntry.status)) {
+            } else if (currentStatus === AGENT_STATUS_CODES.ERROR && existsSync(agentEntry.rootPath) && existsSync(agentEntry.configPath)){
+                 if (![AGENT_STATUS_CODES.ACTIVE, AGENT_STATUS_CODES.INACTIVE].includes(currentStatus)) {
                     newStatus = AGENT_STATUS_CODES.AVAILABLE;
                  }
             }
 
             if (newStatus !== currentStatus) {
                 this.#updateAgentIndexEntry(indexKey, { status: newStatus });
-                debug(`Updated status for ${agentId} from ${currentStatus} to ${newStatus}`);
             }
         }
-
-        debug('Agent scan complete.');
     }
 
     /**

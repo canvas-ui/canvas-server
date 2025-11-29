@@ -147,7 +147,6 @@ class Users extends EventEmitter {
     async create(userData = {}) {
         if (!this.#initialized) throw new Error('Users service not initialized');
 
-        debug(`create: Creating user with data: ${JSON.stringify(userData)}`);
         const id = userData.id || generateNanoid(8);
 
         try {
@@ -167,12 +166,11 @@ class Users extends EventEmitter {
                 email,
                 homePath: userHomePath,
                 userType: userData.userType || 'user',
-                status: 'pending', // Mark as pending until fully created
+                status: 'pending',
                 createdAt: new Date().toISOString(),
                 updatedAt: new Date().toISOString()
             };
             this.#indexStore.set(id, preliminaryUserData);
-            debug(`Pre-registered user in index: ${id}`);
 
             await this.#createHomeDirectory(userHomePath, id, email);
 
@@ -198,16 +196,12 @@ class Users extends EventEmitter {
                         name: 'Default API Token',
                         description: 'Auto-generated global API token for user access'
                     });
-                    debug(`Global API token generated for user ${user.id}: ${globalToken.id}`);
                 } catch (tokenError) {
-                    debug(`Warning: Failed to generate global API token for user ${user.id}: ${tokenError.message}`);
-                    // Non-fatal - user can create tokens manually later
+                    console.warn(`Failed to generate global API token for user ${user.id}: ${tokenError.message}`);
                 }
             }
 
-            this.#setupUserEventListeners(user);
             this.emit('user.created', { id, name, email });
-            debug(`User created: ${user.name} (${user.email}) (ID: ${user.id})`);
             return user;
         } catch (error) {
             // Rollback pre-registration if creation fails
@@ -215,10 +209,8 @@ class Users extends EventEmitter {
                 const storedData = this.#indexStore.get(id);
                 if (storedData?.status === 'pending') {
                     this.#indexStore.delete(id);
-                    debug(`Rolled back pre-registration for user: ${id}`);
                 }
             }
-            debug(`Error creating user: ${error.message}`);
             throw error;
         }
     }
@@ -229,30 +221,18 @@ class Users extends EventEmitter {
      * @returns {Promise<User>} User instance
      */
     async get(id) {
-        if (!this.#initialized) { // Added check - important for store access
-            throw new Error('Users service not initialized');
-        }
+        if (!this.#initialized) throw new Error('Users service not initialized');
+
         if (this.#users.has(id)) {
             return this.#users.get(id);
         }
-        // Get specific user by ID from the flat store
+
         const userDataFromIndex = this.#indexStore.get(id);
         if (!userDataFromIndex) {
-            throw new Error(`User not found in index: ${id}`);
+            throw new Error(`User not found: ${id}`);
         }
-        return await this.#initializeUser({
-            ...userDataFromIndex,
-            workspaceManager: this.#workspaceManager,
-        });
-    }
 
-    /**
-     * Get a user by ID (wrapper for async get)
-     * @param {string} id - User ID
-     * @returns {Promise<User>} User instance
-     */
-    getById(id) {
-        return this.get(id);
+        return await this.#initializeUser(userDataFromIndex);
     }
 
     /**
@@ -269,19 +249,6 @@ class Users extends EventEmitter {
             throw new Error(`User not found by email: ${email}`);
         }
         return this.get(id);
-    }
-
-    // Aliases for backward compatibility
-    async getUserByEmail(email) {
-        return this.getByEmail(email);
-    }
-
-    async getUserById(id) {
-        return this.get(id);
-    }
-
-    async createUser(userData) {
-        return this.create(userData);
     }
 
     /**
@@ -327,9 +294,7 @@ class Users extends EventEmitter {
      * @returns {Promise<Array<Object>>} Array of user objects (JSON representation from index)
      */
     async list(options = {}) {
-        if (!this.#initialized) { // Added check
-            throw new Error('Users service not initialized');
-        }
+        if (!this.#initialized) throw new Error('Users service not initialized');
         const allUsersInStore = this.#indexStore.store;
         let usersArray = Object.values(allUsersInStore);
 
@@ -401,28 +366,21 @@ class Users extends EventEmitter {
      * @returns {Promise<boolean>} True if user was deleted
      */
     async delete(id) {
-        if (!this.#initialized) { // Added check
-            throw new Error('Users service not initialized');
-        }
+        if (!this.#initialized) throw new Error('Users service not initialized');
         if (!id) throw new Error('User ID is required');
 
         if (!this.#indexStore.has(id)) {
-            if (this.#users.has(id)) { // Should not happen if store is source of truth
-                this.#users.delete(id);
-                this.emit('user.deleted', { id });
-                debug(`User ${id} deleted from memory (was not in index).`);
-                return true;
-            }
-            throw new Error(`User not found in index: ${id}`);
+            throw new Error(`User not found: ${id}`);
         }
+
         const userToDeleteData = this.#indexStore.get(id);
-        const userHomePath = userToDeleteData.homePath;
         this.#indexStore.delete(id);
 
         if (this.#users.has(id)) {
             this.#users.delete(id);
         }
-        console.log(`User ${id} deleted. Home directory left in place: ${userHomePath}`);
+
+        console.log(`User ${id} deleted. Home directory left in place: ${userToDeleteData.homePath}`);
         this.emit('user.deleted', { id });
         return true;
     }
@@ -489,43 +447,27 @@ class Users extends EventEmitter {
      */
 
     async #createHomeDirectory(homePath, userId, userEmail) {
-        if (!this.#initialized) {
-            throw new Error('Users service not initialized');
-        }
-
         if (!this.#workspaceManager) {
-            throw new Error('Users service is not fully configured (missing WorkspaceManager).');
+            throw new Error('WorkspaceManager required');
         }
 
-        // Resolve home path
         const userHomePath = path.resolve(homePath);
-        debug(`Creating user home directory at: ${userHomePath} for userID: ${userId}, email: ${userEmail}`);
 
-        // Check if home path exists
         if (existsSync(userHomePath)) {
             throw new Error(`User home directory already exists: ${userHomePath}`);
         }
 
-        try {
-            // Create universe workspace in workspaces subdirectory
-            const universeWorkspacePath = path.join(userHomePath, 'workspaces', 'universe');
-            await this.#workspaceManager.createUniverseWorkspace(userId, userEmail, universeWorkspacePath);
+        const universeWorkspacePath = path.join(userHomePath, 'workspaces', 'universe');
+        await this.#workspaceManager.createUniverseWorkspace(userId, userEmail, universeWorkspacePath);
 
-            debug(`User Home Directory and Universe workspace created for user: ${userEmail} (ID: ${userId})`);
-            return userHomePath;
-        } catch (error) {
-            debug(`Error creating user home: ${error.message}`);
-            throw error;
-        }
+        return userHomePath;
     }
 
     async #initializeUser(userData) {
-        debug(`Initializing user: ${userData.name} (${userData.email}) (ID: ${userData.id})`);
-
-        if (!userData.id) { throw new Error('User ID is required for #initializeUser'); }
-        if (!userData.name) { throw new Error('Name is required for #initializeUser'); }
-        if (!userData.email) { throw new Error('Email is required for #initializeUser'); }
-        if (!userData.homePath) { throw new Error('Home path is required for #initializeUser'); }
+        if (!userData.id) throw new Error('User ID is required');
+        if (!userData.name) throw new Error('Name is required');
+        if (!userData.email) throw new Error('Email is required');
+        if (!userData.homePath) throw new Error('Home path is required');
 
         const userOptions = {
             ...userData, // This has id, name, email, homePath, userType, status
@@ -535,31 +477,22 @@ class Users extends EventEmitter {
         // Create and initialize the User instance
         const user = new User(userOptions);
 
-        // Store the user instance first
+        // Setup event listeners
+        this.#setupUserEventListeners(user);
+
+        // Store the user instance
         this.#saveEntry(user.id, user);
 
-        // Start the universe workspace - this is critical for user functionality
-        debug(`Starting universe workspace for user ${user.name} (${user.email})`);
-
+        // Start the universe workspace
         const universeId = this.#workspaceManager.resolveWorkspaceId(user.id, 'universe');
         if (universeId) {
              const workspace = await this.#workspaceManager.startWorkspace(universeId, user.id);
              if (!workspace) {
-                 // Log warning but don't fail user init? Or fail?
-                 // The original code threw an error.
                  throw new Error(`Failed to start universe workspace for user ${user.name} (${user.email})`);
              }
-             debug(`Universe workspace started successfully for user ${user.name} (${user.email})`);
         } else {
-             // This might happen during creation before the workspace is created?
-             // But create() calls createHomeDirectory (which creates workspace) BEFORE initializeUser.
-             // So it should exist.
-             // If we are loading an existing user, it should also exist.
              console.warn(`Universe workspace ID not found for user ${user.name} (${user.email}) during initialization.`);
         }
-
-        // Setup event listeners after workspace is started
-        this.#setupUserEventListeners(user);
 
         return user;
     }
@@ -714,13 +647,7 @@ class Users extends EventEmitter {
     }
 
     #setupUserEventListeners(user) {
-        user.on('create', (data) => {
-            debug(`User created: ${data.email} (ID: ${data.id})`, data);
-            this.#saveEntry(data.id, data);
-        });
-
         user.on('update', (data) => {
-            debug(`User updated: ${data.email} (ID: ${data.id})`, data);
             const updatedUser = this.#users.get(data.id);
             if (updatedUser) {
                 this.#saveEntry(data.id, updatedUser.toJSON());

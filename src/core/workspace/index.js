@@ -347,13 +347,10 @@ class WorkspaceManager extends EventEmitter {
         await ws.stop();
         this.#workspaces.delete(workspaceId);
 
-        // Remove from index
         const entry = this.#findInIndex(workspaceId);
         if (entry) {
              const indexKey = `${entry.owner}/${entry.id}`;
              this.#indexStore.delete(indexKey);
-
-             // Remove from lookups
              this.#removeFromIndexes(entry.owner, entry.name, entry.host || WORKSPACE_DEFAULT_HOST, entry.reference);
         }
 
@@ -414,15 +411,15 @@ class WorkspaceManager extends EventEmitter {
     async startWorkspace(workspaceId, userId) {
         const ws = await this.getWorkspace(workspaceId, userId);
         if (!ws) throw new Error('Workspace not found');
+
         await ws.start();
 
-        // Start roles
         if (this.#roles && ws.config.roles && Array.isArray(ws.config.roles)) {
             for (const roleId of ws.config.roles) {
                 try {
                     await this.#roles.start(roleId, userId);
                 } catch (e) {
-                    debug(`Failed to start role ${roleId}: ${e.message}`);
+                    console.warn(`Failed to start role ${roleId}: ${e.message}`);
                 }
             }
         }
@@ -430,16 +427,15 @@ class WorkspaceManager extends EventEmitter {
     }
 
     async stopWorkspace(workspaceId, userId) {
-         const ws = await this.getWorkspace(workspaceId, userId);
-        if (!ws) return true; // Already not loaded
+        const ws = await this.getWorkspace(workspaceId, userId);
+        if (!ws) return true;
 
-        // Stop roles
         if (this.#roles && ws.config.roles && Array.isArray(ws.config.roles)) {
             for (const roleId of ws.config.roles) {
                 try {
                     await this.#roles.stop(roleId, userId);
                 } catch (e) {
-                    debug(`Failed to stop role ${roleId}: ${e.message}`);
+                    console.warn(`Failed to stop role ${roleId}: ${e.message}`);
                 }
             }
         }
@@ -454,7 +450,8 @@ class WorkspaceManager extends EventEmitter {
     #findInIndex(workspaceId) {
         const all = this.#indexStore.store;
         for (const key in all) {
-            if (all[key].id === workspaceId) return all[key];
+            const entry = all[key];
+            if (entry && entry.id === workspaceId) return entry;
         }
         return null;
     }
@@ -520,10 +517,6 @@ class WorkspaceManager extends EventEmitter {
         }
     }
 
-    // Compatibility methods if needed (resolveId etc) can be added
-    async getWorkspaceById(id, userId) {
-        return this.getWorkspace(id, userId);
-    }
 }
 
 export default WorkspaceManager;

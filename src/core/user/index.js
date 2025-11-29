@@ -406,14 +406,21 @@ class Users extends EventEmitter {
             throw new Error(`User not found: ${userId}`);
         }
 
-        const universeWorkspace = await this.#workspaceManager.getWorkspace(user.id, 'universe', user.id);
-        if (!universeWorkspace) {
-            throw new Error(`Universe workspace not found for user: ${user.email}`);
+        const universeId = this.#workspaceManager.resolveWorkspaceId(user.id, 'universe');
+        if (!universeId) {
+             throw new Error(`Universe workspace not found (ID resolution failed) for user: ${user.email}`);
         }
 
-        // This is handled by our stupid to-be-refactored/renamed getWorkspace method
-        if (universeWorkspace.status !== 'running') {
-            await this.#workspaceManager.startWorkspace(user.id, 'universe', user.id);
+        const universeWorkspace = await this.#workspaceManager.getWorkspace(universeId, user.id);
+
+        if (!universeWorkspace) {
+             // Try to open it if not loaded? getWorkspace loads it.
+             // If null, it means it really doesn't exist or error.
+             throw new Error(`Universe workspace not found/loaded for user: ${user.email}`);
+        }
+
+        if (!universeWorkspace.isActive) {
+            await this.#workspaceManager.startWorkspace(universeId, user.id);
         }
 
         return true;
@@ -499,12 +506,22 @@ class Users extends EventEmitter {
         // Start the universe workspace - this is critical for user functionality
         debug(`Starting universe workspace for user ${user.name} (${user.email})`);
 
-        const workspace = await this.#workspaceManager.startWorkspace(user.id, 'universe', user.id);
-        if (!workspace) {
-            throw new Error(`Failed to start universe workspace for user ${user.name} (${user.email})`);
+        const universeId = this.#workspaceManager.resolveWorkspaceId(user.id, 'universe');
+        if (universeId) {
+             const workspace = await this.#workspaceManager.startWorkspace(universeId, user.id);
+             if (!workspace) {
+                 // Log warning but don't fail user init? Or fail?
+                 // The original code threw an error.
+                 throw new Error(`Failed to start universe workspace for user ${user.name} (${user.email})`);
+             }
+             debug(`Universe workspace started successfully for user ${user.name} (${user.email})`);
+        } else {
+             // This might happen during creation before the workspace is created?
+             // But create() calls createHomeDirectory (which creates workspace) BEFORE initializeUser.
+             // So it should exist.
+             // If we are loading an existing user, it should also exist.
+             console.warn(`Universe workspace ID not found for user ${user.name} (${user.email}) during initialization.`);
         }
-
-        debug(`Universe workspace started successfully for user ${user.name} (${user.email})`);
 
         // Setup event listeners after workspace is started
         this.#setupUserEventListeners(user);

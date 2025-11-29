@@ -24,6 +24,10 @@
     "src/services/stored",
     "extensions/browser-extensions"
   ],
+  "overrides": {
+    "@types/react": "19.2.7",
+    "@types/react-dom": "19.2.3"
+  },
   "author": "me@idnc.sk",
   "license": "AGPL-3.0-or-later",
   "dependencies": {

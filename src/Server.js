@@ -22,7 +22,7 @@ const debug = createDebug('canvas:server');
 import WorkspaceManager from './core/workspace/index.js';
 import Users from './core/user/index.js';
 import ContextManager from './core/context/index.js';
-import DotfileManager from './core/workspace/services/dotfile/index.js';
+// DotfileManager is now part of WorkspaceManager
 import Roles from './core/role/index.js';
 import Agents from './core/agent/index.js';
 import EventEmitter from 'eventemitter2';
@@ -43,7 +43,6 @@ class Server extends EventEmitter {
     #users;
     #workspaceManager;
     #contextManager;
-    #dotfileManager;
     #roles;
     #agents;
 
@@ -144,7 +143,7 @@ class Server extends EventEmitter {
                 users: this.#users,
                 workspaceManager: this.#workspaceManager,
                 contextManager: this.#contextManager,
-                dotfileManager: this.#dotfileManager,
+                dotfileManager: this.#workspaceManager.dotfileService, // Access via WorkspaceManager
                 roles: this.#roles,
                 agents: this.#agents,
                 authService: this.#authService
@@ -172,9 +171,7 @@ class Server extends EventEmitter {
             workspaceManager: this.#workspaceManager
         });
 
-        this.#dotfileManager = new DotfileManager({
-            workspaceManager: this.#workspaceManager
-        });
+        // DotfileManager initialized inside WorkspaceManager now
 
         this.#roles = new Roles({
             indexStore: jim.createIndex('roles'),
@@ -197,9 +194,8 @@ class Server extends EventEmitter {
         this.#users.setContextManager(this.#contextManager);
 
         await this.#users.initialize();
-        await this.#workspaceManager.initialize();
+        await this.#workspaceManager.initialize(); // This initializes dotfileService
         await this.#contextManager.initialize();
-        await this.#dotfileManager.initialize();
         await this.#roles.initialize();
         await this.#agents.initialize();
     }

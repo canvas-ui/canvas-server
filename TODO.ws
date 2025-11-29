@@ -1,22 +1,35 @@
 OK lets refactor this :) module
 
 Workspace
-
 Data Sources
 
+In reality, most of the time spent on a project is in thinking mode, the limiting factor here is not the LLM but .. the HUMAN
+Additionally
+Lazy person + LLM == lazy person
+(replace "lazy" with a more appropriate term if you feel to do so)
+
+
+
 Global
+- User manager
+- Context manager
 - Workspace manager
 - Role manager
 - Agent manager
-- User manager
-- StoreD
+- Device manager (to assess)
 
 Workspace Local
-- Home
-- Dotfiles
-- Roles
-- Agents
--
+- Services
+    - Home
+    - Dotfiles
+    - Storage?
+
+- Linked services
+    - Roles
+    - Agents
+
+- Managers
+
 
 Workspace
 // Parameters

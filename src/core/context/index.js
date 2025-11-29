@@ -122,9 +122,20 @@ class ContextManager extends EventEmitter {
                 debug(`Relative URL provided, using default workspace: ${parsed.workspaceID} for user ${userId}`);
             }
 
-            const workspace = await this.#workspaceManager.getWorkspace(userId, parsed.workspaceID, userId);
+            // Resolve workspace ID first
+            const workspaceId = this.#workspaceManager.resolveWorkspaceId(userId, parsed.workspaceID);
+            if (!workspaceId) {
+                throw new Error(`Workspace not found (ID resolution failed): ${parsed.workspaceID} for user ${userId}`);
+            }
+
+            const workspace = await this.#workspaceManager.getWorkspace(workspaceId, userId);
             if (!workspace) {
                 throw new Error(`Workspace not found or not accessible: ${parsed.workspaceID} for user ${userId}`);
+            }
+
+            // Ensure workspace is running
+            if (!workspace.isActive) {
+                await workspace.start();
             }
 
             const contextOptions = {
@@ -222,9 +233,19 @@ class ContextManager extends EventEmitter {
 
                     // When loading workspace for a shared context, use owner's permissions
                     // The context's own ACL will control what the accessing user can do
+
+                    // Resolve workspace ID first
+                    let workspaceId = storedContextData.workspaceId;
+                    // Check if workspaceId is a reference or ID
+                    // If it looks like a reference or name, try to resolve it.
+                    // Usually storedContextData.workspaceId SHOULD be the ID, but legacy data might have names.
+                    if (workspaceId && (workspaceId.includes(':') || workspaceId.length < 12)) {
+                         const resolvedId = this.#workspaceManager.resolveWorkspaceId(ownerUserId, workspaceId);
+                         if (resolvedId) workspaceId = resolvedId;
+                    }
+
                     const workspace = await this.#workspaceManager.getWorkspace(
-                        ownerUserId, // Use ownerUserId to load the workspace
-                        storedContextData.workspaceId,
+                        workspaceId,
                         ownerUserId  // Use owner's permissions to load workspace (context ACL controls actual access)
                     );
 

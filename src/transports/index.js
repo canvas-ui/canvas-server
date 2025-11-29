@@ -36,7 +36,7 @@ import setupWebSocketHandlers from './websocket/index.js';
 
 // Logging
 import createDebug from 'debug';
-const debug = createDebug('canvas-server:api');
+const debug = createDebug('canvas-server:transports');
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -334,11 +334,11 @@ export async function createServer(options = {}) {
 }
 
 /**
- * Start the API server
+ * Start the Transport server
  * @param {Object} options - Server options
  * @returns {Promise<FastifyInstance>} - Fastify server instance
  */
-export async function startApiServer(options = {}) {
+export async function startTransportServer(options = {}) {
   // Create and configure the Fastify server
   const fastify = await createServer(options);
 
@@ -364,9 +364,10 @@ export async function startApiServer(options = {}) {
   const host = options.host || env.server.api.host;
 
   await fastify.listen({ port, host });
-  debug(`API server listening on http://${host}:${port}`);
+  debug(`Transport server listening on http://${host}:${port}`);
 
   return fastify;
 }
 
 export default createServer;
+

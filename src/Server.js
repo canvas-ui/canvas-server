@@ -22,12 +22,12 @@ const debug = createDebug('canvas:server');
 import WorkspaceManager from './core/workspace/index.js';
 import Users from './core/user/index.js';
 import ContextManager from './core/context/index.js';
-import DotfileManager from './core/dotfile/index.js';
+import DotfileManager from './core/workspace/services/dotfile/index.js';
 import Roles from './core/role/index.js';
 import Agents from './core/agent/index.js';
 import EventEmitter from 'eventemitter2';
-import { authService } from './api/auth/service.js';
-import { startApiServer } from './api/index.js';
+import { authService } from './transports/auth/service.js';
+import { startTransportServer } from './transports/index.js';
 
 /**
  * Canvas Server
@@ -138,7 +138,7 @@ class Server extends EventEmitter {
 
         // Start API server if enabled
         if (env.server.api.enabled) {
-            this.#apiServer = await startApiServer({
+            this.#apiServer = await startTransportServer({
                 port: env.server.api.port,
                 host: env.server.api.host,
                 users: this.#users,

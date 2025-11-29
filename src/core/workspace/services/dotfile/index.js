@@ -9,7 +9,7 @@ import { spawn } from 'child_process';
 import EventEmitter from 'eventemitter2';
 
 // Logging
-import logger, { createDebug } from '../../utils/log/index.js';
+import logger, { createDebug } from '../../../../utils/log/index.js';
 const debug = createDebug('dotfile-manager');
 
 const DOTFILES_DIR = 'dotfiles.git';

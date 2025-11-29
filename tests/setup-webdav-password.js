@@ -5,7 +5,7 @@
  * Helps users set up passwords for WebDAV testing
  */
 
-import { authService } from '../src/api/auth/service.js';
+import { authService } from '../src/transports/auth/service.js';
 import { jim } from '../src/Server.js';
 import UserManager from '../src/managers/user/index.js';
 import { env } from '../src/env.js';

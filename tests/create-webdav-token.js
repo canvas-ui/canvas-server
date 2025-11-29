@@ -5,7 +5,7 @@
  * Helps users create API tokens for WebDAV access
  */
 
-import { authService } from '../src/api/auth/service.js';
+import { authService } from '../src/transports/auth/service.js';
 import { jim } from '../src/Server.js';
 
 const DEBUG = process.env.DEBUG || 'webdav:*';

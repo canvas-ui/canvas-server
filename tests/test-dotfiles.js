@@ -5,10 +5,10 @@
  */
 
 import { env } from '../src/env.js';
-import UserManager from '../src/managers/user/index.js';
-import WorkspaceManager from '../src/managers/workspace/index.js';
-import ContextManager from '../src/managers/context/index.js';
-import DotfileManager from '../src/managers/dotfile/index.js';
+import UserManager from '../src/core/user/index.js';
+import WorkspaceManager from '../src/core/workspace/index.js';
+import ContextManager from '../src/core/context/index.js';
+import DotfileManager from '../src/core/workspace/services/dotfile/index.js';
 import Jim from '../src/utils/jim/index.js';
 import path from 'path';
 

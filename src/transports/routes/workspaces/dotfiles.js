@@ -114,7 +114,7 @@ export default async function workspaceDotfilesRoutes(fastify, options) {
       const featureArrayInput = request.query.featureArray || [];
       const derivedFeatureArray = ['data/abstraction/dotfile', ...featureArrayInput];
 
-      const documents = await workspace.findDocuments(
+      const documents = await workspace.db.findDocuments(
         contextSpec,
         derivedFeatureArray,
         [], // empty filterArray
@@ -176,7 +176,7 @@ export default async function workspaceDotfilesRoutes(fastify, options) {
         data: df
       }));
 
-      const inserted = await workspace.insertDocumentArray(
+      const inserted = await workspace.db.insertDocumentArray(
         documentArray,
         contextSpec,
         ['data/abstraction/dotfile', ...featureArrayInput]
@@ -225,7 +225,7 @@ export default async function workspaceDotfilesRoutes(fastify, options) {
   }, async (request, reply) => {
     try {
       const { workspace } = extractRequestInfo(request);
-      const result = await workspace.updateDocumentArray(request.body.documents);
+      const result = await workspace.db.updateDocumentArray(request.body.documents);
       const responseObject = new ResponseObject().updated(result, 'Dotfiles updated successfully');
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
     } catch (error) {
@@ -259,7 +259,7 @@ export default async function workspaceDotfilesRoutes(fastify, options) {
     try {
       const { workspace } = extractRequestInfo(request);
       const docIds = Array.isArray(request.body) ? request.body : [request.body];
-      const success = await workspace.deleteDocumentArray(docIds);
+      const success = await workspace.db.deleteDocumentArray(docIds);
       const responseObject = success ?
         new ResponseObject().deleted(null, 'Dotfiles deleted successfully') :
         new ResponseObject().badRequest('Failed to delete dotfiles');

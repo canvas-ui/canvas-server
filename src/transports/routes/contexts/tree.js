@@ -93,7 +93,7 @@ export default async function treeRoutes(fastify, options) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
-      const result = await workspace.insertPath(
+      const result = await workspace.tree.insertPath(
         request.body.path,
         null,
         request.body.autoCreateLayers === undefined ? true : request.body.autoCreateLayers
@@ -151,7 +151,7 @@ export default async function treeRoutes(fastify, options) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
-      const success = await workspace.removePath(
+      const success = await workspace.tree.removePath(
         request.query.path,
         request.query.recursive || false
       );
@@ -206,7 +206,7 @@ export default async function treeRoutes(fastify, options) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
-      const success = await workspace.movePath(
+      const success = await workspace.tree.movePath(
         request.body.from,
         request.body.to,
         request.body.recursive || false
@@ -262,7 +262,7 @@ export default async function treeRoutes(fastify, options) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
-      const success = await workspace.copyPath(
+      const success = await workspace.tree.copyPath(
         request.body.from,
         request.body.to,
         request.body.recursive || false
@@ -316,7 +316,7 @@ export default async function treeRoutes(fastify, options) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
-      const success = await workspace.mergeUp(request.body.path);
+      const success = await workspace.tree.mergeUp(request.body.path);
       if (!success) {
         const response = new ResponseObject().error('Failed to merge layer bitmaps upwards in workspace.');
         return reply.code(response.statusCode).send(response.getResponse());
@@ -366,7 +366,7 @@ export default async function treeRoutes(fastify, options) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
-      const success = await workspace.mergeDown(request.body.path);
+      const success = await workspace.tree.mergeDown(request.body.path);
       if (!success) {
         const response = new ResponseObject().error('Failed to merge layer bitmaps downwards in workspace.');
         return reply.code(response.statusCode).send(response.getResponse());
@@ -413,7 +413,7 @@ export default async function treeRoutes(fastify, options) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
-      const success = await workspace.subtractUp(request.body.path);
+      const success = await workspace.tree.subtractUp(request.body.path);
       if (!success) {
         const response = new ResponseObject().error('Failed to subtract layer bitmaps upwards in workspace.');
         return reply.code(response.statusCode).send(response.getResponse());
@@ -460,7 +460,7 @@ export default async function treeRoutes(fastify, options) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
-      const success = await workspace.subtractDown(request.body.path);
+      const success = await workspace.tree.subtractDown(request.body.path);
       if (!success) {
         const response = new ResponseObject().error('Failed to subtract layer bitmaps downwards in workspace.');
         return reply.code(response.statusCode).send(response.getResponse());
@@ -511,7 +511,7 @@ export default async function treeRoutes(fastify, options) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
-      const result = await workspace.mergeLayer(request.body.layerId, request.body.targetLayers);
+      const result = await workspace.tree.mergeLayer(request.body.layerId, request.body.targetLayers);
       if (result.error) {
         const response = new ResponseObject().badRequest(result.error);
         return reply.code(response.statusCode).send(response.getResponse());
@@ -563,7 +563,7 @@ export default async function treeRoutes(fastify, options) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
-      const result = await workspace.subtractLayer(request.body.layerId, request.body.targetLayers);
+      const result = await workspace.tree.subtractLayer(request.body.layerId, request.body.targetLayers);
       if (result.error) {
         const response = new ResponseObject().badRequest(result.error);
         return reply.code(response.statusCode).send(response.getResponse());

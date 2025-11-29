@@ -190,8 +190,8 @@ export default async function pubWorkspaceRoutes(fastify, options) {
       const options = { limit, offset, page };
 
       // Use workspace's document listing capability
-      const dbResult = await access.workspace.listDocuments(
-        access.accessType === 'user' ? access.userId : access.workspace.owner,
+      const dbResult = await access.workspace.db.findDocuments(
+        '/', // contextSpec
         [], // featureArray
         [], // filterArray
         options
@@ -278,7 +278,7 @@ export default async function pubWorkspaceRoutes(fastify, options) {
         data: doc
       }));
 
-      const result = await access.workspace.insertDocumentArray(
+      const result = await access.workspace.db.insertDocumentArray(
         documentArray,
         '/', // contextSpec - use root context
         featureArray
@@ -355,7 +355,7 @@ export default async function pubWorkspaceRoutes(fastify, options) {
       const { path = '/' } = request.query;
 
       // Use workspace's tree listing capability
-      const tree = await access.workspace.listTree(path);
+      const tree = access.workspace.jsonTree;
 
       const response = new ResponseObject().found(
         tree,

@@ -592,7 +592,7 @@ class Context extends EventEmitter {
         }
 
         // Create the URL path in the current workspace
-        const contextLayers = await this.#workspace.insertPath(parsed.path);
+        const contextLayers = await this.#workspace.tree.insertPath(parsed.path);
         this.#contextBitmapArray = parsed.pathArray;
         debug(`ContextPath: ${parsed.path}, contextLayer IDs: ${JSON.stringify(contextLayers)}`);
 

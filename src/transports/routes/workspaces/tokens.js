@@ -71,7 +71,7 @@ export default async function workspaceTokenRoutes(fastify, options) {
 
       // Save the updated ACL
       const success = await fastify.workspaceManager.updateWorkspaceConfig(
-        request.user.id,
+        workspace.owner,
         workspace.id,
         request.user.id,
         { acl: currentACL }
@@ -202,7 +202,7 @@ export default async function workspaceTokenRoutes(fastify, options) {
 
       // Save the updated ACL
       const success = await fastify.workspaceManager.updateWorkspaceConfig(
-        request.user.id,
+        workspace.owner,
         workspace.id,
         request.user.id,
         { acl: currentACL }
@@ -271,7 +271,7 @@ export default async function workspaceTokenRoutes(fastify, options) {
 
       // Save the updated ACL
       const success = await fastify.workspaceManager.updateWorkspaceConfig(
-        request.user.id,
+        workspace.owner,
         workspace.id,
         request.user.id,
         { acl: currentACL }

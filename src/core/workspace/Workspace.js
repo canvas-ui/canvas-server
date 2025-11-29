@@ -204,43 +204,6 @@ class Workspace extends EventEmitter {
          return await this.db.findDocuments(contextSpec, featureBitmapArray, filterArray, rest);
     }
 
-    async search(query, options = {}) {
-        if (!this.isActive) throw new Error('Workspace not active');
-        // Db.query(query, contextBitmapArray, featureBitmapArray, filterArray, metadataOnly)
-        // or ftsQuery?
-        // Assuming generic query for now
-        if (typeof query === 'string') {
-             const { contextSpec = null, featureBitmapArray = [], filterArray = [], ...rest } = options;
-             return await this.db.ftsQuery(query, contextSpec, featureBitmapArray, filterArray, rest);
-        }
-
-        const { contextBitmapArray = [], featureBitmapArray = [], filterArray = [], metadataOnly = false } = options;
-        return await this.db.query(query, contextBitmapArray, featureBitmapArray, filterArray, metadataOnly);
-    }
-
-    /**
-     * Tree Methods
-     */
-     async insertPath(path, data = null, autoCreateLayers = true) {
-        if (!this.isActive) throw new Error('Workspace not active');
-        return await this.tree.insertPath(path, data, autoCreateLayers);
-     }
-
-     async removePath(path, recursive = false) {
-         if (!this.isActive) throw new Error('Workspace not active');
-         return await this.tree.removePath(path, recursive);
-     }
-
-     async movePath(pathFrom, pathTo, recursive = false) {
-        if (!this.isActive) throw new Error('Workspace not active');
-        return await this.tree.movePath(pathFrom, pathTo, recursive);
-     }
-
-     async copyPath(pathFrom, pathTo, recursive = false) {
-        if (!this.isActive) throw new Error('Workspace not active');
-        return await this.tree.copyPath(pathFrom, pathTo, recursive);
-     }
-
     clearDatabaseSync() {
         if (!this.isActive) { throw new Error('Workspace not active'); }
         return this.db.clearSync();

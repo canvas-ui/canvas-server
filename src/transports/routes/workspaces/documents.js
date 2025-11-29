@@ -72,7 +72,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
 
       if (searchQuery) {
         // Use full-text search
-        documents = await workspace.ftsQuery(
+        documents = await workspace.db.ftsQuery(
           searchQuery,
           request.query.contextSpec,
           request.query.featureArray,
@@ -81,7 +81,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
         );
       } else {
         // Use regular document listing
-        documents = await workspace.findDocuments(
+        documents = await workspace.db.findDocuments(
           request.query.contextSpec,
           request.query.featureArray,
           request.query.filterArray || [],
@@ -183,7 +183,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());
       }
 
-      const documents = await workspace.insertDocumentArray(
+      const documents = await workspace.db.insertDocumentArray(
         itemsToInsert,
         contextSpec,
         featureArray
@@ -226,13 +226,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return;
 
-      const document = await workspace.getDocumentById(
-        request.params.docId,
-        {
-          contextSpec: request.query.contextSpec,
-          featureArray: request.query.featureArray
-        }
-      );
+      const document = await workspace.db.getDocumentById(request.params.docId);
       if (!document) {
         const responseObject = new ResponseObject().notFound(`Document with ID ${request.params.docId} not found`);
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());
@@ -287,7 +281,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       // Create derived feature array with abstraction path
       const derivedFeatureArray = [`data/abstraction/${request.params.abstraction}`, ...request.query.featureArray];
 
-      const documents = await workspace.findDocuments(
+      const documents = await workspace.db.findDocuments(
         request.query.contextSpec,
         derivedFeatureArray,
         request.query.filterArray || [],
@@ -362,7 +356,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());
       }
 
-      const success = await workspace.updateDocumentArray(itemsToUpdate);
+      const success = await workspace.db.updateDocumentArray(itemsToUpdate);
       if (!success) {
         const responseObject = new ResponseObject().badRequest('Failed to update documents');
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());
@@ -418,7 +412,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
 
       // Convert array of IDs to the format workspace expects
       const documentIds = Array.isArray(request.body) ? request.body : [request.body];
-      const result = await workspace.deleteDocumentArray(documentIds);
+      const result = await workspace.db.deleteDocumentArray(documentIds);
 
       // Check if any documents were successfully deleted
       if (result.failed.length > 0 && result.successful.length === 0) {
@@ -476,7 +470,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
 
       // Convert array of IDs to the format workspace expects
       const documentIds = Array.isArray(request.body) ? request.body : [request.body];
-      const result = await workspace.removeDocumentArray(
+      const result = await workspace.db.removeDocumentArray(
         documentIds,
         request.query.contextSpec,
         request.query.featureArray
@@ -535,13 +529,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());
       }
 
-      const document = await workspace.getDocumentById(
-        documentId,
-        {
-          contextSpec: request.query.contextSpec,
-          featureArray: request.query.featureArray
-        }
-      );
+      const document = await workspace.db.getDocumentById(documentId);
 
       if (!document) {
         const responseObject = new ResponseObject().notFound(`Document with ID ${request.params.docId} not found`);
@@ -588,7 +576,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       if (!workspace) return;
 
       const checksumString = `${request.params.algo}/${request.params.hash}`;
-      const document = await workspace.getDocumentByChecksumString(checksumString);
+      const document = await workspace.db.getDocumentByChecksumString(checksumString);
       if (!document) {
         const responseObject = new ResponseObject().notFound(`Document with checksum ${checksumString} not found`);
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());

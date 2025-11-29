@@ -9,7 +9,7 @@ We need to start refactoring our application as follows:
   - oauth2 to integrate with google and microsofts o365 accounts
 
 - Special consideration for access tokens:
-  - Users(user homes) should be movable between canvas-server instances, hence, access tokens should be placed within users home/config/user.json or acl.json or access.json or tokens.json whatever would be more appropriate
+  - Users(user homes) should be movable between canvas-server instances same as agents and workspaces, hence, access tokens should be placed within users config/user.json or acl.json or access.json or tokens.json whatever would be more appropriate
   - Every resource the user creates(workspace, role, context, agent) should by default allow access using his auth token(question is whether to generate one per resource or use a global one, I'm more inclined to generate a per-resource token instead)
   - Therefore, when a user moves his home to a different instance, he should still be able to access workspaces define in his ./config/workspaces.json since he took his tokens with him
   - Auth module should therefore read out tokens for each initialized user from his home workspace
@@ -17,13 +17,12 @@ We need to start refactoring our application as follows:
 - All auth mechanisms should have a example configuration in ./server/config
 - local user email + pass and tokens are default and can not be disabled
 
-
 #2 Core modules:
 - User manager
   - Scope: Global
   - UserManager should register a user and create a home drive for him
-  - Home drive path defaults to env.server.home/$user.email, we should require this parameter to be set by a higher-level module/Server.js, lets not do any guesswork / assumptions or use default paths in the core modules
-  - The actuall home drive should be a special workspace of type Universe (type: universe, color: #fff, name: Universe, description: "..and then there was geometry" that immutable in terms of name and parameters
+  - Home drive path defaults to env.server.home/user.email, we should require this parameter to be set by a higher-level module(for example Server.js), lets not do any guesswork / assumptions or use default paths in the core modules
+  - The actuall home should be a special workspace of type Universe (type: universe, color: #fff, name: Universe, description: "..and then there was geometry" that immutable in terms of name and parameters
   - All user roles should be placed in the universe workspace in ./roles
   - All user workspaces should be placed in the universe workspace in ./workspaces
   - User config should be placed in ./config
@@ -80,3 +79,4 @@ Workspace
 - dotfiles
 - home
 - agents
+

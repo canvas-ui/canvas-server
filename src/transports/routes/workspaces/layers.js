@@ -4,12 +4,18 @@ import ResponseObject from '../../ResponseObject.js';
 
 export default async function workspaceLayerRoutes(fastify, options) {
   async function getWorkspaceInstance(request, reply) {
-    const workspace = await fastify.workspaceManager.getWorkspace(
-      request.params.id,
-      request.user.id
-    );
+    const identifier = request.params.id;
+    const userId = request.user.id;
+    const isWorkspaceId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(identifier);
+    const workspaceId = isWorkspaceId ? identifier : fastify.workspaceManager.resolveWorkspaceId(userId, identifier);
+    if (!workspaceId) {
+      const responseObject = new ResponseObject().notFound(`Workspace with ID ${identifier} not found`);
+      reply.code(responseObject.statusCode).send(responseObject.getResponse());
+      return null;
+    }
+    const workspace = await fastify.workspaceManager.getWorkspace(workspaceId, userId);
     if (!workspace) {
-      const responseObject = new ResponseObject().notFound(`Workspace with ID ${request.params.id} not found`);
+      const responseObject = new ResponseObject().notFound(`Workspace with ID ${identifier} not found`);
       reply.code(responseObject.statusCode).send(responseObject.getResponse());
       return null;
     }

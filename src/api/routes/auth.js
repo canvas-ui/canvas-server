@@ -89,8 +89,8 @@ export default async function authRoutes(fastify, options) {
     }
   }, async (request, reply) => {
     try {
-      // Check if userManager is available
-      if (!fastify.userManager) {
+      // Check if users service is available
+      if (!fastify.users) {
         fastify.log.error('User manager not available in login endpoint');
         const response = new ResponseObject().serverError('User management system not available');
         return reply.code(response.statusCode).send(response.getResponse());
@@ -112,7 +112,7 @@ export default async function authRoutes(fastify, options) {
         }
       }
 
-      const result = await login(email, password, fastify.userManager, strategy);
+      const result = await login(email, password, fastify.users, strategy);
 
       // Generate JWT token
       const token = authService.generateJWT(result.user);
@@ -189,7 +189,7 @@ export default async function authRoutes(fastify, options) {
     }
   }, async (request, reply) => {
     try {
-      const result = await register(request.body, fastify.userManager);
+      const result = await register(request.body, fastify.users);
 
       if (!result.success) {
         // Include server-provided details when available
@@ -269,7 +269,7 @@ export default async function authRoutes(fastify, options) {
     }
   }, async (request, reply) => {
     try {
-      await requestPasswordReset(request.body.email, fastify.userManager);
+      await requestPasswordReset(request.body.email, fastify.users);
       const response = new ResponseObject().success({
         success: true,
         message: 'If an account exists with this email, you will receive password reset instructions.'
@@ -297,7 +297,7 @@ export default async function authRoutes(fastify, options) {
   }, async (request, reply) => {
     try {
       const { token, newPassword } = request.body;
-      const success = await resetPassword(token, newPassword, fastify.userManager);
+      const success = await resetPassword(token, newPassword, fastify.users);
 
       if (!success) {
         const response = new ResponseObject().badRequest('Password reset token is invalid or expired');
@@ -327,7 +327,7 @@ export default async function authRoutes(fastify, options) {
     }
   }, async (request, reply) => {
     try {
-      const result = await requestEmailVerification(request.body.email, fastify.userManager);
+      const result = await requestEmailVerification(request.body.email, fastify.users);
 
       // Try to send the email if we could create a token
       if (result?.token && result?.user) {
@@ -363,7 +363,7 @@ export default async function authRoutes(fastify, options) {
     }
   }, async (request, reply) => {
     try {
-      await verifyEmail(request.params.token, fastify.userManager);
+      await verifyEmail(request.params.token, fastify.users);
       const response = new ResponseObject().success({ success: true }, 'Email verified successfully');
       return reply.code(response.statusCode).send(response.getResponse());
     } catch (error) {
@@ -595,7 +595,7 @@ export default async function authRoutes(fastify, options) {
 
       // Get user data from database
       try {
-        userData = await fastify.userManager.getUserById(userId);
+        userData = await fastify.users.getById(userId);
 
         if (!userData) {
           fastify.log.error(`[Auth/Me] User not found in database: ${userId}`);

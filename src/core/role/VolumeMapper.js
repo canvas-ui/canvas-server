@@ -6,7 +6,7 @@ import { existsSync } from 'fs';
 import * as fsPromises from 'fs/promises';
 
 // Logging
-import { createDebug } from '../../../utils/log/index.js';
+import { createDebug } from '../../utils/log/index.js';
 const debug = createDebug('role-manager:volume-mapper');
 
 /**
@@ -15,20 +15,20 @@ const debug = createDebug('role-manager:volume-mapper');
  */
 class VolumeMapper {
 
-    #userManager;
+    #users;
     #workspaceManager;
     #serverConfig;
 
     /**
      * Create VolumeMapper instance
      * @param {Object} options - Configuration options
-     * @param {Object} options.userManager - UserManager instance
+     * @param {Object} options.users - Users service instance
      * @param {Object} options.workspaceManager - WorkspaceManager instance
      * @param {Object} options.serverConfig - Server configuration
      */
     constructor(options = {}) {
-        if (!options.userManager) {
-            throw new Error('UserManager is required for VolumeMapper');
+        if (!options.users) {
+            throw new Error('Users service is required for VolumeMapper');
         }
         if (!options.workspaceManager) {
             throw new Error('WorkspaceManager is required for VolumeMapper');
@@ -37,7 +37,7 @@ class VolumeMapper {
             throw new Error('Server configuration is required for VolumeMapper');
         }
 
-        this.#userManager = options.userManager;
+        this.#users = options.users;
         this.#workspaceManager = options.workspaceManager;
         this.#serverConfig = options.serverConfig;
 
@@ -332,7 +332,7 @@ class VolumeMapper {
             case 'workspace':
                 // User/workspace roles have restricted access
                 if (context.userId) {
-                    const user = await this.#userManager.getUser(context.userId);
+                    const user = await this.#users.get(context.userId);
                     if (user && user.homePath) {
                         allowedPrefixes.push(user.homePath);
                     }

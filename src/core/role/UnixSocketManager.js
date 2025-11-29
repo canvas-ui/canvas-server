@@ -6,7 +6,7 @@ import { existsSync } from 'fs';
 import * as fsPromises from 'fs/promises';
 
 // Logging
-import { createDebug } from '../../../utils/log/index.js';
+import { createDebug } from '../../utils/log/index.js';
 const debug = createDebug('role-manager:socket-manager');
 
 /**
@@ -15,24 +15,24 @@ const debug = createDebug('role-manager:socket-manager');
  */
 class UnixSocketManager {
 
-    #userManager;
+    #users;
     #workspaceManager;
 
     /**
      * Create UnixSocketManager instance
      * @param {Object} options - Configuration options
-     * @param {Object} options.userManager - UserManager instance
+     * @param {Object} options.users - Users service instance
      * @param {Object} options.workspaceManager - WorkspaceManager instance
      */
     constructor(options = {}) {
-        if (!options.userManager) {
-            throw new Error('UserManager is required for UnixSocketManager');
+        if (!options.users) {
+            throw new Error('Users service is required for UnixSocketManager');
         }
         if (!options.workspaceManager) {
             throw new Error('WorkspaceManager is required for UnixSocketManager');
         }
 
-        this.#userManager = options.userManager;
+        this.#users = options.users;
         this.#workspaceManager = options.workspaceManager;
 
         debug('UnixSocketManager initialized');

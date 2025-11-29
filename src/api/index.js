@@ -131,10 +131,12 @@ export async function createServer(options = {}) {
   });
 
   // Make managers available
-  if (options.userManager) server.decorate('userManager', options.userManager);
+  if (options.users) server.decorate('users', options.users);
   if (options.workspaceManager) server.decorate('workspaceManager', options.workspaceManager);
   if (options.contextManager) server.decorate('contextManager', options.contextManager);
   if (options.dotfileManager) server.decorate('dotfileManager', options.dotfileManager);
+  if (options.roles) server.decorate('roles', options.roles);
+  if (options.agents) server.decorate('agents', options.agents);
   if (options.authService) server.decorate('authService', options.authService);
 
   // Add hook to handle WebDAV OPTIONS requests before CORS plugin intercepts them
@@ -342,16 +344,18 @@ export async function startApiServer(options = {}) {
 
   // These decorations are now handled in createServer, but we'll keep them here
   // to ensure backward compatibility, only adding if they don't already exist
-  if (!fastify.hasDecorator('userManager') && options.userManager)
-    fastify.decorate('userManager', options.userManager);
+  if (!fastify.hasDecorator('users') && options.users)
+    fastify.decorate('users', options.users);
   if (!fastify.hasDecorator('workspaceManager') && options.workspaceManager)
     fastify.decorate('workspaceManager', options.workspaceManager);
   if (!fastify.hasDecorator('contextManager') && options.contextManager)
     fastify.decorate('contextManager', options.contextManager);
   if (!fastify.hasDecorator('dotfileManager') && options.dotfileManager)
     fastify.decorate('dotfileManager', options.dotfileManager);
-  if (!fastify.hasDecorator('agentManager') && options.agentManager)
-    fastify.decorate('agentManager', options.agentManager);
+  if (!fastify.hasDecorator('roles') && options.roles)
+    fastify.decorate('roles', options.roles);
+  if (!fastify.hasDecorator('agents') && options.agents)
+    fastify.decorate('agents', options.agents);
   if (!fastify.hasDecorator('authService') && options.authService)
     fastify.decorate('authService', options.authService);
 

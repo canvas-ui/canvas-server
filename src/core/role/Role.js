@@ -4,11 +4,11 @@
 import EventEmitter from 'eventemitter2';
 
 // Logging
-import logger, { createDebug } from '../../../utils/log/index.js';
+import logger, { createDebug } from '../../utils/log/index.js';
 const debug = createDebug('role-manager:role');
 
 // Constants
-import { ROLE_STATUS } from '../index.js';
+import { ROLE_STATUS } from './index.js';
 
 /**
  * Base Role Class

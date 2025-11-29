@@ -14,7 +14,7 @@ import logger, { createDebug } from '../../utils/log/index.js';
 const debug = createDebug('agent-manager');
 
 // Includes
-import Agent from './lib/Agent.js';
+import Agent from './Agent.js';
 
 /**
  * Constants
@@ -162,15 +162,15 @@ function parseAgentIndexKey(indexKey) {
 }
 
 /**
- * Agent Manager
+ * Agents Service
  */
-class AgentManager extends EventEmitter {
+class Agents extends EventEmitter {
 
     #defaultRootPath;   // Default Root path for all user agents managed by this instance
     #indexStore;        // Persistent index of all agents (key: userId/agent.id -> agent data)
     #nameIndex;         // Secondary index for name lookups (key: userId@host:agentName -> agent.id)
     #referenceIndex;    // Tertiary index for full reference lookups
-    #userManager;       // UserManager instance for resolving user identifiers
+    #users;       // Users service instance for resolving user identifiers
 
     // Runtime
     #agents = new Map(); // Cache for loaded Agent instances (key: agent.id -> Agent)
@@ -181,37 +181,37 @@ class AgentManager extends EventEmitter {
      * @param {Object} options - Configuration options
      * @param {string} options.defaultRootPath - Root path where user agent directories are stored
      * @param {Object} options.indexStore - Initialized Conf instance for the agent index
-     * @param {Object} options.userManager - Initialized UserManager instance
+     * @param {Object} options.users - Initialized Users service instance
      * @param {Object} [options.eventEmitterOptions] - Options for EventEmitter2
      */
     constructor(options = {}) {
         super(options.eventEmitterOptions || {});
 
         if (!options.defaultRootPath) {
-            throw new Error('Agents defaultRootPath is required for AgentManager');
+            throw new Error('Agents defaultRootPath is required for Agents service');
         }
 
         if (!options.indexStore) {
-            throw new Error('Index store is required for AgentManager');
+            throw new Error('Index store is required for Agents service');
         }
 
-        if (!options.userManager) {
-            throw new Error('UserManager is required for AgentManager');
+        if (!options.users) {
+            throw new Error('Users service is required for Agents service');
         }
 
         this.#defaultRootPath = path.resolve(options.defaultRootPath);
         this.#indexStore = options.indexStore;
-        this.#userManager = options.userManager;
+        this.#users = options.users;
         this.#nameIndex = new Map();
         this.#referenceIndex = new Map();
 
-        debug(`Initializing AgentManager with default rootPath: ${this.#defaultRootPath}`);
+        debug(`Initializing Agents service with default rootPath: ${this.#defaultRootPath}`);
     }
 
     /**
      * Getters
      */
-    get userManager() { return this.#userManager; }
+    get users() { return this.#users; }
 
     /**
      * Private helper to construct agent index key
@@ -254,7 +254,7 @@ class AgentManager extends EventEmitter {
         await this.#scanIndexedAgents();
 
         this.#initialized = true;
-        debug(`AgentManager initialized with ${this.#indexStore.size} agent(s) in index`);
+        debug(`Agents service initialized with ${this.#indexStore.size} agent(s) in index`);
 
         return this;
     }
@@ -325,8 +325,8 @@ class AgentManager extends EventEmitter {
      * @param {Object} options - Additional options for agent config
      * @returns {Promise<Object>} The index entry of the newly created agent
      */
-    async createAgent(userId, agentName, options = {}) {
-        if (!this.#initialized) throw new Error('AgentManager not initialized');
+    async create(userId, agentName, options = {}) {
+        if (!this.#initialized) throw new Error('Agents service not initialized');
         if (!userId) throw new Error('userId required to create an agent.');
         if (!agentName) throw new Error('Agent name required to create an agent.');
 
@@ -335,7 +335,7 @@ class AgentManager extends EventEmitter {
         this.#validateAgentData(agentData);
 
         // Resolve userId
-        const ownerId = await this.#userManager.resolveToUserId(userId);
+        const ownerId = await this.#users.resolveId(userId);
         if (!ownerId) {
             throw new Error(`Could not resolve user identifier: "${userId}"`);
         }
@@ -438,16 +438,16 @@ class AgentManager extends EventEmitter {
      * @param {string} requestingUserId - The ULID of the user making the request
      * @returns {Promise<Agent|null>} The loaded Agent instance
      */
-    async openAgent(userId, agentIdentifier, requestingUserId) {
+    async open(userId, agentIdentifier, requestingUserId) {
         if (!this.#initialized) {
-            throw new Error('AgentManager not initialized. Cannot open agent.');
+            throw new Error('Agents service not initialized. Cannot open agent.');
         }
         if (!userId || !agentIdentifier) {
             throw new Error(`userId and agentIdentifier are required to open an agent, got userId: ${userId}, agentIdentifier: ${agentIdentifier}`);
         }
 
         // Resolve the provided userId to an actual user ID
-        const ownerId = await this.#userManager.resolveToUserId(userId);
+        const ownerId = await this.#users.resolveId(userId);
         if (!ownerId) {
             debug(`openAgent failed: Could not resolve user identifier "${userId}"`);
             return null;
@@ -538,14 +538,14 @@ class AgentManager extends EventEmitter {
      * @param {string} requestingUserId - The ULID of the user making the request
      * @returns {Promise<Agent|null>} The started Agent instance or null on failure
      */
-    async startAgent(userId, agentIdentifier, requestingUserId) {
-        if (!this.#initialized) throw new Error('AgentManager not initialized');
+    async start(userId, agentIdentifier, requestingUserId) {
+        if (!this.#initialized) throw new Error('Agents service not initialized');
         if (!requestingUserId) {
             requestingUserId = userId;
         }
 
         // Resolve the provided userId to an actual user ID
-        const ownerId = await this.#userManager.resolveToUserId(userId);
+        const ownerId = await this.#users.resolveId(userId);
         if (!ownerId) {
             debug(`startAgent failed: Could not resolve user identifier "${userId}"`);
             return null;
@@ -610,14 +610,14 @@ class AgentManager extends EventEmitter {
      * @param {string} requestingUserId - The ULID of the user making the request
      * @returns {Promise<boolean>} True if stopped or already inactive/not loaded, false on failure
      */
-    async stopAgent(userId, agentIdentifier, requestingUserId) {
-        if (!this.#initialized) throw Error('AgentManager not initialized');
+    async stop(userId, agentIdentifier, requestingUserId) {
+        if (!this.#initialized) throw Error('Agents service not initialized');
         if (!requestingUserId) {
             requestingUserId = userId;
         }
 
         // Resolve the provided userId to an actual user ID
-        const ownerId = await this.#userManager.resolveToUserId(userId);
+        const ownerId = await this.#users.resolveId(userId);
         if (!ownerId) {
             debug(`stopAgent failed: Could not resolve user identifier "${userId}"`);
             return false;
@@ -689,8 +689,8 @@ class AgentManager extends EventEmitter {
      * @param {boolean} [removeFiles=true] - Whether to remove agent files from filesystem
      * @returns {Promise<boolean>} True if deleted successfully, false on failure
      */
-    async deleteAgent(userId, agentIdentifier, requestingUserId, removeFiles = true) {
-        if (!this.#initialized) throw Error('AgentManager not initialized');
+    async delete(userId, agentIdentifier, requestingUserId, removeFiles = true) {
+        if (!this.#initialized) throw Error('Agents service not initialized');
         if (!requestingUserId) {
             requestingUserId = userId;
         }
@@ -698,7 +698,7 @@ class AgentManager extends EventEmitter {
         debug(`Attempting to delete agent "${agentIdentifier}" for user "${userId}"`);
 
         // Resolve the provided userId to an actual user ID
-        const ownerId = await this.#userManager.resolveToUserId(userId);
+        const ownerId = await this.#users.resolveId(userId);
         if (!ownerId) {
             debug(`deleteAgent failed: Could not resolve user identifier "${userId}"`);
             return false;
@@ -812,11 +812,11 @@ class AgentManager extends EventEmitter {
      * @param {string} [host=DEFAULT_HOST] - Host to filter by
      * @returns {Promise<Array<Object>>} An array of agent index entry objects
      */
-    async listUserAgents(userId, host = DEFAULT_HOST) {
-        if (!this.#initialized) throw new Error('AgentManager not initialized');
+    async listByUser(userId, host = DEFAULT_HOST) {
+        if (!this.#initialized) throw new Error('Agents service not initialized');
         if (!userId) return [];
 
-        const ownerId = await this.#userManager.resolveToUserId(userId);
+        const ownerId = await this.#users.resolveId(userId);
         if (!ownerId) return [];
 
         const prefix = `${ownerId}/`;
@@ -832,7 +832,7 @@ class AgentManager extends EventEmitter {
                     const agentHost = agentEntry.host || DEFAULT_HOST;
                     if (!host || agentHost === host) {
                         try {
-                            const ownerUser = await this.#userManager.getUser(agentEntry.owner);
+                            const ownerUser = await this.#users.get(agentEntry.owner);
                             const agentWithOwnerEmail = {
                                 ...agentEntry,
                                 ownerEmail: ownerUser.email
@@ -868,7 +868,7 @@ class AgentManager extends EventEmitter {
 
         // If not found, resolve the userIdentifier to the actual user ID and try again
         try {
-            const resolvedUserId = await this.#userManager.resolveToUserId(userIdentifier);
+            const resolvedUserId = await this.#users.resolveId(userIdentifier);
             if (resolvedUserId && resolvedUserId !== userIdentifier) {
                 nameKey = `${resolvedUserId}@${host}:${agentName}`;
                 agentId = this.#nameIndex.get(nameKey);
@@ -889,9 +889,9 @@ class AgentManager extends EventEmitter {
      * @param {string} requestingUserId - The ULID of the user making the request
      * @returns {Promise<Agent|null>} The loaded Agent instance
      */
-    async getAgentById(agentId, requestingUserId) {
+    async getById(agentId, requestingUserId) {
         if (!this.#initialized) {
-            throw new Error('AgentManager not initialized. Cannot get agent by ID.');
+            throw new Error('Agents service not initialized. Cannot get agent by ID.');
         }
         if (!agentId) {
             throw new Error('agentId is required to get agent by ID');
@@ -964,8 +964,8 @@ class AgentManager extends EventEmitter {
      * @param {string} [requestingUserId] - The ULID of the user making the request
      * @returns {Promise<Agent|null>} Updated agent instance or null if failed
      */
-    async updateAgent(userId, agentIdentifier, updateData, requestingUserId) {
-        if (!this.#initialized) throw Error('AgentManager not initialized');
+    async update(userId, agentIdentifier, updateData, requestingUserId) {
+        if (!this.#initialized) throw Error('Agents service not initialized');
         if (!requestingUserId) {
             requestingUserId = userId;
         }
@@ -973,7 +973,7 @@ class AgentManager extends EventEmitter {
         debug(`Attempting to update agent "${agentIdentifier}" for user "${userId}"`);
 
         // Resolve the provided userId to an actual user ID
-        const ownerId = await this.#userManager.resolveToUserId(userId);
+        const ownerId = await this.#users.resolveId(userId);
         if (!ownerId) {
             debug(`updateAgent failed: Could not resolve user identifier "${userId}"`);
             return null;
@@ -1277,7 +1277,7 @@ class AgentManager extends EventEmitter {
     }
 }
 
-export default AgentManager;
+export default Agents;
 export {
     AGENT_STATUS_CODES,
     AGENT_DIRECTORIES,

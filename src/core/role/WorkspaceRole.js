@@ -7,7 +7,7 @@ import path from 'path';
 import Role from './Role.js';
 
 // Logging
-import { createDebug } from '../../../utils/log/index.js';
+import { createDebug } from '../../utils/log/index.js';
 const debug = createDebug('role-manager:workspace-role');
 
 /**

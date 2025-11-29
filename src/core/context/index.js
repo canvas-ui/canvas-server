@@ -377,7 +377,7 @@ class ContextManager extends EventEmitter {
                 if (key.startsWith(ownedPrefix)) {
                     // Resolve owner ID to user email
                     try {
-                        const ownerUser = await this.#workspaceManager.userManager.getUser(contextInstance.userId);
+                        const ownerUser = await this.#workspaceManager.users.get(contextInstance.userId);
                         const contextWithOwnerEmail = {
                             ...contextInstance.toJSON(),
                             ownerEmail: ownerUser.email
@@ -410,7 +410,7 @@ class ContextManager extends EventEmitter {
                     if (key.startsWith(ownedPrefix)) {
                         // Resolve owner ID to user email
                         try {
-                            const ownerUser = await this.#workspaceManager.userManager.getUser(storedContextData.userId);
+                            const ownerUser = await this.#workspaceManager.users.get(storedContextData.userId);
                             const contextWithOwnerEmail = {
                                 ...storedContextData,
                                 ownerEmail: ownerUser.email
@@ -453,7 +453,7 @@ class ContextManager extends EventEmitter {
                         if (hasAccess) {
                             // The accessingUserId has some level of access to this context.
                             try {
-                                const ownerUser = await this.#workspaceManager.userManager.getUser(storedContextData.userId);
+                                const ownerUser = await this.#workspaceManager.users.get(storedContextData.userId);
                                 const contextWithOwnerEmail = {
                                     ...storedContextData,
                                     ownerEmail: ownerUser.email,
@@ -657,7 +657,7 @@ class ContextManager extends EventEmitter {
             }
 
             // Resolve the user identifier to a user ID if needed
-            const resolvedUserId = await this.#workspaceManager.userManager.resolveToUserId(ownerUserId);
+            const resolvedUserId = await this.#workspaceManager.users.resolveId(ownerUserId);
             if (!resolvedUserId) {
                 return null;
             }
@@ -686,7 +686,7 @@ class ContextManager extends EventEmitter {
 
         try {
             // Get user info to construct the address
-            const user = await this.#workspaceManager.userManager.getUser(context.userId);
+            const user = await this.#workspaceManager.users.get(context.userId);
             if (!user || !user.name) {
                 return null;
             }

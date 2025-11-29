@@ -321,7 +321,7 @@ class Context extends EventEmitter {
         }
 
         // Resolve email to userId for owner check
-        const targetUser = await this.#workspaceManager.userManager.getUserByEmail(userEmail);
+        const targetUser = await this.#workspaceManager.users.getByEmail(userEmail);
         if (!targetUser) {
             throw new Error(`User with email ${userEmail} not found`);
         }

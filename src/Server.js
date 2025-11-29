@@ -19,11 +19,12 @@ import createDebug from 'debug';
 const debug = createDebug('canvas:server');
 
 // Managers
-import WorkspaceManager from './managers/workspace/index.js';
-import UserManager from './managers/user/index.js';
-import ContextManager from './managers/context/index.js';
-import DotfileManager from './managers/dotfile/index.js';
-import AgentManager from './managers/agent/index.js';
+import WorkspaceManager from './core/workspace/index.js';
+import Users from './core/user/index.js';
+import ContextManager from './core/context/index.js';
+import DotfileManager from './core/dotfile/index.js';
+import Roles from './core/role/index.js';
+import Agents from './core/agent/index.js';
 import EventEmitter from 'eventemitter2';
 import { authService } from './api/auth/service.js';
 import { startApiServer } from './api/index.js';
@@ -39,11 +40,12 @@ class Server extends EventEmitter {
     #initialized = false;
 
     // Global managers
-    #userManager;
+    #users;
     #workspaceManager;
     #contextManager;
     #dotfileManager;
-    #agentManager;
+    #roles;
+    #agents;
 
     // Global services
     #authService;
@@ -67,12 +69,12 @@ class Server extends EventEmitter {
     get mode() { return this.#mode; }
     get isInitialized() { return this.#initialized; }
 
-    get userManager() {
+    get users() {
         if (!this.#initialized) {
-            throw new Error('UserManager not initialized');
+            throw new Error('Users service not initialized');
         }
 
-        return this.#userManager;
+        return this.#users;
     }
 
     get workspaceManager() {
@@ -91,12 +93,20 @@ class Server extends EventEmitter {
         return this.#contextManager;
     }
 
-    get agentManager() {
+    get roles() {
         if (!this.#initialized) {
-            throw new Error('AgentManager not initialized');
+            throw new Error('Roles service not initialized');
         }
 
-        return this.#agentManager;
+        return this.#roles;
+    }
+
+    get agents() {
+        if (!this.#initialized) {
+            throw new Error('Agents service not initialized');
+        }
+
+        return this.#agents;
     }
 
     get authService() {
@@ -131,11 +141,12 @@ class Server extends EventEmitter {
             this.#apiServer = await startApiServer({
                 port: env.server.api.port,
                 host: env.server.api.host,
-                userManager: this.#userManager,
+                users: this.#users,
                 workspaceManager: this.#workspaceManager,
                 contextManager: this.#contextManager,
                 dotfileManager: this.#dotfileManager,
-                agentManager: this.#agentManager,
+                roles: this.#roles,
+                agents: this.#agents,
                 authService: this.#authService
             });
         }
@@ -145,7 +156,7 @@ class Server extends EventEmitter {
     }
 
     async #initializeCoreServices() {
-        this.#userManager = new UserManager({
+        this.#users = new Users({
             rootPath: env.user.home,
             indexStore: jim.createIndex('users'),
         });
@@ -153,7 +164,7 @@ class Server extends EventEmitter {
         this.#workspaceManager = new WorkspaceManager({
             defaultRootPath: env.user.home,
             indexStore: jim.createIndex('workspaces'),
-            userManager: this.#userManager,
+            users: this.#users,
         });
 
         this.#contextManager = new ContextManager({
@@ -165,20 +176,32 @@ class Server extends EventEmitter {
             workspaceManager: this.#workspaceManager
         });
 
-        this.#agentManager = new AgentManager({
-            defaultRootPath: path.join(env.server.home, 'agents'),
-            indexStore: jim.createIndex('agents'),
-            userManager: this.#userManager,
+        this.#roles = new Roles({
+            indexStore: jim.createIndex('roles'),
+            users: this.#users,
+            workspaceManager: this.#workspaceManager,
+            serverConfig: {
+                dataPath: env.server.home
+            }
         });
 
-        this.#userManager.setWorkspaceManager(this.#workspaceManager);
-        this.#userManager.setContextManager(this.#contextManager);
+        this.#workspaceManager.setRoles(this.#roles); // Late injection if method exists
 
-        await this.#userManager.initialize();
+        this.#agents = new Agents({
+            defaultRootPath: path.join(env.server.home, 'agents'),
+            indexStore: jim.createIndex('agents'),
+            users: this.#users,
+        });
+
+        this.#users.setWorkspaceManager(this.#workspaceManager);
+        this.#users.setContextManager(this.#contextManager);
+
+        await this.#users.initialize();
         await this.#workspaceManager.initialize();
         await this.#contextManager.initialize();
         await this.#dotfileManager.initialize();
-        await this.#agentManager.initialize();
+        await this.#roles.initialize();
+        await this.#agents.initialize();
     }
 
     async #createAdminUser() {
@@ -188,7 +211,7 @@ class Server extends EventEmitter {
 
             debug(`Attempting to create admin user with email: ${adminEmail}, forceReset: ${forceReset}`);
 
-            const adminExists = await this.#userManager.hasUserByEmail(adminEmail);
+            const adminExists = await this.#users.hasByEmail(adminEmail);
             debug(`Admin user exists: ${adminExists}`);
 
             // If admin exists and we're not forcing a reset, skip creation
@@ -204,12 +227,12 @@ class Server extends EventEmitter {
             let user;
             if (adminExists) {
                 // Get existing user for update
-                user = await this.#userManager.getUserByEmail(adminEmail);
+                user = await this.#users.getByEmail(adminEmail);
                 debug(`Resetting admin user ${adminEmail} with ID: ${user.id}`);
             } else {
                 // Create new admin user
                 debug(`Creating new admin user ${adminEmail}`);
-                user = await this.#userManager.createUser({
+                user = await this.#users.create({
                     name: this.#generateUsernameFromEmail(adminEmail), // Generate proper username
                     email: adminEmail,
                     userType: 'admin',

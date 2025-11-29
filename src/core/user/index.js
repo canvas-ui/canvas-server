@@ -12,7 +12,7 @@ import logger, { createDebug } from '../../utils/log/index.js';
 const debug = createDebug('user-manager');
 
 // Includes
-import User from './lib/User.js';
+import User from './User.js';
 
 /**
  * Constants
@@ -22,10 +22,10 @@ const USER_TYPES = ['user', 'admin'];
 const USER_STATUS_CODES = ['active', 'inactive', 'pending', 'deleted'];
 
 /**
- * User Manager
+ * Users Service
  */
 
-class UserManager extends EventEmitter {
+class Users extends EventEmitter {
 
     #rootPath;      // User $home directory
     #indexStore;    // User index store
@@ -37,7 +37,7 @@ class UserManager extends EventEmitter {
     #initialized = false;   // Manager initialized flag
 
     /**
-     * Create a new UserManager
+     * Create a new Users service
      * @param {Object} options - Manager options
      * @param {string} options.rootPath - Root path for user homes
      * @param {Object} [options.workspaceManager] - Workspace manager (can be set later)
@@ -50,7 +50,7 @@ class UserManager extends EventEmitter {
             throw new Error('User home root path is required');
         }
         if (!options.indexStore) {
-            throw new Error('Index store is required for UserManager');
+            throw new Error('Index store is required for Users service');
         }
 
         this.#rootPath = options.rootPath;
@@ -58,17 +58,17 @@ class UserManager extends EventEmitter {
         this.#workspaceManager = options.workspaceManager; // Can be initially undefined
         this.#contextManager = options.contextManager; // Can be initially undefined
 
-        debug(`Initializing UserManager with user home directory rootPath: ${this.#rootPath}`);
+        debug(`Initializing Users service with user home directory rootPath: ${this.#rootPath}`);
     }
 
     /**
-     * Initialize manager
+     * Initialize service
      * @override
      */
     async initialize() {
         if (this.#initialized) { return true; }
 
-        debug(`UserManager initialized with ${this.#indexStore.size} user(s) in index`);
+        debug(`Users service initialized with ${this.#indexStore.size} user(s) in index`);
         this.#initialized = true;
         return this;
     }
@@ -105,12 +105,12 @@ class UserManager extends EventEmitter {
      * @param {string} identifier - The user ID, email, or name.
      * @returns {Promise<string|null>} The user ID if found, otherwise null.
      */
-    async resolveToUserId(identifier) {
-        if (!this.#initialized) throw new Error('UserManager not initialized');
+    async resolveId(identifier) {
+        if (!this.#initialized) throw new Error('Users service not initialized');
         if (!identifier) return null;
 
         // Check if it's an ID
-        if (await this.hasUser(identifier)) {
+        if (await this.has(identifier)) {
             return identifier;
         }
 
@@ -137,10 +137,10 @@ class UserManager extends EventEmitter {
      * @param {string} [userData.status='active'] - User status
      * @returns {Promise<User>} Created user
      */
-    async createUser(userData = {}) {
-        if (!this.#initialized) throw new Error('UserManager not initialized');
+    async create(userData = {}) {
+        if (!this.#initialized) throw new Error('Users service not initialized');
 
-        debug(`createUser: Creating user with data: ${JSON.stringify(userData)}`);
+        debug(`create: Creating user with data: ${JSON.stringify(userData)}`);
         const id = userData.id || generateNanoid(8);
 
         try {
@@ -150,8 +150,8 @@ class UserManager extends EventEmitter {
             const name = userData.name;
             const userHomePath = userData.homePath || path.join(this.#rootPath, email);
 
-            if (await this.hasUser(id)) throw new Error(`User already exists with ID: ${id}`);
-            if (await this.hasUserByEmail(email)) throw new Error(`User already exists with email: ${email} (ID: ${id})`);
+            if (await this.has(id)) throw new Error(`User already exists with ID: ${id}`);
+            if (await this.hasByEmail(email)) throw new Error(`User already exists with email: ${email} (ID: ${id})`);
 
             // Pre-register user in index so workspace creation can resolve the ID
             const preliminaryUserData = {
@@ -206,9 +206,9 @@ class UserManager extends EventEmitter {
      * @param {string} id - User ID
      * @returns {Promise<User>} User instance
      */
-    async getUser(id) {
+    async get(id) {
         if (!this.#initialized) { // Added check - important for store access
-            throw new Error('UserManager not initialized');
+            throw new Error('Users service not initialized');
         }
         if (this.#users.has(id)) {
             return this.#users.get(id);
@@ -225,12 +225,12 @@ class UserManager extends EventEmitter {
     }
 
     /**
-     * Get a user by ID (wrapper for async getUser)
+     * Get a user by ID (wrapper for async get)
      * @param {string} id - User ID
      * @returns {Promise<User>} User instance
      */
-    getUserById(id) {
-        return this.getUser(id);
+    getById(id) {
+        return this.get(id);
     }
 
     /**
@@ -238,15 +238,15 @@ class UserManager extends EventEmitter {
      * @param {string} email - User email
      * @returns {Promise<User>} User instance
      */
-    async getUserByEmail(email) {
+    async getByEmail(email) {
         if (!this.#initialized) {
-            throw new Error('UserManager not initialized');
+            throw new Error('Users service not initialized');
         }
         const id = this.#findUserIdByEmail(email);
         if (!id) {
             throw new Error(`User not found by email: ${email}`);
         }
-        return this.getUser(id);
+        return this.get(id);
     }
 
     /**
@@ -254,15 +254,15 @@ class UserManager extends EventEmitter {
      * @param {string} name - User name
      * @returns {Promise<User>} User instance
      */
-    async getUserByName(name) {
+    async getByName(name) {
         if (!this.#initialized) {
-            throw new Error('UserManager not initialized');
+            throw new Error('Users service not initialized');
         }
         const id = this.#findUserIdByName(name);
         if (!id) {
             throw new Error(`User not found by name: ${name}`);
         }
-        return this.getUser(id);
+        return this.get(id);
     }
 
     /**
@@ -270,8 +270,8 @@ class UserManager extends EventEmitter {
      * @param {string} id - User ID
      * @returns {Promise<boolean>} True if user exists (in memory or index)
      */
-    async hasUser(id) {
-        if (!this.#initialized) throw new Error('UserManager not initialized');
+    async has(id) {
+        if (!this.#initialized) throw new Error('Users service not initialized');
         return this.#users.has(id) || this.#indexStore.has(id);
     }
 
@@ -280,7 +280,7 @@ class UserManager extends EventEmitter {
      * @param {string} email - User email
      * @returns {Promise<boolean>} True if user exists with valid home directory
      */
-    async hasUserByEmail(email) {
+    async hasByEmail(email) {
         return !!this.#findUserIdByEmail(email);
     }
 
@@ -291,9 +291,9 @@ class UserManager extends EventEmitter {
      * @param {string} [options.userType] - Filter by user type
      * @returns {Promise<Array<Object>>} Array of user objects (JSON representation from index)
      */
-    async listUsers(options = {}) {
+    async list(options = {}) {
         if (!this.#initialized) { // Added check
-            throw new Error('UserManager not initialized');
+            throw new Error('Users service not initialized');
         }
         const allUsersInStore = this.#indexStore.store;
         let usersArray = Object.values(allUsersInStore);
@@ -313,9 +313,9 @@ class UserManager extends EventEmitter {
      * @param {Object} userData - User data to update
      * @returns {Promise<User>} Updated user instance
      */
-    async updateUser(id, userData = {}) {
+    async update(id, userData = {}) {
         if (!this.#initialized) {
-            throw new Error('UserManager not initialized');
+            throw new Error('Users service not initialized');
         }
         if (!id) throw new Error('User ID is required');
 
@@ -365,9 +365,9 @@ class UserManager extends EventEmitter {
      * @param {string} id - User ID
      * @returns {Promise<boolean>} True if user was deleted
      */
-    async deleteUser(id) {
+    async delete(id) {
         if (!this.#initialized) { // Added check
-            throw new Error('UserManager not initialized');
+            throw new Error('Users service not initialized');
         }
         if (!id) throw new Error('User ID is required');
 
@@ -398,10 +398,10 @@ class UserManager extends EventEmitter {
 
     async ensureUserUniverseWorkspaceIsRunning(userId) {
         if (!this.#initialized) {
-            throw new Error('UserManager not initialized');
+            throw new Error('Users service not initialized');
         }
 
-        const user = await this.getUser(userId);
+        const user = await this.get(userId);
         if (!user) {
             throw new Error(`User not found: ${userId}`);
         }
@@ -421,10 +421,10 @@ class UserManager extends EventEmitter {
 
     async ensureDefaultUserContextExists(userId) {
         if (!this.#initialized) {
-            throw new Error('UserManager not initialized');
+            throw new Error('Users service not initialized');
         }
 
-        const user = await this.getUser(userId);
+        const user = await this.get(userId);
         if (!user) {
             throw new Error(`User not found: ${userId}`);
         }
@@ -448,11 +448,11 @@ class UserManager extends EventEmitter {
 
     async #createHomeDirectory(homePath, userId, userEmail) {
         if (!this.#initialized) {
-            throw new Error('UserManager not initialized');
+            throw new Error('Users service not initialized');
         }
 
         if (!this.#workspaceManager) {
-            throw new Error('UserManager is not fully configured (missing WorkspaceManager).');
+            throw new Error('Users service is not fully configured (missing WorkspaceManager).');
         }
 
         // Resolve home path
@@ -682,7 +682,7 @@ class UserManager extends EventEmitter {
     }
 }
 
-export default UserManager;
+export default Users;
 export {
     USER_TYPES,
     USER_STATUS_CODES

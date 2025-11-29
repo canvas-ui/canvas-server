@@ -13,7 +13,7 @@ const debug = createDebug('api:roles');
  */
 class RoleAPI {
 
-    #roleManager;
+    #roles;
     #userManager;
     #workspaceManager;
     #router;
@@ -21,13 +21,13 @@ class RoleAPI {
     /**
      * Create RoleAPI instance
      * @param {Object} options - Configuration options
-     * @param {Object} options.roleManager - RoleManager instance
+     * @param {Object} options.roles - Roles service instance
      * @param {Object} options.userManager - UserManager instance
      * @param {Object} options.workspaceManager - WorkspaceManager instance
      */
     constructor(options = {}) {
-        if (!options.roleManager) {
-            throw new Error('RoleManager is required for RoleAPI');
+        if (!options.roles) {
+            throw new Error('Roles service is required for RoleAPI');
         }
         if (!options.userManager) {
             throw new Error('UserManager is required for RoleAPI');
@@ -36,7 +36,7 @@ class RoleAPI {
             throw new Error('WorkspaceManager is required for RoleAPI');
         }
 
-        this.#roleManager = options.roleManager;
+        this.#roles = options.roles;
         this.#userManager = options.userManager;
         this.#workspaceManager = options.workspaceManager;
         this.#router = express.Router();
@@ -102,7 +102,7 @@ class RoleAPI {
             if (workspaceId) filters.workspaceId = workspaceId;
             if (status) filters.status = status;
 
-            const roles = this.#roleManager.listRoles(filters);
+            const roles = this.#roles.list(filters);
 
             // Filter based on user permissions
             const accessibleRoles = roles.filter(role => {
@@ -145,7 +145,7 @@ class RoleAPI {
                 });
             }
 
-            const roleConfig = await this.#roleManager.createRole(template, {
+            const roleConfig = await this.#roles.create(template, {
                 name,
                 type,
                 userId,
@@ -173,7 +173,7 @@ class RoleAPI {
             const { roleId } = req.params;
             const requestingUserId = req.user?.id;
 
-            const role = await this.#roleManager.getRole(roleId, requestingUserId);
+            const role = await this.#roles.get(roleId, requestingUserId);
             if (!role) {
                 return res.status(404).json({
                     success: false,
@@ -200,7 +200,7 @@ class RoleAPI {
             const { config } = req.body;
             const requestingUserId = req.user?.id;
 
-            const role = await this.#roleManager.getRole(roleId, requestingUserId);
+            const role = await this.#roles.get(roleId, requestingUserId);
             if (!role) {
                 return res.status(404).json({
                     success: false,
@@ -231,7 +231,7 @@ class RoleAPI {
             const { force } = req.query;
             const requestingUserId = req.user?.id;
 
-            const success = await this.#roleManager.removeRole(roleId, requestingUserId, force === 'true');
+            const success = await this.#roles.remove(roleId, requestingUserId, force === 'true');
 
             res.json({
                 success,
@@ -253,7 +253,7 @@ class RoleAPI {
             const { roleId } = req.params;
             const requestingUserId = req.user?.id;
 
-            const role = await this.#roleManager.startRole(roleId, requestingUserId);
+            const role = await this.#roles.start(roleId, requestingUserId);
 
             res.json({
                 success: true,
@@ -275,7 +275,7 @@ class RoleAPI {
             const { roleId } = req.params;
             const requestingUserId = req.user?.id;
 
-            const success = await this.#roleManager.stopRole(roleId, requestingUserId);
+            const success = await this.#roles.stop(roleId, requestingUserId);
 
             res.json({
                 success,
@@ -297,7 +297,7 @@ class RoleAPI {
             const { roleId } = req.params;
             const requestingUserId = req.user?.id;
 
-            const role = await this.#roleManager.getRole(roleId, requestingUserId);
+            const role = await this.#roles.get(roleId, requestingUserId);
             if (!role) {
                 return res.status(404).json({
                     success: false,
@@ -328,7 +328,7 @@ class RoleAPI {
             const { tail, follow } = req.query;
             const requestingUserId = req.user?.id;
 
-            const role = await this.#roleManager.getRole(roleId, requestingUserId);
+            const role = await this.#roles.get(roleId, requestingUserId);
             if (!role) {
                 return res.status(404).json({
                     success: false,
@@ -373,7 +373,7 @@ class RoleAPI {
             const { roleId } = req.params;
             const requestingUserId = req.user?.id;
 
-            const role = await this.#roleManager.getRole(roleId, requestingUserId);
+            const role = await this.#roles.get(roleId, requestingUserId);
             if (!role) {
                 return res.status(404).json({
                     success: false,
@@ -401,7 +401,7 @@ class RoleAPI {
             const { roleId } = req.params;
             const requestingUserId = req.user?.id;
 
-            const role = await this.#roleManager.getRole(roleId, requestingUserId);
+            const role = await this.#roles.get(roleId, requestingUserId);
             if (!role) {
                 return res.status(404).json({
                     success: false,
@@ -494,7 +494,7 @@ class RoleAPI {
 
             for (const roleId of roleIds) {
                 try {
-                    const role = await this.#roleManager.getRole(roleId, requestingUserId);
+                    const role = await this.#roles.get(roleId, requestingUserId);
                     if (role) {
                         roles.push(role.toJSON());
                     }

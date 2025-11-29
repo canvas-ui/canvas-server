@@ -4,7 +4,7 @@
 import path from 'path';
 
 // Logging
-import { createDebug } from '../../../utils/log/index.js';
+import { createDebug } from '../../utils/log/index.js';
 const debug = createDebug('role-manager:security');
 
 /**
@@ -14,24 +14,24 @@ const debug = createDebug('role-manager:security');
 class RoleSecurity {
 
     #serverConfig;
-    #userManager;
+    #users;
 
     /**
      * Create RoleSecurity instance
      * @param {Object} options - Configuration options
      * @param {Object} options.serverConfig - Server configuration
-     * @param {Object} options.userManager - UserManager instance
+     * @param {Object} options.users - Users service instance
      */
     constructor(options = {}) {
         if (!options.serverConfig) {
             throw new Error('Server configuration is required for RoleSecurity');
         }
-        if (!options.userManager) {
-            throw new Error('UserManager is required for RoleSecurity');
+        if (!options.users) {
+            throw new Error('Users service is required for RoleSecurity');
         }
 
         this.#serverConfig = options.serverConfig;
-        this.#userManager = options.userManager;
+        this.#users = options.users;
 
         debug('RoleSecurity initialized');
     }
@@ -471,7 +471,7 @@ class RoleSecurity {
             case 'user':
             case 'workspace':
                 if (context.userId) {
-                    const user = await this.#userManager.getUser(context.userId);
+                    const user = await this.#users.get(context.userId);
                     if (user && user.homePath) {
                         paths.push(user.homePath);
                     }
@@ -562,7 +562,7 @@ class RoleSecurity {
      */
     async #checkAdminPermissions(userId) {
         // Simplified admin check - in production, this would check user roles
-        const user = await this.#userManager.getUser(userId);
+        const user = await this.#users.get(userId);
         return user && user.role === 'admin';
     }
 

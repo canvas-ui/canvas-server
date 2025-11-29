@@ -29,7 +29,7 @@ export default async function agentRoutes(fastify, options) {
       if (!validateUserWithResponse(request, reply)) return;
 
       const { host } = request.query;
-      const agents = await fastify.agentManager.listUserAgents(request.user.id, host);
+      const agents = await fastify.agents.listByUser(request.user.id, host);
 
       const response = new ResponseObject().found(agents, 'Agents retrieved successfully', 200, agents.length);
       return reply.code(response.statusCode).send(response.getResponse());
@@ -61,7 +61,7 @@ export default async function agentRoutes(fastify, options) {
         metadata = {}
       } = request.body;
 
-      const agent = await fastify.agentManager.createAgent(
+      const agent = await fastify.agents.create(
         request.user.id,
         name,
         {
@@ -102,7 +102,7 @@ export default async function agentRoutes(fastify, options) {
     try {
       if (!validateUserWithResponse(request, reply)) return;
 
-      const agent = await fastify.agentManager.openAgent(
+      const agent = await fastify.agents.open(
         request.user.id,
         request.params.agentIdentifier,
         request.user.id
@@ -129,7 +129,7 @@ export default async function agentRoutes(fastify, options) {
     try {
       if (!validateUserWithResponse(request, reply)) return;
 
-      const agent = await fastify.agentManager.startAgent(
+      const agent = await fastify.agents.start(
         request.user.id,
         request.params.agentIdentifier,
         request.user.id
@@ -156,7 +156,7 @@ export default async function agentRoutes(fastify, options) {
     try {
       if (!validateUserWithResponse(request, reply)) return;
 
-      const success = await fastify.agentManager.stopAgent(
+      const success = await fastify.agents.stop(
         request.user.id,
         request.params.agentIdentifier,
         request.user.id
@@ -183,7 +183,7 @@ export default async function agentRoutes(fastify, options) {
     try {
       if (!validateUserWithResponse(request, reply)) return;
 
-      const agent = await fastify.agentManager.openAgent(
+      const agent = await fastify.agents.open(
         request.user.id,
         request.params.agentIdentifier,
         request.user.id
@@ -220,7 +220,7 @@ export default async function agentRoutes(fastify, options) {
     try {
       if (!validateUserWithResponse(request, reply)) return;
 
-      const agent = await fastify.agentManager.openAgent(
+      const agent = await fastify.agents.open(
         request.user.id,
         request.params.agentIdentifier,
         request.user.id
@@ -257,7 +257,7 @@ export default async function agentRoutes(fastify, options) {
       if (mcp !== undefined) updateData.mcp = mcp;
       if (metadata !== undefined) updateData.metadata = metadata;
 
-      const updatedAgent = await fastify.agentManager.updateAgent(
+      const updatedAgent = await fastify.agents.update(
         request.user.id,
         request.params.agentIdentifier,
         updateData
@@ -279,7 +279,7 @@ export default async function agentRoutes(fastify, options) {
     try {
       if (!validateUserWithResponse(request, reply)) return;
 
-      const agent = await fastify.agentManager.openAgent(
+      const agent = await fastify.agents.open(
         request.user.id,
         request.params.agentIdentifier,
         request.user.id
@@ -292,7 +292,7 @@ export default async function agentRoutes(fastify, options) {
 
       // Stop agent if it's running before deletion
       if (agent.isActive) {
-        await fastify.agentManager.stopAgent(
+        await fastify.agents.stop(
           request.user.id,
           request.params.agentIdentifier,
           request.user.id
@@ -300,7 +300,7 @@ export default async function agentRoutes(fastify, options) {
       }
 
       // Delete the agent
-      const success = await fastify.agentManager.deleteAgent(
+      const success = await fastify.agents.delete(
         request.user.id,
         request.params.agentIdentifier
       );
@@ -326,7 +326,7 @@ export default async function agentRoutes(fastify, options) {
     try {
       if (!validateUserWithResponse(request, reply)) return;
 
-      const agent = await fastify.agentManager.openAgent(
+      const agent = await fastify.agents.open(
         request.user.id,
         request.params.agentIdentifier,
         request.user.id
@@ -367,7 +367,7 @@ export default async function agentRoutes(fastify, options) {
     try {
       if (!validateUserWithResponse(request, reply)) return;
 
-      const agent = await fastify.agentManager.openAgent(
+      const agent = await fastify.agents.open(
         request.user.id,
         request.params.agentIdentifier,
         request.user.id
@@ -443,7 +443,7 @@ export default async function agentRoutes(fastify, options) {
     try {
       if (!validateUserWithResponse(request, reply)) return;
 
-      const agent = await fastify.agentManager.openAgent(
+      const agent = await fastify.agents.open(
         request.user.id,
         request.params.agentIdentifier,
         request.user.id
@@ -486,7 +486,7 @@ export default async function agentRoutes(fastify, options) {
     try {
       if (!validateUserWithResponse(request, reply)) return;
 
-      const agent = await fastify.agentManager.openAgent(
+      const agent = await fastify.agents.open(
         request.user.id,
         request.params.agentIdentifier,
         request.user.id
@@ -520,7 +520,7 @@ export default async function agentRoutes(fastify, options) {
     try {
       if (!validateUserWithResponse(request, reply)) return;
 
-      const agent = await fastify.agentManager.openAgent(
+      const agent = await fastify.agents.open(
         request.user.id,
         request.params.agentIdentifier,
         request.user.id
@@ -554,7 +554,7 @@ export default async function agentRoutes(fastify, options) {
     try {
       if (!validateUserWithResponse(request, reply)) return;
 
-      const agent = await fastify.agentManager.openAgent(
+      const agent = await fastify.agents.open(
         request.user.id,
         request.params.agentIdentifier,
         request.user.id

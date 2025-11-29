@@ -106,21 +106,4 @@ const minioStorage = await roleManager.createRole('minio', {
 });
 ```
 
-## 🌟 **Benefits of Final Architecture**
-
-1. **Crystal Clear Naming**: `WorkspaceRole` perfectly describes what it does
-2. **Future-Proof**: Leaves room for potential `UserRole` without refactoring
-3. **Clean User Home**: All workspaces contained in `workspaces/` subdirectory
-4. **Consistent Patterns**: All workspace roles work identically
-5. **Simpler Mental Model**: "Global" vs "Workspace" is immediately understandable
-6. **Organized Structure**: User home directory stays clean and organized
-
-## 📋 **Migration from Previous Architecture**
-
-- **Old "user roles"** → Workspace roles with `workspaceId: universeWorkspace.id`
-- **Old "workspace roles"** → Workspace roles with `workspaceId: specificWorkspace.id`
-- **Old "local roles"** → Workspace roles (final naming)
-- **Role templates**: Updated to `"type": "workspace"`
-- **Code**: `LocalRole` → `WorkspaceRole` (descriptive naming)
-
 The universe workspace now serves as the "personal workspace" where user-level roles live, making the architecture both cleaner and more intuitive.

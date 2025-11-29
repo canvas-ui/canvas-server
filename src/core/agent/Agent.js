@@ -13,20 +13,20 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { z } from 'zod';
 
 // Logging
-import logger, { createDebug } from '../../../utils/log/index.js';
+import logger, { createDebug } from '../../utils/log/index.js';
 const debug = createDebug('agent-manager:agent');
 
 // Includes
-import Db from '../../../services/synapsd/src/index.js';
+import Db from '../../services/synapsd/src/index.js';
 
 // LLM Connectors
-import { AnthropicConnector, OpenAIConnector, OllamaConnector } from './connectors/index.js';
+import { AnthropicConnector, OpenAIConnector, OllamaConnector } from './lib/connectors/index.js';
 
 // Constants
 import {
     AGENT_STATUS_CODES,
     AGENT_DIRECTORIES,
-} from '../index.js';
+} from './index.js';
 
 /**
  * Canvas Agent

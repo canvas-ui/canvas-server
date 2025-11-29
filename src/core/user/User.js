@@ -5,11 +5,11 @@ import path from 'path';
 import EventEmitter from 'eventemitter2';
 
 // Logging
-import logger, { createDebug } from '../../../utils/log/index.js';
+import logger, { createDebug } from '../../utils/log/index.js';
 const debug = createDebug('user-manager:user');
 
 // Constants
-import { USER_STATUS_CODES } from '../index.js';
+import { USER_STATUS_CODES } from './index.js';
 
 /**
  * User Class

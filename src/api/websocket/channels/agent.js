@@ -7,7 +7,7 @@ const debug = createDebug('canvas-server:websocket:agent');
 /**
  * Agent WebSocket channel for real-time agent interactions
  * Handles streaming chat responses and agent status updates
- * 
+ *
  * @param {FastifyInstance} fastify - Fastify instance
  * @param {Socket} socket - Socket.io socket instance
  */
@@ -31,7 +31,7 @@ export default function registerAgentWebSocket(fastify, socket) {
       }
 
       // Verify agent access
-      const agent = await fastify.agentManager.openAgent(user.id, agentId, user.id);
+      const agent = await fastify.agents.open(user.id, agentId, user.id);
       if (!agent) {
         socket.emit('error', { message: 'Agent not found or access denied' });
         return;
@@ -70,29 +70,29 @@ export default function registerAgentWebSocket(fastify, socket) {
   socket.on('agent:chat:stream', async (data) => {
     try {
       const { agentId, message, context, mcpContext = true, maxTokens, temperature } = data;
-      
+
       if (!agentId || !message) {
-        socket.emit('agent:chat:error', { 
-          agentId, 
-          error: 'Agent ID and message are required' 
+        socket.emit('agent:chat:error', {
+          agentId,
+          error: 'Agent ID and message are required'
         });
         return;
       }
 
       // Verify agent access and status
-      const agent = await fastify.agentManager.openAgent(user.id, agentId, user.id);
+      const agent = await fastify.agents.open(user.id, agentId, user.id);
       if (!agent) {
-        socket.emit('agent:chat:error', { 
-          agentId, 
-          error: 'Agent not found or access denied' 
+        socket.emit('agent:chat:error', {
+          agentId,
+          error: 'Agent not found or access denied'
         });
         return;
       }
 
       if (!agent.isActive) {
-        socket.emit('agent:chat:error', { 
-          agentId, 
-          error: 'Agent is not active. Please start the agent first.' 
+        socket.emit('agent:chat:error', {
+          agentId,
+          error: 'Agent is not active. Please start the agent first.'
         });
         return;
       }

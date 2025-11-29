@@ -156,8 +156,8 @@ class WorkspaceManager extends EventEmitter {
     #indexStore;        // Persistent index of all workspaces (key: userId/workspace.id -> workspace data)
     #nameIndex;         // Secondary index for name lookups (key: userId@host:workspaceName -> workspace.id)
     #referenceIndex;    // Tertiary index for full reference lookups (key: userIdentifier@host:workspaceName -> workspace.id)
-    #userManager;       // UserManager instance for resolving user identifiers
-    #roleManager;       // RoleManager instance for role management
+    #users;       // Users service for resolving user identifiers
+    #roles;       // Roles service instance for role management
 
     // Runtime
     #workspaces = new Map(); // Cache for loaded Workspace instances (key: workspace.id -> Workspace)
@@ -168,8 +168,8 @@ class WorkspaceManager extends EventEmitter {
      * @param {Object} options - Configuration options
      * @param {string} options.defaultRootPath - Root path where user workspace directories are stored
      * @param {Object} options.indexStore - Initialized Conf instance for the workspace index
-     * @param {Object} options.userManager - Initialized UserManager instance
-     * @param {Object} [options.roleManager] - RoleManager instance for role integration
+     * @param {Object} options.users - Initialized Users service instance
+     * @param {Object} [options.roles] - Roles service instance for role integration
      * @param {Object} [options.eventEmitterOptions] - Options for EventEmitter2
      */
     constructor(options = {}) {
@@ -183,14 +183,14 @@ class WorkspaceManager extends EventEmitter {
             throw new Error('Index store is required for WorkspaceManager');
         }
 
-        if (!options.userManager) {
-            throw new Error('UserManager is required for WorkspaceManager');
+        if (!options.users) {
+            throw new Error('Users service is required for WorkspaceManager');
         }
 
         this.#defaultRootPath = path.resolve(options.defaultRootPath); // Ensure absolute path
         this.#indexStore = options.indexStore;
-        this.#userManager = options.userManager; // Store userManager instance
-        this.#roleManager = options.roleManager; // Store roleManager instance
+        this.#users = options.users; // Store users service instance
+        this.#roles = options.roles; // Store roles service instance
         this.#nameIndex = new Map(); // In-memory secondary index for name lookups
         this.#referenceIndex = new Map(); // In-memory tertiary index for reference lookups
 
@@ -201,8 +201,8 @@ class WorkspaceManager extends EventEmitter {
      * Getters
      */
 
-    get userManager() { return this.#userManager; }
-    get roleManager() { return this.#roleManager; }
+    get users() { return this.#users; }
+    get roles() { return this.#roles; }
 
     /**
      * Private helper to construct workspace index key
@@ -297,7 +297,7 @@ class WorkspaceManager extends EventEmitter {
         if (!workspaceName) throw new Error('Workspace name required to create a workspace.');
 
         // The provided userId is now treated as an identifier that needs resolution
-        const ownerId = await this.#userManager.resolveToUserId(userId);
+        const ownerId = await this.#users.resolveId(userId);
         if (!ownerId) {
             throw new Error(`Could not resolve user identifier: "${userId}"`);
         }
@@ -322,7 +322,7 @@ class WorkspaceManager extends EventEmitter {
             workspaceDir = options.workspacePath;
         } else {
             // For regular workspaces, place them in user's workspaces subdirectory
-            const user = await this.#userManager.getUser(ownerId);
+            const user = await this.#users.get(ownerId);
             if (!user || !user.homePath) {
                 throw new Error(`Could not determine home path for user ${ownerId}`);
             }
@@ -436,7 +436,7 @@ class WorkspaceManager extends EventEmitter {
         }
 
         // Resolve the provided userId (which can be an identifier) to an actual user ID.
-        const ownerId = await this.#userManager.resolveToUserId(userId);
+        const ownerId = await this.#users.resolveId(userId);
         if (!ownerId) {
             debug(`openWorkspace failed: Could not resolve user identifier "${userId}"`);
             return null;
@@ -533,7 +533,7 @@ class WorkspaceManager extends EventEmitter {
         this.#ensureRequiredParams({ userId, workspaceIdentifier: workspaceIdentifier, requestingUserId }, 'closeWorkspace');
 
         // Resolve the provided userId (which can be an identifier) to an actual user ID.
-        const ownerId = await this.#userManager.resolveToUserId(userId);
+        const ownerId = await this.#users.resolveId(userId);
         if (!ownerId) {
             debug(`closeWorkspace failed: Could not resolve user identifier "${userId}"`);
             return false;
@@ -592,7 +592,7 @@ class WorkspaceManager extends EventEmitter {
         this.#ensureRequiredParams({ userId, workspaceIdentifier: workspaceIdentifier, requestingUserId }, 'startWorkspace');
 
         // Resolve the provided userId (which can be an identifier) to an actual user ID.
-        const ownerId = await this.#userManager.resolveToUserId(userId);
+        const ownerId = await this.#users.resolveId(userId);
         if (!ownerId) {
             debug(`startWorkspace failed: Could not resolve user identifier "${userId}"`);
             return null;
@@ -642,7 +642,7 @@ class WorkspaceManager extends EventEmitter {
             this.#updateWorkspaceIndexEntry(indexKey, { status: WORKSPACE_STATUS_CODES.ACTIVE, lastAccessed: new Date().toISOString() });
 
             // Start associated roles
-            if (this.#roleManager) {
+            if (this.#roles) {
                 try {
                     const roleResults = await this.startWorkspaceRoles(ownerId, workspaceIdentifier, requestingUserId);
                     if (roleResults.length > 0) {
@@ -681,7 +681,7 @@ class WorkspaceManager extends EventEmitter {
         this.#ensureRequiredParams({ userId, workspaceIdentifier: workspaceIdentifier, requestingUserId }, 'stopWorkspace');
 
         // Resolve the provided userId (which can be an identifier) to an actual user ID.
-        const ownerId = await this.#userManager.resolveToUserId(userId);
+        const ownerId = await this.#users.resolveId(userId);
         if (!ownerId) {
             debug(`stopWorkspace failed: Could not resolve user identifier "${userId}"`);
             return false;
@@ -733,7 +733,7 @@ class WorkspaceManager extends EventEmitter {
         debug(`Stopping workspace ${workspaceId}...`);
         try {
             // Stop associated roles first
-            if (this.#roleManager) {
+            if (this.#roles) {
                 try {
                     const roleResults = await this.stopWorkspaceRoles(ownerId, workspaceIdentifier, requestingUserId);
                     if (roleResults.length > 0) {
@@ -772,7 +772,7 @@ class WorkspaceManager extends EventEmitter {
         if (!this.#initialized) throw new Error('WorkspaceManager not initialized');
 
         // Resolve the provided userId (which can be an identifier) to an actual user ID.
-        const ownerId = await this.#userManager.resolveToUserId(userId);
+        const ownerId = await this.#users.resolveId(userId);
         if (!ownerId) {
             debug(`removeWorkspace failed: Could not resolve user identifier "${userId}"`);
             return false;
@@ -951,7 +951,7 @@ class WorkspaceManager extends EventEmitter {
         }
 
         // First resolve the user identifier to a user ID
-        const userId = await this.#userManager.resolveToUserId(parsed.userIdentifier);
+        const userId = await this.#users.resolveId(parsed.userIdentifier);
         if (!userId) {
             return null;
         }
@@ -972,7 +972,7 @@ class WorkspaceManager extends EventEmitter {
 
         try {
             // Get user info to construct the address
-            const user = await this.#userManager.getUser(workspace.owner);
+            const user = await this.#users.get(workspace.owner);
             if (!user || !user.name) {
                 return null;
             }
@@ -1079,7 +1079,7 @@ class WorkspaceManager extends EventEmitter {
         }
 
         // Resolve user identifier to ID for getWorkspaceById call
-        const ownerId = await this.#userManager.resolveToUserId(userId);
+        const ownerId = await this.#users.resolveId(userId);
         if (!ownerId) {
             debug(`getWorkspaceByName: Could not resolve user identifier "${userId}"`);
             return null;
@@ -1102,7 +1102,7 @@ class WorkspaceManager extends EventEmitter {
             requestingUserId = ownerId;
         }
         this.#ensureRequiredParams({ ownerId, workspaceId, requestingUserId }, 'isOpen');
-        const resolvedOwnerId = await this.#userManager.resolveToUserId(ownerId);
+        const resolvedOwnerId = await this.#users.resolveId(ownerId);
         if (!resolvedOwnerId) return false;
         const workspaceKey = `${resolvedOwnerId}/${workspaceId}`;
         const ws = this.#workspaces.get(workspaceKey);
@@ -1121,7 +1121,7 @@ class WorkspaceManager extends EventEmitter {
             requestingUserId = ownerId;
         }
         this.#ensureRequiredParams({ ownerId, workspaceId, requestingUserId }, 'isActive');
-        const resolvedOwnerId = await this.#userManager.resolveToUserId(ownerId);
+        const resolvedOwnerId = await this.#users.resolveId(ownerId);
         if (!resolvedOwnerId) return false;
         const workspaceKey = `${resolvedOwnerId}/${workspaceId}`;
         const workspace = this.#workspaces.get(workspaceKey);
@@ -1138,13 +1138,13 @@ class WorkspaceManager extends EventEmitter {
         if (!this.#initialized) throw new Error('WorkspaceManager not initialized');
         if (!userId) return [];
 
-        const accessingUserId = await this.#userManager.resolveToUserId(userId);
+        const accessingUserId = await this.#users.resolveId(userId);
         if (!accessingUserId) return [];
 
         // Get the user's email for checking shared workspaces
         let userEmail = null;
         try {
-            const user = await this.#userManager.getUser(accessingUserId);
+            const user = await this.#users.get(accessingUserId);
             userEmail = user.email;
         } catch (error) {
             debug(`Failed to resolve user email for ${accessingUserId}: ${error.message}`);
@@ -1167,7 +1167,7 @@ class WorkspaceManager extends EventEmitter {
                     if (!host || workspaceHost === host) {
                         // Resolve owner ID to user email
                         try {
-                            const ownerUser = await this.#userManager.getUser(workspaceEntry.owner);
+                            const ownerUser = await this.#users.get(workspaceEntry.owner);
                             const workspaceWithOwnerEmail = {
                                 ...workspaceEntry,
                                 ownerEmail: ownerUser.email
@@ -1205,7 +1205,7 @@ class WorkspaceManager extends EventEmitter {
                         const workspaceHost = workspaceEntry.host || WORKSPACE_DEFAULT_HOST;
                         if (!host || workspaceHost === host) {
                             try {
-                                const ownerUser = await this.#userManager.getUser(workspaceEntry.owner);
+                                const ownerUser = await this.#users.get(workspaceEntry.owner);
                                 const sharedWorkspace = {
                                     ...workspaceEntry,
                                     ownerEmail: ownerUser.email,
@@ -1266,13 +1266,13 @@ class WorkspaceManager extends EventEmitter {
      */
     async hasWorkspace(userId, workspaceIdentifier, requestingUserId) {
         if (!this.#initialized) { throw new Error('WorkspaceManager not initialized'); }
-        const ownerId = await this.#userManager.resolveToUserId(userId);
+        const ownerId = await this.#users.resolveId(userId);
         if (!ownerId) return false;
 
         if (!requestingUserId) {
             requestingUserId = ownerId;
         } else {
-            const resolvedRequesterId = await this.#userManager.resolveToUserId(requestingUserId);
+            const resolvedRequesterId = await this.#users.resolveId(requestingUserId);
             if (!resolvedRequesterId) return false;
             requestingUserId = resolvedRequesterId;
         }
@@ -1318,13 +1318,13 @@ class WorkspaceManager extends EventEmitter {
     async getWorkspaceConfig(userId, workspaceId, requestingUserId) {
         if (!this.#initialized) { throw new Error('WorkspaceManager not initialized'); }
 
-        const ownerId = await this.#userManager.resolveToUserId(userId);
+        const ownerId = await this.#users.resolveId(userId);
         if (!ownerId) return null;
 
         if (!requestingUserId) {
             requestingUserId = ownerId;
         } else {
-            const resolvedRequesterId = await this.#userManager.resolveToUserId(requestingUserId);
+            const resolvedRequesterId = await this.#users.resolveId(requestingUserId);
             if (!resolvedRequesterId) return null;
             requestingUserId = resolvedRequesterId;
         }
@@ -1367,13 +1367,13 @@ class WorkspaceManager extends EventEmitter {
      */
     async updateWorkspaceConfig(userId, workspaceId, requestingUserId, updates) {
         if (!this.#initialized) { throw new Error('WorkspaceManager not initialized'); }
-        const ownerId = await this.#userManager.resolveToUserId(userId);
+        const ownerId = await this.#users.resolveId(userId);
         if (!ownerId) return false;
 
         if (!requestingUserId) {
             requestingUserId = ownerId;
         } else {
-            const resolvedRequesterId = await this.#userManager.resolveToUserId(requestingUserId);
+            const resolvedRequesterId = await this.#users.resolveId(requestingUserId);
             if (!resolvedRequesterId) return false;
             requestingUserId = resolvedRequesterId;
         }
@@ -1481,11 +1481,11 @@ class WorkspaceManager extends EventEmitter {
      * @returns {Promise<boolean>} Success status
      */
     async associateRole(userId, workspaceId, roleId, requestingUserId) {
-        if (!this.#roleManager) {
-            throw new Error('RoleManager not available for role association');
+        if (!this.#roles) {
+            throw new Error('Roles service not available for role association');
         }
 
-        const ownerId = await this.#userManager.resolveToUserId(userId);
+        const ownerId = await this.#users.resolveId(userId);
         if (!ownerId) {
             throw new Error(`Could not resolve user identifier: "${userId}"`);
         }
@@ -1527,7 +1527,7 @@ class WorkspaceManager extends EventEmitter {
      * @returns {Promise<boolean>} Success status
      */
     async disassociateRole(userId, workspaceId, roleId, requestingUserId) {
-        const ownerId = await this.#userManager.resolveToUserId(userId);
+        const ownerId = await this.#users.resolveId(userId);
         if (!ownerId) {
             throw new Error(`Could not resolve user identifier: "${userId}"`);
         }
@@ -1562,7 +1562,7 @@ class WorkspaceManager extends EventEmitter {
      * @returns {Promise<Array>} Array of role IDs
      */
     async getWorkspaceRoles(userId, workspaceId, requestingUserId) {
-        const ownerId = await this.#userManager.resolveToUserId(userId);
+        const ownerId = await this.#users.resolveId(userId);
         if (!ownerId) return [];
 
         const indexKey = this.#constructWorkspaceIndexKey(ownerId, workspaceId);
@@ -1583,8 +1583,8 @@ class WorkspaceManager extends EventEmitter {
      * @returns {Promise<Array>} Array of started role results
      */
     async startWorkspaceRoles(userId, workspaceId, requestingUserId) {
-        if (!this.#roleManager) {
-            debug('RoleManager not available, skipping role start');
+        if (!this.#roles) {
+            debug('Roles service not available, skipping role start');
             return [];
         }
 
@@ -1593,7 +1593,7 @@ class WorkspaceManager extends EventEmitter {
 
         for (const roleId of roleIds) {
             try {
-                const role = await this.#roleManager.startRole(roleId, requestingUserId);
+                const role = await this.#roles.start(roleId, requestingUserId);
                 results.push({ roleId, status: 'started', role });
                 debug(`Started role ${roleId} for workspace ${workspaceId}`);
             } catch (error) {
@@ -1613,8 +1613,8 @@ class WorkspaceManager extends EventEmitter {
      * @returns {Promise<Array>} Array of stopped role results
      */
     async stopWorkspaceRoles(userId, workspaceId, requestingUserId) {
-        if (!this.#roleManager) {
-            debug('RoleManager not available, skipping role stop');
+        if (!this.#roles) {
+            debug('Roles service not available, skipping role stop');
             return [];
         }
 
@@ -1623,7 +1623,7 @@ class WorkspaceManager extends EventEmitter {
 
         for (const roleId of roleIds) {
             try {
-                await this.#roleManager.stopRole(roleId, requestingUserId);
+                await this.#roles.stop(roleId, requestingUserId);
                 results.push({ roleId, status: 'stopped' });
                 debug(`Stopped role ${roleId} for workspace ${workspaceId}`);
             } catch (error) {
@@ -1642,7 +1642,7 @@ class WorkspaceManager extends EventEmitter {
      * @returns {Promise<string|null>} Role mount path or null
      */
     async getWorkspaceRolePath(userId, workspaceId) {
-        const ownerId = await this.#userManager.resolveToUserId(userId);
+        const ownerId = await this.#users.resolveId(userId);
         if (!ownerId) return null;
 
         const indexKey = this.#constructWorkspaceIndexKey(ownerId, workspaceId);

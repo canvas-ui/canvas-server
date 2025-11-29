@@ -14,11 +14,11 @@ import logger, { createDebug } from '../../utils/log/index.js';
 const debug = createDebug('role-manager');
 
 // Includes
-import Role from './lib/Role.js';
-import GlobalRole from './lib/GlobalRole.js';
-import WorkspaceRole from './lib/WorkspaceRole.js';
-import VolumeMapper from './lib/VolumeMapper.js';
-import UnixSocketManager from './lib/UnixSocketManager.js';
+import Role from './Role.js';
+import GlobalRole from './GlobalRole.js';
+import WorkspaceRole from './WorkspaceRole.js';
+import VolumeMapper from './VolumeMapper.js';
+import UnixSocketManager from './UnixSocketManager.js';
 
 /**
  * Constants
@@ -42,14 +42,14 @@ const ROLE_TYPES = {
 const ROLE_CONFIG_FILENAME = 'role.json';
 
 /**
- * Role Manager
+ * Roles Service
  * Manages Docker-based roles with workspace integration
  */
-class RoleManager extends EventEmitter {
+class Roles extends EventEmitter {
 
     #docker;
     #indexStore;
-    #userManager;
+    #users;
     #workspaceManager;
     #serverConfig;
     #volumeMapper;
@@ -63,7 +63,7 @@ class RoleManager extends EventEmitter {
      * Constructor
      * @param {Object} options - Configuration options
      * @param {Object} options.indexStore - Initialized Conf instance for role index
-     * @param {Object} options.userManager - UserManager instance
+     * @param {Object} options.users - Users service instance
      * @param {Object} options.workspaceManager - WorkspaceManager instance
      * @param {Object} options.serverConfig - Server configuration
      * @param {Object} [options.dockerOptions] - Docker client options
@@ -73,20 +73,20 @@ class RoleManager extends EventEmitter {
         super(options.eventEmitterOptions || {});
 
         if (!options.indexStore) {
-            throw new Error('Index store is required for RoleManager');
+            throw new Error('Index store is required for Roles service');
         }
-        if (!options.userManager) {
-            throw new Error('UserManager is required for RoleManager');
+        if (!options.users) {
+            throw new Error('Users service is required for Roles service');
         }
         if (!options.workspaceManager) {
-            throw new Error('WorkspaceManager is required for RoleManager');
+            throw new Error('WorkspaceManager is required for Roles service');
         }
         if (!options.serverConfig) {
-            throw new Error('Server configuration is required for RoleManager');
+            throw new Error('Server configuration is required for Roles service');
         }
 
         this.#indexStore = options.indexStore;
-        this.#userManager = options.userManager;
+        this.#users = options.users;
         this.#workspaceManager = options.workspaceManager;
         this.#serverConfig = options.serverConfig;
 
@@ -97,35 +97,35 @@ class RoleManager extends EventEmitter {
 
         // Initialize volume mapper
         this.#volumeMapper = new VolumeMapper({
-            userManager: this.#userManager,
+            users: this.#users,
             workspaceManager: this.#workspaceManager,
             serverConfig: this.#serverConfig
         });
 
         // Initialize socket manager
         this.#socketManager = new UnixSocketManager({
-            userManager: this.#userManager,
+            users: this.#users,
             workspaceManager: this.#workspaceManager
         });
 
-        debug('RoleManager initialized');
+        debug('Roles service initialized');
     }
 
     /**
      * Getters
      */
-    get userManager() { return this.#userManager; }
+    get users() { return this.#users; }
     get workspaceManager() { return this.#workspaceManager; }
     get docker() { return this.#docker; }
     get socketManager() { return this.#socketManager; }
 
     /**
-     * Initialize RoleManager
+     * Initialize Roles service
      */
     async initialize() {
         if (this.#initialized) return true;
 
-        debug('Initializing RoleManager...');
+        debug('Initializing Roles service...');
 
         // Test Docker connection
         try {
@@ -139,7 +139,7 @@ class RoleManager extends EventEmitter {
         await this.#scanExistingRoles();
 
         this.#initialized = true;
-        debug(`RoleManager initialized with ${this.#indexStore.size} role(s) in index`);
+        debug(`Roles service initialized with ${this.#indexStore.size} role(s) in index`);
 
         return this;
     }
@@ -154,9 +154,9 @@ class RoleManager extends EventEmitter {
      * @param {Object} [options.config] - Additional role configuration
      * @returns {Promise<Object>} Created role entry
      */
-    async createRole(templateName, options = {}) {
+    async create(templateName, options = {}) {
         if (!this.#initialized) {
-            throw new Error('RoleManager not initialized');
+            throw new Error('Roles service not initialized');
         }
         if (!templateName || !options.name || !options.type) {
             throw new Error('templateName, name, and type are required');
@@ -216,9 +216,9 @@ class RoleManager extends EventEmitter {
      * @param {string} [requestingUserId] - User making the request
      * @returns {Promise<Role>} Started role instance
      */
-    async startRole(roleId, requestingUserId) {
+    async start(roleId, requestingUserId) {
         if (!this.#initialized) {
-            throw new Error('RoleManager not initialized');
+            throw new Error('Roles service not initialized');
         }
 
         const roleConfig = this.#indexStore.get(roleId);
@@ -262,9 +262,9 @@ class RoleManager extends EventEmitter {
      * @param {string} [requestingUserId] - User making the request
      * @returns {Promise<boolean>} Success status
      */
-    async stopRole(roleId, requestingUserId) {
+    async stop(roleId, requestingUserId) {
         if (!this.#initialized) {
-            throw new Error('RoleManager not initialized');
+            throw new Error('Roles service not initialized');
         }
 
         const roleConfig = this.#indexStore.get(roleId);
@@ -305,9 +305,9 @@ class RoleManager extends EventEmitter {
      * @param {boolean} [force=false] - Force removal even if running
      * @returns {Promise<boolean>} Success status
      */
-    async removeRole(roleId, requestingUserId, force = false) {
+    async remove(roleId, requestingUserId, force = false) {
         if (!this.#initialized) {
-            throw new Error('RoleManager not initialized');
+            throw new Error('Roles service not initialized');
         }
 
         const roleConfig = this.#indexStore.get(roleId);
@@ -327,7 +327,7 @@ class RoleManager extends EventEmitter {
             if (!force && roleConfig.status === ROLE_STATUS.RUNNING) {
                 throw new Error(`Role ${roleId} is running. Stop first or use force=true`);
             }
-            await this.stopRole(roleId, requestingUserId);
+            await this.stop(roleId, requestingUserId);
             this.#roles.delete(roleId);
         }
 
@@ -354,7 +354,7 @@ class RoleManager extends EventEmitter {
      * @param {string} [filter.status] - Status filter
      * @returns {Array<Object>} Array of role configurations
      */
-    listRoles(filter = {}) {
+    list(filter = {}) {
         const allRoles = Object.values(this.#indexStore.store || {});
 
         return allRoles.filter(role => {
@@ -371,7 +371,7 @@ class RoleManager extends EventEmitter {
      * @param {string} [requestingUserId] - User making the request
      * @returns {Promise<Role|null>} Role instance or null
      */
-    async getRole(roleId, requestingUserId) {
+    async get(roleId, requestingUserId) {
         const roleConfig = this.#indexStore.get(roleId);
         if (!roleConfig) return null;
 
@@ -548,5 +548,5 @@ class RoleManager extends EventEmitter {
     }
 }
 
-export default RoleManager;
+export default Roles;
 export { ROLE_STATUS, ROLE_TYPES };

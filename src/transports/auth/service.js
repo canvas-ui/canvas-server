@@ -21,6 +21,98 @@ const TOKEN_TYPES = {
 };
 
 /**
+ * TokenManager - Manages tokens with hybrid storage (file-based + jim index fallback)
+ */
+class TokenManager {
+  #userHomePath;
+
+  constructor(userHomePath) {
+    this.#userHomePath = userHomePath;
+  }
+
+  /**
+   * Get tokens file path for a user
+   * @param {string} userId - User ID or email
+   * @returns {string} - Path to tokens.json
+   */
+  #getTokensFilePath(userId) {
+    return path.join(this.#userHomePath, userId, 'config', 'tokens.json');
+  }
+
+  /**
+   * Read tokens from file
+   * @param {string} userId - User ID
+   * @returns {Object} - Tokens object
+   */
+  readTokens(userId) {
+    const tokensPath = this.#getTokensFilePath(userId);
+
+    if (!fs.existsSync(tokensPath)) {
+      return {};
+    }
+
+    try {
+      const data = fs.readFileSync(tokensPath, 'utf8');
+      return JSON.parse(data);
+    } catch (error) {
+      console.error(`[TokenManager] Failed to read tokens for ${userId}:`, error.message);
+      return {};
+    }
+  }
+
+  /**
+   * Write tokens to file
+   * @param {string} userId - User ID
+   * @param {Object} tokens - Tokens object
+   */
+  writeTokens(userId, tokens) {
+    const tokensPath = this.#getTokensFilePath(userId);
+    const configDir = path.dirname(tokensPath);
+
+    // Ensure config directory exists
+    if (!fs.existsSync(configDir)) {
+      fs.mkdirSync(configDir, { recursive: true });
+    }
+
+    try {
+      fs.writeFileSync(tokensPath, JSON.stringify(tokens, null, 2), 'utf8');
+    } catch (error) {
+      console.error(`[TokenManager] Failed to write tokens for ${userId}:`, error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * List all user IDs that have token files
+   * @returns {Array<string>} - Array of user IDs
+   */
+  listUserIds() {
+    const userIds = [];
+
+    if (!fs.existsSync(this.#userHomePath)) {
+      return userIds;
+    }
+
+    try {
+      const entries = fs.readdirSync(this.#userHomePath, { withFileTypes: true });
+
+      for (const entry of entries) {
+        if (entry.isDirectory()) {
+          const tokensPath = this.#getTokensFilePath(entry.name);
+          if (fs.existsSync(tokensPath)) {
+            userIds.push(entry.name);
+          }
+        }
+      }
+    } catch (error) {
+      console.error('[TokenManager] Failed to list user IDs:', error.message);
+    }
+
+    return userIds;
+  }
+}
+
+/**
  * AuthService - Handles authentication, token management and password operations
  */
 class AuthService {
@@ -32,6 +124,7 @@ class AuthService {
   #authConfig = null;
   #smtpConfig = null;
   #rateLimitStore;
+  #tokenManager = null;
 
   constructor() {
     // Init happens in initialize() to ensure env is loaded
@@ -88,6 +181,31 @@ class AuthService {
             },
             defaultUserType: 'user',
             defaultStatus: 'active'
+          },
+          ldap: {
+            enabled: false,
+            servers: {
+              primary: {
+                url: 'ldap://ldap.example.com:389',
+                bindDN: 'cn=admin,dc=example,dc=com',
+                bindPassword: '',
+                searchBase: 'ou=users,dc=example,dc=com',
+                searchFilter: '(mail={{email}})',
+                attributes: ['mail', 'cn', 'displayName', 'memberOf'],
+                tls: false
+              },
+              secondary: {
+                url: 'ldap://ldap2.example.com:389',
+                bindDN: 'cn=admin,dc=example,dc=com',
+                bindPassword: '',
+                searchBase: 'ou=users,dc=example,dc=com',
+                searchFilter: '(mail={{email}})',
+                attributes: ['mail', 'cn', 'displayName', 'memberOf'],
+                tls: false
+              }
+            },
+            defaultUserType: 'user',
+            defaultStatus: 'active'
           }
         },
         jwt: {
@@ -139,8 +257,10 @@ class AuthService {
 
   /**
    * Initialize the auth service
+   * @param {Object} options - Initialization options
+   * @param {string} options.userHomePath - Path to user home directory root
    */
-  async initialize() {
+  async initialize(options = {}) {
     if (this.#initialized) return;
 
     // Ensure auth configuration exists with defaults
@@ -151,6 +271,12 @@ class AuthService {
     this.#tokensStore = jim.createIndex('tokens');
     this.#passwordsStore = jim.createIndex('passwords');
     this.#rateLimitStore = jim.createIndex('rateLimits');
+
+    // Initialize file-based token manager if user home path is provided
+    if (options.userHomePath) {
+      this.#tokenManager = new TokenManager(options.userHomePath);
+      console.log('[AuthService] TokenManager initialized with user home path:', options.userHomePath);
+    }
 
     this.#initialized = true;
   }
@@ -191,57 +317,57 @@ class AuthService {
   generateSecurePassword(length = 12) {
     const policy = this.getPasswordPolicy();
     const minLength = Math.max(length, policy.minLength);
-    
+
     // Character sets for each requirement
     const lowercase = 'abcdefghijklmnopqrstuvwxyz';
     const uppercase = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
     const numbers = '0123456789';
     const special = '!?@%&*()_+-';
-    
+
     let password = '';
     const requiredChars = [];
-    
+
     // Add required characters first
     if (policy.requireLowercase) {
       const char = lowercase[crypto.randomInt(lowercase.length)];
       requiredChars.push(char);
       password += char;
     }
-    
+
     if (policy.requireUppercase) {
       const char = uppercase[crypto.randomInt(uppercase.length)];
       requiredChars.push(char);
       password += char;
     }
-    
+
     if (policy.requireNumbers) {
       const char = numbers[crypto.randomInt(numbers.length)];
       requiredChars.push(char);
       password += char;
     }
-    
+
     if (policy.requireSpecialChars) {
       const char = special[crypto.randomInt(special.length)];
       requiredChars.push(char);
       password += char;
     }
-    
+
     // Fill remaining length with random characters from all sets
     const allChars = lowercase + uppercase + numbers + special;
     const remainingLength = minLength - password.length;
-    
+
     for (let i = 0; i < remainingLength; i++) {
       const char = allChars[crypto.randomInt(allChars.length)];
       password += char;
     }
-    
+
     // Shuffle the password to avoid predictable patterns
     const passwordArray = password.split('');
     for (let i = passwordArray.length - 1; i > 0; i--) {
       const j = crypto.randomInt(i + 1);
       [passwordArray[i], passwordArray[j]] = [passwordArray[j], passwordArray[i]];
     }
-    
+
     return passwordArray.join('');
   }
 
@@ -269,8 +395,13 @@ class AuthService {
       const description = options.description || '';
       const expiresIn = options.expiresIn || null; // null means no expiration
 
-      // Load existing tokens
-      const tokensJson = this.#tokensStore.get(userId) || {};
+      // Load existing tokens (prefer file-based, fallback to jim)
+      let tokensJson;
+      if (this.#tokenManager) {
+        tokensJson = this.#tokenManager.readTokens(userId);
+      } else {
+        tokensJson = this.#tokensStore.get(userId) || {};
+      }
 
       // Check for duplicate token names
       const existingTokens = Object.values(tokensJson);
@@ -302,8 +433,12 @@ class AuthService {
       // Add new token
       tokensJson[tokenId] = token;
 
-      // Save tokens
-      this.#tokensStore.set(userId, tokensJson);
+      // Save tokens (prefer file-based, fallback to jim)
+      if (this.#tokenManager) {
+        this.#tokenManager.writeTokens(userId, tokensJson);
+      } else {
+        this.#tokensStore.set(userId, tokensJson);
+      }
 
       // Return token with value (only returned on creation)
       return {
@@ -326,7 +461,13 @@ class AuthService {
   async updateToken(userId, tokenId, updates = {}) {
     this.#ensureInitialized();
 
-    const tokensJson = this.#tokensStore.get(userId) || {};
+    // Load tokens (prefer file-based, fallback to jim)
+    let tokensJson;
+    if (this.#tokenManager) {
+      tokensJson = this.#tokenManager.readTokens(userId);
+    } else {
+      tokensJson = this.#tokensStore.get(userId) || {};
+    }
 
     // Verify token exists
     if (!tokensJson[tokenId]) {
@@ -339,8 +480,12 @@ class AuthService {
     if (updates.name) token.name = updates.name;
     if (updates.description) token.description = updates.description;
 
-    // Save tokens
-    this.#tokensStore.set(userId, tokensJson);
+    // Save tokens (prefer file-based, fallback to jim)
+    if (this.#tokenManager) {
+      this.#tokenManager.writeTokens(userId, tokensJson);
+    } else {
+      this.#tokensStore.set(userId, tokensJson);
+    }
 
     return token;
   }
@@ -354,7 +499,13 @@ class AuthService {
   async deleteToken(userId, tokenId) {
     this.#ensureInitialized();
 
-    const tokensJson = this.#tokensStore.get(userId) || {};
+    // Load tokens (prefer file-based, fallback to jim)
+    let tokensJson;
+    if (this.#tokenManager) {
+      tokensJson = this.#tokenManager.readTokens(userId);
+    } else {
+      tokensJson = this.#tokensStore.get(userId) || {};
+    }
 
     // Verify token exists
     if (!tokensJson[tokenId]) {
@@ -364,11 +515,15 @@ class AuthService {
     // Delete token
     delete tokensJson[tokenId];
 
-    // Save tokens (or delete if empty)
-    if (Object.keys(tokensJson).length === 0) {
-      this.#tokensStore.delete(userId);
+    // Save tokens (prefer file-based, fallback to jim)
+    if (this.#tokenManager) {
+      this.#tokenManager.writeTokens(userId, tokensJson);
     } else {
-      this.#tokensStore.set(userId, tokensJson);
+      if (Object.keys(tokensJson).length === 0) {
+        this.#tokensStore.delete(userId);
+      } else {
+        this.#tokensStore.set(userId, tokensJson);
+      }
     }
 
     return true;
@@ -382,7 +537,13 @@ class AuthService {
   async listTokens(userId) {
     this.#ensureInitialized();
 
-    const tokensJson = this.#tokensStore.get(userId) || {};
+    // Load tokens (prefer file-based, fallback to jim)
+    let tokensJson;
+    if (this.#tokenManager) {
+      tokensJson = this.#tokenManager.readTokens(userId);
+    } else {
+      tokensJson = this.#tokensStore.get(userId) || {};
+    }
 
     return Object.values(tokensJson).map(token => {
       // Never return the hash
@@ -404,11 +565,22 @@ class AuthService {
     // Hash the provided token value
     const tokenHash = crypto.createHash('sha256').update(tokenValue).digest('hex');
 
-    // Check all users' tokens
-    const userIds = this.#tokensStore.store ? Object.keys(this.#tokensStore.store) : [];
+    // Get list of user IDs (prefer file-based, fallback to jim)
+    let userIds;
+    if (this.#tokenManager) {
+      userIds = this.#tokenManager.listUserIds();
+    } else {
+      userIds = this.#tokensStore.store ? Object.keys(this.#tokensStore.store) : [];
+    }
 
     for (const userId of userIds) {
-      const userTokens = this.#tokensStore.get(userId) || {};
+      // Load user tokens (prefer file-based, fallback to jim)
+      let userTokens;
+      if (this.#tokenManager) {
+        userTokens = this.#tokenManager.readTokens(userId);
+      } else {
+        userTokens = this.#tokensStore.get(userId) || {};
+      }
 
       for (const tokenId in userTokens) {
         const token = userTokens[tokenId];
@@ -423,7 +595,13 @@ class AuthService {
         if (token.hash === tokenHash) {
           // Update last used
           token.lastUsedAt = new Date().toISOString();
-          this.#tokensStore.set(userId, userTokens);
+
+          // Save updated token (prefer file-based, fallback to jim)
+          if (this.#tokenManager) {
+            this.#tokenManager.writeTokens(userId, userTokens);
+          } else {
+            this.#tokensStore.set(userId, userTokens);
+          }
 
           return { userId, tokenId };
         }
@@ -447,11 +625,23 @@ class AuthService {
     // Hash the provided token value
     const tokenHash = crypto.createHash('sha256').update(tokenValue).digest('hex');
 
-    // Check all users' tokens
-    const userIds = this.#tokensStore.store ? Object.keys(this.#tokensStore.store) : [];
+    // Get list of user IDs (prefer file-based, fallback to jim)
+    let userIds;
+    if (this.#tokenManager) {
+      userIds = this.#tokenManager.listUserIds();
+    } else {
+      userIds = this.#tokensStore.store ? Object.keys(this.#tokensStore.store) : [];
+    }
 
     for (const userId of userIds) {
-      const userTokens = this.#tokensStore.get(userId) || {};
+      // Load user tokens (prefer file-based, fallback to jim)
+      let userTokens;
+      if (this.#tokenManager) {
+        userTokens = this.#tokenManager.readTokens(userId);
+      } else {
+        userTokens = this.#tokensStore.get(userId) || {};
+      }
+
       let tokenFound = false;
       let tokenId;
 
@@ -475,11 +665,15 @@ class AuthService {
       }
 
       if (tokenFound) {
-        // Save tokens (or delete if empty)
-        if (Object.keys(userTokens).length === 0) {
-          this.#tokensStore.delete(userId);
+        // Save tokens (prefer file-based, fallback to jim)
+        if (this.#tokenManager) {
+          this.#tokenManager.writeTokens(userId, userTokens);
         } else {
-          this.#tokensStore.set(userId, userTokens);
+          if (Object.keys(userTokens).length === 0) {
+            this.#tokensStore.delete(userId);
+          } else {
+            this.#tokensStore.set(userId, userTokens);
+          }
         }
 
         return { userId, tokenId };

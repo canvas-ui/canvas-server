@@ -24,8 +24,8 @@ export default async function workspaceTokenRoutes(fastify, options) {
       },
       body: {
         type: 'object',
-        required: ['permissions'],
         properties: {
+          name: { type: 'string' },
           permissions: {
             type: 'array',
             items: { type: 'string', enum: ['read', 'write', 'admin'] },
@@ -49,44 +49,27 @@ export default async function workspaceTokenRoutes(fastify, options) {
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());
       }
 
-      const { permissions, description, expiresAt } = request.body;
+      const { name, permissions, description, expiresAt } = request.body;
       const workspace = request.workspace;
 
-      // Generate new API token
-      const tokenValue = `canvas-${crypto.randomBytes(24).toString('hex')}`;
-      const tokenHash = `sha256:${crypto.createHash('sha256').update(tokenValue).digest('hex')}`;
-
-      // Create token data
-      const tokenData = {
-        permissions,
+      // Use the new Workspace.createToken method
+      const token = workspace.createToken({
+        name: name || 'Workspace access token',
+        permissions: permissions || ['read', 'write'],
         description: description || 'Workspace sharing token',
-        createdAt: new Date().toISOString(),
         expiresAt: expiresAt || null
-      };
-
-      // Update workspace ACL
-      const currentACL = workspace.acl || { tokens: {} };
-      currentACL.tokens = currentACL.tokens || {};
-      currentACL.tokens[tokenHash] = tokenData;
-
-      // Save the updated ACL
-      const success = await fastify.workspaceManager.updateWorkspaceConfig(
-        workspace.owner,
-        workspace.id,
-        request.user.id,
-        { acl: currentACL }
-      );
-
-      if (!success) {
-        const responseObject = new ResponseObject().serverError('Failed to save workspace sharing token');
-        return reply.code(responseObject.statusCode).send(responseObject.getResponse());
-      }
+      });
 
       // Return token info (including the actual token value)
       const responseData = {
-        tokenHash,
-        token: tokenValue, // Only returned on creation
-        ...tokenData
+        id: token.id,
+        hash: token.hash,
+        token: token.value, // Only returned on creation
+        name: token.name,
+        permissions: token.permissions,
+        description: token.description,
+        createdAt: token.createdAt,
+        expiresAt: token.expiresAt
       };
 
       const responseObject = new ResponseObject().created(responseData, 'Workspace sharing token created successfully');
@@ -120,16 +103,17 @@ export default async function workspaceTokenRoutes(fastify, options) {
       }
 
       const workspace = request.workspace;
-      const tokens = workspace.acl?.tokens || {};
 
-      // Convert to array and hide sensitive data
-      const tokenList = Object.entries(tokens).map(([tokenHash, tokenData]) => ({
-        tokenHash,
-        permissions: tokenData.permissions,
-        description: tokenData.description,
-        createdAt: tokenData.createdAt,
-        expiresAt: tokenData.expiresAt,
-        isExpired: tokenData.expiresAt ? new Date() > new Date(tokenData.expiresAt) : false
+      // Use the new Workspace.listTokens method
+      const tokenList = workspace.listTokens().map(token => ({
+        hash: token.hash,
+        id: token.id,
+        name: token.name,
+        permissions: token.permissions,
+        description: token.description,
+        createdAt: token.createdAt,
+        expiresAt: token.expiresAt,
+        isExpired: token.expiresAt ? new Date() > new Date(token.expiresAt) : false
       }));
 
       const responseObject = new ResponseObject().found(tokenList, 'Workspace sharing tokens retrieved successfully', 200, tokenList.length);
@@ -257,28 +241,11 @@ export default async function workspaceTokenRoutes(fastify, options) {
       const workspace = request.workspace;
       const tokenHash = request.params.tokenHash;
 
-      const currentACL = workspace.acl || { tokens: {} };
-      const tokens = currentACL.tokens || {};
+      // Use the new Workspace.deleteToken method
+      const deleted = workspace.deleteToken(tokenHash);
 
-      // Check if token exists
-      if (!tokens[tokenHash]) {
+      if (!deleted) {
         const responseObject = new ResponseObject().notFound('Sharing token not found');
-        return reply.code(responseObject.statusCode).send(responseObject.getResponse());
-      }
-
-      // Remove the token
-      delete tokens[tokenHash];
-
-      // Save the updated ACL
-      const success = await fastify.workspaceManager.updateWorkspaceConfig(
-        workspace.owner,
-        workspace.id,
-        request.user.id,
-        { acl: currentACL }
-      );
-
-      if (!success) {
-        const responseObject = new ResponseObject().serverError('Failed to revoke workspace sharing token');
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());
       }
 

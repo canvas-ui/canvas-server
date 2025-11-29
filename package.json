@@ -52,6 +52,7 @@
     "fastmcp": "^3.24.0",
     "imapflow": "^1.1.1",
     "jsonwebtoken": "^9.0.2",
+    "ldapjs": "^3.0.7",
     "lmdb": "^3.4.4",
     "nanoid": "^5.1.5",
     "node-machine-id": "^1.1.12",

@@ -126,9 +126,14 @@ class Server extends EventEmitter {
         // Initialize core services
         await this.#initializeCoreServices();
 
-        // Initialize auth service
+        // Initialize auth service with user home path
         this.#authService = authService;
-        await this.#authService.initialize();
+        await this.#authService.initialize({
+            userHomePath: env.user.home
+        });
+
+        // Inject authService into users for token generation
+        this.#users.setAuthService(this.#authService);
 
         // Create admin user if needed
         if (env.admin?.email) {
@@ -198,6 +203,8 @@ class Server extends EventEmitter {
         await this.#contextManager.initialize();
         await this.#roles.initialize();
         await this.#agents.initialize();
+
+        // Note: authService will be injected after initialization in the main initialize method
     }
 
     async #createAdminUser() {

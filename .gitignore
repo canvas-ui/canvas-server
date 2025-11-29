@@ -10,6 +10,7 @@
 !/server/config/
 /server/config/*
 !/server/config/example-*.json
+!/server/config/*.example.json
 !/server/config/default-*.json
 /data/**
 !/data/.keep

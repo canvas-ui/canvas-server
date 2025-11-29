@@ -4,6 +4,8 @@
 import EventEmitter from 'eventemitter2';
 import path from 'path';
 import Conf from 'conf';
+import crypto from 'crypto';
+import { v4 as uuidv4 } from 'uuid';
 import createDebug from 'debug';
 const debug = createDebug('workspace');
 
@@ -207,6 +209,116 @@ class Workspace extends EventEmitter {
     clearDatabaseSync() {
         if (!this.isActive) { throw new Error('Workspace not active'); }
         return this.db.clearSync();
+    }
+
+    /**
+     * Token Management Methods
+     */
+
+    /**
+     * Create a new access token for this workspace
+     * @param {Object} options - Token options
+     * @param {string} options.name - Token name
+     * @param {string} options.description - Token description
+     * @param {Array<string>} options.permissions - Permissions array (e.g., ['read', 'write'])
+     * @param {string|null} options.expiresAt - Expiration date (ISO string) or null
+     * @returns {Object} - Created token with value
+     */
+    createToken(options = {}) {
+        const tokenId = uuidv4();
+        const name = options.name || 'Workspace token';
+        const description = options.description || '';
+        const permissions = options.permissions || ['read', 'write'];
+        const expiresAt = options.expiresAt || null;
+
+        // Generate token value with canvas-workspace- prefix
+        const randomPart = crypto.randomBytes(24).toString('hex');
+        const tokenValue = `canvas-workspace-${randomPart}`;
+        const tokenHash = crypto.createHash('sha256').update(tokenValue).digest('hex');
+
+        const token = {
+            id: tokenId,
+            name,
+            description,
+            permissions,
+            createdAt: new Date().toISOString(),
+            expiresAt
+        };
+
+        // Get current ACL
+        const acl = this.#configStore.get('acl') || { tokens: {} };
+        if (!acl.tokens) acl.tokens = {};
+
+        // Store with sha256: prefix to match the template structure
+        acl.tokens[`sha256:${tokenHash}`] = token;
+
+        // Save to config
+        this.#configStore.set('acl', acl);
+
+        // Return token with value (only returned on creation)
+        return {
+            ...token,
+            value: tokenValue,
+            hash: `sha256:${tokenHash}`
+        };
+    }
+
+    /**
+     * List all tokens for this workspace
+     * @returns {Array<Object>} - Array of tokens (without hashes)
+     */
+    listTokens() {
+        const acl = this.#configStore.get('acl') || { tokens: {} };
+        const tokens = acl.tokens || {};
+
+        return Object.entries(tokens).map(([hash, token]) => ({
+            ...token,
+            hash // Include the hash key for deletion
+        }));
+    }
+
+    /**
+     * Delete a token by hash
+     * @param {string} hash - Token hash (with sha256: prefix)
+     * @returns {boolean} - True if deleted
+     */
+    deleteToken(hash) {
+        const acl = this.#configStore.get('acl') || { tokens: {} };
+        if (!acl.tokens || !acl.tokens[hash]) {
+            return false;
+        }
+
+        delete acl.tokens[hash];
+        this.#configStore.set('acl', acl);
+        return true;
+    }
+
+    /**
+     * Verify a token against this workspace's ACL
+     * @param {string} tokenValue - Token value to verify
+     * @returns {Object|null} - Token data if valid, null otherwise
+     */
+    verifyToken(tokenValue) {
+        if (!tokenValue) return null;
+
+        const tokenHash = crypto.createHash('sha256').update(tokenValue).digest('hex');
+        const hashKey = `sha256:${tokenHash}`;
+
+        const acl = this.#configStore.get('acl') || { tokens: {} };
+        const token = acl.tokens?.[hashKey];
+
+        if (!token) return null;
+
+        // Check if token is expired
+        if (token.expiresAt && new Date(token.expiresAt) < new Date()) {
+            return null;
+        }
+
+        return {
+            ...token,
+            workspaceId: this.id,
+            workspaceName: this.name
+        };
     }
 
     toJSON() {

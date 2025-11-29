@@ -2,12 +2,13 @@
 
 import authService from './service.js';
 import imapAuthStrategy from './imap-strategy.js';
+import ldapAuthStrategy from './ldap-strategy.js';
 import createError from '@fastify/error';
 import { authService as _authService } from './service.js';
 import ResponseObject from '../ResponseObject.js';
 
 // Export the auth service and strategies
-export { authService, imapAuthStrategy };
+export { authService, imapAuthStrategy, ldapAuthStrategy };
 
 /**
  * Custom errors
@@ -193,7 +194,7 @@ export async function verifyJWT(request, reply) {
 }
 
 /**
- * Verify API token for authenticated routes
+ * Verify API token (user-level or resource-level) for authenticated routes
  * @param {Object} request - Fastify request object
  * @param {Object} reply - Fastify reply object
  */
@@ -223,19 +224,47 @@ export async function verifyApiToken(request, reply) {
   }
 
   console.log(`[Auth/API] Verifying API token: ${token.substring(0, 10)}...`);
-  console.log(`[Auth/API] Full token: ${token}`);
-  console.log(`[Auth/API] Server has authService: ${!!request.server.authService}`);
 
   let tokenResult;
+  let isResourceToken = false;
+
+  // First, try user-level token verification
   try {
     tokenResult = await request.server.authService.verifyApiToken(token);
-    console.log(`[Auth/API] Token verification result: ${JSON.stringify(tokenResult)}`);
+    console.log(`[Auth/API] User token verification result: ${JSON.stringify(tokenResult)}`);
   } catch (tokenError) {
-    console.error(`[Auth/API] Token verification error: ${tokenError.message}`);
-    console.error(`[Auth/API] Token verification error stack: ${tokenError.stack}`);
-    const error = new Error(`API token verification failed: ${tokenError.message}`);
-    error.statusCode = 401;
-    throw error;
+    console.error(`[Auth/API] User token verification error: ${tokenError.message}`);
+  }
+
+  // If user token not found, try resource-level token (workspace, context, etc.)
+  if (!tokenResult && token.startsWith('canvas-workspace-')) {
+    console.log('[Auth/API] Attempting workspace token verification');
+
+    // Extract workspace identifier from route params (if available)
+    const workspaceName = request.params?.workspace || request.params?.name;
+
+    if (workspaceName && request.server.workspaceManager) {
+      try {
+        const workspace = await request.server.workspaceManager.get(workspaceName);
+        const workspaceTokenData = workspace.verifyToken(token);
+
+        if (workspaceTokenData) {
+          // Workspace token is valid - need to get workspace owner as the user
+          const owner = workspace.owner;
+          tokenResult = {
+            userId: owner,
+            workspaceId: workspace.id,
+            workspaceName: workspace.name,
+            permissions: workspaceTokenData.permissions,
+            tokenType: 'workspace'
+          };
+          isResourceToken = true;
+          console.log(`[Auth/API] Workspace token verified for workspace: ${workspace.name}`);
+        }
+      } catch (wsError) {
+        console.error(`[Auth/API] Workspace token verification failed: ${wsError.message}`);
+      }
+    }
   }
 
   if (!tokenResult) {
@@ -311,15 +340,26 @@ export async function verifyApiToken(request, reply) {
   request.user = essentialUserData; // Set request.user directly
   request.token = tokenResult.tokenId; // Keep this for API token specific logic if any
 
+  // If this is a resource token, add resource metadata to request
+  if (isResourceToken) {
+    request.resourceToken = {
+      type: tokenResult.tokenType,
+      workspaceId: tokenResult.workspaceId,
+      workspaceName: tokenResult.workspaceName,
+      permissions: tokenResult.permissions
+    };
+    console.log(`[Auth/API] Resource token authenticated: ${tokenResult.tokenType}`);
+  }
+
   console.log(`[Auth/API] Authentication successful for user ${essentialUserData.id}`);
 }
 
 /**
- * Login with email/password (supports both local and IMAP authentication)
+ * Login with email/password (supports local, IMAP, and LDAP authentication)
  * @param {string} email - User email
  * @param {string} password - User password
  * @param {Object} userManager - User manager instance
- * @param {string} strategy - Authentication strategy ('local', 'imap', 'auto')
+ * @param {string} strategy - Authentication strategy ('local', 'imap', 'ldap', 'auto')
  * @returns {Promise<Object>} - User object and token
  */
 export async function login(email, password, userManager, strategy = 'auto') {
@@ -334,7 +374,7 @@ export async function login(email, password, userManager, strategy = 'auto') {
 
   console.log(`[Auth/Login] Attempting login for ${email} with strategy: ${strategy}`);
 
-  // Auto-detect strategy based on existing user or IMAP configuration
+  // Auto-detect strategy based on existing user or external auth configuration
   if (strategy === 'auto') {
     // First check if user exists locally
     let existingUser;
@@ -345,22 +385,54 @@ export async function login(email, password, userManager, strategy = 'auto') {
       existingUser = null;
     }
 
-    if (existingUser && existingUser.authMethod === 'imap') {
-      strategy = 'imap';
+    if (existingUser && existingUser.authMethod) {
+      // Use the auth method stored with the user
+      strategy = existingUser.authMethod;
     } else if (existingUser) {
       strategy = 'local';
     } else {
-      // User doesn't exist, check if IMAP is configured for this domain
+      // User doesn't exist, check if external auth is configured
       const domain = email.split('@')[1]?.toLowerCase();
-      if (domain && imapAuthStrategy.isEnabled() && imapAuthStrategy.getImapConfig(domain)) {
+
+      // Check LDAP first (usually for internal/corporate users)
+      if (ldapAuthStrategy.isEnabled()) {
+        strategy = 'ldap';
+      }
+      // Then check IMAP for specific domains
+      else if (domain && imapAuthStrategy.isEnabled() && imapAuthStrategy.getImapConfig(domain)) {
         strategy = 'imap';
-      } else {
+      }
+      // Default to local
+      else {
         strategy = 'local';
       }
     }
   }
 
   console.log(`[Auth/Login] Using authentication strategy: ${strategy}`);
+
+  // LDAP Authentication
+  if (strategy === 'ldap') {
+    try {
+      // Initialize LDAP strategy if not already done
+      await ldapAuthStrategy.initialize();
+
+      // Authenticate against LDAP server (with fallback to secondary servers)
+      const ldapResult = await ldapAuthStrategy.authenticateWithFallback(email, password);
+
+      // Get or create user
+      const user = await ldapAuthStrategy.createUserFromLdapAuth(ldapResult, userManager);
+
+      console.log(`[Auth/Login] LDAP login successful for user: ${user.id}`);
+      return { user, authMethod: 'ldap' };
+    } catch (error) {
+      console.log(`[Auth/Login] LDAP authentication failed: ${error.message}`);
+      // If LDAP fails explicitly, don't fall back
+      if (strategy === 'ldap') {
+        throw error;
+      }
+    }
+  }
 
   // IMAP Authentication
   if (strategy === 'imap') {

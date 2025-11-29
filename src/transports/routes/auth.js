@@ -1,6 +1,6 @@
 'use strict';
 
-import { authService, imapAuthStrategy, login, register, verifyEmail, requestPasswordReset, resetPassword, validateUser, requestEmailVerification } from '../auth/strategies.js';
+import { authService, imapAuthStrategy, ldapAuthStrategy, login, register, verifyEmail, requestPasswordReset, resetPassword, validateUser, requestEmailVerification } from '../auth/strategies.js';
 import ResponseObject from '../ResponseObject.js';
 
 // Persistent rate limiter (per-IP) using jim index store to survive process restarts
@@ -49,6 +49,7 @@ export default async function authRoutes(fastify, options) {
   fastify.get('/config', async (request, reply) => {
     try {
       await imapAuthStrategy.initialize();
+      await ldapAuthStrategy.initialize();
 
       const config = {
         strategies: {
@@ -60,6 +61,9 @@ export default async function authRoutes(fastify, options) {
           imap: {
             enabled: imapAuthStrategy.isEnabled(),
             domains: imapAuthStrategy.getAvailableDomains()
+          },
+          ldap: {
+            enabled: ldapAuthStrategy.isEnabled()
           }
         }
       };
@@ -83,7 +87,7 @@ export default async function authRoutes(fastify, options) {
         properties: {
           email: { type: 'string', format: 'email' },
           password: { type: 'string', minLength: 8 },
-          strategy: { type: 'string', enum: ['local', 'imap', 'auto'] }
+          strategy: { type: 'string', enum: ['local', 'imap', 'ldap', 'auto'] }
         }
       }
     }
@@ -98,7 +102,7 @@ export default async function authRoutes(fastify, options) {
 
       const { email, password, strategy = 'auto' } = request.body;
 
-      // Ensure IMAP strategy is initialized before login attempt
+      // Ensure external auth strategies are initialized before login attempt
       if (strategy === 'imap' || strategy === 'auto') {
         try {
           await imapAuthStrategy.initialize();
@@ -107,6 +111,19 @@ export default async function authRoutes(fastify, options) {
           // If strategy is explicitly 'imap', fail fast
           if (strategy === 'imap') {
             const response = new ResponseObject().serverError('IMAP authentication is not available.');
+            return reply.code(response.statusCode).send(response.getResponse());
+          }
+        }
+      }
+
+      if (strategy === 'ldap' || strategy === 'auto') {
+        try {
+          await ldapAuthStrategy.initialize();
+        } catch (error) {
+          fastify.log.warn(`LDAP strategy initialization failed: ${error.message}. LDAP login may be unavailable.`);
+          // If strategy is explicitly 'ldap', fail fast
+          if (strategy === 'ldap') {
+            const response = new ResponseObject().serverError('LDAP authentication is not available.');
             return reply.code(response.statusCode).send(response.getResponse());
           }
         }
@@ -144,6 +161,19 @@ export default async function authRoutes(fastify, options) {
       if (error.code === 'ERR_IMAP_CONFIG') {
         fastify.log.info(`IMAP config error: ${error.message}`);
         const response = new ResponseObject().badRequest('Unsupported login domain - email server not configured');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+
+      // Handle LDAP-specific errors
+      if (error.code === 'ERR_LDAP_AUTH') {
+        fastify.log.info(`LDAP login failed: ${error.message}`);
+        const response = new ResponseObject().unauthorized(error.message || 'LDAP authentication failed');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+
+      if (error.code === 'ERR_LDAP_CONFIG') {
+        fastify.log.info(`LDAP config error: ${error.message}`);
+        const response = new ResponseObject().badRequest('LDAP authentication not configured properly');
         return reply.code(response.statusCode).send(response.getResponse());
       }
 

@@ -34,6 +34,7 @@ class Users extends EventEmitter {
     #users = new Map();     // Initialized User Instances, keeps this implementation as slim as possible
     #workspaceManager;      // Workspace manager
     #contextManager;        // Context manager
+    #authService;           // Auth service (for token generation)
     #initialized = false;   // Manager initialized flag
 
     /**
@@ -93,6 +94,12 @@ class Users extends EventEmitter {
     setContextManager(manager) {
         if (!this.#contextManager) {
             this.#contextManager = manager;
+        }
+    }
+
+    setAuthService(authService) {
+        if (!this.#authService) {
+            this.#authService = authService;
         }
     }
 
@@ -183,6 +190,21 @@ class Users extends EventEmitter {
                 id: 'default',
             });
 
+            // Auto-generate global API token for the user
+            if (this.#authService) {
+                try {
+                    const globalToken = await this.#authService.createToken(user.id, {
+                        type: 'api',
+                        name: 'Default API Token',
+                        description: 'Auto-generated global API token for user access'
+                    });
+                    debug(`Global API token generated for user ${user.id}: ${globalToken.id}`);
+                } catch (tokenError) {
+                    debug(`Warning: Failed to generate global API token for user ${user.id}: ${tokenError.message}`);
+                    // Non-fatal - user can create tokens manually later
+                }
+            }
+
             this.#setupUserEventListeners(user);
             this.emit('user.created', { id, name, email });
             debug(`User created: ${user.name} (${user.email}) (ID: ${user.id})`);
@@ -256,6 +278,10 @@ class Users extends EventEmitter {
 
     async getUserById(id) {
         return this.get(id);
+    }
+
+    async createUser(userData) {
+        return this.create(userData);
     }
 
     /**

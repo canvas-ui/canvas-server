@@ -104,7 +104,6 @@ class WorkspaceManager extends EventEmitter {
 
     #indexStore;        // Persistent index
     #users;             // Users service
-    #users;             // Users service
     #roles;             // Roles service
     #contextManager;    // Context Manager
 

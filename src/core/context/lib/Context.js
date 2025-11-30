@@ -43,6 +43,9 @@ class Context extends EventEmitter {
 
     #filterArray = [];
 
+    // Rules for auto-linking
+    #rules = [];
+
     // Workspace references
     #workspace; // Current workspace instance
     #db; // workspace.db
@@ -104,6 +107,9 @@ class Context extends EventEmitter {
         // Context variables
         this.#serverContextArray = options.serverContextArray || [];
         this.#clientContextArray = options.clientContextArray || [];
+
+        // Rules
+        this.#rules = options.rules || [];
 
         // Set up event forwarding from workspace
         this.#setupWorkspaceEventForwarding();
@@ -215,6 +221,7 @@ class Context extends EventEmitter {
     get contextBitmapArray() { return this.#contextBitmapArray; }
     get featureBitmapArray() { return this.#featureBitmapArray; }
     get filterArray() { return this.#filterArray; }
+    get rules() { return [...this.#rules]; }
 
     /**
      * Helper Methods
@@ -760,6 +767,44 @@ class Context extends EventEmitter {
     clearFeatureBitmaps() {
         this.#featureBitmapArray = [];
         this.emit('context.updated', { id: this.#id, featureBitmapArray: this.#featureBitmapArray });
+    }
+
+    /**
+     * Rules API
+     */
+
+    async addRule(rule) {
+        if (!rule || !rule.id || !rule.type) {
+            throw new Error('Invalid rule object. Must have id and type.');
+        }
+
+        // Check for duplicate rule ID
+        if (this.#rules.some(r => r.id === rule.id)) {
+            throw new Error(`Rule with ID ${rule.id} already exists.`);
+        }
+
+        this.#rules.push(rule);
+        this.#updatedAt = new Date().toISOString();
+        this.emit('context.rule.added', { id: this.#id, rule });
+
+        // Save changes
+        await this.#contextManager.saveContext(this.#userId, this);
+        return rule;
+    }
+
+    async removeRule(ruleId) {
+        const initialLength = this.#rules.length;
+        this.#rules = this.#rules.filter(r => r.id !== ruleId);
+
+        if (this.#rules.length !== initialLength) {
+            this.#updatedAt = new Date().toISOString();
+            this.emit('context.rule.removed', { id: this.#id, ruleId });
+
+            // Save changes
+            await this.#contextManager.saveContext(this.#userId, this);
+            return true;
+        }
+        return false;
     }
 
     /**
@@ -1413,6 +1458,7 @@ class Context extends EventEmitter {
             featureBitmapArray: this.#featureBitmapArray,
             filterArray: this.#filterArray,
             pendingUrl: this.#pendingUrl || null,
+            rules: this.#rules,
         };
     }
 

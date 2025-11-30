@@ -198,6 +198,7 @@ class Server extends EventEmitter {
 
         this.#users.setWorkspaceManager(this.#workspaceManager);
         this.#users.setContextManager(this.#contextManager);
+        this.#workspaceManager.setContextManager(this.#contextManager);
 
         await this.#users.initialize();
         await this.#workspaceManager.initialize(); // This initializes dotfileService

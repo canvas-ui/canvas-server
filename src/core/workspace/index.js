@@ -15,6 +15,8 @@ const debug = createDebug('workspace-manager');
 import Workspace from './Workspace.js';
 import DotfileManager from './services/dotfile/index.js';
 import HomeService from './services/home/index.js';
+import HookService from './services/hook/index.js';
+import ImapService from './services/imap/index.js';
 
 // Constants
 import {
@@ -100,7 +102,9 @@ class WorkspaceManager extends EventEmitter {
 
     #indexStore;        // Persistent index
     #users;             // Users service
+    #users;             // Users service
     #roles;             // Roles service
+    #contextManager;    // Context Manager
 
     #workspaces = new Map(); // Runtime cache
     #initialized = false;
@@ -112,7 +116,10 @@ class WorkspaceManager extends EventEmitter {
 
     // Services
     dotfileService = null;
+    dotfileService = null;
     homeService = null;
+    hookService = null;
+    imapService = null;
 
     constructor(options = {}) {
         super(options.eventEmitterOptions);
@@ -142,6 +149,20 @@ class WorkspaceManager extends EventEmitter {
         });
         await this.homeService.initialize();
 
+        // Initialize Hook Service
+        this.hookService = new HookService({
+            workspaceManager: this,
+            contextManager: this.#contextManager
+        });
+        await this.hookService.initialize();
+
+        // Initialize Imap Service
+        this.imapService = new ImapService({
+            workspaceManager: this,
+            hookService: this.hookService
+        });
+        await this.imapService.initialize();
+
         // Scan/Validate index and rebuild lookups
         await this.#scanWorkspaces();
         await this.#rebuildIndexes();
@@ -168,7 +189,16 @@ class WorkspaceManager extends EventEmitter {
                 result = await this.dotfileService.enable(workspace, userId);
                 break;
             case 'home':
+            case 'home':
                 result = await this.homeService.enable(workspace);
+                break;
+            case 'hook':
+                // Hooks are always enabled if service is initialized, but we can toggle specific hooks
+                // For now, just return true
+                result = true;
+                break;
+            case 'imap':
+                result = await this.imapService.enable(workspace);
                 break;
             default:
                 throw new Error(`Unknown service: ${serviceName}`);
@@ -237,6 +267,10 @@ class WorkspaceManager extends EventEmitter {
         this.#roles = roles;
     }
 
+    setContextManager(contextManager) {
+        this.#contextManager = contextManager;
+    }
+
     async listWorkspaces(userId) {
         if (!this.#initialized) throw new Error('Not initialized');
 
@@ -290,7 +324,7 @@ class WorkspaceManager extends EventEmitter {
             const conf = new Conf({
                 configName: path.basename(entry.configPath, '.json'),
                 cwd: path.dirname(entry.configPath),
-                 accessPropertiesByDotNotation: false
+                accessPropertiesByDotNotation: false
             });
 
             const workspace = new Workspace({
@@ -319,7 +353,7 @@ class WorkspaceManager extends EventEmitter {
 
         // Check uniqueness
         if (this.resolveWorkspaceId(userId, sanitizedName, host)) {
-             throw new Error(`Workspace with name "${sanitizedName}" already exists for user ${userId}`);
+            throw new Error(`Workspace with name "${sanitizedName}" already exists for user ${userId}`);
         }
 
         const workspaceId = uuidv4(); // Or nanoid if preferred
@@ -442,9 +476,9 @@ class WorkspaceManager extends EventEmitter {
 
         const entry = this.#findInIndex(workspaceId);
         if (entry) {
-             const indexKey = `${entry.owner}/${entry.id}`;
-             this.#indexStore.delete(indexKey);
-             this.#removeFromIndexes(entry.owner, entry.name, entry.host || WORKSPACE_DEFAULT_HOST, entry.reference);
+            const indexKey = `${entry.owner}/${entry.id}`;
+            this.#indexStore.delete(indexKey);
+            this.#removeFromIndexes(entry.owner, entry.name, entry.host || WORKSPACE_DEFAULT_HOST, entry.reference);
         }
 
         if (destroyData && ws.rootPath) {
@@ -464,22 +498,22 @@ class WorkspaceManager extends EventEmitter {
     }
 
     resolveWorkspaceIdFromReference(workspaceRef) {
-         const parsed = parseWorkspaceReference(workspaceRef);
-         if (!parsed) return null;
+        const parsed = parseWorkspaceReference(workspaceRef);
+        if (!parsed) return null;
 
-         // This implies strict reference matching or we reconstruct the key
-         // If the reference is stored in #referenceIndex, use it
-         if (this.#referenceIndex.has(workspaceRef)) {
-             return this.#referenceIndex.get(workspaceRef);
-         }
+        // This implies strict reference matching or we reconstruct the key
+        // If the reference is stored in #referenceIndex, use it
+        if (this.#referenceIndex.has(workspaceRef)) {
+            return this.#referenceIndex.get(workspaceRef);
+        }
 
-         // Fallback: try to reconstruct name key if we can resolve user identifier
-         // But here we might need async user resolution if the ref uses email/name
-         // The old code did synchronous lookup if possible or async elsewhere.
-         // Here we stick to synchronous lookups on the index.
-         // If reference contains ID, we might need to handle that.
+        // Fallback: try to reconstruct name key if we can resolve user identifier
+        // But here we might need async user resolution if the ref uses email/name
+        // The old code did synchronous lookup if possible or async elsewhere.
+        // Here we stick to synchronous lookups on the index.
+        // If reference contains ID, we might need to handle that.
 
-         return null;
+        return null;
     }
 
     async resolveWorkspaceIdFromSimpleIdentifier(workspaceIdentifier) {

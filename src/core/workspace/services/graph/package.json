@@ -1,0 +1,10 @@
+{
+    "name": "@canvas/graph-service",
+    "version": "1.0.0",
+    "description": "Microsoft 365 integration service for Canvas",
+    "type": "module",
+    "dependencies": {
+        "@microsoft/microsoft-graph-client": "^3.0.7",
+        "@azure/identity": "^4.0.0"
+    }
+}

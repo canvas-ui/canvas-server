@@ -17,6 +17,8 @@ import DotfileManager from './services/dotfile/index.js';
 import HomeService from './services/home/index.js';
 import HookService from './services/hook/index.js';
 import ImapService from './services/imap/index.js';
+import GraphService from './services/graph/index.js';
+import ChatService from './services/chat/index.js';
 
 // Constants
 import {
@@ -120,6 +122,8 @@ class WorkspaceManager extends EventEmitter {
     homeService = null;
     hookService = null;
     imapService = null;
+    graphService = null;
+    chatService = null;
 
     constructor(options = {}) {
         super(options.eventEmitterOptions);
@@ -163,6 +167,20 @@ class WorkspaceManager extends EventEmitter {
         });
         await this.imapService.initialize();
 
+        // Initialize Graph Service
+        this.graphService = new GraphService({
+            workspaceManager: this,
+            hookService: this.hookService
+        });
+        await this.graphService.initialize();
+
+        // Initialize Chat Service
+        this.chatService = new ChatService({
+            workspaceManager: this,
+            hookService: this.hookService
+        });
+        await this.chatService.initialize();
+
         // Scan/Validate index and rebuild lookups
         await this.#scanWorkspaces();
         await this.#rebuildIndexes();
@@ -199,6 +217,12 @@ class WorkspaceManager extends EventEmitter {
                 break;
             case 'imap':
                 result = await this.imapService.enable(workspace);
+                break;
+            case 'graph':
+                result = await this.graphService.enable(workspace);
+                break;
+            case 'chat':
+                result = await this.chatService.enable(workspace);
                 break;
             default:
                 throw new Error(`Unknown service: ${serviceName}`);

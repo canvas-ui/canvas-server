@@ -18,9 +18,9 @@ export default async function workspaceRoutes(fastify, options) {
    */
   const validateUserWithResponse = (request, reply) => {
     if (!validateUser(request.user, ['id', 'email'])) {
-        const response = new ResponseObject().unauthorized('Valid authentication required');
-        reply.code(response.statusCode).send(response.getResponse());
-        return false;
+      const response = new ResponseObject().unauthorized('Valid authentication required');
+      reply.code(response.statusCode).send(response.getResponse());
+      return false;
     }
     return true;
   };
@@ -58,6 +58,10 @@ export default async function workspaceRoutes(fastify, options) {
     prefix: '/:id/services',
     onRequest: [resolveWorkspaceAddress]
   });
+  fastify.register(import('./settings.js'), {
+    prefix: '/:id',
+    onRequest: [resolveWorkspaceAddress]
+  });
 
   // List all workspaces
   fastify.get('/', {
@@ -80,7 +84,7 @@ export default async function workspaceRoutes(fastify, options) {
     } catch (error) {
       fastify.log.error(error);
       const response = new ResponseObject().serverError('Failed to list workspaces');
-        return reply.code(response.statusCode).send(response.getResponse());
+      return reply.code(response.statusCode).send(response.getResponse());
     }
   });
 
@@ -105,7 +109,7 @@ export default async function workspaceRoutes(fastify, options) {
     }
   }, async (request, reply) => {
     if (!validateUserWithResponse(request, reply)) {
-        return;
+      return;
     }
     try {
       const workspace = await fastify.workspaceManager.createWorkspace(
@@ -209,7 +213,7 @@ export default async function workspaceRoutes(fastify, options) {
     }
   }, async (request, reply) => {
     if (!validateUserWithResponse(request, reply)) {
-        return;
+      return;
     }
     try {
       // Access already validated by middleware
@@ -253,7 +257,7 @@ export default async function workspaceRoutes(fastify, options) {
     }
   }, async (request, reply) => {
     if (!validateUserWithResponse(request, reply)) {
-        return;
+      return;
     }
     try {
       // Prevent deletion of universe workspace

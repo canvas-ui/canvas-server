@@ -29,6 +29,7 @@ import pingRoute from './routes/ping.js';
 import schemaRoutes from './routes/schemas.js';
 import adminRoutes from './routes/admin/index.js';
 import webdavRoutes from './routes/webdav.js';
+import menuRoutes from './routes/menu.js';
 // import { mcpPlugin } from './mcp/index.js'; // DISABLED for now
 
 // WebSocket handlers
@@ -262,6 +263,7 @@ export async function createServer(options = {}) {
   // Register routes
   server.register(pingRoute);
   server.register(authRoutes, { prefix: '/rest/v2/auth' });
+  server.register(menuRoutes, { prefix: '/rest/v2', onRequest: [server.authenticate] });
   server.register(workspaceRoutes, { prefix: '/rest/v2/workspaces' });
   server.register(contextRoutes, { prefix: '/rest/v2/contexts' });
   server.register(agentRoutes, { prefix: '/rest/v2/agents' });
@@ -288,7 +290,7 @@ export async function createServer(options = {}) {
     reply.sendFile('index.html');
   });
 
-    // Global error handler
+  // Global error handler
   server.setErrorHandler((error, request, reply) => {
     server.log.error('Global error handler called:', error);
     console.log('Global error handler called:', error.message, 'statusCode:', error.statusCode);
@@ -304,7 +306,7 @@ export async function createServer(options = {}) {
         server.log.info('Authentication failed - closing connection');
         console.log('Authentication failed - closing connection');
 
-                // Create and send the error response
+        // Create and send the error response
         const response = new ResponseObject();
         response.error(error.message || 'Authentication failed', null, statusCode);
 

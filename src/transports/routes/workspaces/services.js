@@ -1,129 +1,155 @@
 'use strict';
 
 import ResponseObject from '../../ResponseObject.js';
-import { requireWorkspaceRead, requireWorkspaceAdmin } from '../../middleware/workspace-acl.js';
+import path from 'path';
+import fs from 'fs/promises';
 
 /**
- * Workspace services routes - enable/disable dotfiles, home, etc.
- * @param {FastifyInstance} fastify - Fastify instance
+ * Workspace Services Routes
+ *
+ * Manages workspace service configuration and lifecycle
  */
 export default async function workspaceServicesRoutes(fastify, options) {
+    const { workspaceManager } = options;
+
     /**
-     * GET /workspaces/:id/services
-     * Get status of all services for a workspace
+     * List all services and their status
      */
-    fastify.get('/', {
-        onRequest: [fastify.authenticate, requireWorkspaceRead()],
-        schema: {
-            params: {
-                type: 'object',
-                required: ['id'],
-                properties: {
-                    id: { type: 'string' }
-                }
-            }
-        }
-    }, async (request, reply) => {
+    fastify.get('/:workspaceId/services', async (request, reply) => {
         try {
-            const workspace = request.workspace;
+            const { workspaceId } = request.params;
+            const userId = request.user.id;
 
-            const status = await fastify.workspaceManager.getServicesStatus(
-                workspace.id,
-                request.user.id
-            );
+            const workspace = await workspaceManager.getWorkspace(workspaceId, userId);
+            if (!workspace) {
+                return reply.code(404).send(ResponseObject.error('Workspace not found'));
+            }
 
-            const responseObject = new ResponseObject().found(
-                status,
-                'Services status retrieved successfully'
-            );
-            return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+            const servicesStatus = await workspaceManager.getServicesStatus(workspaceId, userId);
+
+            return reply.send(ResponseObject.success({ services: servicesStatus }));
         } catch (error) {
-            fastify.log.error(error);
-            const responseObject = new ResponseObject().serverError('Failed to get services status');
-            return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+            request.log.error(error);
+            return reply.code(500).send(ResponseObject.error(error.message));
         }
     });
 
     /**
-     * POST /workspaces/:id/services/:service/enable
-     * Enable a service for a workspace
+     * Enable a service
      */
-    fastify.post('/:service/enable', {
-        onRequest: [fastify.authenticate, requireWorkspaceAdmin()],
-        schema: {
-            params: {
-                type: 'object',
-                required: ['id', 'service'],
-                properties: {
-                    id: { type: 'string' },
-                    service: { type: 'string', enum: ['dotfiles', 'home'] }
-                }
-            }
-        }
-    }, async (request, reply) => {
+    fastify.post('/:workspaceId/services/:serviceName/enable', async (request, reply) => {
         try {
-            const workspace = request.workspace;
-            const serviceName = request.params.service;
+            const { workspaceId, serviceName } = request.params;
+            const userId = request.user.id;
 
-            const result = await fastify.workspaceManager.enableService(
-                workspace.id,
-                request.user.id,
-                serviceName
-            );
+            const workspace = await workspaceManager.getWorkspace(workspaceId, userId);
+            if (!workspace) {
+                return reply.code(404).send(ResponseObject.error('Workspace not found'));
+            }
 
-            const responseObject = new ResponseObject().success(
-                result,
-                `Service '${serviceName}' enabled successfully`
-            );
-            return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+            const result = await workspaceManager.enableService(workspaceId, userId, serviceName);
+
+            return reply.send(ResponseObject.success({
+                message: `Service ${serviceName} enabled successfully`,
+                result
+            }));
         } catch (error) {
-            fastify.log.error(error);
-            const responseObject = new ResponseObject().serverError(
-                error.message || `Failed to enable service`
-            );
-            return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+            request.log.error(error);
+            return reply.code(500).send(ResponseObject.error(error.message));
         }
     });
 
     /**
-     * POST /workspaces/:id/services/:service/disable
-     * Disable a service for a workspace
+     * Disable a service
      */
-    fastify.post('/:service/disable', {
-        onRequest: [fastify.authenticate, requireWorkspaceAdmin()],
-        schema: {
-            params: {
-                type: 'object',
-                required: ['id', 'service'],
-                properties: {
-                    id: { type: 'string' },
-                    service: { type: 'string', enum: ['dotfiles', 'home'] }
-                }
-            }
-        }
-    }, async (request, reply) => {
+    fastify.post('/:workspaceId/services/:serviceName/disable', async (request, reply) => {
         try {
-            const workspace = request.workspace;
-            const serviceName = request.params.service;
+            const { workspaceId, serviceName } = request.params;
+            const userId = request.user.id;
 
-            const result = await fastify.workspaceManager.disableService(
-                workspace.id,
-                request.user.id,
-                serviceName
-            );
+            const workspace = await workspaceManager.getWorkspace(workspaceId, userId);
+            if (!workspace) {
+                return reply.code(404).send(ResponseObject.error('Workspace not found'));
+            }
 
-            const responseObject = new ResponseObject().success(
-                result,
-                `Service '${serviceName}' disabled successfully`
-            );
-            return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+            const result = await workspaceManager.disableService(workspaceId, userId, serviceName);
+
+            return reply.send(ResponseObject.success({
+                message: `Service ${serviceName} disabled successfully`,
+                result
+            }));
         } catch (error) {
-            fastify.log.error(error);
-            const responseObject = new ResponseObject().serverError(
-                error.message || `Failed to disable service`
-            );
-            return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+            request.log.error(error);
+            return reply.code(500).send(ResponseObject.error(error.message));
+        }
+    });
+
+    /**
+     * Get service configuration
+     */
+    fastify.get('/:workspaceId/services/:serviceName/config', async (request, reply) => {
+        try {
+            const { workspaceId, serviceName } = request.params;
+            const userId = request.user.id;
+
+            const workspace = await workspaceManager.getWorkspace(workspaceId, userId);
+            if (!workspace) {
+                return reply.code(404).send(ResponseObject.error('Workspace not found'));
+            }
+
+            // Read config file from workspace/config/{serviceName}.json
+            const configPath = path.join(workspace.rootPath, 'config', `${serviceName}.json`);
+
+            try {
+                const configContent = await fs.readFile(configPath, 'utf-8');
+                const config = JSON.parse(configContent);
+
+                return reply.send(ResponseObject.success({ config }));
+            } catch (err) {
+                if (err.code === 'ENOENT') {
+                    return reply.send(ResponseObject.success({ config: null }));
+                }
+                throw err;
+            }
+        } catch (error) {
+            request.log.error(error);
+            return reply.code(500).send(ResponseObject.error(error.message));
+        }
+    });
+
+    /**
+     * Update service configuration
+     */
+    fastify.put('/:workspaceId/services/:serviceName/config', async (request, reply) => {
+        try {
+            const { workspaceId, serviceName } = request.params;
+            const { config } = request.body;
+            const userId = request.user.id;
+
+            if (!config) {
+                return reply.code(400).send(ResponseObject.error('Config is required'));
+            }
+
+            const workspace = await workspaceManager.getWorkspace(workspaceId, userId);
+            if (!workspace) {
+                return reply.code(404).send(ResponseObject.error('Workspace not found'));
+            }
+
+            // Ensure config directory exists
+            const configDir = path.join(workspace.rootPath, 'config');
+            await fs.mkdir(configDir, { recursive: true });
+
+            // Write config file
+            const configPath = path.join(configDir, `${serviceName}.json`);
+            await fs.writeFile(configPath, JSON.stringify(config, null, 2), 'utf-8');
+
+            return reply.send(ResponseObject.success({
+                message: `Configuration for ${serviceName} updated successfully`,
+                config
+            }));
+        } catch (error) {
+            request.log.error(error);
+            return reply.code(500).send(ResponseObject.error(error.message));
         }
     });
 }
-

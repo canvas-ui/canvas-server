@@ -5,6 +5,7 @@ import documentRoutes from './documents.js';
 import treeRoutes from './tree.js';
 import tokenRoutes from './tokens.js';
 import shareRoutes from './shares.js';
+import rulesRoutes from './rules.js';
 import { resolveContextAddress } from '../../middleware/address-resolver.js';
 
 /**
@@ -38,8 +39,8 @@ export default async function contextRoutes(fastify, options) {
     onRequest: [resolveContextAddress]
   });
 
-  // Additional general routes for /contexts if any can go here
-  // For example, the current GET / and POST / for listing/creating contexts
-  // might stay here or be moved to lifecycle.js depending on preference.
-  // For now, I'll assume they are part of lifecycle.
+  fastify.register(rulesRoutes, {
+    prefix: '/',
+    onRequest: [resolveContextAddress]
+  });
 }

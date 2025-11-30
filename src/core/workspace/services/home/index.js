@@ -58,8 +58,9 @@ class HomeService extends EventEmitter {
         // Initialize Stored instance for this workspace
         const stored = await this.#initializeStored(workspace, homePath);
 
-        // Initial scan
-        await stored.scan();
+        // Initial scan and sync to synapsd
+        const files = await stored.scan();
+        await this.#syncInitialFiles(workspace, stored, files);
         debug(`Home service enabled for workspace ${workspace.id}`);
 
         this.emit('home.enabled', { workspaceId: workspace.id, path: homePath });
@@ -164,129 +165,140 @@ class HomeService extends EventEmitter {
     }
 
     async #handleFileAdd(workspace, data) {
-        debug(`File added in ${workspace.id}: ${data.key}`);
+        if (!workspace.isActive) return;
+
+        const { key, checksums, size, mimeType } = data;
+        if (!key || !checksums?.sha256) {
+            debug(`File add missing key or checksums: key=${key}, checksums=${JSON.stringify(checksums)}`);
+            return;
+        }
+
+        const filename = path.basename(key);
+        if (!filename) {
+            debug(`File add has empty filename from key: ${key}`);
+            return;
+        }
+
+        const dataPath = this.#buildDataPath(key);
+        const checksumString = `sha256/${checksums.sha256}`;
+        debug(`File add: key=${key}, checksum=${checksumString.slice(0, 20)}...`);
+
         try {
-            await this.#upsertFileDocument(workspace, data);
+            const existingDoc = await workspace.db.getDocumentByChecksumString(checksumString);
+            debug(`Lookup result: ${existingDoc ? `found doc ${existingDoc.id}` : 'not found'}`);
+
+            if (existingDoc) {
+                const dataPaths = existingDoc.metadata?.dataPaths || [];
+                debug(`Existing dataPaths: ${JSON.stringify(dataPaths)}`);
+                if (!dataPaths.includes(dataPath)) {
+                    dataPaths.push(dataPath);
+                    await workspace.db.updateDocument(existingDoc.id, {
+                        metadata: { ...existingDoc.metadata, dataPaths },
+                    });
+                    debug(`Added path to file doc ${existingDoc.id}: ${key} -> ${JSON.stringify(dataPaths)}`);
+                } else {
+                    debug(`Path already exists in doc ${existingDoc.id}: ${dataPath}`);
+                }
+            } else {
+                const fileDoc = {
+                    schema: 'data/abstraction/file',
+                    checksumArray: [checksumString],
+                    data: { filename, size, mime: mimeType },
+                    metadata: { dataPaths: [dataPath] },
+                };
+                debug(`Inserting file doc: checksum=${checksumString.slice(0, 20)}..., data=${JSON.stringify(fileDoc.data)}`);
+                await workspace.db.insertDocument(fileDoc, '/');
+                debug(`Created file doc: ${key}`);
+            }
         } catch (err) {
-            debug(`Error handling file add: ${err.message}`);
+            debug(`Error handling file add for key=${key}: ${err.message}`);
         }
     }
 
     async #handleFileChange(workspace, data) {
+        // Stored emits file:unlink + file:add for changes, so this is just for logging
         debug(`File changed in ${workspace.id}: ${data.key}`);
-        try {
-            await this.#upsertFileDocument(workspace, data);
-        } catch (err) {
-            debug(`Error handling file change: ${err.message}`);
-        }
     }
 
     async #handleFileUnlink(workspace, data) {
-        debug(`File unlinked in ${workspace.id}: ${data.key}`);
+        if (!workspace.isActive) return;
+
+        const { key, checksums, locations } = data;
+        if (!checksums?.sha256) {
+            debug(`File unlink missing checksums (not indexed): ${key}`);
+            return;
+        }
+
+        const dataPath = this.#buildDataPath(key);
+        const checksumString = `sha256/${checksums.sha256}`;
+
         try {
-            await this.#removeFileDocument(workspace, data);
+            const existingDoc = await workspace.db.getDocumentByChecksumString(checksumString);
+            if (!existingDoc) return;
+
+            const dataPaths = (existingDoc.metadata?.dataPaths || []).filter(p => p !== dataPath);
+
+            // locations.length === 0 means no more stored references exist
+            if (locations?.length === 0 || dataPaths.length === 0) {
+                await workspace.db.deleteDocument(existingDoc.id);
+                debug(`Deleted file doc (orphaned): ${existingDoc.id}`);
+            } else {
+                await workspace.db.updateDocument(existingDoc.id, {
+                    metadata: { ...existingDoc.metadata, dataPaths },
+                });
+                debug(`Removed path from file doc ${existingDoc.id}: ${key}`);
+            }
         } catch (err) {
             debug(`Error handling file unlink: ${err.message}`);
         }
     }
 
-    /**
-     * Create or update a File document in synapsd
-     */
-    async #upsertFileDocument(workspace, data) {
-        if (!workspace.isActive) {
-            debug(`Workspace ${workspace.id} not active, skipping file document upsert`);
-            return;
-        }
-
-        const { key, checksums, size, mimeType, backend } = data;
-        const dataPath = `file://{WORKSPACE_ROOT}/home/${key}`;
-
-        // Build checksum array in the format synapsd expects
-        const checksumArray = checksums?.sha256 ? [`sha256:${checksums.sha256}`] : [];
-
-        // Check if document with this checksum already exists
-        const existingDoc = await this.#findDocumentByChecksum(workspace, checksumArray);
-
-        if (existingDoc) {
-            // Document exists - add this dataPath if not already present
-            const dataPaths = existingDoc.metadata?.dataPaths || [];
-            if (!dataPaths.includes(dataPath)) {
-                dataPaths.push(dataPath);
-                await workspace.db.updateDocument(existingDoc.id, {
-                    metadata: { ...existingDoc.metadata, dataPaths },
-                });
-                debug(`Added dataPath to existing file document: ${existingDoc.id}`);
-            }
-        } else {
-            // Create new File document
-            const fileDoc = {
-                schema: 'data/abstraction/file',
-                checksumArray,
-                data: {
-                    filename: path.basename(key),
-                    size,
-                    mime: mimeType,
-                },
-                metadata: {
-                    dataPaths: [dataPath],
-                },
-            };
-
-            await workspace.db.insertDocument(fileDoc, '/', ['data/abstraction/file']);
-            debug(`Created new file document for: ${key}`);
-        }
+    #buildDataPath(key) {
+        return `file://{WORKSPACE_ROOT}/home/${key}`;
     }
 
-    /**
-     * Remove a file's dataPath from its document (or delete if last occurrence)
-     */
-    async #removeFileDocument(workspace, data) {
-        if (!workspace.isActive) return;
+    async #syncInitialFiles(workspace, stored, files) {
+        if (!workspace.isActive || !files?.length) return;
 
-        const { key, checksums } = data;
-        const dataPath = `file://{WORKSPACE_ROOT}/home/${key}`;
-        const checksumArray = checksums?.sha256 ? [`sha256:${checksums.sha256}`] : [];
+        let synced = 0;
+        for (const file of files) {
+            if (!file.key || !file.checksums?.sha256) continue;
 
-        const existingDoc = await this.#findDocumentByChecksum(workspace, checksumArray);
-        if (!existingDoc) return;
+            const filename = path.basename(file.key);
+            if (!filename) continue;
 
-        const dataPaths = (existingDoc.metadata?.dataPaths || []).filter(p => p !== dataPath);
+            const dataPath = this.#buildDataPath(file.key);
+            const checksumString = `sha256/${file.checksums.sha256}`;
 
-        if (dataPaths.length === 0) {
-            // Last occurrence - delete the document
-            await workspace.db.deleteDocument(existingDoc.id);
-            debug(`Deleted file document (last occurrence): ${existingDoc.id}`);
-        } else {
-            // Update document with remaining paths
-            await workspace.db.updateDocument(existingDoc.id, {
-                metadata: { ...existingDoc.metadata, dataPaths },
-            });
-            debug(`Removed dataPath from file document: ${existingDoc.id}`);
-        }
-    }
+            try {
+                const existingDoc = await workspace.db.getDocumentByChecksumString(checksumString);
 
-    async #findDocumentByChecksum(workspace, checksumArray) {
-        if (!checksumArray?.length) return null;
-
-        try {
-            // Query by checksum - synapsd should support this
-            const docs = await workspace.db.findDocuments('/', ['data/abstraction/file'], [], {
-                limit: 1,
-                // Filter by checksum if supported
-            });
-
-            // For now, scan through results (should be optimized in synapsd)
-            for (const doc of docs) {
-                if (doc.checksumArray?.some(cs => checksumArray.includes(cs))) {
-                    return doc;
+                if (existingDoc) {
+                    const dataPaths = existingDoc.metadata?.dataPaths || [];
+                    if (!dataPaths.includes(dataPath)) {
+                        dataPaths.push(dataPath);
+                        await workspace.db.updateDocument(existingDoc.id, {
+                            metadata: { ...existingDoc.metadata, dataPaths },
+                        });
+                    }
+                } else {
+                    const fileDoc = {
+                        schema: 'data/abstraction/file',
+                        checksumArray: [checksumString],
+                        data: { filename, size: file.size, mime: file.mimeType },
+                        metadata: { dataPaths: [dataPath] },
+                    };
+                    debug(`Syncing initial file doc: ${JSON.stringify(fileDoc.data)}`);
+                    await workspace.db.insertDocument(fileDoc, '/');
                 }
+                synced++;
+            } catch (err) {
+                debug(`Error syncing initial file ${file.key}: ${err.message}`);
             }
-        } catch (err) {
-            debug(`Error finding document by checksum: ${err.message}`);
         }
-        return null;
+        debug(`Synced ${synced}/${files.length} initial files to synapsd`);
     }
 }
 
 export default HomeService;
+

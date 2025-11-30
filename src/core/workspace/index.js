@@ -507,6 +507,7 @@ class WorkspaceManager extends EventEmitter {
 
         await ws.start();
 
+        // Start roles
         if (this.#roles && ws.config.roles && Array.isArray(ws.config.roles)) {
             for (const roleId of ws.config.roles) {
                 try {
@@ -516,13 +517,41 @@ class WorkspaceManager extends EventEmitter {
                 }
             }
         }
+
+        // Enable services based on config
+        await this.#enableConfiguredServices(ws);
+
         return ws;
+    }
+
+    async #enableConfiguredServices(workspace) {
+        const services = workspace.services || {};
+
+        // Enable home service if configured
+        if (services.home?.enabled && !this.homeService.isEnabled(workspace.id)) {
+            try {
+                await this.homeService.enable(workspace);
+                debug(`Home service auto-enabled for workspace ${workspace.id}`);
+            } catch (e) {
+                console.warn(`Failed to enable home service for ${workspace.id}: ${e.message}`);
+            }
+        }
     }
 
     async stopWorkspace(workspaceId, userId) {
         const ws = await this.getWorkspace(workspaceId, userId);
         if (!ws) return true;
 
+        // Disable services
+        if (this.homeService.isEnabled(ws.id)) {
+            try {
+                await this.homeService.disable(ws);
+            } catch (e) {
+                console.warn(`Failed to disable home service for ${ws.id}: ${e.message}`);
+            }
+        }
+
+        // Stop roles
         if (this.#roles && ws.config.roles && Array.isArray(ws.config.roles)) {
             for (const roleId of ws.config.roles) {
                 try {

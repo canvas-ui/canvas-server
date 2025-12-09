@@ -6,8 +6,8 @@ import { existsSync } from 'fs';
 import * as fsPromises from 'fs/promises';
 
 // Logging
-import { createDebug } from '../../utils/log/index.js';
-const debug = createDebug('role-manager:volume-mapper');
+import { createLogger } from '../../utils/log.js';
+const logger = createLogger('role-manager:volume-mapper');
 
 /**
  * Volume Mapper
@@ -41,7 +41,7 @@ class VolumeMapper {
         this.#workspaceManager = options.workspaceManager;
         this.#serverConfig = options.serverConfig;
 
-        debug('VolumeMapper initialized');
+        logger.debug('VolumeMapper initialized');
     }
 
     /**
@@ -67,12 +67,12 @@ class VolumeMapper {
                     resolved.push(resolvedVolume);
                 }
             } catch (error) {
-                debug(`Failed to resolve volume mapping: ${error.message}`);
+                logger.debug(`Failed to resolve volume mapping: ${error.message}`);
                 // Skip invalid volume mappings
             }
         }
 
-        debug(`Resolved ${resolved.length}/${volumes.length} volume mappings for role ${context.roleId}`);
+        logger.debug(`Resolved ${resolved.length}/${volumes.length} volume mappings for role ${context.roleId}`);
         return resolved;
     }
 
@@ -90,10 +90,10 @@ class VolumeMapper {
                 const hostPath = this.#extractHostPath(mount);
                 await this.#ensurePath(hostPath, context);
                 results.push({ mount, status: 'created', path: hostPath });
-                debug(`Ensured volume path: ${hostPath}`);
+                logger.debug(`Ensured volume path: ${hostPath}`);
             } catch (error) {
                 results.push({ mount, status: 'failed', error: error.message });
-                debug(`Failed to ensure volume path for ${mount}: ${error.message}`);
+                logger.debug(`Failed to ensure volume path for ${mount}: ${error.message}`);
             }
         }
 
@@ -199,7 +199,7 @@ class VolumeMapper {
     }
 
     async #resolveHostPath(hostPath, context) {
-        debug(`Resolving host path: ${hostPath} for ${context.type} role`);
+        logger.debug(`Resolving host path: ${hostPath} for ${context.type} role`);
 
         // Server-wide paths (for global roles)
         if (hostPath.startsWith('server:')) {
@@ -233,7 +233,7 @@ class VolumeMapper {
 
         // Absolute paths remain unchanged
         if (path.isAbsolute(hostPath)) {
-            debug(`Using absolute path: ${hostPath}`);
+            logger.debug(`Using absolute path: ${hostPath}`);
             return hostPath;
         }
 
@@ -369,7 +369,7 @@ class VolumeMapper {
     async #ensurePath(hostPath, context) {
         if (!existsSync(hostPath)) {
             await fsPromises.mkdir(hostPath, { recursive: true });
-            debug(`Created directory: ${hostPath}`);
+            logger.debug(`Created directory: ${hostPath}`);
         }
 
         // Set appropriate permissions based on role type
@@ -388,7 +388,7 @@ class VolumeMapper {
             const mode = context.type === 'global' ? 0o755 : 0o750;
             await fsPromises.chmod(hostPath, mode);
         } catch (error) {
-            debug(`Failed to set permissions for ${hostPath}: ${error.message}`);
+            logger.debug(`Failed to set permissions for ${hostPath}: ${error.message}`);
             // Don't fail the entire operation for permission issues
         }
     }

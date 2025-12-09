@@ -1,8 +1,8 @@
 'use strict';
 
-import { createDebug } from '../../../../../utils/log/index.js';
+import { createLogger } from '../../../../../utils/log.js';
 
-const debug = createDebug('hook:linker');
+const logger = createLogger('hook:linker');
 
 /**
  * LinkerHook
@@ -34,7 +34,7 @@ class LinkerHook {
     }
 
     async #processDocument(document, workspaceId) {
-        debug(`Processing document ${document.id} for linking...`);
+        logger.debug(`Processing document ${document.id} for linking...`);
 
         // Get workspace for DB access
         const workspace = await this.#workspaceManager.getWorkspace(workspaceId, document.userId || 'system');
@@ -60,7 +60,7 @@ class LinkerHook {
                     await this.#linkDocumentToContext(document, contextMeta, workspaceId);
                 }
             } catch (err) {
-                debug(`Error processing context ${contextMeta.id}: ${err.message}`);
+                logger.debug(`Error processing context ${contextMeta.id}: ${err.message}`);
             }
         }
 
@@ -71,7 +71,7 @@ class LinkerHook {
     }
 
     async #linkByContact(document, workspace) {
-        debug(`Attempting contact-based linking for document ${document.id}`);
+        logger.debug(`Attempting contact-based linking for document ${document.id}`);
 
         try {
             // Extract email from "from" field
@@ -81,11 +81,11 @@ class LinkerHook {
             const senderEmail = emailMatch[1]?.trim().toLowerCase();
 
             if (!senderEmail) {
-                debug('Could not extract sender email');
+                logger.debug('Could not extract sender email');
                 return;
             }
 
-            debug(`Looking for contact with email: ${senderEmail}`);
+            logger.debug(`Looking for contact with email: ${senderEmail}`);
 
             // Find contact document by email
             // We need to query synapsd for a contact with this email
@@ -106,32 +106,32 @@ class LinkerHook {
             }
 
             if (!contactDoc) {
-                debug(`No contact found for email: ${senderEmail}`);
+                logger.debug(`No contact found for email: ${senderEmail}`);
                 return;
             }
 
-            debug(`Found contact document ${contactDoc.id} for ${senderEmail}`);
+            logger.debug(`Found contact document ${contactDoc.id} for ${senderEmail}`);
 
             // Get all context bitmaps that contain this contact
             const contextBitmaps = await workspace.db.getBitmapsForDocument(contactDoc.id, 'context/');
 
             if (contextBitmaps.length === 0) {
-                debug(`Contact ${contactDoc.id} is not in any contexts`);
+                logger.debug(`Contact ${contactDoc.id} is not in any contexts`);
                 return;
             }
 
-            debug(`Contact is in ${contextBitmaps.length} context(s): ${contextBitmaps.join(', ')}`);
+            logger.debug(`Contact is in ${contextBitmaps.length} context(s): ${contextBitmaps.join(', ')}`);
 
             // Add the email document to all those contexts
             for (const bitmapKey of contextBitmaps) {
                 await workspace.db.bitmapIndex.tick(bitmapKey, document.id);
-                debug(`Added email ${document.id} to context bitmap ${bitmapKey}`);
+                logger.debug(`Added email ${document.id} to context bitmap ${bitmapKey}`);
             }
 
-            debug(`Successfully linked email ${document.id} to ${contextBitmaps.length} context(s) via contact`);
+            logger.debug(`Successfully linked email ${document.id} to ${contextBitmaps.length} context(s) via contact`);
 
         } catch (err) {
-            debug(`Failed to link by contact: ${err.message}`);
+            logger.debug(`Failed to link by contact: ${err.message}`);
         }
     }
 
@@ -158,7 +158,7 @@ class LinkerHook {
     }
 
     async #linkDocumentToContext(document, contextMeta, workspaceId) {
-        debug(`Linking document ${document.id} to context ${contextMeta.id}`);
+        logger.debug(`Linking document ${document.id} to context ${contextMeta.id}`);
 
         const workspace = await this.#workspaceManager.getWorkspace(workspaceId, contextMeta.userId);
         if (!workspace) return;
@@ -187,10 +187,10 @@ class LinkerHook {
                 // No data change
             }, newContexts, newFeatures);
 
-            debug(`Linked document ${document.id} to context ${contextMeta.id}`);
+            logger.debug(`Linked document ${document.id} to context ${contextMeta.id}`);
 
         } catch (err) {
-            debug(`Failed to link document: ${err.message}`);
+            logger.debug(`Failed to link document: ${err.message}`);
         }
     }
 }

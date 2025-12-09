@@ -1,12 +1,12 @@
 'use strict';
 
-import { createDebug } from '../../utils/log/index.js';
+import { createLogger } from '../../utils/log.js';
 import { authService } from '../auth/strategies.js';
 import registerContextWebSocket from './channels/context.js';
 import registerWorkspaceWebSocket from './channels/workspace.js';
 import registerAgentWebSocket from './channels/agent.js';
 
-const debug = createDebug('canvas-server:websocket:main');
+const logger = createLogger('canvas-server:websocket:main');
 
 /**
  * WebSocket bootstrap – push-only design.
@@ -22,7 +22,7 @@ export default function setupWebSocketHandlers(fastify) {
   const connections = new Map(); // socket.id → { socket, user, lastActivity }
   const connectionAttempts = new Map(); // ip → { count, timestamp }
 
-  debug('🚀 Setting up WebSocket handlers...');
+  logger.debug('🚀 Setting up WebSocket handlers...');
 
   /* ---------------- Authentication middleware ---------------- */
   io.use(async (socket, next) => {
@@ -30,7 +30,7 @@ export default function setupWebSocketHandlers(fastify) {
       const clientIp = socket.handshake.address;
       const connectionId = socket.handshake.headers['x-connection-id'] || generateConnectionId();
 
-      debug(`🔐 Authenticating WebSocket connection from ${clientIp}`);
+      logger.debug(`🔐 Authenticating WebSocket connection from ${clientIp}`);
 
       // rudimentary rate-limit on handshake attempts per IP
       const attempt = connectionAttempts.get(clientIp) || { count: 0, timestamp: Date.now() };
@@ -38,7 +38,7 @@ export default function setupWebSocketHandlers(fastify) {
       connectionAttempts.set(clientIp, attempt);
       if (attempt.count > 10 && (Date.now() - attempt.timestamp) < 60_000) {
         const error = new Error('Too many connection attempts');
-        debug(`❌ Rate limit exceeded for ${clientIp}`);
+        logger.debug(`❌ Rate limit exceeded for ${clientIp}`);
         next(error);
         // Force disconnect to close TCP connection
         socket.disconnect(true);
@@ -53,7 +53,7 @@ export default function setupWebSocketHandlers(fastify) {
       const token = socket.handshake.auth.token || socket.handshake.headers.authorization?.replace('Bearer ', '');
       if (!token) {
         const error = new Error('Authentication token required');
-        debug(`❌ No token provided for ${clientIp}`);
+        logger.debug(`❌ No token provided for ${clientIp}`);
         next(error);
         // Force disconnect to close TCP connection
         socket.disconnect(true);
@@ -62,11 +62,11 @@ export default function setupWebSocketHandlers(fastify) {
 
       let user;
       if (token.startsWith('canvas-')) {
-        debug(`🎫 Verifying Canvas API token for ${clientIp}`);
+        logger.debug(`🎫 Verifying Canvas API token for ${clientIp}`);
         const apiRes = await authService.verifyApiToken(token);
         if (!apiRes) {
           const error = new Error('Invalid API token');
-          debug(`❌ Invalid Canvas API token for ${clientIp}`);
+          logger.debug(`❌ Invalid Canvas API token for ${clientIp}`);
           next(error);
           // Force disconnect to close TCP connection
           socket.disconnect(true);
@@ -74,12 +74,12 @@ export default function setupWebSocketHandlers(fastify) {
         }
         user = await fastify.users.get(apiRes.userId);
       } else {
-        debug(`🎫 Verifying JWT token for ${clientIp}`);
+        logger.debug(`🎫 Verifying JWT token for ${clientIp}`);
         // Use authService to verify JWT token consistently with REST API
         const verificationResult = await authService.verifyToken(token);
         if (!verificationResult.valid) {
           const error = new Error(`JWT verification failed: ${verificationResult.message}`);
-          debug(`❌ JWT verification failed for ${clientIp}: ${verificationResult.message}`);
+          logger.debug(`❌ JWT verification failed for ${clientIp}: ${verificationResult.message}`);
           next(error);
           socket.disconnect(true);
           return;
@@ -89,7 +89,7 @@ export default function setupWebSocketHandlers(fastify) {
 
       if (!user || user.status !== 'active') {
         const error = new Error('Invalid user');
-        debug(`❌ Invalid or inactive user for ${clientIp}`);
+        logger.debug(`❌ Invalid or inactive user for ${clientIp}`);
         next(error);
         // Force disconnect to close TCP connection
         socket.disconnect(true);
@@ -98,11 +98,11 @@ export default function setupWebSocketHandlers(fastify) {
 
       socket.user = { id: user.id, email: user.email.toLowerCase() };
       socket.connectionId = connectionId;
-      debug(`✅ WebSocket authenticated: ${user.email} (${user.id}) from ${clientIp}`);
+      logger.debug(`✅ WebSocket authenticated: ${user.email} (${user.id}) from ${clientIp}`);
       next();
     } catch (err) {
       const error = new Error(`Auth error: ${err.message}`);
-      debug(`❌ Authentication error: ${err.message}`);
+      logger.debug(`❌ Authentication error: ${err.message}`);
       next(error);
       // Force disconnect to close TCP connection
       socket.disconnect(true);
@@ -111,63 +111,63 @@ export default function setupWebSocketHandlers(fastify) {
 
   /* ---------------- Broadcast helpers ---------------- */
   fastify.decorate('broadcastToUser', (userId, event, payload) => {
-    debug(`📡 Broadcasting event "${event}" to user ${userId}`);
+    logger.debug(`📡 Broadcasting event "${event}" to user ${userId}`);
     let sent = 0;
     connections.forEach((conn) => {
       if (conn.user.id === userId) {
         try {
-          debug(`  ➡️  Sending to socket ${conn.socket.id}`);
+          logger.debug(`  ➡️  Sending to socket ${conn.socket.id}`);
           conn.socket.emit(event, payload);
           sent++;
         } catch (error) {
-          debug(`  ❌ Failed to send to socket ${conn.socket.id}:`, error.message);
+          logger.debug(`  ❌ Failed to send to socket ${conn.socket.id}:`, error.message);
         }
       }
     });
-    debug(`📡 Broadcast complete: sent to ${sent} connections for user ${userId}`);
+    logger.debug(`📡 Broadcast complete: sent to ${sent} connections for user ${userId}`);
     return sent;
   });
 
   fastify.decorate('broadcastToWorkspace', (workspaceId, event, payload) => {
-    debug(`📡 Broadcasting event "${event}" to workspace ${workspaceId}`);
+    logger.debug(`📡 Broadcasting event "${event}" to workspace ${workspaceId}`);
     let sent = 0;
     connections.forEach((conn) => {
       if (conn.socket.subscriptions?.has?.(`workspace:${workspaceId}`)) {
         try {
-          debug(`  ➡️  Sending to socket ${conn.socket.id}`);
+          logger.debug(`  ➡️  Sending to socket ${conn.socket.id}`);
           conn.socket.emit(event, payload);
           sent++;
         } catch (error) {
-          debug(`  ❌ Failed to send to socket ${conn.socket.id}:`, error.message);
+          logger.debug(`  ❌ Failed to send to socket ${conn.socket.id}:`, error.message);
         }
       }
     });
-    debug(`📡 Broadcast complete: sent to ${sent} connections for workspace ${workspaceId}`);
+    logger.debug(`📡 Broadcast complete: sent to ${sent} connections for workspace ${workspaceId}`);
     return sent;
   });
 
   fastify.decorate('broadcastToContext', (contextId, event, payload) => {
-    debug(`📡 Broadcasting event "${event}" to context ${contextId}`);
+    logger.debug(`📡 Broadcasting event "${event}" to context ${contextId}`);
     let sent = 0;
     connections.forEach((conn) => {
       if (conn.socket.subscriptions?.has?.(`context:${contextId}`)) {
         try {
-          debug(`  ➡️  Sending to socket ${conn.socket.id}`);
+          logger.debug(`  ➡️  Sending to socket ${conn.socket.id}`);
           conn.socket.emit(event, payload);
           sent++;
         } catch (error) {
-          debug(`  ❌ Failed to send to socket ${conn.socket.id}:`, error.message);
+          logger.debug(`  ❌ Failed to send to socket ${conn.socket.id}:`, error.message);
         }
       }
     });
-    debug(`📡 Broadcast complete: sent to ${sent} connections for context ${contextId}`);
+    logger.debug(`📡 Broadcast complete: sent to ${sent} connections for context ${contextId}`);
     return sent;
   });
 
   fastify.decorate('getUserConnectionCount', (userId) => {
     let c = 0;
     connections.forEach((conn) => { if (conn.user.id === userId) c++; });
-    debug(`👥 User ${userId} has ${c} active connections`);
+    logger.debug(`👥 User ${userId} has ${c} active connections`);
     return c;
   });
 
@@ -176,8 +176,8 @@ export default function setupWebSocketHandlers(fastify) {
     const { user } = socket;
     connections.set(socket.id, { socket, user, lastActivity: Date.now() });
 
-    debug(`🔌 New WebSocket connection: ${socket.id} for user ${user.email} (${user.id})`);
-    debug(`👥 Total connections: ${connections.size}`);
+    logger.debug(`🔌 New WebSocket connection: ${socket.id} for user ${user.email} (${user.id})`);
+    logger.debug(`👥 Total connections: ${connections.size}`);
 
     // Initialize per-socket subscription set
     if (!socket.subscriptions) {
@@ -232,10 +232,10 @@ export default function setupWebSocketHandlers(fastify) {
 
         socket.subscriptions.add(channel);
         socket.join(channel);
-        debug(`🛎️  Socket ${socket.id} subscribed to ${channel}`);
+        logger.debug(`🛎️  Socket ${socket.id} subscribed to ${channel}`);
         socket.emit('subscribed', { channel });
       } catch (err) {
-        debug(`❌ Subscription error on socket ${socket.id}: ${err.message}`);
+        logger.debug(`❌ Subscription error on socket ${socket.id}: ${err.message}`);
         socket.emit('error', { message: 'Subscription failed' });
       }
     });
@@ -248,32 +248,32 @@ export default function setupWebSocketHandlers(fastify) {
         }
         socket.subscriptions.delete(channel);
         socket.leave(channel);
-        debug(`🔕 Socket ${socket.id} unsubscribed from ${channel}`);
+        logger.debug(`🔕 Socket ${socket.id} unsubscribed from ${channel}`);
         socket.emit('unsubscribed', { channel });
       } catch (err) {
-        debug(`❌ Unsubscribe error on socket ${socket.id}: ${err.message}`);
+        logger.debug(`❌ Unsubscribe error on socket ${socket.id}: ${err.message}`);
       }
     });
 
     // Register push modules
-    debug(`📋 Registering context WebSocket for socket ${socket.id}`);
+    logger.debug(`📋 Registering context WebSocket for socket ${socket.id}`);
     registerContextWebSocket(fastify, socket);
-    debug(`📋 Registering workspace WebSocket for socket ${socket.id}`);
+    logger.debug(`📋 Registering workspace WebSocket for socket ${socket.id}`);
     registerWorkspaceWebSocket(fastify, socket);
-    debug(`📋 Registering agent WebSocket for socket ${socket.id}`);
+    logger.debug(`📋 Registering agent WebSocket for socket ${socket.id}`);
     registerAgentWebSocket(fastify, socket);
 
     socket.emit('authenticated', { userId: user.id, email: user.email });
-    debug(`✅ Sent authentication confirmation to ${socket.id}`);
+    logger.debug(`✅ Sent authentication confirmation to ${socket.id}`);
 
     // heartbeat
     socket.on('ping', () => {
-      debug(`💗 Heartbeat from ${socket.id}`);
+      logger.debug(`💗 Heartbeat from ${socket.id}`);
       socket.emit('pong', { time: Date.now() });
     });
 
     socket.on('disconnect', () => {
-      debug(`🔌 WebSocket disconnected: ${socket.id} for user ${user.email}`);
+      logger.debug(`🔌 WebSocket disconnected: ${socket.id} for user ${user.email}`);
       connections.delete(socket.id);
       fastify.broadcastToUser(user.id, 'connection.change', {
         event: 'disconnect',

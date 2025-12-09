@@ -1,8 +1,8 @@
 'use strict';
 
 // Logging
-import { createDebug } from '../../../../utils/log/index.js';
-const debug = createDebug('agent-manager:llm-connector');
+import { createLogger } from '../../../../utils/log.js';
+const logger = createLogger('agent-manager:llm-connector');
 
 /**
  * Base LLM Connector
@@ -15,7 +15,7 @@ class BaseLLMConnector {
     constructor(config = {}) {
         this.config = config;
         this.name = this.constructor.name;
-        debug(`Initialized ${this.name} with config keys: ${Object.keys(config).join(', ')}`);
+        logger.debug(`Initialized ${this.name} with config keys: ${Object.keys(config).join(', ')}`);
     }
 
     /**
@@ -104,7 +104,7 @@ class BaseLLMConnector {
      * @param {string} operation - The operation that failed
      */
     handleError(error, operation = 'LLM operation') {
-        debug(`${this.name} error during ${operation}: ${error.message}`);
+        logger.debug(`${this.name} error during ${operation}: ${error.message}`);
 
         // Create standardized error
         const standardError = new Error(`${this.name} ${operation} failed: ${error.message}`);

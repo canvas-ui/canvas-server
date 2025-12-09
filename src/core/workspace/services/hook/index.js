@@ -1,10 +1,10 @@
 'use strict';
 
 import EventEmitter from 'eventemitter2';
-import { createDebug } from '../../../../utils/log/index.js';
+import { createLogger } from '../../../../utils/log.js';
 import LinkerHook from './internal/LinkerHook.js';
 
-const debug = createDebug('hook-service');
+const logger = createLogger('hook-service');
 
 /**
  * HookService
@@ -31,7 +31,7 @@ class HookService extends EventEmitter {
     async initialize() {
         if (this.#initialized) return this;
 
-        debug('HookService initializing...');
+        logger.debug('HookService initializing...');
 
         // Register system hooks
         await this.#registerSystemHooks();
@@ -39,7 +39,7 @@ class HookService extends EventEmitter {
         // TODO: Load user hooks from workspace/hooks directory
 
         this.#initialized = true;
-        debug('HookService initialized');
+        logger.debug('HookService initialized');
         return this;
     }
 
@@ -57,7 +57,7 @@ class HookService extends EventEmitter {
             throw new Error('Invalid hook: must have an id');
         }
         this.#hooks.set(hook.id, hook);
-        debug(`Registered hook: ${hook.id}`);
+        logger.debug(`Registered hook: ${hook.id}`);
     }
 
     /**
@@ -67,7 +67,7 @@ class HookService extends EventEmitter {
      * @param {string} workspaceId
      */
     async dispatchEvent(eventName, payload, workspaceId) {
-        debug(`Dispatching event ${eventName} to ${this.#hooks.size} hooks`);
+        logger.debug(`Dispatching event ${eventName} to ${this.#hooks.size} hooks`);
 
         const promises = [];
         for (const hook of this.#hooks.values()) {
@@ -90,10 +90,10 @@ class HookService extends EventEmitter {
 
     async #runHook(hook, eventName, payload, workspaceId) {
         try {
-            debug(`Running hook ${hook.id} for event ${eventName}`);
+            logger.debug(`Running hook ${hook.id} for event ${eventName}`);
             await hook.run(eventName, payload, workspaceId);
         } catch (err) {
-            debug(`Error running hook ${hook.id}: ${err.message}`);
+            logger.debug(`Error running hook ${hook.id}: ${err.message}`);
         }
     }
 }

@@ -4,8 +4,8 @@
 import Role from './Role.js';
 
 // Logging
-import { createDebug } from '../../utils/log/index.js';
-const debug = createDebug('role-manager:global-role');
+import { createLogger } from '../../utils/log.js';
+const logger = createLogger('role-manager:global-role');
 
 /**
  * Global Role Class
@@ -19,7 +19,7 @@ class GlobalRole extends Role {
      */
     constructor(options = {}) {
         super(options);
-        debug(`GlobalRole instance created: ${this.id} (${this.name})`);
+        logger.debug(`GlobalRole instance created: ${this.id} (${this.name})`);
     }
 
     /**
@@ -48,7 +48,7 @@ class GlobalRole extends Role {
             'canvas.role.template': this.template
         };
 
-        debug(`Prepared global role container config for ${this.id}`);
+        logger.debug(`Prepared global role container config for ${this.id}`);
         return config;
     }
 
@@ -99,7 +99,7 @@ class GlobalRole extends Role {
         }
 
         await super.updateConfig(allowedUpdates);
-        debug(`Global role ${this.id} configuration updated with restricted keys`);
+        logger.debug(`Global role ${this.id} configuration updated with restricted keys`);
     }
 
     /**

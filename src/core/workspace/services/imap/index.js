@@ -5,9 +5,9 @@ import path from 'path';
 import fs from 'fs';
 import Imap from 'imap';
 import { simpleParser } from 'mailparser';
-import { createDebug } from '../../../../utils/log/index.js';
+import { createLogger } from '../../../../utils/log.js';
 
-const debug = createDebug('imap-service');
+const logger = createLogger('imap-service');
 
 /**
  * ImapService
@@ -31,17 +31,17 @@ class ImapService extends EventEmitter {
     }
 
     async initialize() {
-        debug('ImapService initialized');
+        logger.debug('ImapService initialized');
         return this;
     }
 
     async enable(workspace) {
-        debug(`Enabling ImapService for workspace ${workspace.id}`);
+        logger.debug(`Enabling ImapService for workspace ${workspace.id}`);
 
         try {
             const configPath = path.join(workspace.rootPath, 'config', 'imap.json');
             if (!fs.existsSync(configPath)) {
-                debug(`No IMAP config found at ${configPath}`);
+                logger.debug(`No IMAP config found at ${configPath}`);
                 return false;
             }
 
@@ -61,13 +61,13 @@ class ImapService extends EventEmitter {
 
             return true;
         } catch (err) {
-            debug(`Failed to enable ImapService: ${err.message}`);
+            logger.debug(`Failed to enable ImapService: ${err.message}`);
             return false;
         }
     }
 
     async disable(workspace) {
-        debug(`Disabling ImapService for workspace ${workspace.id}`);
+        logger.debug(`Disabling ImapService for workspace ${workspace.id}`);
         this.#stopPolling(workspace.id);
 
         const connection = this.#connections.get(workspace.id);
@@ -82,7 +82,7 @@ class ImapService extends EventEmitter {
      * Add an IMAP account for a workspace
      */
     async addAccount(workspaceId, userId, config) {
-        debug(`Adding IMAP account for workspace ${workspaceId}`);
+        logger.debug(`Adding IMAP account for workspace ${workspaceId}`);
 
         try {
             const imap = new Imap({
@@ -106,14 +106,14 @@ class ImapService extends EventEmitter {
 
             return { success: true };
         } catch (err) {
-            debug(`Failed to add IMAP account: ${err.message}`);
+            logger.debug(`Failed to add IMAP account: ${err.message}`);
             return { success: false, error: err.message };
         }
     }
 
     #setupImapHandlers(workspaceId, imap) {
         imap.once('ready', () => {
-            debug(`IMAP connection ready for workspace ${workspaceId}`);
+            logger.debug(`IMAP connection ready for workspace ${workspaceId}`);
             const connection = this.#connections.get(workspaceId);
             if (connection) {
                 connection.status = 'connected';
@@ -121,7 +121,7 @@ class ImapService extends EventEmitter {
         });
 
         imap.once('error', (err) => {
-            debug(`IMAP error for workspace ${workspaceId}: ${err.message}`);
+            logger.debug(`IMAP error for workspace ${workspaceId}: ${err.message}`);
             const connection = this.#connections.get(workspaceId);
             if (connection) {
                 connection.status = 'error';
@@ -129,7 +129,7 @@ class ImapService extends EventEmitter {
         });
 
         imap.once('end', () => {
-            debug(`IMAP connection ended for workspace ${workspaceId}`);
+            logger.debug(`IMAP connection ended for workspace ${workspaceId}`);
             const connection = this.#connections.get(workspaceId);
             if (connection) {
                 connection.status = 'disconnected';
@@ -138,13 +138,13 @@ class ImapService extends EventEmitter {
     }
 
     #startPolling(workspaceId, intervalMs = 60000) {
-        debug(`Starting email polling for workspace ${workspaceId} every ${intervalMs}ms`);
+        logger.debug(`Starting email polling for workspace ${workspaceId} every ${intervalMs}ms`);
 
         const intervalId = setInterval(async () => {
             try {
                 await this.fetchNewEmails(workspaceId);
             } catch (err) {
-                debug(`Error during polling: ${err.message}`);
+                logger.debug(`Error during polling: ${err.message}`);
             }
         }, intervalMs);
 
@@ -156,7 +156,7 @@ class ImapService extends EventEmitter {
         if (intervalId) {
             clearInterval(intervalId);
             this.#pollingIntervals.delete(workspaceId);
-            debug(`Stopped polling for workspace ${workspaceId}`);
+            logger.debug(`Stopped polling for workspace ${workspaceId}`);
         }
     }
 
@@ -164,11 +164,11 @@ class ImapService extends EventEmitter {
      * Fetch new emails from IMAP server
      */
     async fetchNewEmails(workspaceId) {
-        debug(`Fetching new emails for workspace ${workspaceId}`);
+        logger.debug(`Fetching new emails for workspace ${workspaceId}`);
 
         const connection = this.#connections.get(workspaceId);
         if (!connection) {
-            debug(`No IMAP connection found for workspace ${workspaceId}`);
+            logger.debug(`No IMAP connection found for workspace ${workspaceId}`);
             return [];
         }
 
@@ -192,13 +192,13 @@ class ImapService extends EventEmitter {
                         }
 
                         if (!results || results.length === 0) {
-                            debug('No new emails found');
+                            logger.debug('No new emails found');
                             imap.end();
                             resolve([]);
                             return;
                         }
 
-                        debug(`Found ${results.length} new email(s)`);
+                        logger.debug(`Found ${results.length} new email(s)`);
 
                         const fetch = imap.fetch(results, {
                             bodies: '',
@@ -206,7 +206,7 @@ class ImapService extends EventEmitter {
                         });
 
                         fetch.on('message', (msg, seqno) => {
-                            debug(`Processing message #${seqno}`);
+                            logger.debug(`Processing message #${seqno}`);
                             let buffer = '';
 
                             msg.on('body', (stream, info) => {
@@ -251,18 +251,18 @@ class ImapService extends EventEmitter {
                                         }
                                     }
                                 } catch (parseErr) {
-                                    debug(`Error parsing email: ${parseErr.message}`);
+                                    logger.debug(`Error parsing email: ${parseErr.message}`);
                                 }
                             });
                         });
 
                         fetch.once('error', (err) => {
-                            debug(`Fetch error: ${err.message}`);
+                            logger.debug(`Fetch error: ${err.message}`);
                             reject(err);
                         });
 
                         fetch.once('end', () => {
-                            debug('Fetch completed');
+                            logger.debug('Fetch completed');
                             imap.end();
                             resolve(emails);
                         });
@@ -271,7 +271,7 @@ class ImapService extends EventEmitter {
             });
 
             imap.once('error', (err) => {
-                debug(`IMAP error: ${err.message}`);
+                logger.debug(`IMAP error: ${err.message}`);
                 reject(err);
             });
 

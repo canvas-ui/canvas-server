@@ -1,7 +1,7 @@
-import { createDebug } from '../../../utils/log/index.js';
+import { createLogger } from '../../../utils/log.js';
 import crypto from 'crypto';
 
-const debug = createDebug('websocket:workspace');
+const logger = createLogger('websocket:workspace');
 
 /**
  * Register workspace-update websocket forwarding for a specific socket.
@@ -19,7 +19,7 @@ const debug = createDebug('websocket:workspace');
 export default function registerWorkspaceWebSocket(fastify, socket) {
   const { workspaceManager } = fastify;
   if (!workspaceManager) {
-    debug('⚠️  workspaceManager not present on fastify – skipping workspace WS setup');
+    logger.debug('⚠️  workspaceManager not present on fastify – skipping workspace WS setup');
     return;
   }
 
@@ -45,14 +45,14 @@ export default function registerWorkspaceWebSocket(fastify, socket) {
       // Verify access using token-based ACL validation
       const hasAccess = await validateWorkspaceAccess(socket, workspaceId);
       if (!hasAccess) {
-        debug(`Access denied for user ${userId} to workspace ${workspaceId} – not forwarding ${eventName}`);
+        logger.debug(`Access denied for user ${userId} to workspace ${workspaceId} – not forwarding ${eventName}`);
         return;
       }
 
       socket.emit(eventName, eventPayload);
-      debug(`➡️  forwarded ${eventName} to ${userId}`);
+      logger.debug(`➡️  forwarded ${eventName} to ${userId}`);
     } catch (err) {
-      debug(`Error forwarding workspace event: ${err.message}`);
+      logger.debug(`Error forwarding workspace event: ${err.message}`);
     }
   };
 
@@ -64,7 +64,7 @@ export default function registerWorkspaceWebSocket(fastify, socket) {
   socket.on('disconnect', () => {
     listeners.forEach((listener) => workspaceManager.off('**', listener));
     listeners.clear();
-    debug(`Cleaned workspace WS listeners for socket ${socket.id}`);
+    logger.debug(`Cleaned workspace WS listeners for socket ${socket.id}`);
   });
 }
 
@@ -78,21 +78,21 @@ async function validateWorkspaceAccess(socket, workspaceIdentifier) {
   try {
     const userId = socket.user?.id;
     if (!userId) {
-      debug(`No user ID found on socket for workspace access validation`);
+      logger.debug(`No user ID found on socket for workspace access validation`);
       return false;
     }
 
     // Get the token from the socket handshake
     const token = socket.handshake?.auth?.token;
     if (!token || !token.startsWith('canvas-')) {
-      debug(`Invalid or missing Canvas token for workspace access`);
+      logger.debug(`Invalid or missing Canvas token for workspace access`);
       return false;
     }
 
     // Try owner access first (fastest path)
     const workspaceManager = socket.server?.workspaceManager;
     if (!workspaceManager) {
-      debug(`WorkspaceManager not available for access validation`);
+      logger.debug(`WorkspaceManager not available for access validation`);
       return false;
     }
 
@@ -108,11 +108,11 @@ async function validateWorkspaceAccess(socket, workspaceIdentifier) {
       }
 
       if (workspace) {
-        debug(`Owner access granted for workspace ${workspaceIdentifier}`);
+        logger.debug(`Owner access granted for workspace ${workspaceIdentifier}`);
         return true;
       }
     } catch (error) {
-      debug(`Owner access check failed: ${error.message}`);
+      logger.debug(`Owner access check failed: ${error.message}`);
     }
 
     // Try token-based access
@@ -141,13 +141,13 @@ async function validateWorkspaceAccess(socket, workspaceIdentifier) {
         if (tokenData) {
           // Check expiration
           if (tokenData.expiresAt && new Date() > new Date(tokenData.expiresAt)) {
-            debug(`Token has expired for workspace ${workspaceIdentifier}`);
+            logger.debug(`Token has expired for workspace ${workspaceIdentifier}`);
             return false;
           }
 
           // WebSocket access requires at least read permission
           if (tokenData.permissions.includes('read')) {
-            debug(`Token access granted for workspace ${workspaceIdentifier}`);
+            logger.debug(`Token access granted for workspace ${workspaceIdentifier}`);
             return true;
           }
         }
@@ -162,13 +162,13 @@ async function validateWorkspaceAccess(socket, workspaceIdentifier) {
           if (tokenData) {
             // Check expiration
             if (tokenData.expiresAt && new Date() > new Date(tokenData.expiresAt)) {
-              debug(`Token has expired for workspace ${workspaceIdentifier}`);
+              logger.debug(`Token has expired for workspace ${workspaceIdentifier}`);
               continue;
             }
 
             // WebSocket access requires at least read permission
             if (tokenData.permissions.includes('read')) {
-              debug(`Token access granted for workspace ${workspaceIdentifier}`);
+              logger.debug(`Token access granted for workspace ${workspaceIdentifier}`);
               return true;
             }
           }
@@ -176,11 +176,11 @@ async function validateWorkspaceAccess(socket, workspaceIdentifier) {
       }
     }
 
-    debug(`No valid access found for workspace ${workspaceIdentifier}`);
+    logger.debug(`No valid access found for workspace ${workspaceIdentifier}`);
     return false;
 
   } catch (error) {
-    debug(`Error validating workspace access: ${error.message}`);
+    logger.debug(`Error validating workspace access: ${error.message}`);
     return false;
   }
 }

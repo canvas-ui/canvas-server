@@ -2,20 +2,17 @@
 import Conf from 'conf';
 
 // Logging
-import createDebug from 'debug';
-const debug = createDebug('canvas:utils:jim');
+import { createLogger } from '../log.js';
 
 /**
  * For now, the only supported driver is Conf
  */
 
 class JsonIndexManager {
-    constructor(
-        options = {
-            rootPath: null,
-            driver: 'conf',
-        }
-    ) {
+
+    #logger;
+
+    constructor(options = {}) {
         if (!options.rootPath) {
             throw new Error('rootPath is required');
         }
@@ -23,9 +20,8 @@ class JsonIndexManager {
         this.rootPath = options.rootPath;
         this.driver = options.driver || 'conf';
         this.driverOptions = options.driverOptions || {};
-        debug('Initializing JsonIndexManager service with rootPath: ', this.rootPath);
-        debug('Default driver: ', this.driver);
-        debug('Driver options: ', this.driverOptions);
+        this.#logger = options.logger || createLogger('jim');
+        this.#logger.debug({ rootPath: this.rootPath, driver: this.driver, driverOptions: this.driverOptions }, 'Initializing JsonIndexManager');
         this.indices = new Map();
     }
 

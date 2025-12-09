@@ -4,8 +4,8 @@
 import express from 'express';
 
 // Logging
-import { createDebug } from '../../../utils/log/index.js';
-const debug = createDebug('api:roles');
+import { createLogger } from '../../../utils/log.js';
+const logger = createLogger('api:roles');
 
 /**
  * Role API Routes
@@ -42,7 +42,7 @@ class RoleAPI {
         this.#router = express.Router();
 
         this.#setupRoutes();
-        debug('RoleAPI initialized');
+        logger.debug('RoleAPI initialized');
     }
 
     /**
@@ -84,7 +84,7 @@ class RoleAPI {
         this.#router.post('/workspaces/:workspaceId/roles/:roleId', this.#associateWorkspaceRole.bind(this));
         this.#router.delete('/workspaces/:workspaceId/roles/:roleId', this.#disassociateWorkspaceRole.bind(this));
 
-        debug('Role API routes configured');
+        logger.debug('Role API routes configured');
     }
 
     /**
@@ -115,7 +115,7 @@ class RoleAPI {
                 total: accessibleRoles.length
             });
 
-            debug(`Listed ${accessibleRoles.length} roles for user ${requestingUserId}`);
+            logger.debug(`Listed ${accessibleRoles.length} roles for user ${requestingUserId}`);
         } catch (error) {
             this.#handleError(res, error, 'Failed to list roles');
         }
@@ -158,7 +158,7 @@ class RoleAPI {
                 role: roleConfig
             });
 
-            debug(`Created role ${roleConfig.id} (${name}) for user ${requestingUserId}`);
+            logger.debug(`Created role ${roleConfig.id} (${name}) for user ${requestingUserId}`);
         } catch (error) {
             this.#handleError(res, error, 'Failed to create role');
         }
@@ -215,7 +215,7 @@ class RoleAPI {
                 role: role.toJSON()
             });
 
-            debug(`Updated role ${roleId} configuration`);
+            logger.debug(`Updated role ${roleId} configuration`);
         } catch (error) {
             this.#handleError(res, error, 'Failed to update role');
         }
@@ -238,7 +238,7 @@ class RoleAPI {
                 message: success ? 'Role removed successfully' : 'Failed to remove role'
             });
 
-            debug(`Removed role ${roleId}, force: ${force}`);
+            logger.debug(`Removed role ${roleId}, force: ${force}`);
         } catch (error) {
             this.#handleError(res, error, 'Failed to remove role');
         }
@@ -260,7 +260,7 @@ class RoleAPI {
                 role: role.toJSON()
             });
 
-            debug(`Started role ${roleId}`);
+            logger.debug(`Started role ${roleId}`);
         } catch (error) {
             this.#handleError(res, error, 'Failed to start role');
         }
@@ -282,7 +282,7 @@ class RoleAPI {
                 message: success ? 'Role stopped successfully' : 'Failed to stop role'
             });
 
-            debug(`Stopped role ${roleId}`);
+            logger.debug(`Stopped role ${roleId}`);
         } catch (error) {
             this.#handleError(res, error, 'Failed to stop role');
         }
@@ -312,7 +312,7 @@ class RoleAPI {
                 role: role.toJSON()
             });
 
-            debug(`Restarted role ${roleId}`);
+            logger.debug(`Restarted role ${roleId}`);
         } catch (error) {
             this.#handleError(res, error, 'Failed to restart role');
         }
@@ -499,7 +499,7 @@ class RoleAPI {
                         roles.push(role.toJSON());
                     }
                 } catch (error) {
-                    debug(`Failed to get role ${roleId}: ${error.message}`);
+                    logger.debug(`Failed to get role ${roleId}: ${error.message}`);
                 }
             }
 
@@ -635,7 +635,7 @@ class RoleAPI {
      * @private
      */
     #handleError(res, error, message) {
-        debug(`API Error: ${message} - ${error.message}`);
+        logger.debug(`API Error: ${message} - ${error.message}`);
 
         const statusCode = error.status || 500;
         res.status(statusCode).json({

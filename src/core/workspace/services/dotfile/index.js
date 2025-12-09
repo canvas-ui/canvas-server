@@ -9,8 +9,8 @@ import { spawn } from 'child_process';
 import EventEmitter from 'eventemitter2';
 
 // Logging
-import { createDebug } from '../../../../utils/log/index.js';
-const debug = createDebug('dotfile-manager');
+import { createLogger } from '../../../../utils/log.js';
+const logger = createLogger('dotfile-manager');
 
 const DOTFILES_DIR = 'dotfiles.git';
 const TEMPLATE_DIRNAME = 'files'; // relative to this module directory
@@ -72,7 +72,7 @@ class DotfileManager extends EventEmitter {
         if (!this.workspaceManager) {
             throw new Error('WorkspaceManager is required');
         }
-        debug('DotfileManager initialized');
+        logger.debug('DotfileManager initialized');
     }
 
     // Initialize method for compatibility with Server.js
@@ -119,7 +119,7 @@ class DotfileManager extends EventEmitter {
         }
 
         this.emit('dotfiles.enabled', { workspaceId: workspace.id, path: repoPath });
-        debug(`Dotfiles service enabled for workspace ${workspace.id}`);
+        logger.debug(`Dotfiles service enabled for workspace ${workspace.id}`);
 
         return { success: true, path: repoPath, initialized: !hasRepo };
     }
@@ -132,7 +132,7 @@ class DotfileManager extends EventEmitter {
         if (!workspace?.id) return { success: true };
 
         this.emit('dotfiles.disabled', { workspaceId: workspace.id });
-        debug(`Dotfiles service disabled for workspace ${workspace.id}`);
+        logger.debug(`Dotfiles service disabled for workspace ${workspace.id}`);
 
         return { success: true };
     }
@@ -334,11 +334,11 @@ class DotfileManager extends EventEmitter {
             });
 
             gitProcess.stderr.on('data', (data) => {
-                debug(`Git ${serviceName}: ${data.toString().trim()}`);
+                logger.debug(`Git ${serviceName}: ${data.toString().trim()}`);
             });
 
             gitProcess.on('error', (error) => {
-                debug(`Git ${serviceName} error: ${error.message}`);
+                logger.debug(`Git ${serviceName} error: ${error.message}`);
                 reject(error);
             });
 
@@ -403,7 +403,7 @@ class DotfileManager extends EventEmitter {
         gitProcess.stdout.pipe(reply.raw, { end: false });
 
         gitProcess.stderr.on('data', (data) => {
-            debug(`Git upload-pack: ${data.toString().trim()}`);
+            logger.debug(`Git upload-pack: ${data.toString().trim()}`);
         });
 
         // Handle request body
@@ -418,7 +418,7 @@ class DotfileManager extends EventEmitter {
         // Wait for git process to complete
         return new Promise((resolve, reject) => {
             gitProcess.on('error', (error) => {
-                debug(`Git upload-pack error: ${error.message}`);
+                logger.debug(`Git upload-pack error: ${error.message}`);
                 reply.raw.end();
                 reject(error);
             });
@@ -468,7 +468,7 @@ class DotfileManager extends EventEmitter {
         gitProcess.stdout.pipe(reply.raw, { end: false });
 
         gitProcess.stderr.on('data', (data) => {
-            debug(`Git receive-pack: ${data.toString().trim()}`);
+            logger.debug(`Git receive-pack: ${data.toString().trim()}`);
         });
 
         // Handle request body
@@ -483,7 +483,7 @@ class DotfileManager extends EventEmitter {
         // Wait for git process to complete
         return new Promise((resolve, reject) => {
             gitProcess.on('error', (error) => {
-                debug(`Git receive-pack error: ${error.message}`);
+                logger.debug(`Git receive-pack error: ${error.message}`);
                 reply.raw.end();
                 reject(error);
             });

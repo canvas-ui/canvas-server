@@ -10,8 +10,8 @@ import Conf from 'conf';
 import { generateUUID } from '../../utils/id.js';
 
 // Logging
-import logger, { createDebug } from '../../utils/log/index.js';
-const debug = createDebug('agent-manager');
+import { createLogger } from '../../utils/log.js';
+const logger = createLogger('agent-manager');
 
 // Includes
 import Agent from './Agent.js';
@@ -205,7 +205,7 @@ class Agents extends EventEmitter {
         this.#nameIndex = new Map();
         this.#referenceIndex = new Map();
 
-        debug(`Initializing Agents service with default rootPath: ${this.#defaultRootPath}`);
+        logger.debug(`Initializing Agents service with default rootPath: ${this.#defaultRootPath}`);
     }
 
     /**
@@ -254,7 +254,7 @@ class Agents extends EventEmitter {
         await this.#scanIndexedAgents();
 
         this.#initialized = true;
-        debug(`Agents service initialized with ${this.#indexStore.size} agent(s) in index`);
+        logger.debug(`Agents service initialized with ${this.#indexStore.size} agent(s) in index`);
 
         return this;
     }
@@ -357,7 +357,7 @@ class Agents extends EventEmitter {
         const agentDir = options.agentPath ||
                         (options.rootPath ? path.join(options.rootPath, agentName) :
                         path.join(this.#defaultRootPath, ownerId, agentName));
-        debug(`Using agent path: ${agentDir} for agent ${agentId}`);
+        logger.debug(`Using agent path: ${agentDir} for agent ${agentId}`);
 
         // Validate and create agent
         if (existsSync(agentDir)) {
@@ -367,7 +367,7 @@ class Agents extends EventEmitter {
         try {
             await fsPromises.mkdir(agentDir, { recursive: true });
             await this.#createAgentSubdirectories(agentDir);
-            debug(`Created agent directory and subdirectories: ${agentDir}`);
+            logger.debug(`Created agent directory and subdirectories: ${agentDir}`);
         } catch (err) {
             throw new Error(`Failed to create agent directory: ${err.message}`);
         }
@@ -404,7 +404,7 @@ class Agents extends EventEmitter {
             accessPropertiesByDotNotation: false
         }).store = configData;
 
-        debug(`Created agent config file: ${agentConfigPath}`);
+        logger.debug(`Created agent config file: ${agentConfigPath}`);
 
         // Create index entry
         const indexEntry = {
@@ -427,7 +427,7 @@ class Agents extends EventEmitter {
         indexEntry.reference = referenceKey;
 
         this.emit('agent.created', { userId: ownerId, agentId, agentName, agent: indexEntry });
-        debug(`Agent created: ${agentId} (name: ${agentName}) for user ${ownerId} on host ${host}`);
+        logger.debug(`Agent created: ${agentId} (name: ${agentName}) for user ${ownerId} on host ${host}`);
         return indexEntry;
     }
 
@@ -680,7 +680,7 @@ class Agents extends EventEmitter {
         if (!ownerId) return [];
 
         const prefix = `${ownerId}/`;
-        debug(`Listing agents for userId ${ownerId} on host ${host}`);
+        logger.debug(`Listing agents for userId ${ownerId} on host ${host}`);
 
         const allAgents = this.#indexStore.store;
         const userAgentEntries = [];
@@ -699,14 +699,14 @@ class Agents extends EventEmitter {
                             };
                             userAgentEntries.push(agentWithOwnerEmail);
                         } catch (error) {
-                            debug(`Failed to resolve owner email for agent ${agentEntry.id}: ${error.message}`);
+                            logger.debug(`Failed to resolve owner email for agent ${agentEntry.id}: ${error.message}`);
                             userAgentEntries.push(agentEntry);
                         }
                     }
                 }
             }
         }
-        debug(`Found ${userAgentEntries.length} agents for userId ${ownerId} on host ${host}`);
+        logger.debug(`Found ${userAgentEntries.length} agents for userId ${ownerId} on host ${host}`);
         return userAgentEntries;
     }
 
@@ -737,7 +737,7 @@ class Agents extends EventEmitter {
                 }
             }
         } catch (err) {
-            debug(`Error resolving user identifier ${userIdentifier}: ${err.message}`);
+            logger.debug(`Error resolving user identifier ${userIdentifier}: ${err.message}`);
         }
 
         return null;
@@ -772,19 +772,19 @@ class Agents extends EventEmitter {
         }
 
         if (!entry) {
-            debug(`getAgentById: Agent ${agentId} not found in index`);
+            logger.debug(`getAgentById: Agent ${agentId} not found in index`);
             return null;
         }
 
         // Check ownership if requesting user is provided
         if (requestingUserId && entry.owner !== requestingUserId) {
-            debug(`getAgentById: User ${requestingUserId} is not the owner of agent ${agentId}`);
+            logger.debug(`getAgentById: User ${requestingUserId} is not the owner of agent ${agentId}`);
             return null;
         }
 
         // Return from cache if available
         if (this.#agents.has(agentId)) {
-            debug(`Returning cached Agent instance for ${agentId}`);
+            logger.debug(`Returning cached Agent instance for ${agentId}`);
             return this.#agents.get(agentId);
         }
 
@@ -807,7 +807,7 @@ class Agents extends EventEmitter {
             });
 
             this.#agents.set(agentId, agent);
-            debug(`Loaded and cached Agent instance for ${agentId}`);
+            logger.debug(`Loaded and cached Agent instance for ${agentId}`);
             this.#updateAgentIndexEntry(foundIndexKey, { lastAccessed: new Date().toISOString() });
             return agent;
         } catch (err) {
@@ -975,12 +975,12 @@ class Agents extends EventEmitter {
      * @private
      */
     async #createAgentSubdirectories(agentDir) {
-        debug(`Creating subdirectories for agent at ${agentDir}`);
+        logger.debug(`Creating subdirectories for agent at ${agentDir}`);
         for (const subdirKey in AGENT_DIRECTORIES) {
             const subdirPath = path.join(agentDir, AGENT_DIRECTORIES[subdirKey]);
             try {
                 await fsPromises.mkdir(subdirPath, { recursive: true });
-                debug(`Created subdirectory: ${subdirPath}`);
+                logger.debug(`Created subdirectory: ${subdirPath}`);
             } catch (err) {
                 console.error(`Failed to create subdirectory ${subdirPath}: ${err.message}`);
             }
@@ -1035,7 +1035,7 @@ class Agents extends EventEmitter {
      */
     #validateAgentEntryForOpen(entry, agentId, requestingUserId) {
         if (!entry) {
-            debug(`openAgent failed: Agent ${agentId} not found in index.`);
+            logger.debug(`openAgent failed: Agent ${agentId} not found in index.`);
             return false;
         }
         if (entry.owner !== requestingUserId) {
@@ -1089,7 +1089,7 @@ class Agents extends EventEmitter {
     #updateAgentIndexEntry(indexKey, updates, requestingUserId = null) {
         const currentEntry = this.#indexStore.get(indexKey);
         if (!currentEntry) {
-            debug(`Cannot update index for ${indexKey}: entry not found.`);
+            logger.debug(`Cannot update index for ${indexKey}: entry not found.`);
             return;
         }
 
@@ -1100,7 +1100,7 @@ class Agents extends EventEmitter {
 
         const updatedEntry = { ...currentEntry, ...updates, updatedAt: new Date().toISOString() };
         this.#indexStore.set(indexKey, updatedEntry);
-        debug(`Updated index entry for ${indexKey} with: ${JSON.stringify(updates)}`);
+        logger.debug(`Updated index entry for ${indexKey} with: ${JSON.stringify(updates)}`);
     }
 }
 

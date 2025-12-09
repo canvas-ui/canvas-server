@@ -5,9 +5,9 @@ import path from 'path';
 import fs from 'fs';
 import { Client } from '@microsoft/microsoft-graph-client';
 import { ClientSecretCredential } from '@azure/identity';
-import { createDebug } from '../../../../utils/log/index.js';
+import { createLogger } from '../../../../utils/log.js';
 
-const debug = createDebug('graph-service');
+const logger = createLogger('graph-service');
 
 /**
  * GraphService
@@ -31,17 +31,17 @@ class GraphService extends EventEmitter {
     }
 
     async initialize() {
-        debug('GraphService initialized');
+        logger.debug('GraphService initialized');
         return this;
     }
 
     async enable(workspace) {
-        debug(`Enabling GraphService for workspace ${workspace.id}`);
+        logger.debug(`Enabling GraphService for workspace ${workspace.id}`);
 
         try {
             const configPath = path.join(workspace.rootPath, 'config', 'graph.json');
             if (!fs.existsSync(configPath)) {
-                debug(`No Graph config found at ${configPath}`);
+                logger.debug(`No Graph config found at ${configPath}`);
                 return false;
             }
 
@@ -59,13 +59,13 @@ class GraphService extends EventEmitter {
 
             return true;
         } catch (err) {
-            debug(`Failed to enable GraphService: ${err.message}`);
+            logger.debug(`Failed to enable GraphService: ${err.message}`);
             return false;
         }
     }
 
     async disable(workspace) {
-        debug(`Disabling GraphService for workspace ${workspace.id}`);
+        logger.debug(`Disabling GraphService for workspace ${workspace.id}`);
         this.#stopPolling(workspace.id);
         this.#clients.delete(workspace.id);
         return true;
@@ -75,7 +75,7 @@ class GraphService extends EventEmitter {
      * Add a Microsoft 365 account for a workspace
      */
     async addAccount(workspaceId, userId, config) {
-        debug(`Adding Microsoft 365 account for workspace ${workspaceId}`);
+        logger.debug(`Adding Microsoft 365 account for workspace ${workspaceId}`);
 
         try {
             const credential = new ClientSecretCredential(
@@ -102,19 +102,19 @@ class GraphService extends EventEmitter {
 
             return { success: true };
         } catch (err) {
-            debug(`Failed to add Microsoft 365 account: ${err.message}`);
+            logger.debug(`Failed to add Microsoft 365 account: ${err.message}`);
             return { success: false, error: err.message };
         }
     }
 
     #startPolling(workspaceId, intervalMs = 60000) {
-        debug(`Starting email polling for workspace ${workspaceId} every ${intervalMs}ms`);
+        logger.debug(`Starting email polling for workspace ${workspaceId} every ${intervalMs}ms`);
 
         const intervalId = setInterval(async () => {
             try {
                 await this.fetchNewEmails(workspaceId);
             } catch (err) {
-                debug(`Error during polling: ${err.message}`);
+                logger.debug(`Error during polling: ${err.message}`);
             }
         }, intervalMs);
 
@@ -126,7 +126,7 @@ class GraphService extends EventEmitter {
         if (intervalId) {
             clearInterval(intervalId);
             this.#pollingIntervals.delete(workspaceId);
-            debug(`Stopped polling for workspace ${workspaceId}`);
+            logger.debug(`Stopped polling for workspace ${workspaceId}`);
         }
     }
 
@@ -134,11 +134,11 @@ class GraphService extends EventEmitter {
      * Fetch new emails from Microsoft 365
      */
     async fetchNewEmails(workspaceId) {
-        debug(`Fetching new emails for workspace ${workspaceId}`);
+        logger.debug(`Fetching new emails for workspace ${workspaceId}`);
 
         const clientData = this.#clients.get(workspaceId);
         if (!clientData) {
-            debug(`No Graph client found for workspace ${workspaceId}`);
+            logger.debug(`No Graph client found for workspace ${workspaceId}`);
             return [];
         }
 
@@ -153,7 +153,7 @@ class GraphService extends EventEmitter {
                 .select('id,subject,from,toRecipients,receivedDateTime,bodyPreview,body,internetMessageId')
                 .get();
 
-            debug(`Found ${messages.value.length} new email(s)`);
+            logger.debug(`Found ${messages.value.length} new email(s)`);
 
             const emails = [];
             for (const message of messages.value) {
@@ -196,7 +196,7 @@ class GraphService extends EventEmitter {
 
             return emails;
         } catch (err) {
-            debug(`Error fetching emails: ${err.message}`);
+            logger.debug(`Error fetching emails: ${err.message}`);
             return [];
         }
     }
@@ -205,11 +205,11 @@ class GraphService extends EventEmitter {
      * Fetch calendar events
      */
     async fetchCalendarEvents(workspaceId, startDate, endDate) {
-        debug(`Fetching calendar events for workspace ${workspaceId}`);
+        logger.debug(`Fetching calendar events for workspace ${workspaceId}`);
 
         const clientData = this.#clients.get(workspaceId);
         if (!clientData) {
-            debug(`No Graph client found for workspace ${workspaceId}`);
+            logger.debug(`No Graph client found for workspace ${workspaceId}`);
             return [];
         }
 
@@ -225,10 +225,10 @@ class GraphService extends EventEmitter {
                 .select('id,subject,start,end,location,attendees,body')
                 .get();
 
-            debug(`Found ${events.value.length} calendar event(s)`);
+            logger.debug(`Found ${events.value.length} calendar event(s)`);
             return events.value;
         } catch (err) {
-            debug(`Error fetching calendar events: ${err.message}`);
+            logger.debug(`Error fetching calendar events: ${err.message}`);
             return [];
         }
     }

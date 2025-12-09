@@ -36,8 +36,8 @@ import menuRoutes from './routes/menu.js';
 import setupWebSocketHandlers from './websocket/index.js';
 
 // Logging
-import createDebug from 'debug';
-const debug = createDebug('canvas-server:transports');
+import { createLogger } from '../utils/log.js';
+const logger = createLogger('transports');
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -225,7 +225,7 @@ export async function createServer(options = {}) {
       if (payload && payload.id) {
         try {
           server.broadcastToContext(payload.id, 'context.url.set', payload);
-          debug(`Relayed context.url.set event for context ${payload.id} to WebSocket clients`);
+          logger.debug({ contextId: payload.id }, 'Relayed context.url.set event to WebSocket clients');
         } catch (error) {
           console.error(`Error broadcasting context.url.set event: ${error.message}`);
         }
@@ -366,7 +366,7 @@ export async function startTransportServer(options = {}) {
   const host = options.host || env.server.api.host;
 
   await fastify.listen({ port, host });
-  debug(`Transport server listening on http://${host}:${port}`);
+  logger.info({ host, port }, 'Transport server listening');
 
   return fastify;
 }

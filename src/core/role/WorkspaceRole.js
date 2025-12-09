@@ -7,8 +7,8 @@ import path from 'path';
 import Role from './Role.js';
 
 // Logging
-import { createDebug } from '../../utils/log/index.js';
-const debug = createDebug('role-manager:workspace-role');
+import { createLogger } from '../../utils/log.js';
+const logger = createLogger('role-manager:workspace-role');
 
 /**
  * Workspace Role Class
@@ -32,7 +32,7 @@ class WorkspaceRole extends Role {
 
         this.#workspaceManager = options.workspaceManager;
 
-        debug(`WorkspaceRole instance created: ${this.id} (${this.name}) for workspace: ${this.workspaceId}`);
+        logger.debug(`WorkspaceRole instance created: ${this.id} (${this.name}) for workspace: ${this.workspaceId}`);
     }
 
     /**
@@ -94,7 +94,7 @@ class WorkspaceRole extends Role {
             'canvas.workspace.type': workspace.type
         };
 
-        debug(`Prepared workspace role container config for ${this.id} (workspace: ${this.workspaceId}) with Unix socket`);
+        logger.debug(`Prepared workspace role container config for ${this.id} (workspace: ${this.workspaceId}) with Unix socket`);
         return config;
     }
 
@@ -136,7 +136,7 @@ class WorkspaceRole extends Role {
             const stats = await require('fs').promises.stat(socketPath);
             return stats.isSocket();
         } catch (error) {
-            debug(`Failed to check socket status: ${error.message}`);
+            logger.debug(`Failed to check socket status: ${error.message}`);
             return false;
         }
     }

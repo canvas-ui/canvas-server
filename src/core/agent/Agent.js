@@ -13,8 +13,8 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { z } from 'zod';
 
 // Logging
-import logger, { createDebug } from '../../utils/log/index.js';
-const debug = createDebug('agent-manager:agent');
+import { createLogger } from '../../utils/log.js';
+const logger = createLogger('agent-manager:agent');
 
 // Includes
 import Db from '../../services/synapsd/src/index.js';
@@ -78,7 +78,7 @@ class Agent extends EventEmitter {
             }
         }
 
-        debug(`Agent instance created for ID: ${this.id}, rootPath: ${this.rootPath}, Initial Status: ${this.#status}`);
+        logger.debug(`Agent instance created for ID: ${this.id}, rootPath: ${this.rootPath}, Initial Status: ${this.#status}`);
     }
 
     /**
@@ -120,12 +120,12 @@ class Agent extends EventEmitter {
 
     setStatus(status) {
         if (!Object.values(AGENT_STATUS_CODES).includes(status)) {
-            debug(`Invalid status value provided to setStatus: ${status} for agent ${this.id}`);
+            logger.debug(`Invalid status value provided to setStatus: ${status} for agent ${this.id}`);
             return false;
         }
         if (this.#status !== status) {
             this.#status = status;
-            debug(`Agent ${this.id} status changed to: ${status}`);
+            logger.debug(`Agent ${this.id} status changed to: ${status}`);
             this.emit('status.changed', { id: this.id, status: this.#status });
         }
         return true;
@@ -163,7 +163,7 @@ class Agent extends EventEmitter {
      */
     async start() {
         if (this.isActive) {
-            debug(`Agent "${this.id}" is already active.`);
+            logger.debug(`Agent "${this.id}" is already active.`);
             return this;
         }
         if (this.#status === AGENT_STATUS_CODES.ERROR) {
@@ -171,7 +171,7 @@ class Agent extends EventEmitter {
             throw new Error(`Agent "${this.id}" is in an error state and cannot be started.`);
         }
 
-        debug(`Starting agent "${this.id}"...`);
+        logger.debug(`Starting agent "${this.id}"...`);
         try {
             await this.#initializeDatabase();
             await this.#initializeLLMConnector();
@@ -180,7 +180,7 @@ class Agent extends EventEmitter {
 
             this.setStatus(AGENT_STATUS_CODES.ACTIVE);
             this.emit('afterStart', { id: this.id });
-            debug(`Agent "${this.id}" started successfully.`);
+            logger.debug(`Agent "${this.id}" started successfully.`);
             return this;
         } catch (err) {
             console.error(`Failed to start agent "${this.id}": ${err.message}`);
@@ -197,17 +197,17 @@ class Agent extends EventEmitter {
      */
     async stop() {
         if (this.#status === AGENT_STATUS_CODES.INACTIVE) {
-            debug(`Agent "${this.id}" is already inactive.`);
+            logger.debug(`Agent "${this.id}" is already inactive.`);
             return true;
         }
 
-        debug(`Stopping agent "${this.id}"...`);
+        logger.debug(`Stopping agent "${this.id}"...`);
         try {
             await this.#shutdownResources();
             const previousStatus = this.#status;
             this.setStatus(AGENT_STATUS_CODES.INACTIVE);
             this.emit('afterStop', { id: this.id, previousStatus });
-            debug(`Agent "${this.id}" stopped successfully.`);
+            logger.debug(`Agent "${this.id}" stopped successfully.`);
             return true;
         } catch (err) {
             console.error(`Error stopping agent "${this.id}": ${err.message}`);
@@ -249,7 +249,7 @@ class Agent extends EventEmitter {
                         });
                     }
                 } catch (memErr) {
-                    debug(`Memory query error (ignored): ${memErr.message}`);
+                    logger.debug(`Memory query error (ignored): ${memErr.message}`);
                 }
             }
             */
@@ -314,7 +314,7 @@ class Agent extends EventEmitter {
                     }
                 });
             } catch (storeErr) {
-                debug(`storeMemory failed (ignored): ${storeErr.message}`);
+                logger.debug(`storeMemory failed (ignored): ${storeErr.message}`);
             }
 
             this.emit('chat.message', {
@@ -370,7 +370,7 @@ class Agent extends EventEmitter {
                         });
                     }
                 } catch (memErr) {
-                    debug(`Memory query error (ignored): ${memErr.message}`);
+                    logger.debug(`Memory query error (ignored): ${memErr.message}`);
                 }
             }
             */
@@ -435,7 +435,7 @@ class Agent extends EventEmitter {
                     }
                 });
             } catch (storeErr) {
-                debug(`storeMemory failed (ignored): ${storeErr.message}`);
+                logger.debug(`storeMemory failed (ignored): ${storeErr.message}`);
             }
 
             this.emit('chat.message', {
@@ -519,7 +519,7 @@ class Agent extends EventEmitter {
             }
             return results.map(doc => doc.data || doc);
         } catch (err) {
-            debug(`Memory query failed, falling back to document search: ${err.message}`);
+            logger.debug(`Memory query failed, falling back to document search: ${err.message}`);
             // Fallback to document search
             const docs = await this.db.findDocuments(contextSpec, [], [], { parse: true });
             // Extract data from wrapped documents, handle null/undefined results
@@ -566,7 +566,7 @@ class Agent extends EventEmitter {
                     source: name
                 })));
             } catch (err) {
-                debug(`Failed to list tools from MCP client ${name}: ${err.message}`);
+                logger.debug(`Failed to list tools from MCP client ${name}: ${err.message}`);
             }
         }
 
@@ -600,7 +600,7 @@ class Agent extends EventEmitter {
                     return await client.callTool({ name: toolName, arguments: arguments_ });
                 }
             } catch (err) {
-                debug(`Tool ${toolName} not found in MCP client ${name}: ${err.message}`);
+                logger.debug(`Tool ${toolName} not found in MCP client ${name}: ${err.message}`);
                 continue;
             }
         }
@@ -677,9 +677,9 @@ class Agent extends EventEmitter {
      */
     async #initializeDatabase() {
         if (this.#db) {
-            debug(`Database already initialized for agent "${this.id}"`);
+            logger.debug(`Database already initialized for agent "${this.id}"`);
             if (this.#db.status !== 'running' && this.#db.status !== 'starting') {
-                debug(`DB for agent "${this.id}" exists but not running. Attempting to start.`);
+                logger.debug(`DB for agent "${this.id}" exists but not running. Attempting to start.`);
                 await this.#db.start();
             }
             return;
@@ -688,20 +688,20 @@ class Agent extends EventEmitter {
         try {
             const dbDirName = AGENT_DIRECTORIES.db || 'db';
             const dbPath = path.join(this.rootPath, dbDirName);
-            debug(`Initializing database for agent "${this.id}" at ${dbPath}`);
+            logger.debug(`Initializing database for agent "${this.id}" at ${dbPath}`);
 
             this.#db = new Db({
                 path: dbPath,
             });
 
             await this.#db.start();
-            debug(`Database started for agent "${this.id}".`);
+            logger.debug(`Database started for agent "${this.id}".`);
 
             // Set up event forwarding from database
             this.#setupDatabaseEventForwarding();
 
         } catch (err) {
-            debug(`Error during database initialization for agent "${this.id}": ${err.message}`);
+            logger.debug(`Error during database initialization for agent "${this.id}": ${err.message}`);
             this.#db = null;
             throw err;
         }
@@ -716,7 +716,7 @@ class Agent extends EventEmitter {
             const provider = this.llmProvider;
             const connectorConfig = this.agentConfig.connectors?.[provider] || {};
 
-            debug(`Initializing LLM connector for agent "${this.id}" with provider: ${provider}`);
+            logger.debug(`Initializing LLM connector for agent "${this.id}" with provider: ${provider}`);
 
             switch (provider) {
                 case 'anthropic':
@@ -752,9 +752,9 @@ class Agent extends EventEmitter {
                 throw new Error(`LLM connector ${provider} is not available`);
             }
 
-            debug(`LLM connector initialized for agent "${this.id}"`);
+            logger.debug(`LLM connector initialized for agent "${this.id}"`);
         } catch (err) {
-            debug(`Error initializing LLM connector for agent "${this.id}": ${err.message}`);
+            logger.debug(`Error initializing LLM connector for agent "${this.id}": ${err.message}`);
             throw err;
         }
     }
@@ -765,7 +765,7 @@ class Agent extends EventEmitter {
      */
     async #initializeMCPServer() {
         try {
-            debug(`Initializing MCP server for agent "${this.id}"`);
+            logger.debug(`Initializing MCP server for agent "${this.id}"`);
 
             this.#mcpServer = new McpServer({
                 name: `canvas-agent-${this.id}`,
@@ -778,9 +778,9 @@ class Agent extends EventEmitter {
             // Register agent info tools
             this.#registerAgentTools();
 
-            debug(`MCP server initialized for agent "${this.id}"`);
+            logger.debug(`MCP server initialized for agent "${this.id}"`);
         } catch (err) {
-            debug(`Error initializing MCP server for agent "${this.id}": ${err.message}`);
+            logger.debug(`Error initializing MCP server for agent "${this.id}": ${err.message}`);
             throw err;
         }
     }
@@ -792,7 +792,7 @@ class Agent extends EventEmitter {
     async #initializeMCPClients() {
         try {
             const mcpConfig = this.agentConfig.mcp || { servers: [] };
-            debug(`Initializing ${mcpConfig.servers.length} MCP clients for agent "${this.id}"`);
+            logger.debug(`Initializing ${mcpConfig.servers.length} MCP clients for agent "${this.id}"`);
 
             for (const serverConfig of mcpConfig.servers) {
                 await this.#connectMCPClient(serverConfig);
@@ -801,9 +801,9 @@ class Agent extends EventEmitter {
             // Always connect to the built-in weather MCP server
             await this.#connectWeatherMCPServer();
 
-            debug(`MCP clients initialized for agent "${this.id}"`);
+            logger.debug(`MCP clients initialized for agent "${this.id}"`);
         } catch (err) {
-            debug(`Error initializing MCP clients for agent "${this.id}": ${err.message}`);
+            logger.debug(`Error initializing MCP clients for agent "${this.id}": ${err.message}`);
             throw err;
         }
     }
@@ -828,7 +828,7 @@ class Agent extends EventEmitter {
             await client.connect(transport);
             this.#mcpClients.set(serverConfig.name, client);
 
-            debug(`Connected to MCP server: ${serverConfig.name}`);
+            logger.debug(`Connected to MCP server: ${serverConfig.name}`);
         } catch (err) {
             console.error(`Failed to connect to MCP server ${serverConfig.name}: ${err.message}`);
         }
@@ -856,7 +856,7 @@ class Agent extends EventEmitter {
             await client.connect(transport);
             this.#mcpClients.set('weather', client);
 
-            debug(`Connected to weather MCP server`);
+            logger.debug(`Connected to weather MCP server`);
         } catch (err) {
             console.error(`Failed to connect to weather MCP server: ${err.message}`);
         }
@@ -984,7 +984,7 @@ class Agent extends EventEmitter {
     #setupDatabaseEventForwarding() {
         if (!this.#db) return;
 
-        debug(`Setting up database event forwarding for agent "${this.id}"`);
+        logger.debug(`Setting up database event forwarding for agent "${this.id}"`);
 
         const forward = (eventName, payload) => {
             const dotEvent = eventName.replace(/:/g, '.');
@@ -999,7 +999,7 @@ class Agent extends EventEmitter {
         this.#db.onAny(dbHandler);
 
         this.#eventForwardHandlers = { dbHandler };
-        debug(`Database event forwarding setup completed for agent "${this.id}"`);
+        logger.debug(`Database event forwarding setup completed for agent "${this.id}"`);
     }
 
     /**
@@ -1009,12 +1009,12 @@ class Agent extends EventEmitter {
     #cleanupEventForwarding() {
         if (!this.#db || !this.#eventForwardHandlers) return;
 
-        debug(`Cleaning up event forwarding for agent "${this.id}"`);
+        logger.debug(`Cleaning up event forwarding for agent "${this.id}"`);
 
         this.#db.offAny(this.#eventForwardHandlers.dbHandler);
         this.#eventForwardHandlers = null;
 
-        debug(`Event forwarding cleanup completed for agent "${this.id}"`);
+        logger.debug(`Event forwarding cleanup completed for agent "${this.id}"`);
     }
 
     /**
@@ -1022,7 +1022,7 @@ class Agent extends EventEmitter {
      * @private
      */
     async #shutdownResources() {
-        debug(`Shutting down resources for agent "${this.id}"...`);
+        logger.debug(`Shutting down resources for agent "${this.id}"...`);
 
         // Clean up event forwarding
         this.#cleanupEventForwarding();
@@ -1031,7 +1031,7 @@ class Agent extends EventEmitter {
         for (const [name, client] of this.#mcpClients) {
             try {
                 await client.close();
-                debug(`MCP client ${name} closed for agent "${this.id}"`);
+                logger.debug(`MCP client ${name} closed for agent "${this.id}"`);
             } catch (err) {
                 console.error(`Error closing MCP client ${name} for agent "${this.id}": ${err.message}`);
             }
@@ -1042,7 +1042,7 @@ class Agent extends EventEmitter {
         if (this.#mcpServer) {
             try {
                 await this.#mcpServer.close();
-                debug(`MCP server closed for agent "${this.id}"`);
+                logger.debug(`MCP server closed for agent "${this.id}"`);
             } catch (err) {
                 console.error(`Error closing MCP server for agent "${this.id}": ${err.message}`);
             } finally {
@@ -1054,7 +1054,7 @@ class Agent extends EventEmitter {
         if (this.#db) {
             try {
                 await this.#db.shutdown();
-                debug(`Database shutdown complete for agent "${this.id}"`);
+                logger.debug(`Database shutdown complete for agent "${this.id}"`);
             } catch (dbErr) {
                 console.error(`Error shutting down database for agent "${this.id}": ${dbErr.message}`);
             } finally {
@@ -1065,7 +1065,7 @@ class Agent extends EventEmitter {
         // Clear LLM connector
         this.#llmConnector = null;
 
-        debug(`Agent "${this.id}" resources shut down attempt complete.`);
+        logger.debug(`Agent "${this.id}" resources shut down attempt complete.`);
     }
 
     /**
@@ -1088,7 +1088,7 @@ class Agent extends EventEmitter {
             this.#configStore.set(key, value);
             this.#configStore.set('updatedAt', new Date().toISOString());
             this.emit(`${key}.changed`, { id: this.id, [key]: value });
-            debug(`Agent "${this.id}" config updated: { ${key}: ${value} }. Old value: ${oldValue}`);
+            logger.debug(`Agent "${this.id}" config updated: { ${key}: ${value} }. Old value: ${oldValue}`);
             return true;
         } catch (err) {
             console.error(`Failed to update config key "${key}" for agent "${this.id}": ${err.message}`);

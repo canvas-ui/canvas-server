@@ -5,8 +5,8 @@ import Url from './lib/Url.js';
 import EventEmitter from 'eventemitter2';
 
 // Logging
-import logger, { createDebug } from '../../utils/log/index.js';
-const debug = createDebug('context-manager:index');
+import { createLogger } from '../../utils/log.js';
+const logger = createLogger('context-manager:index');
 
 // Includes
 import Context from './lib/Context.js';
@@ -54,7 +54,7 @@ class ContextManager extends EventEmitter {
         this.#indexStore = options.indexStore;
         this.#workspaceManager = options.workspaceManager;
 
-        debug('Context manager created');
+        logger.debug('Context manager created');
     }
 
     /**
@@ -62,13 +62,13 @@ class ContextManager extends EventEmitter {
      */
     async initialize() {
         if (this.#initialized) { return this; }
-        debug('Initializing context manager: loading stored context IDs...');
+        logger.debug('Initializing context manager: loading stored context IDs...');
 
         // Log the number of items directly from the store if possible, or after loading.
         // For a simple Map-like store, size might be available.
         // If indexStore is more complex, this log might need adjustment.
         const initialContextCount = typeof this.#indexStore.size === 'function' ? this.#indexStore.size() : (this.#indexStore.store ? Object.keys(this.#indexStore.store).length : 'N/A');
-        debug(`ContextManager initialized with ${initialContextCount} context(s) in index`);
+        logger.debug(`ContextManager initialized with ${initialContextCount} context(s) in index`);
         this.#initialized = true;
         return this;
     }
@@ -163,11 +163,11 @@ class ContextManager extends EventEmitter {
             // Emit the context.created event with a consistent payload structure including id
             const contextData = context.toJSON();
             this.emit('context.created', { id: context.id, ...contextData });
-            debug(`Context created with ID ${context.id} and emitted context.created event`);
+            logger.debug(`Context created with ID ${context.id} and emitted context.created event`);
 
             return context;
         } catch (error) {
-            debug(`Error creating context: ${error.message}`);
+            logger.debug(`Error creating context: ${error.message}`);
             throw error;
         }
     }
@@ -330,7 +330,7 @@ class ContextManager extends EventEmitter {
 
             return null;
         } catch (error) {
-            debug(`Error finding context by ID ${contextId}: ${error.message}`);
+            logger.debug(`Error finding context by ID ${contextId}: ${error.message}`);
             return null;
         }
     }
@@ -460,14 +460,14 @@ class ContextManager extends EventEmitter {
                     userId: userId,
                     contextId: contextId.toString()
                 });
-                debug(`Context ${contextKey} removed.`);
+                logger.debug(`Context ${contextKey} removed.`);
                 return true;
             } else {
-                debug(`Context ${contextKey} not found, nothing to remove.`);
+                logger.debug(`Context ${contextKey} not found, nothing to remove.`);
                 return false;
             }
         } catch (error) {
-            debug(`Error removing context for user ${userId}: ${error.message}`);
+            logger.debug(`Error removing context for user ${userId}: ${error.message}`);
             return false;
         }
     }
@@ -646,21 +646,21 @@ class ContextManager extends EventEmitter {
 
             if (isEmail) {
                 // Use new email-based sharing method
-                debug(`Using email-based sharing for ${sharedWithUserId}`);
+                logger.debug(`Using email-based sharing for ${sharedWithUserId}`);
                 await context.grantAccessByEmail(sharedWithUserId, accessLevel, {
                     description: `Shared context access for ${sharedWithUserId}`,
                     grantedBy: requestingUserId
                 });
             } else {
                 // Use old userId-based sharing method (for backward compatibility)
-                debug(`Using userId-based sharing for ${sharedWithUserId}`);
+                logger.debug(`Using userId-based sharing for ${sharedWithUserId}`);
                 await context.grantAccess(sharedWithUserId, accessLevel);
             }
 
-            debug(`Access granted to ${sharedWithUserId} for context ${targetContextIdentifier} with level ${accessLevel} by ${requestingUserId}`);
+            logger.debug(`Access granted to ${sharedWithUserId} for context ${targetContextIdentifier} with level ${accessLevel} by ${requestingUserId}`);
             return true;
         } catch (error) {
-            debug(`Error granting access to context ${targetContextIdentifier}: ${error.message}`);
+            logger.debug(`Error granting access to context ${targetContextIdentifier}: ${error.message}`);
             throw error;
         }
     }
@@ -686,18 +686,18 @@ class ContextManager extends EventEmitter {
 
             if (isEmail) {
                 // Use new email-based revocation method
-                debug(`Using email-based revocation for ${sharedWithUserId}`);
+                logger.debug(`Using email-based revocation for ${sharedWithUserId}`);
                 await context.revokeAccessByEmail(sharedWithUserId);
             } else {
                 // Use old userId-based revocation method (for backward compatibility)
-                debug(`Using userId-based revocation for ${sharedWithUserId}`);
+                logger.debug(`Using userId-based revocation for ${sharedWithUserId}`);
                 await context.revokeAccess(sharedWithUserId);
             }
 
-            debug(`Access revoked from ${sharedWithUserId} for context ${targetContextIdentifier} by ${requestingUserId}`);
+            logger.debug(`Access revoked from ${sharedWithUserId} for context ${targetContextIdentifier} by ${requestingUserId}`);
             return true;
         } catch (error) {
-            debug(`Error revoking access from context ${targetContextIdentifier}: ${error.message}`);
+            logger.debug(`Error revoking access from context ${targetContextIdentifier}: ${error.message}`);
             throw error;
         }
     }

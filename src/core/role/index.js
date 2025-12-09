@@ -10,8 +10,8 @@ import Docker from 'dockerode';
 import { generateUUID } from '../../utils/id.js';
 
 // Logging
-import logger, { createDebug } from '../../utils/log/index.js';
-const debug = createDebug('role-manager');
+import { createLogger } from '../../utils/log.js';
+const logger = createLogger('role-manager');
 
 // Includes
 import Role from './Role.js';
@@ -108,7 +108,7 @@ class Roles extends EventEmitter {
             workspaceManager: this.#workspaceManager
         });
 
-        debug('Roles service initialized');
+        logger.debug('Roles service initialized');
     }
 
     /**
@@ -125,12 +125,12 @@ class Roles extends EventEmitter {
     async initialize() {
         if (this.#initialized) return true;
 
-        debug('Initializing Roles service...');
+        logger.debug('Initializing Roles service...');
 
         // Test Docker connection (non-fatal)
         try {
             await this.#docker.ping();
-            debug('Docker connection established');
+            logger.debug('Docker connection established');
         } catch (error) {
             console.warn(`Docker not available: ${error.message}. Role management features will be disabled.`);
             // Continue initialization without Docker
@@ -144,7 +144,7 @@ class Roles extends EventEmitter {
         }
 
         this.#initialized = true;
-        debug(`Roles service initialized with ${this.#indexStore.size} role(s) in index`);
+        logger.debug(`Roles service initialized with ${this.#indexStore.size} role(s) in index`);
 
         return this;
     }
@@ -205,7 +205,7 @@ class Roles extends EventEmitter {
         // Store in index
         this.#indexStore.set(roleId, roleConfig);
 
-        debug(`Role created: ${roleId} (${options.name}) type: ${options.type}`);
+        logger.debug(`Role created: ${roleId} (${options.name}) type: ${options.type}`);
         this.emit('role.created', { roleId, config: roleConfig });
 
         return roleConfig;
@@ -231,7 +231,7 @@ class Roles extends EventEmitter {
             throw new Error(`Permission denied to start role: ${roleId}`);
         }
 
-        debug(`Starting role: ${roleId} (${roleConfig.name})`);
+        logger.debug(`Starting role: ${roleId} (${roleConfig.name})`);
 
         let role = this.#roles.get(roleId);
         if (!role) {
@@ -240,7 +240,7 @@ class Roles extends EventEmitter {
         }
 
         if (role.status === ROLE_STATUS.RUNNING) {
-            debug(`Role ${roleId} is already running`);
+            logger.debug(`Role ${roleId} is already running`);
             return role;
         }
 
@@ -278,12 +278,12 @@ class Roles extends EventEmitter {
 
         const role = this.#roles.get(roleId);
         if (!role) {
-            debug(`Role ${roleId} is not running`);
+            logger.debug(`Role ${roleId} is not running`);
             this.#updateRoleStatus(roleId, ROLE_STATUS.STOPPED);
             return true;
         }
 
-        debug(`Stopping role: ${roleId} (${roleConfig.name})`);
+        logger.debug(`Stopping role: ${roleId} (${roleConfig.name})`);
 
         try {
             await role.stop();
@@ -318,7 +318,7 @@ class Roles extends EventEmitter {
             throw new Error(`Permission denied to remove role: ${roleId}`);
         }
 
-        debug(`Removing role: ${roleId} (${roleConfig.name}), force: ${force}`);
+        logger.debug(`Removing role: ${roleId} (${roleConfig.name}), force: ${force}`);
 
         // Stop role if running
         if (this.#roles.has(roleId)) {
@@ -334,7 +334,7 @@ class Roles extends EventEmitter {
             const container = this.#docker.getContainer(roleConfig.container.name);
             await container.remove({ force: true });
         } catch (error) {
-            debug(`Container removal failed (may not exist): ${error.message}`);
+            logger.debug(`Container removal failed (may not exist): ${error.message}`);
         }
 
         // Remove from index
@@ -518,7 +518,7 @@ class Roles extends EventEmitter {
      * @private
      */
     async #scanExistingRoles() {
-        debug('Scanning existing roles...');
+        logger.debug('Scanning existing roles...');
         const allRoles = this.#indexStore.store || {};
 
         for (const [roleId, roleConfig] of Object.entries(allRoles)) {
@@ -531,11 +531,11 @@ class Roles extends EventEmitter {
                 const isRunning = containerInfo.State.Running;
                 this.#updateRoleStatus(roleId, isRunning ? ROLE_STATUS.RUNNING : ROLE_STATUS.STOPPED);
 
-                debug(`Role ${roleId} status: ${isRunning ? 'running' : 'stopped'}`);
+                logger.debug(`Role ${roleId} status: ${isRunning ? 'running' : 'stopped'}`);
             } catch (error) {
                 // Container doesn't exist
                 this.#updateRoleStatus(roleId, ROLE_STATUS.STOPPED);
-                debug(`Role ${roleId} container not found, marked as stopped`);
+                logger.debug(`Role ${roleId} container not found, marked as stopped`);
             }
         }
     }

@@ -8,8 +8,9 @@ import * as fsPromises from 'fs/promises';
 import { existsSync } from 'fs';
 import Conf from 'conf';
 import { v4 as uuidv4 } from 'uuid';
-import createDebug from 'debug';
-const debug = createDebug('workspace-manager');
+
+// Logging
+import { createLogger } from '../../utils/log.js';
 
 // Includes
 import Workspace from './Workspace.js';
@@ -106,6 +107,7 @@ class WorkspaceManager extends EventEmitter {
     #users;             // Users service
     #roles;             // Roles service
     #contextManager;    // Context Manager
+    #logger;
 
     #workspaces = new Map(); // Runtime cache
     #initialized = false;
@@ -135,6 +137,7 @@ class WorkspaceManager extends EventEmitter {
         this.#indexStore = options.indexStore;
         this.#users = options.users;
         this.#roles = options.roles;
+        this.#logger = options.logger || createLogger('workspace-manager');
     }
 
     async initialize() {
@@ -185,7 +188,7 @@ class WorkspaceManager extends EventEmitter {
         await this.#rebuildIndexes();
 
         this.#initialized = true;
-        debug('WorkspaceManager initialized');
+        this.#logger.debug('WorkspaceManager initialized');
         return this;
     }
 
@@ -433,7 +436,7 @@ class WorkspaceManager extends EventEmitter {
         // Update in-memory lookups
         this.#addToIndexes(userId, workspaceId, sanitizedName, host, reference);
 
-        debug(`Created workspace ${workspaceId} for user ${userId}`);
+        this.#logger.debug({ workspaceId, userId }, 'Created workspace');
         return configData;
     }
 
@@ -588,7 +591,7 @@ class WorkspaceManager extends EventEmitter {
         if (services.home?.enabled && !this.homeService.isEnabled(workspace.id)) {
             try {
                 await this.homeService.enable(workspace);
-                debug(`Home service auto-enabled for workspace ${workspace.id}`);
+                this.#logger.debug({ workspaceId: workspace.id }, 'Home service auto-enabled');
             } catch (e) {
                 console.warn(`Failed to enable home service for ${workspace.id}: ${e.message}`);
             }
@@ -666,7 +669,7 @@ class WorkspaceManager extends EventEmitter {
                 );
             }
         }
-        debug(`Rebuilt indexes: ${this.#nameIndex.size} names, ${this.#referenceIndex.size} references`);
+        this.#logger.debug({ names: this.#nameIndex.size, references: this.#referenceIndex.size }, 'Rebuilt indexes');
     }
 
     #addToIndexes(userId, workspaceId, name, host, reference) {

@@ -5,9 +5,9 @@ import { existsSync } from 'fs';
 import * as fsPromises from 'fs/promises';
 import EventEmitter from 'eventemitter2';
 import Stored from '../../../../services/stored/src/index.js';
-import { createDebug } from '../../../../utils/log/index.js';
+import { createLogger } from '../../../../utils/log.js';
 
-const debug = createDebug('home-service');
+const logger = createLogger('home-service');
 
 const HOME_DIR = 'home';
 
@@ -33,7 +33,7 @@ class HomeService extends EventEmitter {
     }
 
     async initialize() {
-        debug('HomeService initialized');
+        logger.debug('HomeService initialized');
         return this;
     }
 
@@ -51,7 +51,7 @@ class HomeService extends EventEmitter {
 
         // Ensure home directory exists
         if (!existsSync(homePath)) {
-            debug(`Creating home directory at ${homePath}`);
+            logger.debug(`Creating home directory at ${homePath}`);
             await fsPromises.mkdir(homePath, { recursive: true });
         }
 
@@ -61,7 +61,7 @@ class HomeService extends EventEmitter {
         // Initial scan and sync to synapsd
         const files = await stored.scan();
         await this.#syncInitialFiles(workspace, stored, files);
-        debug(`Home service enabled for workspace ${workspace.id}`);
+        logger.debug(`Home service enabled for workspace ${workspace.id}`);
 
         this.emit('home.enabled', { workspaceId: workspace.id, path: homePath });
         return { success: true, path: homePath };
@@ -77,7 +77,7 @@ class HomeService extends EventEmitter {
         if (stored) {
             await stored.stop();
             this.#storedInstances.delete(workspace.id);
-            debug(`Home service disabled for workspace ${workspace.id}`);
+            logger.debug(`Home service disabled for workspace ${workspace.id}`);
         }
 
         this.emit('home.disabled', { workspaceId: workspace.id });
@@ -169,35 +169,35 @@ class HomeService extends EventEmitter {
 
         const { key, checksums, size, mimeType } = data;
         if (!key || !checksums?.sha256) {
-            debug(`File add missing key or checksums: key=${key}, checksums=${JSON.stringify(checksums)}`);
+            logger.debug(`File add missing key or checksums: key=${key}, checksums=${JSON.stringify(checksums)}`);
             return;
         }
 
         const filename = path.basename(key);
         if (!filename) {
-            debug(`File add has empty filename from key: ${key}`);
+            logger.debug(`File add has empty filename from key: ${key}`);
             return;
         }
 
         const dataPath = this.#buildDataPath(key);
         const checksumString = `sha256/${checksums.sha256}`;
-        debug(`File add: key=${key}, checksum=${checksumString.slice(0, 20)}...`);
+        logger.debug(`File add: key=${key}, checksum=${checksumString.slice(0, 20)}...`);
 
         try {
             const existingDoc = await workspace.db.getDocumentByChecksumString(checksumString);
-            debug(`Lookup result: ${existingDoc ? `found doc ${existingDoc.id}` : 'not found'}`);
+            logger.debug(`Lookup result: ${existingDoc ? `found doc ${existingDoc.id}` : 'not found'}`);
 
             if (existingDoc) {
                 const dataPaths = existingDoc.metadata?.dataPaths || [];
-                debug(`Existing dataPaths: ${JSON.stringify(dataPaths)}`);
+                logger.debug(`Existing dataPaths: ${JSON.stringify(dataPaths)}`);
                 if (!dataPaths.includes(dataPath)) {
                     dataPaths.push(dataPath);
                     await workspace.db.updateDocument(existingDoc.id, {
                         metadata: { ...existingDoc.metadata, dataPaths },
                     });
-                    debug(`Added path to file doc ${existingDoc.id}: ${key} -> ${JSON.stringify(dataPaths)}`);
+                    logger.debug(`Added path to file doc ${existingDoc.id}: ${key} -> ${JSON.stringify(dataPaths)}`);
                 } else {
-                    debug(`Path already exists in doc ${existingDoc.id}: ${dataPath}`);
+                    logger.debug(`Path already exists in doc ${existingDoc.id}: ${dataPath}`);
                 }
             } else {
                 const fileDoc = {
@@ -206,18 +206,18 @@ class HomeService extends EventEmitter {
                     data: { filename, size, mime: mimeType },
                     metadata: { dataPaths: [dataPath] },
                 };
-                debug(`Inserting file doc: checksum=${checksumString.slice(0, 20)}..., data=${JSON.stringify(fileDoc.data)}`);
+                logger.debug(`Inserting file doc: checksum=${checksumString.slice(0, 20)}..., data=${JSON.stringify(fileDoc.data)}`);
                 await workspace.db.insertDocument(fileDoc, '/');
-                debug(`Created file doc: ${key}`);
+                logger.debug(`Created file doc: ${key}`);
             }
         } catch (err) {
-            debug(`Error handling file add for key=${key}: ${err.message}`);
+            logger.debug(`Error handling file add for key=${key}: ${err.message}`);
         }
     }
 
     async #handleFileChange(workspace, data) {
         // Stored emits file:unlink + file:add for changes, so this is just for logging
-        debug(`File changed in ${workspace.id}: ${data.key}`);
+        logger.debug(`File changed in ${workspace.id}: ${data.key}`);
     }
 
     async #handleFileUnlink(workspace, data) {
@@ -225,7 +225,7 @@ class HomeService extends EventEmitter {
 
         const { key, checksums, locations } = data;
         if (!checksums?.sha256) {
-            debug(`File unlink missing checksums (not indexed): ${key}`);
+            logger.debug(`File unlink missing checksums (not indexed): ${key}`);
             return;
         }
 
@@ -241,15 +241,15 @@ class HomeService extends EventEmitter {
             // locations.length === 0 means no more stored references exist
             if (locations?.length === 0 || dataPaths.length === 0) {
                 await workspace.db.deleteDocument(existingDoc.id);
-                debug(`Deleted file doc (orphaned): ${existingDoc.id}`);
+                logger.debug(`Deleted file doc (orphaned): ${existingDoc.id}`);
             } else {
                 await workspace.db.updateDocument(existingDoc.id, {
                     metadata: { ...existingDoc.metadata, dataPaths },
                 });
-                debug(`Removed path from file doc ${existingDoc.id}: ${key}`);
+                logger.debug(`Removed path from file doc ${existingDoc.id}: ${key}`);
             }
         } catch (err) {
-            debug(`Error handling file unlink: ${err.message}`);
+            logger.debug(`Error handling file unlink: ${err.message}`);
         }
     }
 
@@ -288,15 +288,15 @@ class HomeService extends EventEmitter {
                         data: { filename, size: file.size, mime: file.mimeType },
                         metadata: { dataPaths: [dataPath] },
                     };
-                    debug(`Syncing initial file doc: ${JSON.stringify(fileDoc.data)}`);
+                    logger.debug(`Syncing initial file doc: ${JSON.stringify(fileDoc.data)}`);
                     await workspace.db.insertDocument(fileDoc, '/');
                 }
                 synced++;
             } catch (err) {
-                debug(`Error syncing initial file ${file.key}: ${err.message}`);
+                logger.debug(`Error syncing initial file ${file.key}: ${err.message}`);
             }
         }
-        debug(`Synced ${synced}/${files.length} initial files to synapsd`);
+        logger.debug(`Synced ${synced}/${files.length} initial files to synapsd`);
     }
 }
 

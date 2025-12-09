@@ -16,8 +16,8 @@ const jim = new Jim({
 });
 
 // Logging
-import createDebug from 'debug';
-const debug = createDebug('canvas:server');
+import { createLogger } from './utils/log.js';
+const logger = createLogger('server');
 
 // Managers
 import WorkspaceManager from './core/workspace/index.js';
@@ -54,9 +54,9 @@ class Server extends EventEmitter {
     constructor(options = {}) {
         super();
 
-        debug('Initializing canvas-server..');
-        debug('Canvas server options:', options);
-        debug('Environment options:', JSON.stringify(env, null, 2));
+        logger.debug('Initializing canvas-server..');
+        logger.debug({ options }, 'Canvas server options');
+        logger.debug({ env }, 'Environment options');
         this.#mode = options.mode || env.server.mode;
 
         this.options = options;
@@ -164,17 +164,20 @@ class Server extends EventEmitter {
         this.#users = new Users({
             rootPath: env.user.home,
             indexStore: jim.createIndex('users'),
+            logger: createLogger('users'),
         });
 
         this.#workspaceManager = new WorkspaceManager({
             defaultRootPath: env.user.home,
             indexStore: jim.createIndex('workspaces'),
             users: this.#users,
+            logger: createLogger('workspace-manager'),
         });
 
         this.#contextManager = new ContextManager({
             indexStore: jim.createIndex('contexts'),
-            workspaceManager: this.#workspaceManager
+            workspaceManager: this.#workspaceManager,
+            logger: createLogger('context-manager'),
         });
 
         // DotfileManager initialized inside WorkspaceManager now
@@ -185,7 +188,8 @@ class Server extends EventEmitter {
             workspaceManager: this.#workspaceManager,
             serverConfig: {
                 dataPath: env.server.home
-            }
+            },
+            logger: createLogger('roles'),
         });
 
         this.#workspaceManager.setRoles(this.#roles); // Late injection if method exists
@@ -194,6 +198,7 @@ class Server extends EventEmitter {
             defaultRootPath: path.join(env.server.home, 'agents'),
             indexStore: jim.createIndex('agents'),
             users: this.#users,
+            logger: createLogger('agents'),
         });
 
         this.#users.setWorkspaceManager(this.#workspaceManager);
@@ -214,50 +219,50 @@ class Server extends EventEmitter {
             const adminEmail = env.admin.email;
             const forceReset = env.admin.forceReset;
 
-            debug(`Attempting to create admin user with email: ${adminEmail}, forceReset: ${forceReset}`);
+            logger.debug({ adminEmail, forceReset }, 'Attempting to create admin user');
 
             const adminExists = await this.#users.hasByEmail(adminEmail);
-            debug(`Admin user exists: ${adminExists}`);
+            logger.debug({ adminExists }, 'Admin user check');
 
             // If admin exists and we're not forcing a reset, skip creation
             if (adminExists && !forceReset) {
-                debug(`Admin user ${adminEmail} already exists, skipping creation.`);
+                logger.debug({ adminEmail }, 'Admin user already exists, skipping creation');
                 return null;
             }
 
             // Generate password or use configured one
             const password = env.admin.password || this.#authService.generateSecurePassword(12);
-            debug(`Using ${env.admin.password ? 'configured' : 'generated'} password for admin user`);
+            logger.debug('Using %s password for admin user', env.admin.password ? 'configured' : 'generated');
 
             let user;
             if (adminExists) {
                 // Get existing user for update
                 user = await this.#users.getByEmail(adminEmail);
-                debug(`Resetting admin user ${adminEmail} with ID: ${user.id}`);
+                logger.debug({ adminEmail, userId: user.id }, 'Resetting admin user');
             } else {
                 // Create new admin user
-                debug(`Creating new admin user ${adminEmail}`);
+                logger.debug({ adminEmail }, 'Creating new admin user');
                 user = await this.#users.create({
                     name: this.#generateUsernameFromEmail(adminEmail), // Generate proper username
                     email: adminEmail,
                     userType: 'admin',
                     status: 'active'
                 });
-                debug(`Created new admin user ${adminEmail} with ID: ${user.id}`);
+                logger.debug({ adminEmail, userId: user.id }, 'Created new admin user');
             }
 
             // Set password
-            debug(`Setting password for admin user ${user.id}`);
+            logger.debug({ userId: user.id }, 'Setting password for admin user');
             await this.#authService.setPassword(user.id, password);
 
             // Create API token (remove existing one if force reset)
-            debug(`Creating API token for admin user ${user.id}`);
+            logger.debug({ userId: user.id }, 'Creating API token for admin user');
             if (forceReset) {
                 // Find and remove existing Admin API Token
                 const existingTokens = await this.#authService.listTokens(user.id);
                 const existingAdminToken = existingTokens.find(token => token.name === 'Admin API Token');
                 if (existingAdminToken) {
-                    debug(`Removing existing Admin API Token ${existingAdminToken.id}`);
+                    logger.debug({ tokenId: existingAdminToken.id }, 'Removing existing Admin API Token');
                     await this.#authService.deleteToken(user.id, existingAdminToken.id);
                 }
             }
@@ -266,7 +271,7 @@ class Server extends EventEmitter {
                 name: 'Admin API Token',
                 description: 'Default admin token',
             });
-            debug(`API token created with ID: ${apiToken.id}`);
+            logger.debug({ tokenId: apiToken.id }, 'API token created');
 
             // Display credentials
             this.#displayAdminCredentials({
@@ -281,8 +286,7 @@ class Server extends EventEmitter {
                 apiToken: apiToken.value
             };
         } catch (error) {
-            debug(`Error creating/resetting admin user: ${error.message}`);
-            console.error('Failed to create admin user:', error);
+            logger.error({ err: error }, 'Failed to create admin user');
             return null;
         }
     }

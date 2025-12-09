@@ -6,9 +6,9 @@ import fs from 'fs';
 import { WebClient } from '@slack/web-api';
 import { Client as TeamsClient } from '@microsoft/microsoft-graph-client';
 import { ClientSecretCredential } from '@azure/identity';
-import { createDebug } from '../../../../utils/log/index.js';
+import { createLogger } from '../../../../utils/log.js';
 
-const debug = createDebug('chat-service');
+const logger = createLogger('chat-service');
 
 /**
  * ChatService
@@ -33,17 +33,17 @@ class ChatService extends EventEmitter {
     }
 
     async initialize() {
-        debug('ChatService initialized');
+        logger.debug('ChatService initialized');
         return this;
     }
 
     async enable(workspace) {
-        debug(`Enabling ChatService for workspace ${workspace.id}`);
+        logger.debug(`Enabling ChatService for workspace ${workspace.id}`);
 
         try {
             const configPath = path.join(workspace.rootPath, 'config', 'chat.json');
             if (!fs.existsSync(configPath)) {
-                debug(`No Chat config found at ${configPath}`);
+                logger.debug(`No Chat config found at ${configPath}`);
                 return false;
             }
 
@@ -67,13 +67,13 @@ class ChatService extends EventEmitter {
 
             return true;
         } catch (err) {
-            debug(`Failed to enable ChatService: ${err.message}`);
+            logger.debug(`Failed to enable ChatService: ${err.message}`);
             return false;
         }
     }
 
     async disable(workspace) {
-        debug(`Disabling ChatService for workspace ${workspace.id}`);
+        logger.debug(`Disabling ChatService for workspace ${workspace.id}`);
         this.#stopPolling(workspace.id);
         this.#slackClients.delete(workspace.id);
         this.#teamsClients.delete(workspace.id);
@@ -84,7 +84,7 @@ class ChatService extends EventEmitter {
      * Add a Slack workspace
      */
     async addSlackWorkspace(workspaceId, userId, config) {
-        debug(`Adding Slack workspace for ${workspaceId}`);
+        logger.debug(`Adding Slack workspace for ${workspaceId}`);
 
         try {
             const client = new WebClient(config.token);
@@ -101,7 +101,7 @@ class ChatService extends EventEmitter {
 
             return { success: true };
         } catch (err) {
-            debug(`Failed to add Slack workspace: ${err.message}`);
+            logger.debug(`Failed to add Slack workspace: ${err.message}`);
             return { success: false, error: err.message };
         }
     }
@@ -110,7 +110,7 @@ class ChatService extends EventEmitter {
      * Add a Microsoft Teams account
      */
     async addTeamsAccount(workspaceId, userId, config) {
-        debug(`Adding Teams account for ${workspaceId}`);
+        logger.debug(`Adding Teams account for ${workspaceId}`);
 
         try {
             const credential = new ClientSecretCredential(
@@ -138,19 +138,19 @@ class ChatService extends EventEmitter {
 
             return { success: true };
         } catch (err) {
-            debug(`Failed to add Teams account: ${err.message}`);
+            logger.debug(`Failed to add Teams account: ${err.message}`);
             return { success: false, error: err.message };
         }
     }
 
     #startPolling(workspaceId, intervalMs = 60000) {
-        debug(`Starting chat polling for workspace ${workspaceId} every ${intervalMs}ms`);
+        logger.debug(`Starting chat polling for workspace ${workspaceId} every ${intervalMs}ms`);
 
         const intervalId = setInterval(async () => {
             try {
                 await this.fetchNewMessages(workspaceId);
             } catch (err) {
-                debug(`Error during polling: ${err.message}`);
+                logger.debug(`Error during polling: ${err.message}`);
             }
         }, intervalMs);
 
@@ -162,7 +162,7 @@ class ChatService extends EventEmitter {
         if (intervalId) {
             clearInterval(intervalId);
             this.#pollingIntervals.delete(workspaceId);
-            debug(`Stopped polling for workspace ${workspaceId}`);
+            logger.debug(`Stopped polling for workspace ${workspaceId}`);
         }
     }
 
@@ -170,7 +170,7 @@ class ChatService extends EventEmitter {
      * Fetch new messages from Slack and Teams
      */
     async fetchNewMessages(workspaceId) {
-        debug(`Fetching new messages for workspace ${workspaceId}`);
+        logger.debug(`Fetching new messages for workspace ${workspaceId}`);
 
         const messages = [];
 
@@ -254,7 +254,7 @@ class ChatService extends EventEmitter {
                 }
             }
         } catch (err) {
-            debug(`Error fetching Slack messages: ${err.message}`);
+            logger.debug(`Error fetching Slack messages: ${err.message}`);
         }
 
         return messages;
@@ -332,7 +332,7 @@ class ChatService extends EventEmitter {
                 }
             }
         } catch (err) {
-            debug(`Error fetching Teams messages: ${err.message}`);
+            logger.debug(`Error fetching Teams messages: ${err.message}`);
         }
 
         return messages;

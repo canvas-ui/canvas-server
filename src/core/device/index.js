@@ -1,5 +1,5 @@
-import logger, { createDebug } from '../../utils/log/index.js';
-const debug = createDebug('device-manager');
+import { createLogger } from '../../utils/log.js';
+const logger = createLogger('device-manager');
 import EventEmitter from 'eventemitter2';
 import { v4 as uuidv4 } from 'uuid';
 import os from 'os';
@@ -30,7 +30,7 @@ class DeviceManager extends EventEmitter {
             return;
         }
 
-        debug('Initializing device manager');
+        logger.debug('Initializing device manager');
 
         // Create current device
         this.#currentDevice = this.createDevice({
@@ -53,9 +53,9 @@ class DeviceManager extends EventEmitter {
                     }
                 }
 
-                debug(`Loaded ${this.#devices.size} devices from config`);
+                logger.debug(`Loaded ${this.#devices.size} devices from config`);
             } catch (err) {
-                debug(`Error loading devices from config: ${err.message}`);
+                logger.debug(`Error loading devices from config: ${err.message}`);
             }
         }
 
@@ -168,9 +168,9 @@ class DeviceManager extends EventEmitter {
         try {
             const devicesData = Array.from(this.#devices.values()).map((device) => device.toJSON());
             await fs.writeFile(this.#configPath, JSON.stringify(devicesData, null, 2));
-            debug(`Saved ${devicesData.length} devices to config`);
+            logger.debug(`Saved ${devicesData.length} devices to config`);
         } catch (err) {
-            debug(`Error saving devices to config: ${err.message}`);
+            logger.debug(`Error saving devices to config: ${err.message}`);
             throw err;
         }
     }

@@ -8,8 +8,8 @@ import validator from 'validator';
 import { generateNanoid } from '../../utils/id.js';
 
 // Logging
-import logger, { createDebug } from '../../utils/log/index.js';
-const debug = createDebug('user-manager');
+import { createLogger } from '../../utils/log.js';
+const logger = createLogger('user-manager');
 
 // Includes
 import User from './User.js';
@@ -59,7 +59,7 @@ class Users extends EventEmitter {
         this.#workspaceManager = options.workspaceManager; // Can be initially undefined
         this.#contextManager = options.contextManager; // Can be initially undefined
 
-        debug(`Initializing Users service with user home directory rootPath: ${this.#rootPath}`);
+        logger.debug(`Initializing Users service with user home directory rootPath: ${this.#rootPath}`);
     }
 
     /**
@@ -69,7 +69,7 @@ class Users extends EventEmitter {
     async initialize() {
         if (this.#initialized) { return true; }
 
-        debug(`Users service initialized with ${this.#indexStore.size} user(s) in index`);
+        logger.debug(`Users service initialized with ${this.#indexStore.size} user(s) in index`);
         this.#initialized = true;
         return this;
     }

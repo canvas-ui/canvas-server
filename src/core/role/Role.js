@@ -4,8 +4,8 @@
 import EventEmitter from 'eventemitter2';
 
 // Logging
-import logger, { createDebug } from '../../utils/log/index.js';
-const debug = createDebug('role-manager:role');
+import { createLogger } from '../../utils/log.js';
+const logger = createLogger('role-manager:role');
 
 // Constants
 import { ROLE_STATUS } from './index.js';
@@ -42,7 +42,7 @@ class Role extends EventEmitter {
         this.#docker = options.docker;
         this.#status = options.config.status || ROLE_STATUS.CREATED;
 
-        debug(`Role instance created: ${this.id} (${this.name})`);
+        logger.debug(`Role instance created: ${this.id} (${this.name})`);
     }
 
     /**
@@ -66,11 +66,11 @@ class Role extends EventEmitter {
      */
     async start() {
         if (this.#status === ROLE_STATUS.RUNNING) {
-            debug(`Role ${this.id} is already running`);
+            logger.debug(`Role ${this.id} is already running`);
             return;
         }
 
-        debug(`Starting role: ${this.id} (${this.name})`);
+        logger.debug(`Starting role: ${this.id} (${this.name})`);
         this.#setStatus(ROLE_STATUS.STARTING);
 
         try {
@@ -86,7 +86,7 @@ class Role extends EventEmitter {
             this.#setStatus(ROLE_STATUS.RUNNING);
             this.emit('started', { roleId: this.id });
 
-            debug(`Role ${this.id} started successfully`);
+            logger.debug(`Role ${this.id} started successfully`);
         } catch (error) {
             this.#setStatus(ROLE_STATUS.ERROR);
             this.emit('startFailed', { roleId: this.id, error: error.message });
@@ -100,11 +100,11 @@ class Role extends EventEmitter {
      */
     async stop() {
         if (this.#status === ROLE_STATUS.STOPPED || this.#status === ROLE_STATUS.CREATED) {
-            debug(`Role ${this.id} is already stopped`);
+            logger.debug(`Role ${this.id} is already stopped`);
             return;
         }
 
-        debug(`Stopping role: ${this.id} (${this.name})`);
+        logger.debug(`Stopping role: ${this.id} (${this.name})`);
         this.#setStatus(ROLE_STATUS.STOPPING);
 
         try {
@@ -112,7 +112,7 @@ class Role extends EventEmitter {
                 await this.#container.stop({ t: 10 }); // 10 second timeout
                 this.#setStatus(ROLE_STATUS.STOPPED);
                 this.emit('stopped', { roleId: this.id });
-                debug(`Role ${this.id} stopped successfully`);
+                logger.debug(`Role ${this.id} stopped successfully`);
             }
         } catch (error) {
             this.#setStatus(ROLE_STATUS.ERROR);
@@ -126,7 +126,7 @@ class Role extends EventEmitter {
      * @returns {Promise<void>}
      */
     async restart() {
-        debug(`Restarting role: ${this.id} (${this.name})`);
+        logger.debug(`Restarting role: ${this.id} (${this.name})`);
         await this.stop();
         await this.start();
     }
@@ -195,7 +195,7 @@ class Role extends EventEmitter {
     async updateConfig(updates) {
         this.#config = { ...this.#config, ...updates, updatedAt: new Date().toISOString() };
         this.emit('configUpdated', { roleId: this.id, config: this.#config });
-        debug(`Role ${this.id} configuration updated`);
+        logger.debug(`Role ${this.id} configuration updated`);
     }
 
     /**
@@ -276,7 +276,7 @@ class Role extends EventEmitter {
             const oldStatus = this.#status;
             this.#status = status;
             this.emit('statusChanged', { roleId: this.id, oldStatus, newStatus: status });
-            debug(`Role ${this.id} status: ${oldStatus} -> ${status}`);
+            logger.debug(`Role ${this.id} status: ${oldStatus} -> ${status}`);
         }
     }
 
@@ -291,10 +291,10 @@ class Role extends EventEmitter {
             // Try to get existing container
             this.#container = this.#docker.getContainer(containerName);
             await this.#container.inspect();
-            debug(`Found existing container: ${containerName}`);
+            logger.debug(`Found existing container: ${containerName}`);
         } catch (error) {
             // Container doesn't exist, create it
-            debug(`Creating new container: ${containerName}`);
+            logger.debug(`Creating new container: ${containerName}`);
             await this.#createContainer();
         }
     }
@@ -325,7 +325,7 @@ class Role extends EventEmitter {
         const finalConfig = await this._prepareContainerConfig(containerConfig);
 
         this.#container = await this.#docker.createContainer(finalConfig);
-        debug(`Container created: ${this.#config.container.name}`);
+        logger.debug(`Container created: ${this.#config.container.name}`);
     }
 
     /**

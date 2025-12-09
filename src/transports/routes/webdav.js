@@ -2,9 +2,9 @@
 
 import { WebDAVServerManager } from '../webdav/server.js';
 import ResponseObject from '../ResponseObject.js';
-import { createDebug } from '../../utils/log/index.js';
+import { createLogger } from '../../utils/log.js';
 
-const debug = createDebug('webdav:routes');
+const logger = createLogger('webdav:routes');
 
 /**
  * WebDAV Routes for workspace home directory access
@@ -21,19 +21,19 @@ export default async function webdavRoutes(fastify, options) {
   );
 
   await webdavManager.initialize();
-  debug('WebDAV routes initialized');
+  logger.debug('WebDAV routes initialized');
 
   // Decorate fastify with webdavManager for potential future use
   fastify.decorate('webdavManager', webdavManager);
 
   // Register shutdown hook for WebDAV server
   fastify.addHook('onClose', async (instance) => {
-    debug('WebDAV server shutdown hook triggered');
+    logger.debug('WebDAV server shutdown hook triggered');
     try {
       await webdavManager.shutdown();
-      debug('WebDAV server shutdown completed');
+      logger.debug('WebDAV server shutdown completed');
     } catch (error) {
-      debug(`Error during WebDAV server shutdown: ${error.message}`);
+      logger.debug(`Error during WebDAV server shutdown: ${error.message}`);
     }
   });
 
@@ -42,18 +42,18 @@ export default async function webdavRoutes(fastify, options) {
 
   // XML parsers for PROPFIND, PROPPATCH
   fastify.addContentTypeParser('application/xml', { parseAs: 'buffer' }, function (request, buffer, done) {
-    debug(`Parsed XML body: ${buffer.length} bytes`);
+    logger.debug(`Parsed XML body: ${buffer.length} bytes`);
     done(null, buffer);
   });
 
   fastify.addContentTypeParser('text/xml', { parseAs: 'buffer' }, function (request, buffer, done) {
-    debug(`Parsed XML body: ${buffer.length} bytes`);
+    logger.debug(`Parsed XML body: ${buffer.length} bytes`);
     done(null, buffer);
   });
 
   // Wildcard parser for any other content-type (file uploads, etc.)
   fastify.addContentTypeParser('*', { parseAs: 'buffer' }, function (request, buffer, done) {
-    debug(`Parsed body (${request.headers['content-type'] || 'no content-type'}): ${buffer.length} bytes`);
+    logger.debug(`Parsed body (${request.headers['content-type'] || 'no content-type'}): ${buffer.length} bytes`);
     done(null, buffer);
   });
 
@@ -62,9 +62,9 @@ export default async function webdavRoutes(fastify, options) {
    */
   fastify.options('/webdav/:workspaceName/home', {
     preHandler: async (request, reply) => {
-      debug(`=== WebDAV OPTIONS PreHandler Start ===`);
-      debug(`URL: ${request.url}`);
-      debug(`Headers: ${JSON.stringify(request.headers, null, 2)}`);
+      logger.debug(`=== WebDAV OPTIONS PreHandler Start ===`);
+      logger.debug(`URL: ${request.url}`);
+      logger.debug(`Headers: ${JSON.stringify(request.headers, null, 2)}`);
 
       // Set WebDAV capability headers
       reply.header('DAV', '1, 2');
@@ -79,16 +79,16 @@ export default async function webdavRoutes(fastify, options) {
       reply.header('Access-Control-Allow-Credentials', 'true');
       reply.header('Access-Control-Max-Age', '86400');
 
-      debug(`WebDAV OPTIONS headers set`);
-      debug(`=== WebDAV OPTIONS PreHandler End ===`);
+      logger.debug(`WebDAV OPTIONS headers set`);
+      logger.debug(`=== WebDAV OPTIONS PreHandler End ===`);
     }
   }, async (request, reply) => {
-    debug(`=== WebDAV OPTIONS Handler Start ===`);
-    debug(`URL: ${request.url}`);
-    debug(`Headers: ${JSON.stringify(request.headers, null, 2)}`);
+    logger.debug(`=== WebDAV OPTIONS Handler Start ===`);
+    logger.debug(`URL: ${request.url}`);
+    logger.debug(`Headers: ${JSON.stringify(request.headers, null, 2)}`);
 
-    debug(`WebDAV OPTIONS handler completed`);
-    debug(`=== WebDAV OPTIONS Handler End ===`);
+    logger.debug(`WebDAV OPTIONS handler completed`);
+    logger.debug(`=== WebDAV OPTIONS Handler End ===`);
 
     return reply.code(200).send();
   });
@@ -124,7 +124,7 @@ export default async function webdavRoutes(fastify, options) {
         const authHeader = request.headers.authorization;
 
         if (!authHeader) {
-          debug('No authorization header provided');
+          logger.debug('No authorization header provided');
           // Set WWW-Authenticate headers for Windows WebDAV clients
           reply.header('WWW-Authenticate', 'Basic realm="Canvas WebDAV", Bearer realm="Canvas WebDAV"');
           const response = new ResponseObject().unauthorized('Authentication required');
@@ -136,7 +136,7 @@ export default async function webdavRoutes(fastify, options) {
         // Support Bearer token
         if (authHeader.startsWith('Bearer ')) {
           token = authHeader.substring(7);
-          debug('Bearer token authentication detected');
+          logger.debug('Bearer token authentication detected');
         }
         // Support Basic Auth (username:password or username:token)
         else if (authHeader.startsWith('Basic ')) {
@@ -144,27 +144,27 @@ export default async function webdavRoutes(fastify, options) {
             const base64Credentials = authHeader.substring(6);
             const credentials = Buffer.from(base64Credentials, 'base64').toString('utf-8');
             const [username, password] = credentials.split(':');
-            debug(`Basic auth detected for user: ${username}`);
+            logger.debug(`Basic auth detected for user: ${username}`);
 
             // Check if password is an API token (starts with canvas-)
             if (password.startsWith('canvas-')) {
               token = password;
-              debug('Using password as API token');
+              logger.debug('Using password as API token');
             } else {
               // Try to authenticate with username/password
-              debug('Attempting username/password authentication');
+              logger.debug('Attempting username/password authentication');
               try {
                 const user = await fastify.users.getByEmail(username);
 
                 // Verify password
                 const passwordValid = await fastify.authService.verifyPassword(user.id, password);
                 if (!passwordValid) {
-                  debug(`Invalid password for user: ${username}`);
+                  logger.debug(`Invalid password for user: ${username}`);
                   const response = new ResponseObject().unauthorized('Invalid username or password');
                   return reply.code(response.statusCode).send(response.getResponse());
                 }
 
-                debug(`Password authentication successful for user: ${username}`);
+                logger.debug(`Password authentication successful for user: ${username}`);
                 // Set token to null since we'll handle this differently
                 token = null;
                 request.user = {
@@ -175,27 +175,27 @@ export default async function webdavRoutes(fastify, options) {
                   status: user.status || 'active'
                 };
               } catch (userError) {
-                debug(`User not found or error: ${userError.message}`);
+                logger.debug(`User not found or error: ${userError.message}`);
                 const response = new ResponseObject().unauthorized('Invalid username or password');
                 return reply.code(response.statusCode).send(response.getResponse());
               }
             }
           } catch (e) {
-            debug(`Failed to parse Basic auth: ${e.message}`);
+            logger.debug(`Failed to parse Basic auth: ${e.message}`);
             const response = new ResponseObject().unauthorized('Invalid authentication format');
             return reply.code(response.statusCode).send(response.getResponse());
           }
         }
         // Support Digest Auth (for Windows compatibility)
         else if (authHeader.startsWith('Digest ')) {
-          debug('Digest authentication not yet implemented, falling back to Basic');
+          logger.debug('Digest authentication not yet implemented, falling back to Basic');
           reply.header('WWW-Authenticate', 'Digest realm="Canvas WebDAV", qop="auth", nonce="' + Date.now() + '"');
           const response = new ResponseObject().unauthorized('Digest authentication not supported, please use Basic or Bearer');
           return reply.code(response.statusCode).send(response.getResponse());
         }
 
         if (!token && !request.user) {
-          debug('No valid token or user found');
+          logger.debug('No valid token or user found');
           const response = new ResponseObject().unauthorized('Invalid authentication credentials');
           return reply.code(response.statusCode).send(response.getResponse());
         }
@@ -205,30 +205,30 @@ export default async function webdavRoutes(fastify, options) {
           const result = await fastify.authService.verifyToken(token);
 
           if (!result || !result.valid) {
-            debug(`Token verification failed: ${result?.message || 'Invalid token'}`);
+            logger.debug(`Token verification failed: ${result?.message || 'Invalid token'}`);
             const response = new ResponseObject().unauthorized(result?.message || 'Invalid token');
             return reply.code(response.statusCode).send(response.getResponse());
           }
 
           // Attach user to request
           request.user = result.user;
-          debug(`User authenticated via token: ${result.user.id}`);
+          logger.debug(`User authenticated via token: ${result.user.id}`);
         } else {
-          debug(`User authenticated via password: ${request.user.id}`);
+          logger.debug(`User authenticated via password: ${request.user.id}`);
         }
 
         // Verify workspace access
         const workspaceName = request.params.workspaceName;
         const workspaceId = fastify.workspaceManager.resolveWorkspaceId(request.user.id, workspaceName);
         if (!workspaceId) {
-          debug(`Workspace not found: ${workspaceName}`);
+          logger.debug(`Workspace not found: ${workspaceName}`);
           const response = new ResponseObject().notFound(`Workspace not found: ${workspaceName}`);
           return reply.code(response.statusCode).send(response.getResponse());
         }
 
         const workspace = await fastify.workspaceManager.getWorkspace(workspaceId, request.user.id);
         if (!workspace) {
-          debug(`Workspace not found: ${workspaceName}`);
+          logger.debug(`Workspace not found: ${workspaceName}`);
           const response = new ResponseObject().notFound(`Workspace not found: ${workspaceName}`);
           return reply.code(response.statusCode).send(response.getResponse());
         }
@@ -241,12 +241,12 @@ export default async function webdavRoutes(fastify, options) {
           );
 
         if (!hasAccess) {
-          debug(`User ${request.user.id} does not have access to workspace ${workspaceName}`);
+          logger.debug(`User ${request.user.id} does not have access to workspace ${workspaceName}`);
           const response = new ResponseObject().forbidden('Access denied to workspace');
           return reply.code(response.statusCode).send(response.getResponse());
         }
 
-        debug(`Access granted to workspace ${workspaceName} for user ${request.user.id}`);
+        logger.debug(`Access granted to workspace ${workspaceName} for user ${request.user.id}`);
       } catch (error) {
         fastify.log.error(`WebDAV authentication error: ${error.message}`);
         const response = new ResponseObject().serverError('Authentication error');
@@ -258,37 +258,37 @@ export default async function webdavRoutes(fastify, options) {
         const workspaceName = request.params.workspaceName;
         const userId = request.user.id;
 
-        debug(`=== WebDAV Route Handler Start ===`);
-        debug(`Method: ${request.method}`);
-        debug(`URL: ${request.url}`);
-        debug(`Params: ${JSON.stringify(request.params, null, 2)}`);
-        debug(`Query: ${JSON.stringify(request.query, null, 2)}`);
-        debug(`Headers: ${JSON.stringify(request.headers, null, 2)}`);
-        debug(`User: ${userId}, Workspace: ${workspaceName}`);
+        logger.debug(`=== WebDAV Route Handler Start ===`);
+        logger.debug(`Method: ${request.method}`);
+        logger.debug(`URL: ${request.url}`);
+        logger.debug(`Params: ${JSON.stringify(request.params, null, 2)}`);
+        logger.debug(`Query: ${JSON.stringify(request.query, null, 2)}`);
+        logger.debug(`Headers: ${JSON.stringify(request.headers, null, 2)}`);
+        logger.debug(`User: ${userId}, Workspace: ${workspaceName}`);
 
         // Tell Fastify we'll handle the response manually
-        debug(`Hijacking response...`);
+        logger.debug(`Hijacking response...`);
         reply.hijack();
 
         // Delegate to WebDAV server manager
-        debug(`Delegating to WebDAV server manager...`);
+        logger.debug(`Delegating to WebDAV server manager...`);
         await webdavManager.handleRequest(request, reply, userId, workspaceName);
 
-        debug(`WebDAV route handler completed successfully`);
-        debug(`=== WebDAV Route Handler End ===`);
+        logger.debug(`WebDAV route handler completed successfully`);
+        logger.debug(`=== WebDAV Route Handler End ===`);
       } catch (error) {
-        debug(`=== WebDAV Route Handler Error ===`);
-        debug(`Error: ${error.message}`);
-        debug(`Stack trace: ${error.stack}`);
-        debug(`Reply sent: ${reply.sent}`);
-        debug(`Headers sent: ${reply.raw.headersSent}`);
-        debug(`=== End Route Handler Error ===`);
+        logger.debug(`=== WebDAV Route Handler Error ===`);
+        logger.debug(`Error: ${error.message}`);
+        logger.debug(`Stack trace: ${error.stack}`);
+        logger.debug(`Reply sent: ${reply.sent}`);
+        logger.debug(`Headers sent: ${reply.raw.headersSent}`);
+        logger.debug(`=== End Route Handler Error ===`);
 
         fastify.log.error(`WebDAV handler error: ${error.message}`);
 
         // Only send error if response hasn't been sent yet
         if (!reply.raw.headersSent) {
-          debug(`Sending error response from route handler...`);
+          logger.debug(`Sending error response from route handler...`);
           reply.raw.writeHead(500, { 'Content-Type': 'application/json' });
           reply.raw.end(JSON.stringify({
             error: 'Internal Server Error',
@@ -303,9 +303,9 @@ export default async function webdavRoutes(fastify, options) {
    * WebDAV OPTIONS handler for subdirectories and files
    */
   fastify.options('/webdav/:workspaceName/home/*', async (request, reply) => {
-    debug(`=== WebDAV OPTIONS Handler Start (Wildcard) ===`);
-    debug(`URL: ${request.url}`);
-    debug(`Headers: ${JSON.stringify(request.headers, null, 2)}`);
+    logger.debug(`=== WebDAV OPTIONS Handler Start (Wildcard) ===`);
+    logger.debug(`URL: ${request.url}`);
+    logger.debug(`Headers: ${JSON.stringify(request.headers, null, 2)}`);
 
     // Set WebDAV capability headers
     reply.header('DAV', '1, 2');
@@ -320,8 +320,8 @@ export default async function webdavRoutes(fastify, options) {
     reply.header('Access-Control-Allow-Credentials', 'true');
     reply.header('Access-Control-Max-Age', '86400');
 
-    debug(`WebDAV OPTIONS headers set (Wildcard)`);
-    debug(`=== WebDAV OPTIONS Handler End (Wildcard) ===`);
+    logger.debug(`WebDAV OPTIONS headers set (Wildcard)`);
+    logger.debug(`=== WebDAV OPTIONS Handler End (Wildcard) ===`);
 
     return reply.code(200).send();
   });
@@ -354,7 +354,7 @@ export default async function webdavRoutes(fastify, options) {
         const authHeader = request.headers.authorization;
 
         if (!authHeader) {
-          debug('No authorization header provided');
+          logger.debug('No authorization header provided');
           // Set WWW-Authenticate headers for Windows WebDAV clients
           reply.header('WWW-Authenticate', 'Basic realm="Canvas WebDAV", Bearer realm="Canvas WebDAV"');
           const response = new ResponseObject().unauthorized('Authentication required');
@@ -366,7 +366,7 @@ export default async function webdavRoutes(fastify, options) {
         // Support Bearer token
         if (authHeader.startsWith('Bearer ')) {
           token = authHeader.substring(7);
-          debug('Bearer token authentication detected');
+          logger.debug('Bearer token authentication detected');
         }
         // Support Basic Auth (username:password or username:token)
         else if (authHeader.startsWith('Basic ')) {
@@ -374,27 +374,27 @@ export default async function webdavRoutes(fastify, options) {
             const base64Credentials = authHeader.substring(6);
             const credentials = Buffer.from(base64Credentials, 'base64').toString('utf-8');
             const [username, password] = credentials.split(':');
-            debug(`Basic auth detected for user: ${username}`);
+            logger.debug(`Basic auth detected for user: ${username}`);
 
             // Check if password is an API token (starts with canvas-)
             if (password.startsWith('canvas-')) {
               token = password;
-              debug('Using password as API token');
+              logger.debug('Using password as API token');
             } else {
               // Try to authenticate with username/password
-              debug('Attempting username/password authentication');
+              logger.debug('Attempting username/password authentication');
               try {
                 const user = await fastify.users.getByEmail(username);
 
                 // Verify password
                 const passwordValid = await fastify.authService.verifyPassword(user.id, password);
                 if (!passwordValid) {
-                  debug(`Invalid password for user: ${username}`);
+                  logger.debug(`Invalid password for user: ${username}`);
                   const response = new ResponseObject().unauthorized('Invalid username or password');
                   return reply.code(response.statusCode).send(response.getResponse());
                 }
 
-                debug(`Password authentication successful for user: ${username}`);
+                logger.debug(`Password authentication successful for user: ${username}`);
                 // Set token to null since we'll handle this differently
                 token = null;
                 request.user = {
@@ -405,27 +405,27 @@ export default async function webdavRoutes(fastify, options) {
                   status: user.status || 'active'
                 };
               } catch (userError) {
-                debug(`User not found or error: ${userError.message}`);
+                logger.debug(`User not found or error: ${userError.message}`);
                 const response = new ResponseObject().unauthorized('Invalid username or password');
                 return reply.code(response.statusCode).send(response.getResponse());
               }
             }
           } catch (e) {
-            debug(`Failed to parse Basic auth: ${e.message}`);
+            logger.debug(`Failed to parse Basic auth: ${e.message}`);
             const response = new ResponseObject().unauthorized('Invalid authentication format');
             return reply.code(response.statusCode).send(response.getResponse());
           }
         }
         // Support Digest Auth (for Windows compatibility)
         else if (authHeader.startsWith('Digest ')) {
-          debug('Digest authentication not yet implemented, falling back to Basic');
+          logger.debug('Digest authentication not yet implemented, falling back to Basic');
           reply.header('WWW-Authenticate', 'Digest realm="Canvas WebDAV", qop="auth", nonce="' + Date.now() + '"');
           const response = new ResponseObject().unauthorized('Digest authentication not supported, please use Basic or Bearer');
           return reply.code(response.statusCode).send(response.getResponse());
         }
 
         if (!token && !request.user) {
-          debug('No valid token or user found');
+          logger.debug('No valid token or user found');
           const response = new ResponseObject().unauthorized('Invalid authentication credentials');
           return reply.code(response.statusCode).send(response.getResponse());
         }
@@ -435,30 +435,30 @@ export default async function webdavRoutes(fastify, options) {
           const result = await fastify.authService.verifyToken(token);
 
           if (!result || !result.valid) {
-            debug(`Token verification failed: ${result?.message || 'Invalid token'}`);
+            logger.debug(`Token verification failed: ${result?.message || 'Invalid token'}`);
             const response = new ResponseObject().unauthorized(result?.message || 'Invalid token');
             return reply.code(response.statusCode).send(response.getResponse());
           }
 
           // Attach user to request
           request.user = result.user;
-          debug(`User authenticated via token: ${result.user.id}`);
+          logger.debug(`User authenticated via token: ${result.user.id}`);
         } else {
-          debug(`User authenticated via password: ${request.user.id}`);
+          logger.debug(`User authenticated via password: ${request.user.id}`);
         }
 
         // Verify workspace access
         const workspaceName = request.params.workspaceName;
         const workspaceId = fastify.workspaceManager.resolveWorkspaceId(request.user.id, workspaceName);
         if (!workspaceId) {
-          debug(`Workspace not found: ${workspaceName}`);
+          logger.debug(`Workspace not found: ${workspaceName}`);
           const response = new ResponseObject().notFound(`Workspace not found: ${workspaceName}`);
           return reply.code(response.statusCode).send(response.getResponse());
         }
 
         const workspace = await fastify.workspaceManager.getWorkspace(workspaceId, request.user.id);
         if (!workspace) {
-          debug(`Workspace not found: ${workspaceName}`);
+          logger.debug(`Workspace not found: ${workspaceName}`);
           const response = new ResponseObject().notFound(`Workspace not found: ${workspaceName}`);
           return reply.code(response.statusCode).send(response.getResponse());
         }
@@ -471,12 +471,12 @@ export default async function webdavRoutes(fastify, options) {
           );
 
         if (!hasAccess) {
-          debug(`User ${request.user.id} does not have access to workspace ${workspaceName}`);
+          logger.debug(`User ${request.user.id} does not have access to workspace ${workspaceName}`);
           const response = new ResponseObject().forbidden('Access denied to workspace');
           return reply.code(response.statusCode).send(response.getResponse());
         }
 
-        debug(`Access granted to workspace ${workspaceName} for user ${request.user.id}`);
+        logger.debug(`Access granted to workspace ${workspaceName} for user ${request.user.id}`);
       } catch (error) {
         fastify.log.error(`WebDAV authentication error: ${error.message}`);
         const response = new ResponseObject().serverError('Authentication error');
@@ -488,37 +488,37 @@ export default async function webdavRoutes(fastify, options) {
         const workspaceName = request.params.workspaceName;
         const userId = request.user.id;
 
-        debug(`=== WebDAV Route Handler Start (Wildcard) ===`);
-        debug(`Method: ${request.method}`);
-        debug(`URL: ${request.url}`);
-        debug(`Params: ${JSON.stringify(request.params, null, 2)}`);
-        debug(`Query: ${JSON.stringify(request.query, null, 2)}`);
-        debug(`Headers: ${JSON.stringify(request.headers, null, 2)}`);
-        debug(`User: ${userId}, Workspace: ${workspaceName}`);
+        logger.debug(`=== WebDAV Route Handler Start (Wildcard) ===`);
+        logger.debug(`Method: ${request.method}`);
+        logger.debug(`URL: ${request.url}`);
+        logger.debug(`Params: ${JSON.stringify(request.params, null, 2)}`);
+        logger.debug(`Query: ${JSON.stringify(request.query, null, 2)}`);
+        logger.debug(`Headers: ${JSON.stringify(request.headers, null, 2)}`);
+        logger.debug(`User: ${userId}, Workspace: ${workspaceName}`);
 
         // Tell Fastify we'll handle the response manually
-        debug(`Hijacking response...`);
+        logger.debug(`Hijacking response...`);
         reply.hijack();
 
         // Delegate to WebDAV server manager
-        debug(`Delegating to WebDAV server manager...`);
+        logger.debug(`Delegating to WebDAV server manager...`);
         await webdavManager.handleRequest(request, reply, userId, workspaceName);
 
-        debug(`WebDAV route handler completed successfully`);
-        debug(`=== WebDAV Route Handler End (Wildcard) ===`);
+        logger.debug(`WebDAV route handler completed successfully`);
+        logger.debug(`=== WebDAV Route Handler End (Wildcard) ===`);
       } catch (error) {
-        debug(`=== WebDAV Route Handler Error (Wildcard) ===`);
-        debug(`Error: ${error.message}`);
-        debug(`Stack trace: ${error.stack}`);
-        debug(`Reply sent: ${reply.sent}`);
-        debug(`Headers sent: ${reply.raw.headersSent}`);
-        debug(`=== End Route Handler Error (Wildcard) ===`);
+        logger.debug(`=== WebDAV Route Handler Error (Wildcard) ===`);
+        logger.debug(`Error: ${error.message}`);
+        logger.debug(`Stack trace: ${error.stack}`);
+        logger.debug(`Reply sent: ${reply.sent}`);
+        logger.debug(`Headers sent: ${reply.raw.headersSent}`);
+        logger.debug(`=== End Route Handler Error (Wildcard) ===`);
 
         fastify.log.error(`WebDAV handler error: ${error.message}`);
 
         // Only send error if response hasn't been sent yet
         if (!reply.raw.headersSent) {
-          debug(`Sending error response from route handler...`);
+          logger.debug(`Sending error response from route handler...`);
           reply.raw.writeHead(500, { 'Content-Type': 'application/json' });
           reply.raw.end(JSON.stringify({
             error: 'Internal Server Error',

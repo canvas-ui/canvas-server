@@ -5,8 +5,8 @@ import path from 'path';
 import EventEmitter from 'eventemitter2';
 
 // Logging
-import logger, { createDebug } from '../../utils/log/index.js';
-const debug = createDebug('user-manager:user');
+import { createLogger } from '../../utils/log.js';
+const logger = createLogger('user-manager:user');
 
 // Constants
 import { USER_STATUS_CODES } from './index.js';
@@ -65,7 +65,7 @@ class User extends EventEmitter {
         this.#homePath = path.resolve(options.homePath); // Ensure absolute path
         this.#userType = options.userType || 'user';
         this.#status = options.status || 'inactive';
-        debug(`User instance created: ${this.#id} (${this.#name} - ${this.#email}) via ${this.#authMethod} with home path: ${this.#homePath}`);
+        logger.debug(`User instance created: ${this.#id} (${this.#name} - ${this.#email}) via ${this.#authMethod} with home path: ${this.#homePath}`);
     }
 
     /**

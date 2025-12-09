@@ -1,8 +1,8 @@
 'use strict';
 
-import { createDebug } from '../../../utils/log/index.js';
+import { createLogger } from '../../../utils/log.js';
 
-const debug = createDebug('canvas-server:websocket:agent');
+const logger = createLogger('canvas-server:websocket:agent');
 
 /**
  * Agent WebSocket channel for real-time agent interactions
@@ -14,7 +14,7 @@ const debug = createDebug('canvas-server:websocket:agent');
 export default function registerAgentWebSocket(fastify, socket) {
   const { user } = socket;
 
-  debug(`🎭 Registering agent WebSocket for socket ${socket.id}, user ${user.email}`);
+  logger.debug(`🎭 Registering agent WebSocket for socket ${socket.id}, user ${user.email}`);
 
   // Initialize subscriptions if not exists
   if (!socket.subscriptions) {
@@ -41,10 +41,10 @@ export default function registerAgentWebSocket(fastify, socket) {
       socket.subscriptions.add(subscriptionKey);
       socket.join(`agent:${agentId}`);
 
-      debug(`✅ Socket ${socket.id} subscribed to agent ${agentId}`);
+      logger.debug(`✅ Socket ${socket.id} subscribed to agent ${agentId}`);
       socket.emit('agent:subscribed', { agentId });
     } catch (error) {
-      debug(`❌ Agent subscription error for ${socket.id}: ${error.message}`);
+      logger.debug(`❌ Agent subscription error for ${socket.id}: ${error.message}`);
       socket.emit('error', { message: 'Failed to subscribe to agent' });
     }
   });
@@ -59,10 +59,10 @@ export default function registerAgentWebSocket(fastify, socket) {
       socket.subscriptions.delete(subscriptionKey);
       socket.leave(`agent:${agentId}`);
 
-      debug(`🔇 Socket ${socket.id} unsubscribed from agent ${agentId}`);
+      logger.debug(`🔇 Socket ${socket.id} unsubscribed from agent ${agentId}`);
       socket.emit('agent:unsubscribed', { agentId });
     } catch (error) {
-      debug(`❌ Agent unsubscription error for ${socket.id}: ${error.message}`);
+      logger.debug(`❌ Agent unsubscription error for ${socket.id}: ${error.message}`);
     }
   });
 
@@ -126,9 +126,9 @@ export default function registerAgentWebSocket(fastify, socket) {
         result
       });
 
-      debug(`💬 Streaming chat completed for agent ${agentId} by user ${user.id}`);
+      logger.debug(`💬 Streaming chat completed for agent ${agentId} by user ${user.id}`);
     } catch (error) {
-      debug(`❌ Streaming chat error for ${socket.id}: ${error.message}`);
+      logger.debug(`❌ Streaming chat error for ${socket.id}: ${error.message}`);
       socket.emit('agent:chat:error', {
         agentId: data?.agentId,
         messageId: data?.messageId,
@@ -139,9 +139,9 @@ export default function registerAgentWebSocket(fastify, socket) {
 
   // Clean up subscriptions on disconnect
   socket.on('disconnect', () => {
-    debug(`🔌 Agent WebSocket cleanup for socket ${socket.id}`);
+    logger.debug(`🔌 Agent WebSocket cleanup for socket ${socket.id}`);
     // Subscriptions are automatically cleaned up by socket.io
   });
 
-  debug(`✅ Agent WebSocket registered for socket ${socket.id}`);
+  logger.debug(`✅ Agent WebSocket registered for socket ${socket.id}`);
 }

@@ -5,8 +5,8 @@ import EventEmitter from 'eventemitter2';
 import { v4 as uuidv4 } from 'uuid';
 
 // Logging
-import logger, { createDebug } from '../../../utils/log/index.js';
-const debug = createDebug('context-manager:context');
+import { createLogger } from '../../../utils/log.js';
+const logger = createLogger('context-manager:context');
 
 // Includes
 import Url from './Url.js';
@@ -132,7 +132,7 @@ class Context extends EventEmitter {
 
             // Check if URL is within base URL constraints
             if (this.#baseUrl !== '/' && !parsedUrl.path.startsWith(new Url(this.#baseUrl).path)) {
-                debug(`Provided URL "${url}" is outside base URL "${this.#baseUrl}". Forcing URL to base URL.`);
+                logger.debug(`Provided URL "${url}" is outside base URL "${this.#baseUrl}". Forcing URL to base URL.`);
                 const baseUrl = new Url(this.#baseUrl);
                 this.#url = baseUrl.url;
                 this.#path = baseUrl.path;
@@ -171,7 +171,7 @@ class Context extends EventEmitter {
             throw new Error(`Failed to initialize context: ${error.message}`);
         }
 
-        debug(`Context ${this.#id} constructor finished. Initial URL state: ${this.#url}, Base URL: ${this.#baseUrl}`);
+        logger.debug(`Context ${this.#id} constructor finished. Initial URL state: ${this.#url}, Base URL: ${this.#baseUrl}`);
         this.emit('context.created', this.toJSON());
     }
 
@@ -183,7 +183,7 @@ class Context extends EventEmitter {
      */
     async initialize() {
         if (this.#pendingUrl) {
-            debug(`Processing pending URL switch to ${this.#pendingUrl}`);
+            logger.debug(`Processing pending URL switch to ${this.#pendingUrl}`);
             const pendingUrl = this.#pendingUrl;
             this.#pendingUrl = null;
             return this.setUrl(pendingUrl);
@@ -269,7 +269,7 @@ class Context extends EventEmitter {
         }
 
         if (sharedWithUserId === this.#userId) {
-            debug(`User ${sharedWithUserId} is the owner, no need to grant explicit access.`);
+            logger.debug(`User ${sharedWithUserId} is the owner, no need to grant explicit access.`);
             return Promise.resolve(this); // Owner always has full access
         }
 
@@ -292,7 +292,7 @@ class Context extends EventEmitter {
         }
 
         if (sharedWithUserId === this.#userId) {
-            debug(`Cannot revoke access from the owner ${sharedWithUserId}.`);
+            logger.debug(`Cannot revoke access from the owner ${sharedWithUserId}.`);
             return Promise.resolve(this);
         }
 
@@ -304,7 +304,7 @@ class Context extends EventEmitter {
             // Save changes to index
             await this.#contextManager.saveContext(this.#userId, this);
         } else {
-            debug(`No explicit access found for ${sharedWithUserId} to revoke.`);
+            logger.debug(`No explicit access found for ${sharedWithUserId} to revoke.`);
         }
         return Promise.resolve(this);
     }
@@ -333,10 +333,10 @@ class Context extends EventEmitter {
             throw new Error(`User with email ${userEmail} not found`);
         }
 
-        debug(`grantAccessByEmail: Resolved ${userEmail} to userId: ${targetUser.id}`);
+        logger.debug(`grantAccessByEmail: Resolved ${userEmail} to userId: ${targetUser.id}`);
 
         if (targetUser.id === this.#userId) {
-            debug(`User ${userEmail} is the owner, no need to grant explicit access.`);
+            logger.debug(`User ${userEmail} is the owner, no need to grant explicit access.`);
             return Promise.resolve(this); // Owner always has full access
         }
 
@@ -354,15 +354,15 @@ class Context extends EventEmitter {
             grantedBy: options.grantedBy || this.#userId
         };
 
-        debug(`grantAccessByEmail: Stored share for ${userEmail} (userId: ${targetUser.id}) with accessLevel: ${accessLevel}`);
-        debug(`grantAccessByEmail: Context ACL users:`, JSON.stringify(this.#acl.users, null, 2));
+        logger.debug(`grantAccessByEmail: Stored share for ${userEmail} (userId: ${targetUser.id}) with accessLevel: ${accessLevel}`);
+        logger.debug(`grantAccessByEmail: Context ACL users:`, JSON.stringify(this.#acl.users, null, 2));
 
         this.#updatedAt = new Date().toISOString();
         this.emit('context.acl.updated', { id: this.#id, userEmail, accessLevel });
 
         // Save changes to index
         await this.#contextManager.saveContext(this.#userId, this);
-        debug(`grantAccessByEmail: Context saved to index for context ${this.#id}`);
+        logger.debug(`grantAccessByEmail: Context saved to index for context ${this.#id}`);
         return Promise.resolve(this);
     }
 
@@ -377,7 +377,7 @@ class Context extends EventEmitter {
 
         // Check if users object exists
         if (!this.#acl.users || !this.#acl.users[userEmail]) {
-            debug(`No explicit access found for ${userEmail} to revoke.`);
+            logger.debug(`No explicit access found for ${userEmail} to revoke.`);
             return Promise.resolve(this);
         }
 
@@ -457,16 +457,16 @@ class Context extends EventEmitter {
      */
     checkPermission(accessingUserId, requiredAccessLevel) {
         if (!accessingUserId) {
-            debug('No accessingUserId provided for permission check.');
+            logger.debug('No accessingUserId provided for permission check.');
             return false;
         }
 
-        debug(`🔒 checkPermission: Checking if user ${accessingUserId} has ${requiredAccessLevel} for context ${this.#id}`);
-        debug(`🔒 checkPermission: Context owner: ${this.#userId}`);
+        logger.debug(`🔒 checkPermission: Checking if user ${accessingUserId} has ${requiredAccessLevel} for context ${this.#id}`);
+        logger.debug(`🔒 checkPermission: Context owner: ${this.#userId}`);
 
         // Owner always has full permission
         if (accessingUserId === this.#userId) {
-            debug(`🔒 checkPermission: User is owner, granting full access`);
+            logger.debug(`🔒 checkPermission: User is owner, granting full access`);
             return true;
         }
 
@@ -475,25 +475,25 @@ class Context extends EventEmitter {
         // Try old format first (acl[userId])
         if (this.#acl[accessingUserId]) {
             grantedAccessLevel = this.#acl[accessingUserId];
-            debug(`🔒 checkPermission: Found permission in old format: ${grantedAccessLevel}`);
+            logger.debug(`🔒 checkPermission: Found permission in old format: ${grantedAccessLevel}`);
         }
 
         // Try new format (acl.users[email] where we need to match by userId)
         if (!grantedAccessLevel && this.#acl.users) {
-            debug(`🔒 checkPermission: Checking new ACL format, found ${Object.keys(this.#acl.users).length} email entries`);
+            logger.debug(`🔒 checkPermission: Checking new ACL format, found ${Object.keys(this.#acl.users).length} email entries`);
             for (const [email, shareData] of Object.entries(this.#acl.users)) {
-                debug(`🔒 checkPermission: Checking ${email} with userId ${shareData.userId}`);
+                logger.debug(`🔒 checkPermission: Checking ${email} with userId ${shareData.userId}`);
                 if (shareData.userId === accessingUserId) {
                     grantedAccessLevel = shareData.accessLevel;
-                    debug(`🔒 checkPermission: ✓ Found match! User ${accessingUserId} has ${grantedAccessLevel} via ${email}`);
+                    logger.debug(`🔒 checkPermission: ✓ Found match! User ${accessingUserId} has ${grantedAccessLevel} via ${email}`);
                     break;
                 }
             }
         }
 
         if (!grantedAccessLevel) {
-            debug(`🔒 checkPermission: ✗ User ${accessingUserId} has no explicit permissions granted for context ${this.#id}.`);
-            debug(`🔒 checkPermission: ACL contents:`, JSON.stringify(this.#acl, null, 2));
+            logger.debug(`🔒 checkPermission: ✗ User ${accessingUserId} has no explicit permissions granted for context ${this.#id}.`);
+            logger.debug(`🔒 checkPermission: ACL contents:`, JSON.stringify(this.#acl, null, 2));
             return false;
         }
 
@@ -509,12 +509,12 @@ class Context extends EventEmitter {
 
 
         if (!(requiredAccessLevel in permissionHierarchy)) {
-            debug(`Unknown requiredAccessLevel: ${requiredAccessLevel}`);
+            logger.debug(`Unknown requiredAccessLevel: ${requiredAccessLevel}`);
             return false; // Or throw an error
         }
 
         if (!(grantedAccessLevel in permissionHierarchy)) {
-            debug(`User ${accessingUserId} has an unknown grantedAccessLevel: ${grantedAccessLevel}`);
+            logger.debug(`User ${accessingUserId} has an unknown grantedAccessLevel: ${grantedAccessLevel}`);
             return false; // Or throw an error
         }
 
@@ -579,8 +579,8 @@ class Context extends EventEmitter {
             throw new Error(`Invalid URL provided: ${url}`);
         }
 
-        debug(`Attempting to set URL to ${parsed.url}`);
-        debug(`Parsed URL: ${JSON.stringify({ workspaceId: parsed.workspaceId, path: parsed.path, pathArray: parsed.pathArray })}`);
+        logger.debug(`Attempting to set URL to ${parsed.url}`);
+        logger.debug(`Parsed URL: ${JSON.stringify({ workspaceId: parsed.workspaceId, path: parsed.path, pathArray: parsed.pathArray })}`);
 
         // Validate against base URL if it's set and not root
         if (this.#baseUrl && this.#baseUrl !== '/') {
@@ -601,7 +601,7 @@ class Context extends EventEmitter {
         // Create the URL path in the current workspace
         const contextLayers = await this.#workspace.tree.insertPath(parsed.path);
         this.#contextBitmapArray = parsed.pathArray;
-        debug(`ContextPath: ${parsed.path}, contextLayer IDs: ${JSON.stringify(contextLayers)}`);
+        logger.debug(`ContextPath: ${parsed.path}, contextLayer IDs: ${JSON.stringify(contextLayers)}`);
 
         // Update the internal URL state - always use the target workspace name
         this.#url = `${targetWorkspaceName}://${parsed.path.replace(/^\//, '')}`;
@@ -612,7 +612,7 @@ class Context extends EventEmitter {
         this.#updatedAt = new Date().toISOString();
 
         // Emit the change event
-        debug(`📋 Context: Emitting context.url.set event for context ${this.#id}, new URL: ${this.#url}`);
+        logger.debug(`📋 Context: Emitting context.url.set event for context ${this.#id}, new URL: ${this.#url}`);
         this.emit('context.url.set', { id: this.#id, url: this.#url });
 
         // Save changes to index
@@ -651,7 +651,7 @@ class Context extends EventEmitter {
             }
         }
 
-        debug(`Setting base URL from "${this.#baseUrl}" to "${newBaseUrl}"`);
+        logger.debug(`Setting base URL from "${this.#baseUrl}" to "${newBaseUrl}"`);
         this.#baseUrl = newBaseUrl;
         this.#updatedAt = new Date().toISOString();
         this.emit('context.updated', { id: this.#id, baseUrl: this.#baseUrl });
@@ -730,7 +730,7 @@ class Context extends EventEmitter {
             // Set up event forwarding for the new workspace
             this.#setupWorkspaceEventForwarding();
 
-            debug(`Context "${this.#id}" successfully switched to workspace "${workspaceName}"`);
+            logger.debug(`Context "${this.#id}" successfully switched to workspace "${workspaceName}"`);
         } catch (error) {
             throw new Error(`Failed to switch workspace: ${error.message}`);
         }
@@ -851,8 +851,8 @@ class Context extends EventEmitter {
             timestamp: new Date().toISOString()
         };
 
-        debug(`📋 Context: Emitting document.inserted event for context ${this.#id}, documentId: ${documentId}`);
-        debug(`📋 Context: Event payload:`, JSON.stringify(documentEventPayload, null, 2));
+        logger.debug(`📋 Context: Emitting document.inserted event for context ${this.#id}, documentId: ${documentId}`);
+        logger.debug(`📋 Context: Event payload:`, JSON.stringify(documentEventPayload, null, 2));
         this.emit('document.inserted', documentEventPayload);
         this.emit('context.updated', {
             id: this.#id,
@@ -886,9 +886,9 @@ class Context extends EventEmitter {
         ];
 
 
-        debug('#insertDocumentArray: contextArray:', this.#contextBitmapArray);
-        debug('#insertDocumentArray: Received featureArray:', featureArray);
-        debug('#insertDocumentArray: Received options:', options);
+        logger.debug('#insertDocumentArray: contextArray:', this.#contextBitmapArray);
+        logger.debug('#insertDocumentArray: Received featureArray:', featureArray);
+        logger.debug('#insertDocumentArray: Received options:', options);
 
         // Insert the documents (handle async results)
         const result = await Promise.resolve(this.#db.insertDocumentArray(documentArray, contextArray, featureArray));
@@ -896,8 +896,8 @@ class Context extends EventEmitter {
         // Prepare document data for events - handle different result formats
         let documentIds = [];
 
-        debug('#insertDocumentArray: DB result type:', typeof result, 'isArray:', Array.isArray(result));
-        debug('#insertDocumentArray: DB result value:', result);
+        logger.debug('#insertDocumentArray: DB result type:', typeof result, 'isArray:', Array.isArray(result));
+        logger.debug('#insertDocumentArray: DB result value:', result);
 
         if (result && Array.isArray(result)) {
             // Result is an array of document IDs
@@ -914,10 +914,10 @@ class Context extends EventEmitter {
         } else {
             // Fallback: try to extract IDs from documents (though they might not have them yet)
             documentIds = documentArray.map(doc => doc.id).filter(id => id != null);
-            debug('#insertDocumentArray: WARNING - Using fallback for documentIds, may contain nulls');
+            logger.debug('#insertDocumentArray: WARNING - Using fallback for documentIds, may contain nulls');
         }
 
-        debug('#insertDocumentArray: Final documentIds:', documentIds);
+        logger.debug('#insertDocumentArray: Final documentIds:', documentIds);
 
         // Enhance documents with IDs if available
         const enhancedDocuments = documentArray.map((doc, index) => ({
@@ -937,8 +937,8 @@ class Context extends EventEmitter {
             timestamp: new Date().toISOString()
         };
 
-        debug(`📋 Context: Emitting document.inserted event for context ${this.#id}, documentIds: ${JSON.stringify(documentIds)}`);
-        debug(`📋 Context: Event payload:`, JSON.stringify(documentEventPayload, null, 2));
+        logger.debug(`📋 Context: Emitting document.inserted event for context ${this.#id}, documentIds: ${JSON.stringify(documentIds)}`);
+        logger.debug(`📋 Context: Event payload:`, JSON.stringify(documentEventPayload, null, 2));
         this.emit('document.inserted', documentEventPayload);
         return result;
     }
@@ -1053,10 +1053,10 @@ class Context extends EventEmitter {
             throw new Error('Access denied: User requires documentRead permission.');
         }
 
-        debug('#listDocuments: contextArray:', this.#contextBitmapArray);
-        debug('#listDocuments: Received featureArray:', featureArray);
-        debug('#listDocuments: Received filterArray:', filterArray);
-        debug('#listDocuments: Received options:', options);
+        logger.debug('#listDocuments: contextArray:', this.#contextBitmapArray);
+        logger.debug('#listDocuments: Received featureArray:', featureArray);
+        logger.debug('#listDocuments: Received filterArray:', filterArray);
+        logger.debug('#listDocuments: Received options:', options);
 
         if (!this.#workspace || !this.#workspace.db) {
             throw new Error('Workspace or database not available');
@@ -1080,7 +1080,7 @@ class Context extends EventEmitter {
         // Convert context array to path string for query operations
         // SynapsD query operations expect a single path string, not an array
         const contextSpec = this.#convertContextArrayToPath(contextArray);
-        debug('#listDocuments: Converted contextSpec:', contextSpec);
+        logger.debug('#listDocuments: Converted contextSpec:', contextSpec);
 
         // Pass options through to enable pagination
         const documents = await this.#db.findDocuments(contextSpec, featureArray, filterArray, options);
@@ -1113,7 +1113,7 @@ class Context extends EventEmitter {
 
         // Convert context array to path string for query operations
         const contextSpec = this.#convertContextArrayToPath(contextArray);
-        debug('#ftsQuery: Converted contextSpec:', contextSpec);
+        logger.debug('#ftsQuery: Converted contextSpec:', contextSpec);
 
         const documents = await this.#db.ftsQuery(queryString, contextSpec, featureArray, filterArray, options);
         return documents;
@@ -1203,26 +1203,26 @@ class Context extends EventEmitter {
     }
 
     removeDocument(accessingUserId, documentId, featureArray = [], options = {}) {
-        debug(`#removeDocument: Starting removal for documentId: ${documentId}, accessingUserId: ${accessingUserId}, featureArray: ${JSON.stringify(featureArray)}, options: ${JSON.stringify(options)}`);
+        logger.debug(`#removeDocument: Starting removal for documentId: ${documentId}, accessingUserId: ${accessingUserId}, featureArray: ${JSON.stringify(featureArray)}, options: ${JSON.stringify(options)}`);
 
         if (!this.checkPermission(accessingUserId, 'documentReadWrite')) {
-            debug(`#removeDocument: Permission check failed for user ${accessingUserId}`);
+            logger.debug(`#removeDocument: Permission check failed for user ${accessingUserId}`);
             throw new Error('Access denied: User requires documentReadWrite permission.');
         }
-        debug(`#removeDocument: Permission check passed`);
+        logger.debug(`#removeDocument: Permission check passed`);
 
         if (!this.#workspace || !this.#workspace.db) {
-            debug(`#removeDocument: Workspace or database not available - workspace: ${!!this.#workspace}, db: ${!!this.#workspace?.db}`);
+            logger.debug(`#removeDocument: Workspace or database not available - workspace: ${!!this.#workspace}, db: ${!!this.#workspace?.db}`);
             throw new Error('Workspace or database not available');
         }
-        debug(`#removeDocument: Workspace and database available`);
-        debug(`#removeDocument: Context bitmap array: ${JSON.stringify(this.#contextBitmapArray)}`);
+        logger.debug(`#removeDocument: Workspace and database available`);
+        logger.debug(`#removeDocument: Context bitmap array: ${JSON.stringify(this.#contextBitmapArray)}`);
 
         try {
             // We remove document from the current context not from the database
-            debug(`#removeDocument: Calling db.removeDocument with documentId: ${documentId}, contextArray: ${JSON.stringify(this.#contextBitmapArray)}, featureArray: ${JSON.stringify(featureArray)}, options: ${JSON.stringify(options)}`);
+            logger.debug(`#removeDocument: Calling db.removeDocument with documentId: ${documentId}, contextArray: ${JSON.stringify(this.#contextBitmapArray)}, featureArray: ${JSON.stringify(featureArray)}, options: ${JSON.stringify(options)}`);
             const result = this.#db.removeDocument(documentId, this.#contextBitmapArray, featureArray, options);
-            debug(`#removeDocument: Database removal successful, result: ${JSON.stringify(result)}`);
+            logger.debug(`#removeDocument: Database removal successful, result: ${JSON.stringify(result)}`);
 
             // Prepare document data for events
             const documentEventPayload = {
@@ -1235,52 +1235,52 @@ class Context extends EventEmitter {
                 workspaceId: this.#workspace.id,
                 timestamp: new Date().toISOString()
             };
-            debug(`#removeDocument: Prepared event payload: ${JSON.stringify(documentEventPayload)}`);
+            logger.debug(`#removeDocument: Prepared event payload: ${JSON.stringify(documentEventPayload)}`);
 
-            debug(`#removeDocument: Emitting document.remove event`);
+            logger.debug(`#removeDocument: Emitting document.remove event`);
             this.emit('document.removed', documentEventPayload);
 
-            debug(`#removeDocument: Successfully completed removal of document ${documentId} from context`);
+            logger.debug(`#removeDocument: Successfully completed removal of document ${documentId} from context`);
             return result;
         } catch (error) {
-            debug(`#removeDocument: Error during removal process: ${error.message}`);
-            debug(`#removeDocument: Error stack: ${error.stack}`);
+            logger.debug(`#removeDocument: Error during removal process: ${error.message}`);
+            logger.debug(`#removeDocument: Error stack: ${error.stack}`);
             throw error;
         }
     }
 
     removeDocumentArray(accessingUserId, documentIdArray, featureArray = [], options = {}) {
-        debug(`#removeDocumentArray: Starting removal for documentIdArray: ${JSON.stringify(documentIdArray)}, accessingUserId: ${accessingUserId}, featureArray: ${JSON.stringify(featureArray)}, options: ${JSON.stringify(options)}`);
+        logger.debug(`#removeDocumentArray: Starting removal for documentIdArray: ${JSON.stringify(documentIdArray)}, accessingUserId: ${accessingUserId}, featureArray: ${JSON.stringify(featureArray)}, options: ${JSON.stringify(options)}`);
 
         if (!this.checkPermission(accessingUserId, 'documentReadWrite')) {
-            debug(`#removeDocumentArray: Permission check failed for user ${accessingUserId}`);
+            logger.debug(`#removeDocumentArray: Permission check failed for user ${accessingUserId}`);
             throw new Error('Access denied: User requires documentReadWrite permission.');
         }
-        debug(`#removeDocumentArray: Permission check passed`);
+        logger.debug(`#removeDocumentArray: Permission check passed`);
 
         if (!this.#workspace || !this.#workspace.db) {
-            debug(`#removeDocumentArray: Workspace or database not available - workspace: ${!!this.#workspace}, db: ${!!this.#workspace?.db}`);
+            logger.debug(`#removeDocumentArray: Workspace or database not available - workspace: ${!!this.#workspace}, db: ${!!this.#workspace?.db}`);
             throw new Error('Workspace or database not available');
         }
-        debug(`#removeDocumentArray: Workspace and database available`);
+        logger.debug(`#removeDocumentArray: Workspace and database available`);
 
         if (!Array.isArray(documentIdArray)) {
-            debug(`#removeDocumentArray: Invalid input - not an array: ${typeof documentIdArray}`);
+            logger.debug(`#removeDocumentArray: Invalid input - not an array: ${typeof documentIdArray}`);
             throw new Error('Document ID array must be an array');
         }
-        debug(`#removeDocumentArray: Input validation passed - array length: ${documentIdArray.length}`);
-        debug(`#removeDocumentArray: Context bitmap array: ${JSON.stringify(this.#contextBitmapArray)}`);
+        logger.debug(`#removeDocumentArray: Input validation passed - array length: ${documentIdArray.length}`);
+        logger.debug(`#removeDocumentArray: Context bitmap array: ${JSON.stringify(this.#contextBitmapArray)}`);
 
         try {
             // Parse and validate document IDs
-            debug(`#removeDocumentArray: Converting document IDs to numbers`);
+            logger.debug(`#removeDocumentArray: Converting document IDs to numbers`);
             const numericDocumentIdArray = parseDocumentIdArray(documentIdArray, 'Document ID array');
-            debug(`#removeDocumentArray: Document ID conversion successful - using: ${JSON.stringify(numericDocumentIdArray)}`);
+            logger.debug(`#removeDocumentArray: Document ID conversion successful - using: ${JSON.stringify(numericDocumentIdArray)}`);
 
             // We remove documents from the current context not from the database
-            debug(`#removeDocumentArray: Calling db.removeDocumentArray with documentIds: ${JSON.stringify(numericDocumentIdArray)}, contextArray: ${JSON.stringify(this.#contextBitmapArray)}, featureArray: ${JSON.stringify(featureArray)}, options: ${JSON.stringify(options)}`);
+            logger.debug(`#removeDocumentArray: Calling db.removeDocumentArray with documentIds: ${JSON.stringify(numericDocumentIdArray)}, contextArray: ${JSON.stringify(this.#contextBitmapArray)}, featureArray: ${JSON.stringify(featureArray)}, options: ${JSON.stringify(options)}`);
             const result = this.#db.removeDocumentArray(numericDocumentIdArray, this.#contextBitmapArray, featureArray, options);
-            debug(`#removeDocumentArray: Database removal successful, result: ${JSON.stringify(result)}`);
+            logger.debug(`#removeDocumentArray: Database removal successful, result: ${JSON.stringify(result)}`);
 
             // Prepare document data for events
             const documentEventPayload = {
@@ -1293,15 +1293,15 @@ class Context extends EventEmitter {
                 workspaceId: this.#workspace.id,
                 timestamp: new Date().toISOString()
             };
-            debug(`#removeDocumentArray: Prepared event payload: ${JSON.stringify(documentEventPayload)}`);
+            logger.debug(`#removeDocumentArray: Prepared event payload: ${JSON.stringify(documentEventPayload)}`);
 
-            debug(`#removeDocumentArray: Emitting document.removed.batch event`);
+            logger.debug(`#removeDocumentArray: Emitting document.removed.batch event`);
             this.emit('document.removed.batch', documentEventPayload);
-            debug(`#removeDocumentArray: Successfully completed removal of ${numericDocumentIdArray.length} documents from context`);
+            logger.debug(`#removeDocumentArray: Successfully completed removal of ${numericDocumentIdArray.length} documents from context`);
             return result;
         } catch (error) {
-            debug(`#removeDocumentArray: Error during removal process: ${error.message}`);
-            debug(`#removeDocumentArray: Error stack: ${error.stack}`);
+            logger.debug(`#removeDocumentArray: Error during removal process: ${error.message}`);
+            logger.debug(`#removeDocumentArray: Error stack: ${error.stack}`);
             throw error;
         }
     }
@@ -1312,38 +1312,38 @@ class Context extends EventEmitter {
      */
 
     deleteDocumentFromDb(accessingUserId, documentId) {
-        debug(`#deleteDocumentFromDb: Starting deletion for documentId: ${documentId}, accessingUserId: ${accessingUserId}`);
+        logger.debug(`#deleteDocumentFromDb: Starting deletion for documentId: ${documentId}, accessingUserId: ${accessingUserId}`);
 
         // This is a direct DB access method, only context owner should call it.
         if (accessingUserId !== this.#userId) {
-            debug(`#deleteDocumentFromDb: Access denied - user ${accessingUserId} is not owner ${this.#userId}`);
+            logger.debug(`#deleteDocumentFromDb: Access denied - user ${accessingUserId} is not owner ${this.#userId}`);
             throw new Error('Access denied: Only the context owner can delete documents directly from the database.');
         }
-        debug(`#deleteDocumentFromDb: Owner check passed`);
+        logger.debug(`#deleteDocumentFromDb: Owner check passed`);
 
         // Technically, owner has all permissions, but check for completeness or if that changes.
         if (!this.checkPermission(accessingUserId, 'documentReadWrite')) {
-            debug(`#deleteDocumentFromDb: Permission check failed for user ${accessingUserId}`);
+            logger.debug(`#deleteDocumentFromDb: Permission check failed for user ${accessingUserId}`);
             throw new Error('Access denied: User requires documentReadWrite permission for direct DB deletion.');
         }
-        debug(`#deleteDocumentFromDb: Permission check passed`);
+        logger.debug(`#deleteDocumentFromDb: Permission check passed`);
 
         if (!this.#workspace || !this.#workspace.db) {
-            debug(`#deleteDocumentFromDb: Workspace or database not available - workspace: ${!!this.#workspace}, db: ${!!this.#workspace?.db}`);
+            logger.debug(`#deleteDocumentFromDb: Workspace or database not available - workspace: ${!!this.#workspace}, db: ${!!this.#workspace?.db}`);
             throw new Error('Workspace or database not available');
         }
-        debug(`#deleteDocumentFromDb: Workspace and database available`);
+        logger.debug(`#deleteDocumentFromDb: Workspace and database available`);
 
         // Parse and validate document ID
         const numericDocumentId = parseDocumentId(documentId, 'Document ID');
-        debug(`#deleteDocumentFromDb: Document ID validation passed - using: ${numericDocumentId}`);
-        debug(`#deleteDocumentFromDb: Context pathArray: ${JSON.stringify(this.#pathArray)}`);
+        logger.debug(`#deleteDocumentFromDb: Document ID validation passed - using: ${numericDocumentId}`);
+        logger.debug(`#deleteDocumentFromDb: Context pathArray: ${JSON.stringify(this.#pathArray)}`);
 
         try {
             // Completely delete the document from the database, respecting the context
-            debug(`#deleteDocumentFromDb: Calling db.deleteDocument with documentId: ${numericDocumentId}, pathArray: ${JSON.stringify(this.#pathArray)}`);
+            logger.debug(`#deleteDocumentFromDb: Calling db.deleteDocument with documentId: ${numericDocumentId}, pathArray: ${JSON.stringify(this.#pathArray)}`);
             const result = this.#db.deleteDocument(numericDocumentId, this.#pathArray);
-            debug(`#deleteDocumentFromDb: Database deletion successful, result: ${JSON.stringify(result)}`);
+            logger.debug(`#deleteDocumentFromDb: Database deletion successful, result: ${JSON.stringify(result)}`);
 
             // Prepare document data for events
             const documentEventPayload = {
@@ -1354,60 +1354,60 @@ class Context extends EventEmitter {
                 workspaceId: this.#workspace.id,
                 timestamp: new Date().toISOString()
             };
-            debug(`#deleteDocumentFromDb: Prepared event payload: ${JSON.stringify(documentEventPayload)}`);
+            logger.debug(`#deleteDocumentFromDb: Prepared event payload: ${JSON.stringify(documentEventPayload)}`);
 
-            debug(`#deleteDocumentFromDb: Emitting document.delete event`);
+            logger.debug(`#deleteDocumentFromDb: Emitting document.delete event`);
             this.emit('document.deleted', documentEventPayload);
 
-            debug(`#deleteDocumentFromDb: Successfully completed deletion of document ${numericDocumentId}`);
+            logger.debug(`#deleteDocumentFromDb: Successfully completed deletion of document ${numericDocumentId}`);
             return result;
         } catch (error) {
-            debug(`#deleteDocumentFromDb: Error during deletion process: ${error.message}`);
-            debug(`#deleteDocumentFromDb: Error stack: ${error.stack}`);
+            logger.debug(`#deleteDocumentFromDb: Error during deletion process: ${error.message}`);
+            logger.debug(`#deleteDocumentFromDb: Error stack: ${error.stack}`);
             throw error;
         }
     }
 
     deleteDocumentArrayFromDb(accessingUserId, documentIdArray, options = {}) {
-        debug(`#deleteDocumentArrayFromDb: Starting deletion for documentIdArray: ${JSON.stringify(documentIdArray)}, accessingUserId: ${accessingUserId}, options: ${JSON.stringify(options)}`);
+        logger.debug(`#deleteDocumentArrayFromDb: Starting deletion for documentIdArray: ${JSON.stringify(documentIdArray)}, accessingUserId: ${accessingUserId}, options: ${JSON.stringify(options)}`);
 
         // This is a direct DB access method, only context owner should call it.
         if (accessingUserId !== this.#userId) {
-            debug(`#deleteDocumentArrayFromDb: Access denied - user ${accessingUserId} is not owner ${this.#userId}`);
+            logger.debug(`#deleteDocumentArrayFromDb: Access denied - user ${accessingUserId} is not owner ${this.#userId}`);
             throw new Error('Access denied: Only the context owner can delete documents directly from the database.');
         }
-        debug(`#deleteDocumentArrayFromDb: Owner check passed`);
+        logger.debug(`#deleteDocumentArrayFromDb: Owner check passed`);
 
         // Technically, owner has all permissions, but check for completeness or if that changes.
         if (!this.checkPermission(accessingUserId, 'documentReadWrite')) {
-            debug(`#deleteDocumentArrayFromDb: Permission check failed for user ${accessingUserId}`);
+            logger.debug(`#deleteDocumentArrayFromDb: Permission check failed for user ${accessingUserId}`);
             throw new Error('Access denied: User requires documentReadWrite permission for direct DB deletion.');
         }
-        debug(`#deleteDocumentArrayFromDb: Permission check passed`);
+        logger.debug(`#deleteDocumentArrayFromDb: Permission check passed`);
 
         if (!this.#workspace || !this.#workspace.db) {
-            debug(`#deleteDocumentArrayFromDb: Workspace or database not available - workspace: ${!!this.#workspace}, db: ${!!this.#workspace?.db}`);
+            logger.debug(`#deleteDocumentArrayFromDb: Workspace or database not available - workspace: ${!!this.#workspace}, db: ${!!this.#workspace?.db}`);
             throw new Error('Workspace or database not available');
         }
-        debug(`#deleteDocumentArrayFromDb: Workspace and database available`);
+        logger.debug(`#deleteDocumentArrayFromDb: Workspace and database available`);
 
         if (!Array.isArray(documentIdArray)) {
-            debug(`#deleteDocumentArrayFromDb: Invalid input - not an array: ${typeof documentIdArray}`);
+            logger.debug(`#deleteDocumentArrayFromDb: Invalid input - not an array: ${typeof documentIdArray}`);
             throw new Error('Document ID array must be an array');
         }
-        debug(`#deleteDocumentArrayFromDb: Input validation passed - array length: ${documentIdArray.length}`);
+        logger.debug(`#deleteDocumentArrayFromDb: Input validation passed - array length: ${documentIdArray.length}`);
 
         try {
             // Parse and validate document IDs
-            debug(`#deleteDocumentArrayFromDb: Converting document IDs to numbers`);
+            logger.debug(`#deleteDocumentArrayFromDb: Converting document IDs to numbers`);
             const numericDocumentIdArray = parseDocumentIdArray(documentIdArray, 'Document ID array');
-            debug(`#deleteDocumentArrayFromDb: Document ID conversion successful - using: ${JSON.stringify(numericDocumentIdArray)}`);
-            debug(`#deleteDocumentArrayFromDb: Context pathArray: ${JSON.stringify(this.#pathArray)}`);
+            logger.debug(`#deleteDocumentArrayFromDb: Document ID conversion successful - using: ${JSON.stringify(numericDocumentIdArray)}`);
+            logger.debug(`#deleteDocumentArrayFromDb: Context pathArray: ${JSON.stringify(this.#pathArray)}`);
 
             // Completely delete the documents from the database, respecting the context
-            debug(`#deleteDocumentArrayFromDb: Calling db.deleteDocumentArray with documentIds: ${JSON.stringify(numericDocumentIdArray)}, pathArray: ${JSON.stringify(this.#pathArray)}, options: ${JSON.stringify(options)}`);
+            logger.debug(`#deleteDocumentArrayFromDb: Calling db.deleteDocumentArray with documentIds: ${JSON.stringify(numericDocumentIdArray)}, pathArray: ${JSON.stringify(this.#pathArray)}, options: ${JSON.stringify(options)}`);
             const result = this.#db.deleteDocumentArray(numericDocumentIdArray, this.#pathArray, options);
-            debug(`#deleteDocumentArrayFromDb: Database deletion successful, result: ${JSON.stringify(result)}`);
+            logger.debug(`#deleteDocumentArrayFromDb: Database deletion successful, result: ${JSON.stringify(result)}`);
 
             // Prepare document data for events
             const documentEventPayload = {
@@ -1419,16 +1419,16 @@ class Context extends EventEmitter {
                 workspaceId: this.#workspace.id,
                 timestamp: new Date().toISOString()
             };
-            debug(`#deleteDocumentArrayFromDb: Prepared event payload: ${JSON.stringify(documentEventPayload)}`);
+            logger.debug(`#deleteDocumentArrayFromDb: Prepared event payload: ${JSON.stringify(documentEventPayload)}`);
 
-            debug(`#deleteDocumentArrayFromDb: Emitting document.deleted.batch event`);
+            logger.debug(`#deleteDocumentArrayFromDb: Emitting document.deleted.batch event`);
             this.emit('document.deleted.batch', documentEventPayload);
 
-            debug(`#deleteDocumentArrayFromDb: Successfully completed deletion of ${numericDocumentIdArray.length} documents`);
+            logger.debug(`#deleteDocumentArrayFromDb: Successfully completed deletion of ${numericDocumentIdArray.length} documents`);
             return result;
         } catch (error) {
-            debug(`#deleteDocumentArrayFromDb: Error during deletion process: ${error.message}`);
-            debug(`#deleteDocumentArrayFromDb: Error stack: ${error.stack}`);
+            logger.debug(`#deleteDocumentArrayFromDb: Error during deletion process: ${error.message}`);
+            logger.debug(`#deleteDocumentArrayFromDb: Error stack: ${error.stack}`);
             throw error;
         }
     }
@@ -1478,7 +1478,7 @@ class Context extends EventEmitter {
         const documentInContext = await this.#workspace.db.getDocumentByChecksumString(checksumString, this.#pathArray);
 
         if (!documentInContext) {
-            debug(`Document with checksum '${checksumString}' not found within context path '${this.#path}'.`);
+            logger.debug(`Document with checksum '${checksumString}' not found within context path '${this.#path}'.`);
             return null;
         }
 
@@ -1487,13 +1487,13 @@ class Context extends EventEmitter {
         if (featureArray && featureArray.length > 0) {
             const matchesFeatures = await this.#workspace.db.hasDocument(documentInContext.id, this.#contextBitmapArray, featureArray);
             if (!matchesFeatures) {
-                debug(`Document ID '${documentInContext.id}' (checksum '${checksumString}') found in context path '${this.#path}' but does not match featureArray: [${featureArray.join(', ')}].`);
+                logger.debug(`Document ID '${documentInContext.id}' (checksum '${checksumString}') found in context path '${this.#path}' but does not match featureArray: [${featureArray.join(', ')}].`);
                 return null;
             }
         }
 
         // If all checks pass (in context, and matches features if specified)
-        debug(`Document ID '${documentInContext.id}' (checksum '${checksumString}') is accessible in context and matches features (if specified).`);
+        logger.debug(`Document ID '${documentInContext.id}' (checksum '${checksumString}') is accessible in context and matches features (if specified).`);
         return documentInContext;
     }
 
@@ -1513,7 +1513,7 @@ class Context extends EventEmitter {
         const document = await this.#workspace.db.getDocumentByChecksumString(checksumString, this.#pathArray);
 
         if (!document) {
-            debug(`Document with checksum '${checksumString}' not found in database.`);
+            logger.debug(`Document with checksum '${checksumString}' not found in database.`);
             return null;
         }
         return document;
@@ -1526,7 +1526,7 @@ class Context extends EventEmitter {
     #setupWorkspaceEventForwarding() {
         if (!this.#workspace) return;
 
-        debug(`Setting up workspace event forwarding for context "${this.#id}" (wild-card mode)`);
+        logger.debug(`Setting up workspace event forwarding for context "${this.#id}" (wild-card mode)`);
 
         // Wild-card listener – forwards every workspace event
         const handler = (eventName, payload) => {
@@ -1572,7 +1572,7 @@ class Context extends EventEmitter {
         if (this.#workspace && this.#workspaceEventHandlers) {
             this.#workspace.offAny(this.#workspaceEventHandlers);
             this.#workspaceEventHandlers = null;
-            debug(`Workspace event forwarding cleanup completed for context "${this.#id}"`);
+            logger.debug(`Workspace event forwarding cleanup completed for context "${this.#id}"`);
         }
     }
 }

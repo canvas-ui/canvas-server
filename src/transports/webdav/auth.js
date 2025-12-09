@@ -3,9 +3,9 @@
 import webdavServer from 'webdav-server';
 const { HTTPBasicAuthentication } = webdavServer;
 import { authService } from '../auth/strategies.js';
-import { createDebug } from '../../utils/log/index.js';
+import { createLogger } from '../../utils/log.js';
 
-const debug = createDebug('webdav:auth');
+const logger = createLogger('webdav:auth');
 
 /**
  * Canvas WebDAV Authentication Manager
@@ -27,7 +27,7 @@ export class CanvasWebDAVAuthentication extends HTTPBasicAuthentication {
       const authHeader = ctx.headers.find('authorization');
 
       if (!authHeader) {
-        debug('No authorization header provided');
+        logger.debug('No authorization header provided');
         // Set WWW-Authenticate header for Windows WebDAV clients
         ctx.response.setHeader('WWW-Authenticate', 'Basic realm="Canvas WebDAV", Bearer realm="Canvas WebDAV"');
         return callback(null, null);
@@ -38,7 +38,7 @@ export class CanvasWebDAVAuthentication extends HTTPBasicAuthentication {
       // Try Bearer token first (preferred method)
       if (authHeader.startsWith('Bearer ')) {
         token = authHeader.substring(7);
-        debug('Bearer token detected');
+        logger.debug('Bearer token detected');
       }
       // Try HTTP Basic Auth (fallback for WebDAV clients that don't support Bearer)
       else if (authHeader.startsWith('Basic ')) {
@@ -46,26 +46,26 @@ export class CanvasWebDAVAuthentication extends HTTPBasicAuthentication {
           const base64Credentials = authHeader.substring(6);
           const credentials = Buffer.from(base64Credentials, 'base64').toString('utf-8');
           const [username, password] = credentials.split(':', 2);
-          debug(`Basic auth detected for user: ${username}`);
+          logger.debug(`Basic auth detected for user: ${username}`);
 
           // Check if password is an API token (starts with canvas-)
           if (password.startsWith('canvas-')) {
             token = password;
-            debug('Using password as API token');
+            logger.debug('Using password as API token');
           } else {
             // Try to authenticate with username/password
-            debug('Attempting username/password authentication');
+            logger.debug('Attempting username/password authentication');
             try {
               const user = await this.userManager.getByEmail(username);
 
               // Verify password
               const passwordValid = await authService.verifyPassword(user.id, password);
               if (!passwordValid) {
-                debug(`Invalid password for user: ${username}`);
+                logger.debug(`Invalid password for user: ${username}`);
                 return callback(null, null);
               }
 
-              debug(`Password authentication successful for user: ${username}`);
+              logger.debug(`Password authentication successful for user: ${username}`);
               // Return user object directly
               return callback(null, {
                 uid: user.id,
@@ -75,18 +75,18 @@ export class CanvasWebDAVAuthentication extends HTTPBasicAuthentication {
                 isAdministrator: user.userType === 'admin'
               });
             } catch (userError) {
-              debug(`User not found or error: ${userError.message}`);
+              logger.debug(`User not found or error: ${userError.message}`);
               return callback(null, null);
             }
           }
         } catch (e) {
-          debug(`Failed to parse Basic auth: ${e.message}`);
+          logger.debug(`Failed to parse Basic auth: ${e.message}`);
           return callback(null, null);
         }
       }
 
       if (!token) {
-        debug('No valid token found in authorization header');
+        logger.debug('No valid token found in authorization header');
         return callback(null, null);
       }
 
@@ -94,11 +94,11 @@ export class CanvasWebDAVAuthentication extends HTTPBasicAuthentication {
       const result = await authService.verifyToken(token);
 
       if (!result || !result.valid) {
-        debug(`Token verification failed: ${result?.message || 'Invalid token'}`);
+        logger.debug(`Token verification failed: ${result?.message || 'Invalid token'}`);
         return callback(null, null);
       }
 
-      debug(`User authenticated: ${result.user.id} (${result.user.email})`);
+      logger.debug(`User authenticated: ${result.user.id} (${result.user.email})`);
 
       // Return user object with required fields
       callback(null, {
@@ -109,7 +109,7 @@ export class CanvasWebDAVAuthentication extends HTTPBasicAuthentication {
         isAdministrator: result.user.userType === 'admin'
       });
     } catch (error) {
-      debug(`Authentication error: ${error.message}`);
+      logger.debug(`Authentication error: ${error.message}`);
       callback(error, null);
     }
   }
@@ -122,20 +122,20 @@ export class CanvasWebDAVAuthentication extends HTTPBasicAuthentication {
       // Resolve workspace name to ID
       const workspaceId = this.workspaceManager.resolveWorkspaceId(userId, workspaceName);
       if (!workspaceId) {
-        debug(`Workspace not found: ${workspaceName} for user ${userId}`);
+        logger.debug(`Workspace not found: ${workspaceName} for user ${userId}`);
         return false;
       }
 
       // Get workspace by ID for this user
       const workspace = await this.workspaceManager.getWorkspace(workspaceId, userId);
       if (!workspace) {
-        debug(`Workspace not found: ${workspaceName} for user ${userId}`);
+        logger.debug(`Workspace not found: ${workspaceName} for user ${userId}`);
         return false;
       }
 
       // Check if user is owner or has access via ACL
       if (workspace.owner === userId) {
-        debug(`User ${userId} is owner of workspace ${workspaceName}`);
+        logger.debug(`User ${userId} is owner of workspace ${workspaceName}`);
         return true;
       }
 
@@ -144,14 +144,14 @@ export class CanvasWebDAVAuthentication extends HTTPBasicAuthentication {
       const userAccess = acl.find(entry => entry.userId === userId);
 
       if (userAccess && userAccess.permissions?.includes('read')) {
-        debug(`User ${userId} has read access to workspace ${workspaceName}`);
+        logger.debug(`User ${userId} has read access to workspace ${workspaceName}`);
         return true;
       }
 
-      debug(`User ${userId} does not have access to workspace ${workspaceName}`);
+      logger.debug(`User ${userId} does not have access to workspace ${workspaceName}`);
       return false;
     } catch (error) {
-      debug(`Error checking workspace access: ${error.message}`);
+      logger.debug(`Error checking workspace access: ${error.message}`);
       return false;
     }
   }

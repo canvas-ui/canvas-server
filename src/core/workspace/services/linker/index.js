@@ -1,9 +1,9 @@
 'use strict';
 
 import EventEmitter from 'eventemitter2';
-import { createDebug } from '../../../../utils/log/index.js';
+import { createLogger } from '../../../../utils/log.js';
 
-const debug = createDebug('linker-service');
+const logger = createLogger('linker-service');
 
 /**
  * LinkerService
@@ -27,7 +27,7 @@ class LinkerService extends EventEmitter {
 
     async initialize() {
         if (this.#initialized) return this;
-        debug('LinkerService initialized');
+        logger.debug('LinkerService initialized');
         this.#initialized = true;
         return this;
     }
@@ -41,7 +41,7 @@ class LinkerService extends EventEmitter {
         if (!this.#initialized) throw new Error('LinkerService not initialized');
         if (!document) return;
 
-        debug(`Processing document ${document.id} for linking...`);
+        logger.debug(`Processing document ${document.id} for linking...`);
 
         // Get all contexts
         // TODO: Optimize this to only fetch relevant contexts or cache rules
@@ -71,7 +71,7 @@ class LinkerService extends EventEmitter {
                     await this.#linkDocumentToContext(document, contextMeta, workspaceId);
                 }
             } catch (err) {
-                debug(`Error processing context ${contextMeta.id}: ${err.message}`);
+                logger.debug(`Error processing context ${contextMeta.id}: ${err.message}`);
             }
         }
     }
@@ -111,7 +111,7 @@ class LinkerService extends EventEmitter {
     }
 
     async #linkDocumentToContext(document, contextMeta, workspaceId) {
-        debug(`Linking document ${document.id} to context ${contextMeta.id}`);
+        logger.debug(`Linking document ${document.id} to context ${contextMeta.id}`);
 
         // To link, we need to update the document's context bitmap
         // We need to resolve the workspace and get the DB
@@ -126,7 +126,7 @@ class LinkerService extends EventEmitter {
 
         const workspace = await this.#workspaceManager.getWorkspace(workspaceId, contextMeta.userId);
         if (!workspace) {
-            debug(`Workspace ${workspaceId} not found for user ${contextMeta.userId}`);
+            logger.debug(`Workspace ${workspaceId} not found for user ${contextMeta.userId}`);
             return;
         }
 
@@ -200,11 +200,11 @@ class LinkerService extends EventEmitter {
                 // We don't change data, just indexes
             }, newContexts, newFeatures);
 
-            debug(`Linked document ${document.id} to context ${contextMeta.id}`);
+            logger.debug(`Linked document ${document.id} to context ${contextMeta.id}`);
             this.emit('document.linked', { documentId: document.id, contextId: contextMeta.id });
 
         } catch (err) {
-            debug(`Failed to link document: ${err.message}`);
+            logger.debug(`Failed to link document: ${err.message}`);
         }
     }
 }

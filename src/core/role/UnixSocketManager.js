@@ -6,8 +6,8 @@ import { existsSync } from 'fs';
 import * as fsPromises from 'fs/promises';
 
 // Logging
-import { createDebug } from '../../utils/log/index.js';
-const debug = createDebug('role-manager:socket-manager');
+import { createLogger } from '../../utils/log.js';
+const logger = createLogger('role-manager:socket-manager');
 
 /**
  * Unix Socket Manager
@@ -35,7 +35,7 @@ class UnixSocketManager {
         this.#users = options.users;
         this.#workspaceManager = options.workspaceManager;
 
-        debug('UnixSocketManager initialized');
+        logger.debug('UnixSocketManager initialized');
     }
 
     /**
@@ -82,7 +82,7 @@ class UnixSocketManager {
 
         if (!existsSync(socketDir)) {
             await fsPromises.mkdir(socketDir, { recursive: true });
-            debug(`Created socket directory: ${socketDir}`);
+            logger.debug(`Created socket directory: ${socketDir}`);
         }
 
         // Set appropriate permissions for socket directory
@@ -145,7 +145,7 @@ class UnixSocketManager {
         const existingEnv = updatedConfig.Env || [];
         updatedConfig.Env = [...existingEnv, ...socketEnv];
 
-        debug(`Configured socket communication for role ${context.roleId} (${context.type})`);
+        logger.debug(`Configured socket communication for role ${context.roleId} (${context.type})`);
         return updatedConfig;
     }
 
@@ -194,7 +194,7 @@ class UnixSocketManager {
                         path: socketPath,
                         status: 'removed'
                     });
-                    debug(`Cleaned up socket: ${socketPath}`);
+                    logger.debug(`Cleaned up socket: ${socketPath}`);
                 } else {
                     results.push({
                         socket: socketName,
@@ -208,7 +208,7 @@ class UnixSocketManager {
                     status: 'error',
                     error: error.message
                 });
-                debug(`Failed to cleanup socket ${socketName}: ${error.message}`);
+                logger.debug(`Failed to cleanup socket ${socketName}: ${error.message}`);
             }
         }
 
@@ -246,7 +246,7 @@ class UnixSocketManager {
                 }
             }
         } catch (error) {
-            debug(`Failed to list sockets for role ${context.roleId}: ${error.message}`);
+            logger.debug(`Failed to list sockets for role ${context.roleId}: ${error.message}`);
         }
 
         return sockets;
@@ -267,9 +267,9 @@ class UnixSocketManager {
             // Set directory permissions based on role type
             const mode = context.type === 'global' ? 0o755 : 0o750;
             await fsPromises.chmod(socketDir, mode);
-            debug(`Set socket directory permissions: ${socketDir} (mode: ${mode.toString(8)})`);
+            logger.debug(`Set socket directory permissions: ${socketDir} (mode: ${mode.toString(8)})`);
         } catch (error) {
-            debug(`Failed to set socket directory permissions: ${error.message}`);
+            logger.debug(`Failed to set socket directory permissions: ${error.message}`);
             // Don't fail the entire operation for permission issues
         }
     }
@@ -313,7 +313,7 @@ class UnixSocketManager {
         const basePort = 9000; // Start from port 9000
         const port = basePort + (hash % 1000); // Use hash to generate port in range 9000-9999
 
-        debug(`Generated proxy port ${port} for role ${context.roleId} socket ${socketName}`);
+        logger.debug(`Generated proxy port ${port} for role ${context.roleId} socket ${socketName}`);
         return port;
     }
 

@@ -6,8 +6,8 @@
  */
 
 // Logging
-import { createDebug } from '../../../utils/log/index.js';
-const debug = createDebug('role-manager:validator');
+import { createLogger } from '../../../utils/log.js';
+const logger = createLogger('role-manager:validator');
 
 /**
  * Role template schema definition
@@ -202,8 +202,8 @@ class RoleTemplateValidator {
         const isValid = errors.length === 0;
 
         if (!isValid) {
-            debug(`Role template validation failed with ${errors.length} errors`);
-            errors.forEach(error => debug(`  ${error.path}: ${error.message}`));
+            logger.debug({ errorCount: errors.length }, 'Role template validation failed');
+            errors.forEach(error => logger.debug({ path: error.path, message: error.message }, 'Validation error'));
         }
 
         return {

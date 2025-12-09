@@ -1,10 +1,10 @@
 'use strict';
 
 import crypto from 'crypto';
-import { createDebug } from '../../utils/log/index.js';
+import { createLogger } from '../../utils/log.js';
 import ResponseObject from '../ResponseObject.js';
 
-const debug = createDebug('canvas-server:middleware:workspace-acl');
+const logger = createLogger('canvas-server:middleware:workspace-acl');
 
 /**
  * Workspace ACL Validation Middleware
@@ -38,7 +38,7 @@ const debug = createDebug('canvas-server:middleware:workspace-acl');
 export function createWorkspaceACLMiddleware(requiredPermission = 'read') {
   return async function validateWorkspaceAccess(request, reply) {
     try {
-      debug(`Validating workspace access for permission: ${requiredPermission}`);
+      logger.debug(`Validating workspace access for permission: ${requiredPermission}`);
 
       // 1. Extract workspace ID from route parameters
       const workspaceId = request.params.id;
@@ -65,7 +65,7 @@ export function createWorkspaceACLMiddleware(requiredPermission = 'read') {
           throw new Error('Invalid JWT token: no user information');
         }
         userId = request.user.id;
-        debug(`Using JWT token for user: ${userId}`);
+        logger.debug(`Using JWT token for user: ${userId}`);
       } else {
         // For API tokens, verify through authService
         let tokenResult;
@@ -75,9 +75,9 @@ export function createWorkspaceACLMiddleware(requiredPermission = 'read') {
             throw new Error('Invalid API token');
           }
           userId = tokenResult.userId;
-          debug(`Using API token for user: ${userId}`);
+          logger.debug(`Using API token for user: ${userId}`);
         } catch (error) {
-          debug(`API token verification failed: ${error.message}`);
+          logger.debug(`API token verification failed: ${error.message}`);
           throw new Error(`Token verification failed: ${error.message}`);
         }
       }
@@ -90,7 +90,7 @@ export function createWorkspaceACLMiddleware(requiredPermission = 'read') {
       );
 
       if (workspace) {
-        debug(`Owner access granted for workspace ${workspaceId}`);
+        logger.debug(`Owner access granted for workspace ${workspaceId}`);
         request.workspace = workspace;
         request.workspaceAccess = {
           permissions: ['read', 'write', 'admin'],
@@ -110,7 +110,7 @@ export function createWorkspaceACLMiddleware(requiredPermission = 'read') {
         );
 
         if (tokenAccess) {
-          debug(`Token access granted for workspace ${workspaceId}: ${tokenAccess.access.description}`);
+          logger.debug(`Token access granted for workspace ${workspaceId}: ${tokenAccess.access.description}`);
           request.workspace = tokenAccess.workspace;
           request.workspaceAccess = {
             ...tokenAccess.access,
@@ -131,7 +131,7 @@ export function createWorkspaceACLMiddleware(requiredPermission = 'read') {
         );
 
         if (userAccess) {
-          debug(`User email access granted for workspace ${workspaceId}: ${userAccess.access.description}`);
+          logger.debug(`User email access granted for workspace ${workspaceId}: ${userAccess.access.description}`);
           request.workspace = userAccess.workspace;
           request.workspaceAccess = {
             ...userAccess.access,
@@ -142,7 +142,7 @@ export function createWorkspaceACLMiddleware(requiredPermission = 'read') {
       }
 
       // 7. Access denied
-      debug(`Access denied for workspace ${workspaceId}`);
+      logger.debug(`Access denied for workspace ${workspaceId}`);
       if (isJwtToken) {
         const response = new ResponseObject().forbidden(
           `Access denied to workspace ${workspaceId}. You are not the owner of this workspace.`
@@ -156,7 +156,7 @@ export function createWorkspaceACLMiddleware(requiredPermission = 'read') {
       }
 
     } catch (error) {
-      debug(`Workspace ACL validation error: ${error.message}`);
+      logger.debug(`Workspace ACL validation error: ${error.message}`);
       const response = new ResponseObject().serverError(`Workspace access validation failed: ${error.message}`);
       return reply.code(response.statusCode).send(response.getResponse());
     }
@@ -191,7 +191,7 @@ async function tryOwnerAccess(workspaceManager, userId, workspaceIdentifier) {
 
     return workspace;
   } catch (error) {
-    debug(`Owner access failed: ${error.message}`);
+    logger.debug(`Owner access failed: ${error.message}`);
     return null;
   }
 }
@@ -212,7 +212,7 @@ async function tryTokenAccess(workspaceManager, workspaceIdentifier, token, requ
     // Find workspace with this token in ACL
     const workspaceEntry = await findWorkspaceByTokenHash(workspaceManager, workspaceIdentifier, tokenHash);
     if (!workspaceEntry) {
-      debug(`Token not found in any workspace ACL: ${tokenHash.substring(0, 16)}...`);
+      logger.debug(`Token not found in any workspace ACL: ${tokenHash.substring(0, 16)}...`);
       return null;
     }
 
@@ -221,20 +221,20 @@ async function tryTokenAccess(workspaceManager, workspaceIdentifier, token, requ
 
     // Check expiration
     if (tokenData.expiresAt && new Date() > new Date(tokenData.expiresAt)) {
-      debug(`Token has expired: ${tokenData.expiresAt}`);
+      logger.debug(`Token has expired: ${tokenData.expiresAt}`);
       return null;
     }
 
     // Check permissions
     if (!tokenData.permissions.includes(requiredPermission)) {
-      debug(`Token lacks required permission. Has: ${tokenData.permissions}, needs: ${requiredPermission}`);
+      logger.debug(`Token lacks required permission. Has: ${tokenData.permissions}, needs: ${requiredPermission}`);
       return null;
     }
 
     // Load the actual workspace instance for token access
     const workspace = await loadWorkspaceForTokenAccess(workspaceManager, workspaceEntry);
     if (!workspace) {
-      debug(`Failed to load workspace for token access: ${workspaceIdentifier}`);
+      logger.debug(`Failed to load workspace for token access: ${workspaceIdentifier}`);
       return null;
     }
 
@@ -245,7 +245,7 @@ async function tryTokenAccess(workspaceManager, workspaceIdentifier, token, requ
     };
 
   } catch (error) {
-    debug(`Token access validation error: ${error.message}`);
+    logger.debug(`Token access validation error: ${error.message}`);
     return null;
   }
 }
@@ -271,7 +271,7 @@ async function findWorkspaceByTokenHash(workspaceManager, workspaceIdentifier, t
         if (workspaceEntry.id === workspaceIdentifier) {
           const tokens = workspaceEntry.acl?.tokens || {};
           if (tokens[tokenHash]) {
-            debug(`Found token in workspace ACL: ${workspaceIdentifier}`);
+            logger.debug(`Found token in workspace ACL: ${workspaceIdentifier}`);
             return workspaceEntry;
           }
           break;
@@ -283,18 +283,18 @@ async function findWorkspaceByTokenHash(workspaceManager, workspaceIdentifier, t
         if (workspaceEntry.name === workspaceIdentifier) {
           const tokens = workspaceEntry.acl?.tokens || {};
           if (tokens[tokenHash]) {
-            debug(`Found token in workspace ACL by name: ${workspaceIdentifier}`);
+            logger.debug(`Found token in workspace ACL by name: ${workspaceIdentifier}`);
             return workspaceEntry;
           }
         }
       }
     }
 
-    debug(`Token not found in any workspace ACL: ${tokenHash.substring(0, 16)}...`);
+    logger.debug(`Token not found in any workspace ACL: ${tokenHash.substring(0, 16)}...`);
     return null;
 
   } catch (error) {
-    debug(`Error searching for token in workspace ACLs: ${error.message}`);
+    logger.debug(`Error searching for token in workspace ACLs: ${error.message}`);
     return null;
   }
 }
@@ -312,7 +312,7 @@ async function loadWorkspaceForTokenAccess(workspaceManager, workspaceEntry) {
     return workspace;
 
   } catch (error) {
-    debug(`Error loading workspace for token access: ${error.message}`);
+    logger.debug(`Error loading workspace for token access: ${error.message}`);
     return null;
   }
 }
@@ -331,28 +331,28 @@ async function tryUserAccess(workspaceManager, userManager, workspaceIdentifier,
     // Get user email to check against workspace ACL
     const user = await userManager.getUser(userId);
     if (!user || !user.email) {
-      debug(`User not found or missing email: ${userId}`);
+      logger.debug(`User not found or missing email: ${userId}`);
       return null;
     }
 
     // Find workspace and check user ACL
     const workspaceEntry = await findWorkspaceByUserEmail(workspaceManager, workspaceIdentifier, user.email);
     if (!workspaceEntry) {
-      debug(`User ${user.email} not found in any workspace ACL for workspace: ${workspaceIdentifier}`);
+      logger.debug(`User ${user.email} not found in any workspace ACL for workspace: ${workspaceIdentifier}`);
       return null;
     }
 
     // Validate user permissions
     const userData = workspaceEntry.acl.users[user.email];
     if (!userData.permissions.includes(requiredPermission)) {
-      debug(`User ${user.email} lacks required permission. Has: ${userData.permissions}, needs: ${requiredPermission}`);
+      logger.debug(`User ${user.email} lacks required permission. Has: ${userData.permissions}, needs: ${requiredPermission}`);
       return null;
     }
 
     // Load the actual workspace instance
     const workspace = await loadWorkspaceForUserAccess(workspaceManager, workspaceEntry, userId);
     if (!workspace) {
-      debug(`Failed to load workspace for user access: ${workspaceIdentifier}`);
+      logger.debug(`Failed to load workspace for user access: ${workspaceIdentifier}`);
       return null;
     }
 
@@ -367,7 +367,7 @@ async function tryUserAccess(workspaceManager, userManager, workspaceIdentifier,
     };
 
   } catch (error) {
-    debug(`User access validation error: ${error.message}`);
+    logger.debug(`User access validation error: ${error.message}`);
     return null;
   }
 }
@@ -392,7 +392,7 @@ async function findWorkspaceByUserEmail(workspaceManager, workspaceIdentifier, u
         if (workspaceEntry.id === workspaceIdentifier) {
           const users = workspaceEntry.acl?.users || {};
           if (users[userEmail]) {
-            debug(`Found user ${userEmail} in workspace ACL: ${workspaceIdentifier}`);
+            logger.debug(`Found user ${userEmail} in workspace ACL: ${workspaceIdentifier}`);
             return workspaceEntry;
           }
         }
@@ -403,18 +403,18 @@ async function findWorkspaceByUserEmail(workspaceManager, workspaceIdentifier, u
         if (workspaceEntry.name === workspaceIdentifier) {
           const users = workspaceEntry.acl?.users || {};
           if (users[userEmail]) {
-            debug(`Found user ${userEmail} in workspace ACL: ${workspaceEntry.id} (name: ${workspaceIdentifier})`);
+            logger.debug(`Found user ${userEmail} in workspace ACL: ${workspaceEntry.id} (name: ${workspaceIdentifier})`);
             return workspaceEntry;
           }
         }
       }
     }
 
-    debug(`User ${userEmail} not found in workspace ACL for: ${workspaceIdentifier}`);
+    logger.debug(`User ${userEmail} not found in workspace ACL for: ${workspaceIdentifier}`);
     return null;
 
   } catch (error) {
-    debug(`Error finding workspace by user email: ${error.message}`);
+    logger.debug(`Error finding workspace by user email: ${error.message}`);
     return null;
   }
 }
@@ -434,7 +434,7 @@ async function loadWorkspaceForUserAccess(workspaceManager, workspaceEntry, user
     return workspace;
 
   } catch (error) {
-    debug(`Error loading workspace for user access: ${error.message}`);
+    logger.debug(`Error loading workspace for user access: ${error.message}`);
     return null;
   }
 }

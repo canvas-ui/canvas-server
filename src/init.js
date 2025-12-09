@@ -2,9 +2,10 @@
  * Canvas Server init script
  */
 
-// import './utils/event-name-normalizer.js';
 import server from './Server.js';
-import logger from './utils/log.js';
+import { createLogger } from './utils/log.js';
+
+const logger = createLogger('init');
 
 // Constants
 const SHUTDOWN_SIGNALS = ['SIGINT', 'SIGTERM'];
@@ -24,7 +25,7 @@ async function main() {
 
         logger.info('Canvas server started successfully');
     } catch (err) {
-        logger.error('Failed to initialize Canvas server:', err);
+        logger.fatal({ err }, 'Failed to initialize Canvas server');
         process.exit(1);
     }
 }
@@ -35,12 +36,12 @@ async function main() {
 function setupProcessEventListeners() {
     // Handle process signals
     const shutdown = async (signal) => {
-        logger.info(`Received ${signal}, gracefully shutting down`);
+        logger.info({ signal }, 'Received signal, gracefully shutting down');
         try {
             await server.stop();
             process.exit(0);
         } catch (err) {
-            logger.error('Error during shutdown:', err);
+            logger.error({ err }, 'Error during shutdown');
             process.exit(1);
         }
     };
@@ -52,29 +53,29 @@ function setupProcessEventListeners() {
 
     // Handle uncaught exceptions
     process.on('uncaughtException', (error) => {
-        logger.error('Uncaught Exception:', error);
+        logger.fatal({ err: error }, 'Uncaught Exception');
         server.stop().then(() => process.exit(1));
     });
 
     // Handle unhandled rejections
     process.on('unhandledRejection', (reason, promise) => {
-        logger.error('Unhandled Rejection:', { reason, promise });
+        logger.error({ reason }, 'Unhandled Rejection');
     });
 
     // Handle warnings
     process.on('warning', (warning) => {
-        logger.warn('Warning:', { name: warning.name, message: warning.message, stack: warning.stack });
+        logger.warn({ name: warning.name, message: warning.message, stack: warning.stack }, 'Process warning');
     });
 
     // Handle process exit
     process.on('beforeExit', async (code) => {
         if (code !== 0) return;
-        logger.info('Process beforeExit:', code);
+        logger.info({ code }, 'Process beforeExit');
         await server.stop();
     });
 
     process.on('exit', (code) => {
-        logger.info(`Process exiting with code: ${code}`);
+        logger.info({ code }, 'Process exiting');
     });
 
     // Handle Windows specific signals
@@ -103,24 +104,24 @@ async function setupWindowsSignalHandlers() {
  */
 function setupServerEventHandlers() {
     server.on('initialized', () => {
-        logger.info('Canvas server initialized successfully');
+        logger.info('Canvas server initialized');
     });
 
     server.on('started', () => {
-        logger.info('Canvas server started successfully');
+        logger.info('Canvas server started');
     });
 
     server.on('before-shutdown', () => {
-        logger.info('Canvas server is shutting down');
+        logger.info('Canvas server shutting down');
     });
 
     server.on('shutdown', () => {
-        logger.info('Canvas server has shut down');
+        logger.info('Canvas server shut down');
     });
 }
 
 // Run the main function
 main().catch((err) => {
-    logger.error('Fatal error:', err);
+    logger.fatal({ err }, 'Fatal error');
     process.exit(1);
 });

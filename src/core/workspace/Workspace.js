@@ -6,8 +6,9 @@ import path from 'path';
 import Conf from 'conf';
 import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
-import createDebug from 'debug';
-const debug = createDebug('workspace');
+
+// Logging
+import { createLogger } from '../../utils/log.js';
 
 // Includes
 import Db from '../../services/synapsd/src/index.js';
@@ -27,6 +28,7 @@ class Workspace extends EventEmitter {
 
     #rootPath = null;
     #configStore = null;
+    #logger;
 
     #db = null;
     #status = WORKSPACE_STATUS_CODES.INACTIVE;
@@ -50,6 +52,7 @@ class Workspace extends EventEmitter {
         }
 
         this.#configStore = options.configStore;
+        this.#logger = options.logger || createLogger('workspace');
 
         // Managers can be optional
         this.#storageManager = options.storageManager;
@@ -130,7 +133,7 @@ class Workspace extends EventEmitter {
     async start() {
         if (this.isActive) return this;
 
-        debug(`Starting workspace "${this.id}"...`);
+        this.#logger.debug({ workspaceId: this.id }, 'Starting workspace');
         try {
             // Initialize DB
              const dbPath = path.join(this.#rootPath, WORKSPACE_DIRECTORIES.db || 'Db');
@@ -152,7 +155,7 @@ class Workspace extends EventEmitter {
     async stop() {
         if (this.#status === WORKSPACE_STATUS_CODES.INACTIVE) return true;
 
-        debug(`Stopping workspace "${this.id}"...`);
+        this.#logger.debug({ workspaceId: this.id }, 'Stopping workspace');
         try {
             if (this.#db) {
                 await this.#db.shutdown();

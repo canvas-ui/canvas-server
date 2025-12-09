@@ -4,8 +4,8 @@
 import path from 'path';
 
 // Logging
-import { createDebug } from '../../utils/log/index.js';
-const debug = createDebug('role-manager:security');
+import { createLogger } from '../../utils/log.js';
+const logger = createLogger('role-manager:security');
 
 /**
  * Security Manager for Role System
@@ -33,7 +33,7 @@ class RoleSecurity {
         this.#serverConfig = options.serverConfig;
         this.#users = options.users;
 
-        debug('RoleSecurity initialized');
+        logger.debug('RoleSecurity initialized');
     }
 
     /**
@@ -102,7 +102,7 @@ class RoleSecurity {
         // Apply user restrictions
         await this.#applyUserRestrictions(securedConfig, roleConfig, context);
 
-        debug(`Applied security restrictions for role ${roleConfig.id} (${context.type})`);
+        logger.debug(`Applied security restrictions for role ${roleConfig.id} (${context.type})`);
         return securedConfig;
     }
 
@@ -135,12 +135,12 @@ class RoleSecurity {
 
         for (const allowedPath of allowedPaths) {
             if (resolvedPath.startsWith(allowedPath)) {
-                debug(`Host access allowed: ${resolvedPath} (matched: ${allowedPath})`);
+                logger.debug(`Host access allowed: ${resolvedPath} (matched: ${allowedPath})`);
                 return true;
             }
         }
 
-        debug(`Host access denied: ${resolvedPath} for role type ${context.type}`);
+        logger.debug(`Host access denied: ${resolvedPath} for role type ${context.type}`);
         return false;
     }
 

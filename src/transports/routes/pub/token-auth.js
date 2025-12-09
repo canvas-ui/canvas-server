@@ -1,9 +1,9 @@
 'use strict';
 
 import crypto from 'crypto';
-import { createDebug } from '../../../utils/log/index.js';
+import { createLogger } from '../../../utils/log.js';
 
-const debug = createDebug('canvas-server:pub:token-auth');
+const logger = createLogger('canvas-server:pub:token-auth');
 
 /**
  * Token authentication helper for pub routes
@@ -57,27 +57,27 @@ export function validateToken(token, resourceACL, requiredPermission) {
   const tokenData = resourceACL.tokens[tokenHash];
 
   if (!tokenData) {
-    debug(`Token not found in ACL: ${tokenHash.substring(0, 16)}...`);
+    logger.debug(`Token not found in ACL: ${tokenHash.substring(0, 16)}...`);
     return null;
   }
 
   // Check expiration
   if (tokenData.expiresAt && new Date() > new Date(tokenData.expiresAt)) {
-    debug(`Token has expired: ${tokenData.expiresAt}`);
+    logger.debug(`Token has expired: ${tokenData.expiresAt}`);
     return null;
   }
 
   // Check usage limits for secret-link tokens
   if (tokenData.type === 'secret-link' && tokenData.maxUses) {
     if (tokenData.currentUses >= tokenData.maxUses) {
-      debug(`Token has exceeded maximum uses: ${tokenData.currentUses}/${tokenData.maxUses}`);
+      logger.debug(`Token has exceeded maximum uses: ${tokenData.currentUses}/${tokenData.maxUses}`);
       return null;
     }
   }
 
   // Check permissions
   if (!tokenData.permissions.includes(requiredPermission)) {
-    debug(`Token lacks required permission. Has: ${tokenData.permissions}, needs: ${requiredPermission}`);
+    logger.debug(`Token lacks required permission. Has: ${tokenData.permissions}, needs: ${requiredPermission}`);
     return null;
   }
 
@@ -109,10 +109,10 @@ export async function incrementTokenUsage(token, resourceACL, updateACLFn) {
 
   try {
     await updateACLFn(resourceACL);
-    debug(`Incremented token usage: ${tokenData.currentUses}/${tokenData.maxUses}`);
+    logger.debug(`Incremented token usage: ${tokenData.currentUses}/${tokenData.maxUses}`);
     return true;
   } catch (error) {
-    debug(`Failed to increment token usage: ${error.message}`);
+    logger.debug(`Failed to increment token usage: ${error.message}`);
     return false;
   }
 }

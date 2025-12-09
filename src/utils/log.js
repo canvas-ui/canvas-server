@@ -7,16 +7,23 @@ import path from 'path';
 import { env } from '../env.js';
 
 const isDev = process.env.NODE_ENV !== 'production';
+const logFile = path.join(env.server.home, 'log', 'canvas-server.log');
 
-// Configure transport based on environment
-const transport = isDev
-    ? { target: 'pino-pretty', options: { colorize: true } }
-    : { target: 'pino/file', options: { destination: path.join(env.server.home, 'log', 'canvas.log'), mkdir: true } };
+// Always log to file + console (pretty in dev, JSON in prod)
+const transport = pino.transport({
+    targets: [
+        // File transport - always enabled
+        { target: 'pino/file', options: { destination: logFile, mkdir: true }, level: 'debug' },
+        // Console transport
+        isDev
+            ? { target: 'pino-pretty', options: { colorize: true }, level: 'debug' }
+            : { target: 'pino/file', options: { destination: 1 }, level: 'info' } // fd 1 = stdout
+    ]
+});
 
 export const logger = pino({
     level: process.env.LOG_LEVEL || env.server.logLevel || 'info',
-    transport
-});
+}, transport);
 
 export const createLogger = (name) => logger.child({ module: name });
 

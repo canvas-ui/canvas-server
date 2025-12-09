@@ -533,14 +533,24 @@ export async function register(userData, userManager) {
 
   // Create user
   const requireVerification = _authService.isEmailVerificationRequired();
-  const user = await userManager.create({
-    name: userData.name,
-    email: userData.email,
-    // firstName: userData.firstName,
-    // lastName: userData.lastName,
-    userType: 'user',
-    status: requireVerification ? 'pending' : 'active'
-  });
+  let user;
+  try {
+    user = await userManager.create({
+      name: userData.name,
+      email: userData.email,
+      // firstName: userData.firstName,
+      // lastName: userData.lastName,
+      userType: 'user',
+      status: requireVerification ? 'pending' : 'active'
+    });
+  } catch (error) {
+    // Return structured error for user creation failures
+    return {
+      success: false,
+      message: error?.message || 'Failed to create user account',
+      details: error?.details || undefined,
+    };
+  }
 
   // Set password with rollback on failure
   try {

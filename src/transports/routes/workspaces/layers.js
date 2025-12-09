@@ -19,6 +19,14 @@ export default async function workspaceLayerRoutes(fastify, options) {
       reply.code(responseObject.statusCode).send(responseObject.getResponse());
       return null;
     }
+
+    // Workspace must be active to access layers (requires .tree)
+    if (!workspace.isActive) {
+      const responseObject = new ResponseObject().badRequest('Workspace is not active. Start the workspace first.');
+      reply.code(responseObject.statusCode).send(responseObject.getResponse());
+      return null;
+    }
+
     return workspace;
   }
 

@@ -25,6 +25,14 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       reply.code(responseObject.statusCode).send(responseObject.getResponse());
       return null;
     }
+
+    // Workspace must be active to access documents
+    if (!workspace.isActive) {
+      const responseObject = new ResponseObject().badRequest('Workspace is not active. Start the workspace first.');
+      reply.code(responseObject.statusCode).send(responseObject.getResponse());
+      return null;
+    }
+
     return workspace;
   }
 

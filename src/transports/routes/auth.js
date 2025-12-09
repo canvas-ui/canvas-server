@@ -239,15 +239,25 @@ export default async function authRoutes(fastify, options) {
       const response = new ResponseObject().created({ user: result.data.user }, 'Registration successful');
       return reply.code(response.statusCode).send(response.getResponse());
     } catch (error) {
-      fastify.log.error('[Register Route Error]', error.message);
+      fastify.log.error('[Register Route Error]', error);
 
-      // Provide specific error messages for username validation
+      // Provide specific error messages for various validation issues
       if (error.message.includes('User name')) {
         const response = new ResponseObject().badRequest(error.message);
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
-      const response = new ResponseObject().serverError('Registration failed');
+      if (error.message.includes('already exists') || error.message.includes('duplicate') || error.message.includes('Email already registered')) {
+        const response = new ResponseObject().badRequest(error.message || 'Email or username already exists');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+
+      if (error.message.includes('Invalid') || error.message.includes('validation')) {
+        const response = new ResponseObject().badRequest(error.message || 'Invalid registration data');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+
+      const response = new ResponseObject().serverError(error.message || 'Registration failed');
       return reply.code(response.statusCode).send(response.getResponse());
     }
   });

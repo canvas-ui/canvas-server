@@ -84,6 +84,80 @@ export default async function pubWorkspaceRoutes(fastify, options) {
     }
   };
 
+  // Start workspace
+  fastify.post('/:workspaceId/start', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      params: {
+        type: 'object',
+        required: ['workspaceId'],
+        properties: {
+          workspaceId: { type: 'string', description: "Workspace ID or name" }
+        }
+      }
+    }
+  }, async (request, reply) => {
+    try {
+      const { workspaceId } = request.params;
+      const userId = request.user.id;
+
+      const isWorkspaceId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(workspaceId);
+      const resolvedId = isWorkspaceId ? workspaceId : fastify.workspaceManager.resolveWorkspaceId(userId, workspaceId);
+
+      if (!resolvedId) {
+        const response = new ResponseObject().notFound('Workspace not found');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+
+      await fastify.workspaceManager.startWorkspace(resolvedId, userId);
+      const workspace = await fastify.workspaceManager.getWorkspace(resolvedId, userId);
+
+      const responseObject = new ResponseObject().success(workspace.toJSON(), 'Workspace started successfully');
+      return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+    } catch (error) {
+      fastify.log.error(`Error starting workspace: ${error.message}`);
+      const response = new ResponseObject().serverError(`Failed to start workspace: ${error.message}`);
+      return reply.code(response.statusCode).send(response.getResponse());
+    }
+  });
+
+  // Stop workspace
+  fastify.post('/:workspaceId/stop', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      params: {
+        type: 'object',
+        required: ['workspaceId'],
+        properties: {
+          workspaceId: { type: 'string', description: "Workspace ID or name" }
+        }
+      }
+    }
+  }, async (request, reply) => {
+    try {
+      const { workspaceId } = request.params;
+      const userId = request.user.id;
+
+      const isWorkspaceId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(workspaceId);
+      const resolvedId = isWorkspaceId ? workspaceId : fastify.workspaceManager.resolveWorkspaceId(userId, workspaceId);
+
+      if (!resolvedId) {
+        const response = new ResponseObject().notFound('Workspace not found');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+
+      await fastify.workspaceManager.stopWorkspace(resolvedId, userId);
+      const workspace = await fastify.workspaceManager.getWorkspace(resolvedId, userId);
+
+      const responseObject = new ResponseObject().success(workspace.toJSON(), 'Workspace stopped successfully');
+      return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+    } catch (error) {
+      fastify.log.error(`Error stopping workspace: ${error.message}`);
+      const response = new ResponseObject().serverError(`Failed to stop workspace: ${error.message}`);
+      return reply.code(response.statusCode).send(response.getResponse());
+    }
+  });
+
   // Get workspace information
   fastify.get('/:workspaceId', {
     schema: {

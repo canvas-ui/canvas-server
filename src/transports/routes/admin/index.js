@@ -20,8 +20,8 @@ export default async function adminRoutes(fastify, options) {
     }
 
     try {
-      const user = await fastify.userManager.getUser(request.user.id);
-      if (!user.isAdmin()) {
+      const user = await fastify.users.get(request.user.id);
+      if (user.userType !== 'admin') {
         const response = new ResponseObject().forbidden('Admin access required');
         return reply.code(response.statusCode).send(response.getResponse());
       }
@@ -40,7 +40,7 @@ export default async function adminRoutes(fastify, options) {
   }, async (request, reply) => {
     try {
       const { status, userType } = request.query;
-      const users = await fastify.userManager.listUsers({ status, userType });
+      const users = await fastify.users.list({ status, userType });
 
       const response = new ResponseObject().found(users, 'Users retrieved successfully', 200, users.length);
       return reply.code(response.statusCode).send(response.getResponse());
@@ -121,7 +121,7 @@ export default async function adminRoutes(fastify, options) {
     }
   }, async (request, reply) => {
     try {
-      const user = await fastify.userManager.getUser(request.params.userId);
+      const user = await fastify.users.get(request.params.userId);
 
       const response = new ResponseObject().found({
         id: user.id,
@@ -168,7 +168,7 @@ export default async function adminRoutes(fastify, options) {
     }
   }, async (request, reply) => {
     try {
-      const user = await fastify.userManager.updateUser(request.params.userId, request.body);
+      const user = await fastify.users.update(request.params.userId, request.body);
 
       const response = new ResponseObject().success({
         id: user.id,
@@ -207,7 +207,7 @@ export default async function adminRoutes(fastify, options) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
-      await fastify.userManager.deleteUser(request.params.userId);
+      await fastify.users.remove(request.params.userId);
 
       const response = new ResponseObject().success(true, 'User deleted successfully');
       return reply.code(response.statusCode).send(response.getResponse());
@@ -226,7 +226,7 @@ export default async function adminRoutes(fastify, options) {
   }, async (request, reply) => {
     try {
       // Get all users first
-      const users = await fastify.userManager.listUsers();
+      const users = await fastify.users.list();
       let allWorkspaces = [];
 
       // Get workspaces for each user
@@ -278,7 +278,7 @@ export default async function adminRoutes(fastify, options) {
       const { userId, name, label, description, color, type = 'workspace', metadata } = request.body;
 
       // Verify the user exists
-      await fastify.userManager.getUser(userId);
+      await fastify.users.get(userId);
 
       const workspace = await fastify.workspaceManager.createWorkspace(
         name,

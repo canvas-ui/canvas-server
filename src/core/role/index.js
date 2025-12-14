@@ -54,6 +54,7 @@ class Roles extends EventEmitter {
     #serverConfig;
     #volumeMapper;
     #socketManager;
+    #globalRolesConfig; // Persistent global roles configuration
 
     // Runtime state
     #roles = new Map(); // Cache for loaded Role instances (key: roleId -> Role)
@@ -108,6 +109,18 @@ class Roles extends EventEmitter {
             workspaceManager: this.#workspaceManager
         });
 
+        // Initialize global roles configuration store
+        const globalRolesConfigPath = path.join(this.#serverConfig.dataPath, 'config', 'roles.json');
+        this.#globalRolesConfig = new Conf({
+            cwd: path.dirname(globalRolesConfigPath),
+            configName: 'roles',
+            accessPropertiesByDotNotation: false,
+            defaults: {
+                global: [],
+                autoStart: []
+            }
+        });
+
         logger.debug('Roles service initialized');
     }
 
@@ -128,8 +141,10 @@ class Roles extends EventEmitter {
         logger.debug('Initializing Roles service...');
 
         // Test Docker connection (non-fatal)
+        let dockerAvailable = false;
         try {
             await this.#docker.ping();
+            dockerAvailable = true;
             logger.debug('Docker connection established');
         } catch (error) {
             console.warn(`Docker not available: ${error.message}. Role management features will be disabled.`);
@@ -141,6 +156,14 @@ class Roles extends EventEmitter {
             await this.#scanExistingRoles();
         } catch (error) {
             console.warn(`Failed to scan existing roles: ${error.message}`);
+        }
+
+        // Load global roles from persistent config
+        await this.#loadGlobalRoles();
+
+        // Auto-start global roles if Docker is available
+        if (dockerAvailable) {
+            await this.#autoStartGlobalRoles();
         }
 
         this.#initialized = true;
@@ -204,6 +227,11 @@ class Roles extends EventEmitter {
 
         // Store in index
         this.#indexStore.set(roleId, roleConfig);
+
+        // Persist global roles to config file
+        if (options.type === ROLE_TYPES.GLOBAL) {
+            this.#saveGlobalRole(roleConfig);
+        }
 
         logger.debug(`Role created: ${roleId} (${options.name}) type: ${options.type}`);
         this.emit('role.created', { roleId, config: roleConfig });
@@ -339,6 +367,12 @@ class Roles extends EventEmitter {
 
         // Remove from index
         this.#indexStore.delete(roleId);
+
+        // Remove from global roles config if it's a global role
+        if (roleConfig.type === ROLE_TYPES.GLOBAL) {
+            this.#removeGlobalRole(roleId);
+        }
+
         this.emit('role.removed', { roleId, config: roleConfig });
 
         return true;
@@ -538,6 +572,95 @@ class Roles extends EventEmitter {
                 logger.debug(`Role ${roleId} container not found, marked as stopped`);
             }
         }
+    }
+
+    /**
+     * Load global roles from persistent config
+     * @private
+     */
+    async #loadGlobalRoles() {
+        logger.debug('Loading global roles from config...');
+        const globalRoles = this.#globalRolesConfig.get('global') || [];
+
+        for (const roleConfig of globalRoles) {
+            if (!this.#indexStore.get(roleConfig.id)) {
+                this.#indexStore.set(roleConfig.id, roleConfig);
+                logger.debug(`Loaded global role from config: ${roleConfig.id} (${roleConfig.name})`);
+            }
+        }
+
+        logger.debug(`Loaded ${globalRoles.length} global role(s) from config`);
+    }
+
+    /**
+     * Auto-start global roles marked for auto-start
+     * @private
+     */
+    async #autoStartGlobalRoles() {
+        logger.debug('Auto-starting global roles...');
+        const autoStartList = this.#globalRolesConfig.get('autoStart') || [];
+        const globalRoles = this.#globalRolesConfig.get('global') || [];
+
+        let startedCount = 0;
+        for (const roleId of autoStartList) {
+            const roleConfig = globalRoles.find(r => r.id === roleId);
+            if (!roleConfig) {
+                logger.debug(`Auto-start role not found in config: ${roleId}`);
+                continue;
+            }
+
+            if (roleConfig.lifecycle?.autoStart === false) {
+                logger.debug(`Role ${roleId} has autoStart disabled, skipping`);
+                continue;
+            }
+
+            try {
+                logger.debug(`Auto-starting global role: ${roleId} (${roleConfig.name})`);
+                await this.start(roleId);
+                startedCount++;
+                logger.debug(`Auto-started global role: ${roleId}`);
+            } catch (error) {
+                logger.debug(`Failed to auto-start role ${roleId}: ${error.message}`);
+            }
+        }
+
+        logger.debug(`Auto-started ${startedCount} global role(s)`);
+    }
+
+    /**
+     * Save global role to persistent config
+     * @param {Object} roleConfig - Role configuration
+     * @private
+     */
+    #saveGlobalRole(roleConfig) {
+        const globalRoles = this.#globalRolesConfig.get('global') || [];
+
+        // Remove existing entry if present
+        const filtered = globalRoles.filter(r => r.id !== roleConfig.id);
+
+        // Add updated config
+        filtered.push(roleConfig);
+
+        this.#globalRolesConfig.set('global', filtered);
+        logger.debug(`Saved global role to config: ${roleConfig.id}`);
+    }
+
+    /**
+     * Remove global role from persistent config
+     * @param {string} roleId - Role ID
+     * @private
+     */
+    #removeGlobalRole(roleId) {
+        const globalRoles = this.#globalRolesConfig.get('global') || [];
+        const filtered = globalRoles.filter(r => r.id !== roleId);
+        this.#globalRolesConfig.set('global', filtered);
+
+        // Remove from auto-start list
+        const autoStartList = this.#globalRolesConfig.get('autoStart') || [];
+        const filteredAutoStart = autoStartList.filter(id => id !== roleId);
+        this.#globalRolesConfig.set('autoStart', filteredAutoStart);
+
+        logger.debug(`Removed global role from config: ${roleId}`);
     }
 }
 

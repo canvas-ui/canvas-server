@@ -1,0 +1,58 @@
+# Canvas SSH Daemon Configuration
+# Secure SSH/SFTP server with chroot isolation
+
+# Network settings
+Port 22
+AddressFamily any
+ListenAddress 0.0.0.0
+
+# Host keys
+HostKey /etc/ssh/ssh_host_rsa_key
+HostKey /etc/ssh/ssh_host_ecdsa_key
+HostKey /etc/ssh/ssh_host_ed25519_key
+
+# Logging
+SyslogFacility AUTH
+LogLevel INFO
+
+# Authentication settings
+PermitRootLogin no
+PubkeyAuthentication yes
+PasswordAuthentication no
+PermitEmptyPasswords no
+ChallengeResponseAuthentication no
+UsePAM no
+
+# Disable unnecessary authentication methods
+KerberosAuthentication no
+GSSAPIAuthentication no
+
+# Security settings
+StrictModes yes
+MaxAuthTries 3
+MaxSessions 10
+
+# Key authentication
+AuthorizedKeysFile .ssh/authorized_keys
+
+# Forwarding settings
+AllowTcpForwarding no
+AllowStreamLocalForwarding no
+GatewayPorts no
+X11Forwarding no
+PermitTunnel no
+
+# Environment
+PermitUserEnvironment no
+AcceptEnv LANG LC_*
+
+# SFTP subsystem
+Subsystem sftp internal-sftp
+
+# Chroot configuration for all users
+Match User *
+    ChrootDirectory /users/%u
+    ForceCommand internal-sftp
+    AllowTcpForwarding no
+    X11Forwarding no
+    PermitTunnel no

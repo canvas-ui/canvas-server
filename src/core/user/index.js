@@ -83,6 +83,15 @@ class Users extends EventEmitter {
     get workspaceManager() { return this.#workspaceManager; }
 
     /**
+     * Internal helper for SSH key management
+     * @returns {Object} Index store
+     * @private
+     */
+    _getIndexStore() {
+        return this.#indexStore;
+    }
+
+    /**
      * Setters for late dependency injection to solve circular dependencies.
      */
     setWorkspaceManager(manager) {

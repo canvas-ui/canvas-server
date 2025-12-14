@@ -1,0 +1,103 @@
+{
+  "id": "canvas-sshd",
+  "name": "Canvas SSH Daemon",
+  "description": "Secure SSH/SFTP access to user home directories with chroot isolation",
+  "version": "1.0.0",
+  "type": "global",
+  "category": "access",
+  "tags": ["ssh", "sftp", "access", "security"],
+
+  "container": {
+    "image": "canvas/sshd:latest",
+    "command": null,
+    "ports": {
+      "22222": "22"
+    },
+    "healthcheck": {
+      "test": ["CMD", "nc", "-z", "localhost", "22"],
+      "interval": "30s",
+      "timeout": "5s",
+      "retries": 3,
+      "start_period": "10s"
+    },
+    "restart": "unless-stopped",
+    "dockerOptions": {
+      "HostConfig": {
+        "NetworkMode": "host"
+      }
+    }
+  },
+
+  "volumes": [
+    {
+      "host": "server:/users",
+      "container": "/users",
+      "mode": "rw"
+    },
+    {
+      "host": "server:/config/sshd",
+      "container": "/config",
+      "mode": "ro"
+    }
+  ],
+
+  "environment": {
+    "CANVAS_USERS_PATH": "/users",
+    "SSH_PORT": "22",
+    "LOG_LEVEL": "INFO"
+  },
+
+  "networks": ["host"],
+
+  "lifecycle": {
+    "autoStart": true,
+    "dependencies": [],
+    "hooks": {
+      "preStart": null,
+      "postStart": {
+        "command": ["sh", "-c", "sleep 2 && nc -z localhost 22"],
+        "timeout": "10s"
+      },
+      "preStop": null,
+      "postStop": null
+    }
+  },
+
+  "configuration": {
+    "schema": {
+      "type": "object",
+      "properties": {
+        "sshPort": {
+          "type": "integer",
+          "default": 22222,
+          "description": "SSH server port on host"
+        },
+        "logLevel": {
+          "type": "string",
+          "enum": ["DEBUG", "INFO", "WARN", "ERROR"],
+          "default": "INFO",
+          "description": "SSH daemon log level"
+        }
+      }
+    }
+  },
+
+  "resources": {
+    "cpu": "0.25",
+    "memory": "256Mi",
+    "storage": "100Mi"
+  },
+
+  "documentation": {
+    "readme": "Provides secure SSH/SFTP access to Canvas user home directories. Each user is automatically chrooted to their own directory (/users/user@email.tld/) for complete isolation. Only public key authentication is supported for enhanced security.",
+    "urls": {
+      "homepage": "https://www.openssh.com",
+      "documentation": "https://man.openbsd.org/sshd_config"
+    },
+    "usage": {
+      "connection": "ssh -p 22222 user@email.tld@your-server-host",
+      "sftp": "sftp -P 22222 user@email.tld@your-server-host",
+      "scp": "scp -P 22222 file.txt user@email.tld@your-server-host:/"
+    }
+  }
+}

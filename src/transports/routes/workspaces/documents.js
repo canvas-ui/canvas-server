@@ -1,7 +1,7 @@
 'use strict';
 
 import ResponseObject from '../../ResponseObject.js';
-import { parseDocumentId } from '../../../utils/documentId.js';
+import { parseDocumentId, parseDocumentIdArray } from '../../../utils/documentId.js';
 
 /**
  * Workspace document routes handler for the API
@@ -418,17 +418,37 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return;
 
-      // Convert array of IDs to the format workspace expects
-      const documentIds = Array.isArray(request.body) ? request.body : [request.body];
-      const result = await workspace.db.deleteDocumentArray(documentIds);
-
-      // Check if any documents were successfully deleted
-      if (result.failed.length > 0 && result.successful.length === 0) {
-        const responseObject = new ResponseObject().badRequest('Failed to delete documents');
+      // Normalize + validate IDs (SynapsD requires numbers; invalid IDs should 400 with a useful message)
+      const rawIds = Array.isArray(request.body) ? request.body : [request.body];
+      let documentIds;
+      try {
+        documentIds = parseDocumentIdArray(rawIds, 'Document ID array');
+      } catch (e) {
+        const responseObject = new ResponseObject().badRequest(e.message);
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());
       }
 
-      const responseObject = new ResponseObject().deleted(null, 'Documents deleted successfully');
+      const result = await workspace.db.deleteDocumentArray(documentIds);
+
+      // Always return 200 with details (DELETE should be idempotent; not-found is not a client error)
+      if (result?.failed?.length) {
+        fastify.log.warn({
+          workspace: request.params.id,
+          userId: request.user?.id,
+          op: 'workspace.documents.delete',
+          requested: documentIds.length,
+          successful: result.successful?.length || 0,
+          failed: result.failed?.length || 0,
+          failedSamples: (result.failed || []).slice(0, 5)
+        }, 'Workspace document delete had failures');
+      }
+
+      const message =
+        (result?.successful?.length || 0) > 0
+          ? 'Documents deleted successfully'
+          : 'No documents deleted (not found or already deleted)';
+
+      const responseObject = new ResponseObject().deleted(result, message, 200, result?.count ?? documentIds.length);
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
     } catch (error) {
       fastify.log.error(error);
@@ -476,21 +496,42 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return;
 
-      // Convert array of IDs to the format workspace expects
-      const documentIds = Array.isArray(request.body) ? request.body : [request.body];
+      // Normalize + validate IDs (SynapsD requires numbers; invalid IDs should 400 with a useful message)
+      const rawIds = Array.isArray(request.body) ? request.body : [request.body];
+      let documentIds;
+      try {
+        documentIds = parseDocumentIdArray(rawIds, 'Document ID array');
+      } catch (e) {
+        const responseObject = new ResponseObject().badRequest(e.message);
+        return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+      }
+
       const result = await workspace.db.removeDocumentArray(
         documentIds,
         request.query.contextSpec,
         request.query.featureArray
       );
 
-      // Check if any documents were successfully removed
-      if (result.failed.length > 0 && result.successful.length === 0) {
-        const responseObject = new ResponseObject().badRequest('Failed to remove documents');
-        return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+      // Always return 200 with details (remove should be idempotent; not-found/not-in-context is not a client error)
+      if (result?.failed?.length) {
+        fastify.log.warn({
+          workspace: request.params.id,
+          userId: request.user?.id,
+          op: 'workspace.documents.remove',
+          contextSpec: request.query.contextSpec,
+          requested: documentIds.length,
+          successful: result.successful?.length || 0,
+          failed: result.failed?.length || 0,
+          failedSamples: (result.failed || []).slice(0, 5)
+        }, 'Workspace document remove had failures');
       }
 
-      const responseObject = new ResponseObject().deleted(null, 'Documents removed successfully');
+      const message =
+        (result?.successful?.length || 0) > 0
+          ? 'Documents removed successfully'
+          : 'No documents removed (not found or already removed)';
+
+      const responseObject = new ResponseObject().deleted(result, message, 200, result?.count ?? documentIds.length);
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
     } catch (error) {
       fastify.log.error(error);

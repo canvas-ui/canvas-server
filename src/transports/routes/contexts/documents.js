@@ -6,6 +6,20 @@ import { validateUser } from '../../auth/strategies.js';
 import { resolveContextAddress } from '../../middleware/address-resolver.js';
 
 export default async function documentRoutes(fastify, options) {
+  function enforceClientTags(request, featureArray = []) {
+    const out = Array.isArray(featureArray) ? [...featureArray] : [];
+    const filtered = out.filter(f =>
+      typeof f === 'string' &&
+      !f.startsWith('client/device/id/') &&
+      !f.startsWith('client/app/id/')
+    );
+
+    const deviceId = request.client?.deviceId;
+    const appKey = request.client?.appKey;
+    if (deviceId) filtered.push(`client/device/id/${deviceId}`);
+    if (appKey) filtered.push(`client/app/id/${appKey}`);
+    return filtered;
+  }
 
   // Add a pre-handler hook to ensure user is authenticated and valid for all context document routes
   fastify.addHook('preHandler', async (request, reply) => {
@@ -103,7 +117,7 @@ export default async function documentRoutes(fastify, options) {
   // Insert documents into context
   // Path: / (relative to /:id/documents)
   fastify.post('/', {
-    onRequest: [fastify.authenticate],
+    onRequest: [fastify.authenticateClient],
     schema: {
       body: {
         oneOf: [
@@ -173,6 +187,7 @@ export default async function documentRoutes(fastify, options) {
 
       // Support featureArray only when object body is used; default to [] for top-level array mode
       const featureArray = Array.isArray(request.body) ? [] : (request.body.featureArray || []);
+      const enforcedFeatureArray = enforceClientTags(request, featureArray);
 
       // Determine the payload to insert: can be IDs or full documents
       let itemsToInsert;
@@ -191,7 +206,7 @@ export default async function documentRoutes(fastify, options) {
       }
 
       // Directly pass IDs or documents to SynapsD; IDs are now supported natively
-      const result = await context.insertDocumentArray(request.user.id, itemsToInsert, featureArray);
+      const result = await context.insertDocumentArray(request.user.id, itemsToInsert, enforcedFeatureArray);
 
       const response = new ResponseObject().created(result, 'Documents inserted successfully');
       return reply.code(response.statusCode).send(response.getResponse());
@@ -209,7 +224,7 @@ export default async function documentRoutes(fastify, options) {
   // Batch insert documents into context
   // Path: /batch (relative to /:id/documents)
   fastify.post('/batch', {
-    onRequest: [fastify.authenticate],
+    onRequest: [fastify.authenticateClient],
     schema: {
       body: {
         type: 'object',
@@ -238,6 +253,7 @@ export default async function documentRoutes(fastify, options) {
       }
 
       const { featureArray = [], documents } = request.body;
+      const enforcedFeatureArray = enforceClientTags(request, featureArray);
 
       if (!Array.isArray(documents) || documents.length === 0) {
         const response = new ResponseObject().badRequest('Documents must be a non-empty array');
@@ -246,7 +262,7 @@ export default async function documentRoutes(fastify, options) {
 
       console.log(`🔧 Batch insert: Processing ${documents.length} documents for context ${contextId}`);
 
-      const result = await context.insertDocumentArray(request.user.id, documents, featureArray);
+      const result = await context.insertDocumentArray(request.user.id, documents, enforcedFeatureArray);
 
       const response = new ResponseObject().created(result, `${documents.length} documents inserted successfully`);
       return reply.code(response.statusCode).send(response.getResponse());
@@ -264,7 +280,7 @@ export default async function documentRoutes(fastify, options) {
   // Update documents in context
   // Path: / (relative to /:id/documents)
   fastify.put('/', {
-    onRequest: [fastify.authenticate],
+    onRequest: [fastify.authenticateClient],
     schema: {
       // params.id is implicitly available
       body: {
@@ -317,6 +333,7 @@ export default async function documentRoutes(fastify, options) {
       }
 
       const { featureArray = [] } = request.body;
+      const enforcedFeatureArray = enforceClientTags(request, featureArray);
 
       // Determine what to update: either documents or documentIds
       let itemsToUpdate;
@@ -329,7 +346,7 @@ export default async function documentRoutes(fastify, options) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
-      const result = await context.updateDocumentArray(request.user.id, itemsToUpdate, featureArray);
+      const result = await context.updateDocumentArray(request.user.id, itemsToUpdate, enforcedFeatureArray);
 
       const response = new ResponseObject().updated(result, 'Documents updated successfully');
         return reply.code(response.statusCode).send(response.getResponse());

@@ -15,6 +15,7 @@ import { jim } from '../../Server.js';
 // Constants
 const TOKEN_TYPES = {
   API: 'api',
+  DEVICE: 'device',
   REFRESH: 'refresh',
   VERIFICATION: 'verification',
   PASSWORD_RESET: 'password_reset'
@@ -426,6 +427,8 @@ class AuthService {
         name,
         description,
         hash: tokenHash,
+        ...(options.deviceId ? { deviceId: options.deviceId } : {}),
+        ...(options.deviceNameAtIssue ? { deviceNameAtIssue: options.deviceNameAtIssue } : {}),
         createdAt: new Date().toISOString(),
         expiresAt: expiresIn ? new Date(Date.now() + expiresIn).toISOString() : null,
         lastUsedAt: null
@@ -605,6 +608,56 @@ class AuthService {
           }
 
           return { userId, tokenId };
+        }
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Verify a device token and return { userId, tokenId, deviceId }
+   * @param {string} tokenValue
+   * @returns {Promise<{userId: string, tokenId: string, deviceId: string} | null>}
+   */
+  async verifyDeviceToken(tokenValue) {
+    this.#ensureInitialized();
+
+    if (!tokenValue) return null;
+
+    const tokenHash = crypto.createHash('sha256').update(tokenValue).digest('hex');
+
+    let userIds;
+    if (this.#tokenManager) {
+      userIds = this.#tokenManager.listUserIds();
+    } else {
+      userIds = this.#tokensStore.store ? Object.keys(this.#tokensStore.store) : [];
+    }
+
+    for (const userId of userIds) {
+      let userTokens;
+      if (this.#tokenManager) {
+        userTokens = this.#tokenManager.readTokens(userId);
+      } else {
+        userTokens = this.#tokensStore.get(userId) || {};
+      }
+
+      for (const tokenId in userTokens) {
+        const token = userTokens[tokenId];
+        if (token.type !== TOKEN_TYPES.DEVICE) continue;
+        if (!token.deviceId) continue;
+        if (token.expiresAt && new Date(token.expiresAt) < new Date()) continue;
+
+        if (token.hash === tokenHash) {
+          token.lastUsedAt = new Date().toISOString();
+
+          if (this.#tokenManager) {
+            this.#tokenManager.writeTokens(userId, userTokens);
+          } else {
+            this.#tokensStore.set(userId, userTokens);
+          }
+
+          return { userId, tokenId, deviceId: token.deviceId };
         }
       }
     }

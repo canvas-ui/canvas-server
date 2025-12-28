@@ -9,6 +9,20 @@ import { parseDocumentId, parseDocumentIdArray } from '../../../utils/documentId
  * @param {Object} options - Plugin options
  */
 export default async function workspaceDocumentRoutes(fastify, options) {
+  function enforceClientTags(request, featureArray = []) {
+    const out = Array.isArray(featureArray) ? [...featureArray] : [];
+    const filtered = out.filter(f =>
+      typeof f === 'string' &&
+      !f.startsWith('client/device/id/') &&
+      !f.startsWith('client/app/id/')
+    );
+
+    const deviceId = request.client?.deviceId;
+    const appKey = request.client?.appKey;
+    if (deviceId) filtered.push(`client/device/id/${deviceId}`);
+    if (appKey) filtered.push(`client/app/id/${appKey}`);
+    return filtered;
+  }
   async function getWorkspaceInstance(request, reply) {
     const identifier = request.params.id;
     const userId = request.user.id;
@@ -108,7 +122,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
 
   // Insert documents into workspace
   fastify.post('/', {
-    onRequest: [fastify.authenticate],
+    onRequest: [fastify.authenticateClient],
     schema: {
       params: {
         type: 'object',
@@ -178,6 +192,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       const isTopLevelArray = Array.isArray(request.body);
       const contextSpec = isTopLevelArray ? '/' : (request.body.contextSpec || '/');
       const featureArray = isTopLevelArray ? [] : (request.body.featureArray || []);
+      const enforcedFeatureArray = enforceClientTags(request, featureArray);
 
       let itemsToInsert;
       if (isTopLevelArray) {
@@ -194,7 +209,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       const documents = await workspace.db.insertDocumentArray(
         itemsToInsert,
         contextSpec,
-        featureArray
+        enforcedFeatureArray
       );
       const responseObject = new ResponseObject().created(documents, 'Documents inserted successfully');
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
@@ -306,7 +321,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
 
   // Update documents
   fastify.put('/', {
-    onRequest: [fastify.authenticate],
+    onRequest: [fastify.authenticateClient],
     schema: {
       params: {
         type: 'object',

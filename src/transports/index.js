@@ -16,6 +16,7 @@ import ResponseObject from './ResponseObject.js';
 import {
   verifyJWT,
   verifyApiToken,
+  verifyDeviceToken,
   authService
 } from './auth/strategies.js';
 
@@ -85,6 +86,7 @@ export async function createServer(options = {}) {
   // Decorate server with our custom verification strategies
   server.decorate('verifyJWT', verifyJWT);
   server.decorate('verifyApiToken', verifyApiToken);
+  server.decorate('verifyDeviceToken', verifyDeviceToken);
 
   // Register fastify-auth, which will allow us to chain strategies
   await server.register(fastifyAuth);
@@ -94,6 +96,18 @@ export async function createServer(options = {}) {
   server.decorate('authenticate', server.auth([
     server.verifyJWT,
     server.verifyApiToken
+  ], { relation: 'or' }));
+
+  // Device-only authentication (for integrations)
+  server.decorate('authenticateDevice', server.auth([
+    server.verifyDeviceToken
+  ], { relation: 'or' }));
+
+  // Client ingestion authentication (web UI or integrations)
+  // JWT sets request.client to a server-instance deviceId; device tokens set request.client.deviceId explicitly.
+  server.decorate('authenticateClient', server.auth([
+    server.verifyJWT,
+    server.verifyDeviceToken
   ], { relation: 'or' }));
 
   // Create a custom authentication decorator that handles errors properly

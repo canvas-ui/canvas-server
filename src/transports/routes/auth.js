@@ -2,6 +2,7 @@
 
 import { authService, imapAuthStrategy, ldapAuthStrategy, login, register, verifyEmail, requestPasswordReset, resetPassword, validateUser, requestEmailVerification } from '../auth/strategies.js';
 import ResponseObject from '../ResponseObject.js';
+import { v4 as uuidv4 } from 'uuid';
 
 // Persistent rate limiter (per-IP) using jim index store to survive process restarts
 const rateLimitBuckets = new Map(); // fallback in-memory
@@ -456,6 +457,187 @@ export default async function authRoutes(fastify, options) {
     } catch (error) {
       fastify.log.error(error);
       const response = new ResponseObject().serverError('Failed to create API token');
+      return reply.code(response.statusCode).send(response.getResponse());
+    }
+  });
+
+  /**
+   * Devices: register/list/rename
+   * Stored as SynapsD docs in the user's Universe workspace.
+   */
+
+  async function getUniverseWorkspace(request, reply) {
+    const userId = request.user.id;
+    const universeId = await fastify.workspaceManager.resolveWorkspaceId(userId, 'universe');
+    if (!universeId) {
+      const response = new ResponseObject().serverError('Universe workspace not found');
+      reply.code(response.statusCode).send(response.getResponse());
+      return null;
+    }
+
+    const ws = await fastify.workspaceManager.getWorkspace(universeId, userId);
+    if (!ws) {
+      const response = new ResponseObject().serverError('Universe workspace not available');
+      reply.code(response.statusCode).send(response.getResponse());
+      return null;
+    }
+
+    if (!ws.isActive) {
+      await fastify.workspaceManager.startWorkspace(ws.id, userId);
+    }
+
+    return ws;
+  }
+
+  // Register a device and mint a device-scoped token
+  fastify.post('/devices/register', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      body: {
+        type: 'object',
+        properties: {
+          name: { type: 'string' },
+          hostname: { type: 'string' },
+          fqdn: { type: 'string' },
+          platform: { type: 'string' },
+          arch: { type: 'string' },
+          type: { type: 'string' }
+        }
+      }
+    }
+  }, async (request, reply) => {
+    try {
+      const ws = await getUniverseWorkspace(request, reply);
+      if (!ws) return;
+
+      // Generate a new device ID (server-minted)
+      const newDeviceId = uuidv4();
+
+      const now = new Date().toISOString();
+      const input = request.body || {};
+      const name =
+        String(input.name || '').trim() ||
+        String(input.fqdn || '').trim() ||
+        String(input.hostname || '').trim() ||
+        'unknown-device';
+
+      // Upsert device doc in Universe workspace
+      await ws.db.insertDocument({
+        schema: 'data/abstraction/device',
+        data: {
+          id: newDeviceId,
+          name,
+          platform: input.platform,
+          arch: input.arch,
+          type: input.type,
+          createdAt: now,
+          lastSeen: now,
+        }
+      }, '/', ['data/abstraction/device']);
+
+      // Mint a device token (canvas-...)
+      const token = await fastify.authService.createToken(request.user.id, {
+        type: 'device',
+        name: `device:${newDeviceId}`,
+        description: `Device token for ${name}`,
+        deviceId: newDeviceId,
+        deviceNameAtIssue: name,
+      });
+
+      const response = new ResponseObject().created({
+        deviceId: newDeviceId,
+        token: token.value,
+        name,
+      }, 'Device registered');
+      return reply.code(response.statusCode).send(response.getResponse());
+    } catch (error) {
+      fastify.log.error(error);
+      const response = new ResponseObject().serverError('Failed to register device');
+      return reply.code(response.statusCode).send(response.getResponse());
+    }
+  });
+
+  // List devices
+  fastify.get('/devices', {
+    onRequest: [fastify.authenticate],
+  }, async (request, reply) => {
+    try {
+      const ws = await getUniverseWorkspace(request, reply);
+      if (!ws) return;
+
+      const docs = await ws.db.findDocuments('/', ['data/abstraction/device'], [], { limit: 500 });
+      const devices = (docs || []).map(d => ({
+        id: d.data?.id,
+        name: d.data?.name,
+        platform: d.data?.platform,
+        arch: d.data?.arch,
+        type: d.data?.type,
+        createdAt: d.data?.createdAt,
+        lastSeen: d.data?.lastSeen,
+      })).filter(d => d.id);
+
+      const response = new ResponseObject().found(devices, 'Devices retrieved successfully', 200, devices.length);
+      return reply.code(response.statusCode).send(response.getResponse());
+    } catch (error) {
+      fastify.log.error(error);
+      const response = new ResponseObject().serverError('Failed to list devices');
+      return reply.code(response.statusCode).send(response.getResponse());
+    }
+  });
+
+  // Rename a device
+  fastify.patch('/devices/:deviceId', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      params: {
+        type: 'object',
+        required: ['deviceId'],
+        properties: {
+          deviceId: { type: 'string' }
+        }
+      },
+      body: {
+        type: 'object',
+        required: ['name'],
+        properties: {
+          name: { type: 'string' }
+        }
+      }
+    }
+  }, async (request, reply) => {
+    try {
+      const ws = await getUniverseWorkspace(request, reply);
+      if (!ws) return;
+
+      const deviceId = request.params.deviceId;
+      const newName = String(request.body?.name || '').trim();
+      if (!newName) {
+        const response = new ResponseObject().badRequest('name is required');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+
+      const docs = await ws.db.findDocuments('/', ['data/abstraction/device'], [], { limit: 500 });
+      const existing = (docs || []).find(d => d.data?.id === deviceId);
+      if (!existing) {
+        const response = new ResponseObject().notFound('Device not found');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+
+      const now = new Date().toISOString();
+      await ws.db.insertDocument({
+        schema: 'data/abstraction/device',
+        data: {
+          ...existing.data,
+          name: newName,
+          lastSeen: now,
+        }
+      }, '/', ['data/abstraction/device']);
+
+      const response = new ResponseObject().success({ id: deviceId, name: newName }, 'Device renamed');
+      return reply.code(response.statusCode).send(response.getResponse());
+    } catch (error) {
+      fastify.log.error(error);
+      const response = new ResponseObject().serverError('Failed to rename device');
       return reply.code(response.statusCode).send(response.getResponse());
     }
   });

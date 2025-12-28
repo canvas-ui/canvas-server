@@ -191,6 +191,18 @@ export async function verifyJWT(request, reply) {
   console.log(`[Auth/JWT] Preparing to authenticate user: ${essentialUserData.id}`);
   request.user = essentialUserData; // Set request.user directly
   console.log(`[Auth/JWT] User ${essentialUserData.id} authenticated via JWT (set on request.user)`);
+
+  // Provide stable client identity for server-side tagging during ingest.
+  // For JWT-authenticated requests, we treat the canvas-server instance as the "device"
+  // (useful when a user connects to multiple canvas-server instances).
+  const appKey = String(request.headers['x-app-name'] || '').trim() || 'canvas-web';
+  const host =
+    String(request.headers['x-forwarded-host'] || request.headers.host || '').trim() ||
+    'canvas-server';
+  request.client = {
+    deviceId: `server/${host}`,
+    appKey,
+  };
 }
 
 /**
@@ -352,6 +364,68 @@ export async function verifyApiToken(request, reply) {
   }
 
   console.log(`[Auth/API] Authentication successful for user ${essentialUserData.id}`);
+}
+
+/**
+ * Verify device token for client-integrations.
+ * Sets:
+ * - request.user (same shape as other auth strategies)
+ * - request.client = { deviceId, appKey }
+ */
+export async function verifyDeviceToken(request, reply) {
+  if (!request.headers.authorization || !request.headers.authorization.startsWith('Bearer ')) {
+    const error = new Error('Bearer token required');
+    error.statusCode = 401;
+    throw error;
+  }
+
+  const token = request.headers.authorization.split(' ')[1];
+  if (!token || !token.startsWith('canvas-')) {
+    const error = new Error('Not a canvas token');
+    error.statusCode = 401;
+    throw error;
+  }
+
+  const tokenResult = await request.server.authService.verifyDeviceToken(token);
+  if (!tokenResult?.userId || !tokenResult?.deviceId) {
+    const error = new Error('Invalid device token');
+    error.statusCode = 401;
+    throw error;
+  }
+
+  const users = request.server.users;
+  if (!users) {
+    const error = new Error('User manager not initialized');
+    error.statusCode = 500;
+    throw error;
+  }
+
+  const user = await users.get(tokenResult.userId);
+  if (!user || !user.id || !user.email) {
+    const error = new Error('User not found for this device token');
+    error.statusCode = 401;
+    throw error;
+  }
+  if (user.status !== 'active') {
+    const error = new Error('User account is not active');
+    error.statusCode = 401;
+    throw error;
+  }
+
+  request.user = {
+    id: user.id,
+    name: user.name || user.email,
+    email: user.email ? user.email.toLowerCase() : null,
+    userType: user.userType || 'user',
+    status: user.status || 'active'
+  };
+
+  const appKey = String(request.headers['x-app-name'] || '').trim() || 'unknown';
+  request.client = {
+    deviceId: tokenResult.deviceId,
+    appKey
+  };
+  request.token = tokenResult.tokenId;
 }
 
 /**

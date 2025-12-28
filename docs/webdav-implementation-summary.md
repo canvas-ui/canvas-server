@@ -12,26 +12,26 @@ October 20, 2025
 
 ### Components Implemented
 
-1. **Authentication Bridge** (`src/api/webdav/auth.js`)
+1. **Authentication Bridge** (`src/transports/webdav/auth.js`)
    - Custom WebDAV authentication manager extending `webdav-server` HTTPAuthentication
    - Supports both Bearer token and HTTP Basic Auth
    - Integrates with Canvas authService for JWT and API token validation
    - Workspace access control validation
 
-2. **WebDAV Server Manager** (`src/api/webdav/server.js`)
+2. **WebDAV Server Manager** (`src/transports/webdav/server.js`)
    - Manages webdav-server instance lifecycle
    - Implements workspace-to-path mapping
    - Dynamic workspace mounting
    - Automatic home directory creation
    - Class 2 WebDAV support (file locking)
 
-3. **Route Handler** (`src/api/routes/webdav.js`)
+3. **Route Handler** (`src/transports/routes/webdav.js`)
    - Fastify route integration
    - Authentication pre-handler
    - Request delegation to WebDAV server
    - Support for all WebDAV HTTP methods
 
-4. **API Integration** (`src/api/index.js`)
+4. **Transport integration** (`src/transports/index.js`)
    - CORS configuration for WebDAV methods
    - Route registration
    - 404 handler for WebDAV paths
@@ -101,9 +101,9 @@ Two methods supported:
 
 ### New Files
 
-1. `src/api/webdav/auth.js` - Authentication bridge
-2. `src/api/webdav/server.js` - Server manager
-3. `src/api/routes/webdav.js` - Route handler
+1. `src/transports/webdav/auth.js` - Authentication bridge
+2. `src/transports/webdav/server.js` - Server manager
+3. `src/transports/routes/webdav.js` - Route handler
 4. `docs/webdav-access.md` - User documentation
 5. `docs/webdav-testing.md` - Testing guide
 6. `docs/webdav-quick-reference.md` - Quick reference
@@ -111,16 +111,16 @@ Two methods supported:
 
 ### Modified Files
 
-1. `src/api/index.js` - Added WebDAV route registration and CORS config
+1. `src/transports/index.js` - Added WebDAV route registration and CORS config
 2. `README.md` - Added WebDAV section
 3. `package.json` - Added webdav-server dependency
 
 ## Testing
 
 All modules pass syntax validation:
-- ✅ `src/api/webdav/auth.js`
-- ✅ `src/api/webdav/server.js`
-- ✅ `src/api/routes/webdav.js`
+- ✅ `src/transports/webdav/auth.js`
+- ✅ `src/transports/webdav/server.js`
+- ✅ `src/transports/routes/webdav.js`
 - ✅ No linter errors
 
 ### Recommended Testing

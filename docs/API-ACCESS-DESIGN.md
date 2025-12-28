@@ -111,7 +111,7 @@ Examples:
 - `john.doe/my-project` → resolves to workspace owned by user "john.doe" named "my-project"
 
 ### Address Resolution Middleware
-- **Location**: `src/api/middleware/address-resolver.js`
+- **Location**: `src/transports/middleware/address-resolver.js`
 - **Purpose**: Converts user-friendly addresses to internal IDs
 - **Scope**: Applied to routes with `:id` parameters
 - **Behavior**: 
@@ -175,7 +175,7 @@ Examples:
 ## Implementation Notes
 
 ### Workspace ACL Middleware
-- **Location**: `src/api/middleware/workspace-acl.js`
+- **Location**: `src/transports/middleware/workspace-acl.js`
 - **Purpose**: Validates workspace access for both JWT and API tokens
 - **Logic**:
   1. Try owner access first (fastest path)

@@ -34,7 +34,7 @@ The fix involves three main components:
 
 ### 1. Backend: Enhanced Error Handling in Auth Routes
 
-**File**: `src/api/routes/auth.js`
+**File**: `src/transports/routes/auth.js`
 
 ```javascript
 // Handle the specific case where user exists in token but not in database
@@ -56,7 +56,7 @@ if (dbError.message.includes('User not found in index')) {
 
 ### 2. Backend: Enhanced Error Handling in Auth Strategies
 
-**Files**: `src/api/auth/strategies.js`
+**Files**: `src/transports/auth/strategies.js`
 
 Both `verifyJWT` and `verifyApiToken` functions now handle the missing user scenario:
 
@@ -209,8 +209,8 @@ curl -H "Authorization: Bearer YOUR_TOKEN_HERE" http://localhost:8001/rest/v2/au
 
 ## Related Files
 
-- `src/api/routes/auth.js`: Main authentication routes
-- `src/api/auth/strategies.js`: JWT and API token strategies
+- `src/transports/routes/auth.js`: Main authentication routes
+- `src/transports/auth/strategies.js`: JWT and API token strategies
 - `src/ui/web/src/services/auth.ts`: Frontend authentication service
 - `src/managers/user/index.js`: User management logic
 - `tests/auth-redirect-loop-test.js`: Test suite

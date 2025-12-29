@@ -10,7 +10,7 @@
 	url = https://github.com/canvas-ai/canvas-shell.git
 [submodule "extensions/browser-extensions"]
 	path = extensions/browser-extensions
-	url = https://github.com/canvas-ai/canvas-browser-extensions.git
+	url = git@github.com:canvas-ai/canvas-browser-extensions.git
 [submodule "src/services/synapsd"]
 	path = src/services/synapsd
 	url = https://github.com/canvas-ai/canvas-synapsd.git

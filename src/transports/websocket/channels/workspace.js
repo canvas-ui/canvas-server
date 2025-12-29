@@ -82,12 +82,9 @@ async function validateWorkspaceAccess(socket, workspaceIdentifier) {
       return false;
     }
 
-    // Get the token from the socket handshake
+    // Token is only required for token-based ACL shares.
+    // Owner access should work for JWT-authenticated sockets as well.
     const token = socket.handshake?.auth?.token;
-    if (!token || !token.startsWith('canvas-')) {
-      logger.debug(`Invalid or missing Canvas token for workspace access`);
-      return false;
-    }
 
     // Try owner access first (fastest path)
     const workspaceManager = socket.server?.workspaceManager;
@@ -115,7 +112,10 @@ async function validateWorkspaceAccess(socket, workspaceIdentifier) {
       logger.debug(`Owner access check failed: ${error.message}`);
     }
 
-    // Try token-based access
+    // Try token-based access (only for canvas-* tokens)
+    if (!token || !token.startsWith('canvas-')) {
+      return false;
+    }
     const tokenHash = `sha256:${crypto.createHash('sha256').update(token).digest('hex')}`;
     const allWorkspaces = await workspaceManager.listWorkspaces();
 

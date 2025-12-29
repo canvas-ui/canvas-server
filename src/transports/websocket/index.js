@@ -62,17 +62,23 @@ export default function setupWebSocketHandlers(fastify) {
 
       let user;
       if (token.startsWith('canvas-')) {
-        logger.debug(`🎫 Verifying Canvas API token for ${clientIp}`);
-        const apiRes = await authService.verifyApiToken(token);
-        if (!apiRes) {
-          const error = new Error('Invalid API token');
-          logger.debug(`❌ Invalid Canvas API token for ${clientIp}`);
-          next(error);
-          // Force disconnect to close TCP connection
-          socket.disconnect(true);
-          return;
+        // canvas-* can be either a user API token or a device token
+        logger.debug(`🎫 Verifying Canvas token for ${clientIp}`);
+
+        const deviceRes = await authService.verifyDeviceToken(token);
+        if (deviceRes?.userId) {
+          user = await fastify.users.get(deviceRes.userId);
+        } else {
+          const apiRes = await authService.verifyApiToken(token);
+          if (!apiRes) {
+            const error = new Error('Invalid token');
+            logger.debug(`❌ Invalid Canvas token for ${clientIp}`);
+            next(error);
+            socket.disconnect(true);
+            return;
+          }
+          user = await fastify.users.get(apiRes.userId);
         }
-        user = await fastify.users.get(apiRes.userId);
       } else {
         logger.debug(`🎫 Verifying JWT token for ${clientIp}`);
         // Use authService to verify JWT token consistently with REST API

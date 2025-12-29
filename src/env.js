@@ -25,13 +25,14 @@ export const env = {
         logLevel: process.env.LOG_LEVEL || 'info',
         host: process.env.CANVAS_SERVER_HOST || 'canvas.local',
         api: {
-            enabled: process.env.CANVAS_DISABLE_API || true,
+            // "disable" flags exist so Electron can run an embedded instance in minimal mode
+            enabled: process.env.CANVAS_DISABLE_API !== 'true',
             protocol: process.env.CANVAS_API_PROTOCOL || 'http',
             port: process.env.CANVAS_API_PORT || 8001, // Needs to be changed in ./src/ui/web/.env ..for now
             host: process.env.CANVAS_API_HOST || '0.0.0.0'
         },
         web: {
-            enabled: process.env.CANVAS_DISABLE_WEB || true,
+            enabled: process.env.CANVAS_DISABLE_WEB !== 'true',
             protocol: process.env.CANVAS_WEB_PROTOCOL || 'http',
             port: process.env.CANVAS_WEB_PORT || 8001,
             host: process.env.CANVAS_WEB_HOST || '0.0.0.0'

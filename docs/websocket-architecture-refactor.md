@@ -87,7 +87,7 @@ socket.on('context:updated', (payload) => {
 Replace current WebSocket implementation with EventEmitter2 wildcard-based forwarding:
 
 ```javascript
-// src/api/websocket/index-simplified.js
+// src/transports/websocket/index-simplified.js
 const setupManagerEventForwarding = () => {
   const managers = [
     { manager: fastify.contextManager, prefix: 'context' },
@@ -130,8 +130,8 @@ export const MANAGER_EVENTS = {
 ### Phase 4: Remove Complex WebSocket Handlers
 
 Remove manual event handlers in:
-- `src/api/websocket/context.js` (most of it)
-- `src/api/websocket/index.js` (manual event forwarding)
+- `src/transports/websocket/channels/context.js` (most of it)
+- `src/transports/websocket/index.js` (manual event forwarding)
 
 ## Event Naming Convention
 
@@ -174,8 +174,8 @@ Remove manual event handlers in:
 ## Files to Modify
 
 ### Backend
-- `src/api/websocket/index-simplified.js` (new)
-- `src/api/websocket/context.js` (simplify)
+- `src/transports/websocket/index-simplified.js` (new)
+- `src/transports/websocket/channels/context.js` (simplify)
 - `src/managers/context/lib/Context.js` (event consistency)
 
 ### Frontend  

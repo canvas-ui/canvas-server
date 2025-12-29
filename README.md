@@ -124,6 +124,99 @@ Canvas Server supports two types of authentication:
 1. **JWT Token Authentication**: Used for web UI login and normal user sessions, see 
 2. **[API Token Authentication](docs/api-token-auth.md)**: Used for programmatic access (CLI, Electron, browser extensions, curl-based scripts)
 
+## Canvas Roles
+
+Canvas Roles are dockerized services that extend Canvas functionality. There are two types:
+
+- **Global Roles**: Server-wide services managed by admins (e.g., SSH daemon, MinIO S3)
+- **Workspace Roles**: User-scoped services tied to workspaces (e.g., dev environments, AI agents)
+
+### Adding Global Roles
+
+Global roles are configured in `./server/config/roles.json` and can auto-start on server boot.
+
+**Option 1: Via Configuration File (Recommended for Auto-Start)**
+
+Edit `./server/config/roles.json`:
+```json
+{
+  "global": [
+    {
+      "id": "canvas-sshd",
+      "name": "Canvas SSH Daemon",
+      "template": "docker.canvas-sshd",
+      "type": "global",
+      "status": "created",
+      "createdAt": "2024-01-01T00:00:00.000Z"
+    }
+  ],
+  "autoStart": ["canvas-sshd"]
+}
+```
+
+Then restart the server. Roles in the `autoStart` array will start automatically.
+
+**Option 2: Via REST API**
+
+```bash
+# Create role
+curl -X POST http://localhost:8001/rest/v2/roles \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "template": "docker.canvas-sshd",
+    "name": "canvas-sshd",
+    "type": "global"
+  }'
+
+# Start role (use roleId from response)
+curl -X POST http://localhost:8001/rest/v2/roles/{roleId}/start \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+**Option 3: Via Web UI**
+
+1. Navigate to `/admin/roles`
+2. Click "Create Role"
+3. Select template (e.g., `docker.canvas-sshd`)
+4. Enter name and select type
+5. Click "Create Role"
+6. Click ▶ (Play) to start
+
+### Available Global Roles
+
+- **canvas-sshd**: SSH/SFTP access to user home directories with chroot isolation
+- **minio-s3**: Self-hosted S3-compatible object storage
+- More templates in `./extensions/roles/`
+
+**Documentation:**
+- [Canvas Roles Setup Guide](docs/CANVAS-ROLES-SETUP.md) - Complete role system documentation
+- [Canvas SSHD Guide](extensions/roles/docker.canvas-sshd/README.md) - SSH access setup
+
+## WebDAV Access
+
+Canvas Server provides WebDAV access to workspace home directories, enabling native file manager integration across Windows, macOS, and Linux. Mount workspace folders as network drives and work with them using your operating system's native file manager.
+
+**Quick Start:**
+```bash
+# Connection URL format
+http(s)://[server]/webdav/[workspace-name]/home
+
+# Mount on Windows
+net use W: http://localhost:3334/webdav/my-workspace/home /user:email
+
+# Mount on macOS
+mount_webdav -S http://localhost:3334/webdav/my-workspace/home ~/mount-point
+
+# Mount on Linux (davfs2)
+mount.davfs http://localhost:3334/webdav/my-workspace/home ~/mount-point
+```
+
+**Documentation:**
+- [WebDAV Access Guide](docs/webdav-access.md) - Complete setup instructions for all platforms
+- [WebDAV Testing Guide](docs/webdav-testing.md) - Testing and verification procedures
+- [WebDAV Quick Reference](docs/webdav-quick-reference.md) - Command reference and examples
+
 ## References
 
 ### API Documentation

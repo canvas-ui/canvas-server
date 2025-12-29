@@ -1,3 +1,44 @@
+workspace
+  - config
+    - workspace.json
+    - acl.json
+    - storage.json
+  -- 
+  - acl
+  --
+  - db -> synapsd
+  - tree -> synapsd.tree
+    - layers -> synapsd.tree.layers
+  - storage -> stored
+  - hooks
+  --
+  - dotfiles 
+  - home 
+
+home extends workspace
+  - config
+    - universe.json
+    - acl.json
+    - agents.json
+    - storage.json
+    - 
+  --
+  - acl
+  --
+  - agents -> agentd
+  - contexts -> contextManager
+  - roles -> 
+  - tokens
+  - identities
+  - devices
+  - peers
+
+- transports
+  - rest
+  - websocket
+  - webdav
+
+
 # Roaming home profiles / local file backend
 
 - Each workspace should have a "home" folder
@@ -10,6 +51,13 @@ At some point we will have to rewrite our API+synapsd backend to have a common p
 - We **need** to support hooks for all canvas actions, for example I want to run a hook that automatically sorts all URLs I throw into the to-sort context. qwen3:latest is really good at this (give it context paths or the whole tree, url title and a few simple instructions how the tree is structures and done)
 - I want to run my youtube downloader whenever a youtube link is thrown into home://downloads and download videos to either my S3 or workspace home file backends
 - Same for website backups/analytics, file postprocessing etc
+
+workspace
+  .hooks
+  .storage
+    .backends
+  .index
+  .tree
 
 # Import/export workspace(s)
 

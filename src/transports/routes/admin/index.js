@@ -161,6 +161,7 @@ export default async function adminRoutes(fastify, options) {
             pattern: '^[a-z0-9_-]+$'
           },
           email: { type: 'string', format: 'email' },
+          password: { type: 'string', minLength: 8 },
           userType: { type: 'string', enum: ['user', 'admin'] },
           status: { type: 'string', enum: ['active', 'inactive', 'pending', 'deleted'] }
         }
@@ -168,7 +169,19 @@ export default async function adminRoutes(fastify, options) {
     }
   }, async (request, reply) => {
     try {
-      const user = await fastify.users.update(request.params.userId, request.body);
+      const { userId } = request.params;
+      const { password, ...updates } = request.body || {};
+
+      // Ensure user exists (and avoid persisting password in user index)
+      let user = await fastify.users.get(userId);
+
+      if (Object.keys(updates).length) {
+        user = await fastify.users.update(userId, updates);
+      }
+
+      if (typeof password === 'string' && password.trim()) {
+        await fastify.authService.setPassword(userId, password);
+      }
 
       const response = new ResponseObject().success({
         id: user.id,

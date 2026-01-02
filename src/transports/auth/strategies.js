@@ -632,7 +632,7 @@ export async function register(userData, userManager) {
   } catch (error) {
     // Best-effort rollback to avoid leaving a partially created user
     try {
-      await userManager.deleteUser(user.id);
+      await userManager.delete(user.id);
     } catch (_) {
       // ignore rollback errors
     }
@@ -685,7 +685,7 @@ export async function verifyEmail(token, userManager) {
   }
 
   // Update user status
-  const updatedUser = await userManager.updateUser(user.id, {
+  const updatedUser = await userManager.update(user.id, {
     status: 'active',
     emailVerified: true,
     emailVerifiedAt: new Date().toISOString()
@@ -768,7 +768,7 @@ export async function resetPassword(token, newPassword, userManager) {
 
   // If user was pending verification, activate them
   if (user.status === 'pending') {
-    await userManager.updateUser(user.id, {
+    await userManager.update(user.id, {
       status: 'active',
       emailVerified: true,
       emailVerifiedAt: new Date().toISOString()

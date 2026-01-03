@@ -43,17 +43,12 @@
 ## Pub routes
 
 ### Shared Context Access
-- `GET /rest/v2/pub/:targetUserId/contexts/:contextId` - Get shared context by owner and context ID
-- `POST /rest/v2/pub/:ownerUserId/contexts/:contextId/shares` - Share context with another user
-- `DELETE /rest/v2/pub/:ownerUserId/contexts/:contextId/shares/:sharedWithUserId` - Revoke context access
+- `GET /rest/v2/pub/contexts/:contextId` - Get shared context by ID (token-based)
 
 ### Shared Document Operations
-- `GET /rest/v2/pub/:targetUserId/contexts/:contextId/documents` - List documents in shared context
-- `POST /rest/v2/pub/:targetUserId/contexts/:contextId/documents` - Insert documents into shared context
-- `PUT /rest/v2/pub/:targetUserId/contexts/:contextId/documents` - Update documents in shared context
-- `DELETE /rest/v2/pub/:targetUserId/contexts/:contextId/documents/remove` - Remove documents from shared context
-- `DELETE /rest/v2/pub/:targetUserId/contexts/:contextId/documents` - Delete documents from shared context (owner only)
-- `GET /rest/v2/pub/:targetUserId/contexts/:contextId/documents/by-id/:docId` - Get specific document by ID from shared context
+- `GET /rest/v2/pub/contexts/:contextId/documents` - List documents in shared context
+- `POST /rest/v2/pub/contexts/:contextId/documents` - Insert documents into shared context
+- `PUT /rest/v2/pub/contexts/:contextId/documents` - Update documents in shared context
 
 ## Workspaces
 

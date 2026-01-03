@@ -132,7 +132,9 @@ export default async function lifecycleRoutes(fastify, options) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
       if (error.message.includes('Invalid shared context identifier format') || error.message.includes('Expected ')) {
-        const response = new ResponseObject().badRequest(`Invalid context ID format for this endpoint. Use /users/{ownerId}/contexts/{contextId} for shared contexts. Context ID '${request.params.id}' is not valid here.`);
+        const response = new ResponseObject().badRequest(
+          `Invalid context ID format for this endpoint. If you need to disambiguate a shared context, use ?ownerId=<ownerUserId>.`
+        );
         return reply.code(response.statusCode).send(response.getResponse());
       }
       const response = new ResponseObject().error('Failed to get context');

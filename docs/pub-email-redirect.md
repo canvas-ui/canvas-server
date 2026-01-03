@@ -1,33 +1,13 @@
-# Pub Routes Email-to-User-ID Redirection
+# Pub Routes Email-to-User-ID Redirection (Removed)
 
-## Overview
+This feature was removed to avoid leaking emails/user identifiers in URLs.
 
-The pub routes now support automatic redirection from email-based URLs to user ID-based URLs. This allows users to access shared resources using email addresses instead of having to know the specific user ID.
+**Canonical public routes are ID-only:**
 
-## How It Works
+- `GET /rest/v2/pub/workspaces/:workspaceId`
+- `GET /rest/v2/pub/contexts/:contextId`
 
-When a request is made to a pub route with an email address as the `targetUserId` or `ownerUserId` parameter, the system:
-
-1. Validates that the parameter is a valid email address using the `validator` library
-2. Attempts to find a user with that email address using `userManager.getUserByEmail()`
-3. If a user is found, redirects (HTTP 301) to the same URL with the user ID instead of the email
-4. If no user is found or the parameter is not an email, continues with the original logic
-
-## Supported Routes
-
-All pub routes that use `targetUserId` or `ownerUserId` parameters now support email redirection:
-
-- `GET /pub/:targetUserId/contexts/:contextId` - Get context
-- `POST /pub/:ownerUserId/contexts/:contextId/shares` - Share context
-- `DELETE /pub/:ownerUserId/contexts/:contextId/shares/:sharedWithUserId` - Revoke share
-- `GET /pub/:targetUserId/contexts/:contextId/documents` - List documents
-- `POST /pub/:targetUserId/contexts/:contextId/documents` - Insert documents
-- `PUT /pub/:targetUserId/contexts/:contextId/documents` - Update documents
-- `DELETE /pub/:targetUserId/contexts/:contextId/documents/remove` - Remove documents
-- `DELETE /pub/:targetUserId/contexts/:contextId/documents` - Delete documents
-- `GET /pub/:targetUserId/contexts/:contextId/documents/by-id/:docId` - Get document by ID
-
-## Examples
+**Token transport is `Authorization: Bearer canvas-…` only.**
 
 ### Before (User ID required)
 ```

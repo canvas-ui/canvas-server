@@ -47,13 +47,7 @@ curl https://your-canvas-server/api/v2/auth/me \
   -H "Authorization: Bearer canvas-your_token_here"
 ```
 
-### 2. Query Parameter (For GET requests only)
-
-```bash
-curl https://your-canvas-server/api/v2/auth/me?token=canvas-your_token_here
-```
-
-### 3. For Canvas Tools
+### 2. For Canvas Tools
 
 #### canvas-cli
 

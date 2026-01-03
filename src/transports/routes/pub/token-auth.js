@@ -15,12 +15,7 @@ const logger = createLogger('canvas-server:pub:token-auth');
  * @returns {string|null} Token value or null if not found
  */
 export function extractToken(request) {
-  // Check query parameter first
-  if (request.query.token) {
-    return request.query.token;
-  }
-
-  // Check Authorization header (Bearer token)
+  // Authorization header (Bearer token) only.
   const authHeader = request.headers.authorization;
   if (authHeader && authHeader.startsWith('Bearer ')) {
     const token = authHeader.substring(7); // Remove 'Bearer ' prefix
@@ -30,6 +25,23 @@ export function extractToken(request) {
   }
 
   return null;
+}
+
+function permissionSatisfies(requiredPermission, grantedPermissions = []) {
+  const granted = new Set(grantedPermissions);
+  if (granted.has(requiredPermission)) return true;
+
+  // Workspace tokens
+  if (requiredPermission === 'read') return granted.has('write') || granted.has('admin');
+  if (requiredPermission === 'append') return granted.has('write') || granted.has('admin');
+  if (requiredPermission === 'write') return granted.has('admin');
+
+  // Context tokens
+  if (requiredPermission === 'documentRead') return granted.has('documentWrite') || granted.has('documentReadWrite');
+  if (requiredPermission === 'documentAppend') return granted.has('documentWrite') || granted.has('documentReadWrite');
+  if (requiredPermission === 'documentWrite') return granted.has('documentReadWrite');
+
+  return false;
 }
 
 /**
@@ -76,7 +88,7 @@ export function validateToken(token, resourceACL, requiredPermission) {
   }
 
   // Check permissions
-  if (!tokenData.permissions.includes(requiredPermission)) {
+  if (!permissionSatisfies(requiredPermission, tokenData.permissions)) {
     logger.debug(`Token lacks required permission. Has: ${tokenData.permissions}, needs: ${requiredPermission}`);
     return null;
   }

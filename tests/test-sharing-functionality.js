@@ -54,9 +54,7 @@ async function pubRequest(method, endpoint, body = null, token = null) {
     'Content-Type': 'application/json'
   };
 
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`;
-  }
+  if (token) headers['Authorization'] = `Bearer ${token}`;
 
   const options = {
     method,
@@ -67,11 +65,7 @@ async function pubRequest(method, endpoint, body = null, token = null) {
     options.body = JSON.stringify(body);
   }
 
-  let url = `${BASE_URL}/pub${endpoint}`;
-  if (token && !headers['Authorization']) {
-    // Add token as query parameter if not in header
-    url += (endpoint.includes('?') ? '&' : '?') + `token=${token}`;
-  }
+  const url = `${BASE_URL}/pub${endpoint}`;
 
   const response = await fetch(url, options);
   const data = await response.json();
@@ -196,7 +190,7 @@ async function test6_accessWorkspaceViaToken() {
   console.log('\n🧪 Test 6: Accessing workspace via token...');
 
   // Test accessing workspace info via token
-  const result = await pubRequest('GET', `/workspaces/${testWorkspaceId}?token=${workspaceToken}`, null, null);
+  const result = await pubRequest('GET', `/workspaces/${testWorkspaceId}`, null, workspaceToken);
 
   assert.strictEqual(result.status, 200, `Expected 200, got ${result.status}: ${JSON.stringify(result.data)}`);
   assert.strictEqual(result.data.payload.id, testWorkspaceId, 'Should return correct workspace');
@@ -208,7 +202,7 @@ async function test7_accessContextViaToken() {
   console.log('\n🧪 Test 7: Accessing context via token...');
 
   // Test accessing context info via token
-  const result = await pubRequest('GET', `/contexts/${testContextId}?token=${contextToken}`, null, null);
+  const result = await pubRequest('GET', `/contexts/${testContextId}`, null, contextToken);
 
   assert.strictEqual(result.status, 200, `Expected 200, got ${result.status}: ${JSON.stringify(result.data)}`);
   assert.strictEqual(result.data.payload.id, testContextId, 'Should return correct context');
@@ -230,9 +224,9 @@ async function test8_insertDocumentsViaToken() {
     }
   ];
 
-  const result = await pubRequest('POST', `/workspaces/${testWorkspaceId}/documents?token=${workspaceToken}`, {
+  const result = await pubRequest('POST', `/workspaces/${testWorkspaceId}/documents`, {
     documents: testDocuments
-  });
+  }, workspaceToken);
 
   assert.strictEqual(result.status, 201, `Expected 201, got ${result.status}: ${JSON.stringify(result.data)}`);
   assert(Array.isArray(result.data.payload), 'Should return array of inserted documents');
@@ -250,9 +244,9 @@ async function test9_insertDocumentsViaContextToken() {
     }
   ];
 
-  const result = await pubRequest('POST', `/contexts/${testContextId}/documents?token=${contextToken}`, {
+  const result = await pubRequest('POST', `/contexts/${testContextId}/documents`, {
     documents: testDocuments
-  });
+  }, contextToken);
 
   assert.strictEqual(result.status, 201, `Expected 201, got ${result.status}: ${JSON.stringify(result.data)}`);
   assert(Array.isArray(result.data.payload), 'Should return array of inserted documents');
@@ -264,11 +258,10 @@ async function test10_validateToken() {
   console.log('\n🧪 Test 10: Validating token via token API...');
 
   const result = await pubRequest('POST', '/tokens/validate', {
-    token: workspaceToken,
     resourceType: 'workspace',
     resourceId: testWorkspaceId,
     requiredPermission: 'read'
-  });
+  }, workspaceToken);
 
   assert.strictEqual(result.status, 200, `Expected 200, got ${result.status}: ${JSON.stringify(result.data)}`);
   assert.strictEqual(result.data.payload.valid, true, 'Token should be valid');
@@ -280,7 +273,7 @@ async function test10_validateToken() {
 async function test11_getTokenInfo() {
   console.log('\n🧪 Test 11: Getting token info...');
 
-  const result = await pubRequest('GET', `/tokens/info?token=${contextToken}`);
+  const result = await pubRequest('GET', `/tokens/info`, null, contextToken);
 
   assert.strictEqual(result.status, 200, `Expected 200, got ${result.status}: ${JSON.stringify(result.data)}`);
   assert.strictEqual(result.data.payload.resourceType, 'context', 'Should return correct resource type');
@@ -328,7 +321,7 @@ async function test15_accessDeniedWithInvalidToken() {
   console.log('\n🧪 Test 15: Testing access denied with invalid token...');
 
   const invalidToken = 'canvas-invalid-token-123456789';
-  const result = await pubRequest('GET', `/workspaces/${testWorkspaceId}?token=${invalidToken}`, null, null);
+  const result = await pubRequest('GET', `/workspaces/${testWorkspaceId}`, null, invalidToken);
 
   assert.strictEqual(result.status, 403, `Expected 403, got ${result.status}: ${JSON.stringify(result.data)}`);
 

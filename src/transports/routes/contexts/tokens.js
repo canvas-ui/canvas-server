@@ -27,7 +27,7 @@ export default async function contextTokenRoutes(fastify, options) {
         properties: {
           permissions: {
             type: 'array',
-            items: { type: 'string', enum: ['documentRead', 'documentWrite', 'documentReadWrite'] },
+            items: { type: 'string', enum: ['documentRead', 'documentAppend', 'documentWrite', 'documentReadWrite'] },
             minItems: 1
           },
           description: { type: 'string' },

@@ -167,12 +167,6 @@ export default async function pubWorkspaceRoutes(fastify, options) {
         properties: {
           workspaceId: { type: 'string', description: "Workspace ID" }
         }
-      },
-      querystring: {
-        type: 'object',
-        properties: {
-          token: { type: 'string', description: "Access token" }
-        }
       }
     }
   }, async (request, reply) => {
@@ -227,7 +221,6 @@ export default async function pubWorkspaceRoutes(fastify, options) {
       querystring: {
         type: 'object',
         properties: {
-          token: { type: 'string' },
           limit: { type: 'integer' },
           offset: { type: 'integer' },
           page: { type: 'integer' }
@@ -301,12 +294,6 @@ export default async function pubWorkspaceRoutes(fastify, options) {
         required: ['workspaceId'],
         properties: {
           workspaceId: { type: 'string' }
-        }
-      },
-      querystring: {
-        type: 'object',
-        properties: {
-          token: { type: 'string' }
         }
       },
       body: {
@@ -395,7 +382,6 @@ export default async function pubWorkspaceRoutes(fastify, options) {
       querystring: {
         type: 'object',
         properties: {
-          token: { type: 'string' },
           path: { type: 'string' }
         }
       }

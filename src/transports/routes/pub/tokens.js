@@ -121,10 +121,17 @@ class TokenService {
       return { valid: false, reason: 'Usage limit reached' };
     }
 
-    // Check permissions
-    if (!tokenData.permissions.includes(requiredPermission)) {
-      return { valid: false, reason: 'Insufficient permissions' };
-    }
+    // Check permissions (with implication rules matching pub token-auth)
+    const granted = new Set(tokenData.permissions || []);
+    const ok = granted.has(requiredPermission)
+      || (requiredPermission === 'read' && (granted.has('write') || granted.has('admin')))
+      || (requiredPermission === 'append' && (granted.has('write') || granted.has('admin')))
+      || (requiredPermission === 'write' && granted.has('admin'))
+      || (requiredPermission === 'documentRead' && (granted.has('documentWrite') || granted.has('documentReadWrite')))
+      || (requiredPermission === 'documentAppend' && (granted.has('documentWrite') || granted.has('documentReadWrite')))
+      || (requiredPermission === 'documentWrite' && granted.has('documentReadWrite'));
+
+    if (!ok) return { valid: false, reason: 'Insufficient permissions' };
 
     return {
       valid: true,
@@ -213,21 +220,26 @@ export default async function pubTokenRoutes(fastify, options) {
     schema: {
       body: {
         type: 'object',
-        required: ['token', 'resourceType', 'resourceId'],
+        required: ['resourceType', 'resourceId'],
         properties: {
-          token: { type: 'string' },
           resourceType: { type: 'string', enum: ['workspace', 'context'] },
           resourceId: { type: 'string' },
           requiredPermission: {
             type: 'string',
-            enum: ['read', 'write', 'admin', 'documentRead', 'documentWrite', 'documentReadWrite']
+            enum: ['read', 'append', 'write', 'admin', 'documentRead', 'documentAppend', 'documentWrite', 'documentReadWrite']
           }
         }
       }
     }
   }, async (request, reply) => {
     try {
-      const { token, resourceType, resourceId, requiredPermission } = request.body;
+      const token = extractToken(request);
+      if (!token) {
+        const response = new ResponseObject().unauthorized('Authorization: Bearer <token> required');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+
+      const { resourceType, resourceId, requiredPermission } = request.body;
 
       const result = await tokenService.validateToken(token, resourceType, resourceId, requiredPermission);
 
@@ -257,17 +269,17 @@ export default async function pubTokenRoutes(fastify, options) {
   // Get token info
   fastify.get('/info', {
     schema: {
-      querystring: {
-        type: 'object',
-        required: ['token'],
-        properties: {
-          token: { type: 'string' }
-        }
+      response: {
+        200: { type: 'object' }
       }
     }
   }, async (request, reply) => {
     try {
-      const { token } = request.query;
+      const token = extractToken(request);
+      if (!token) {
+        const response = new ResponseObject().unauthorized('Authorization: Bearer <token> required');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
 
       const result = await tokenService.findResourceByToken(token);
 
@@ -297,12 +309,8 @@ export default async function pubTokenRoutes(fastify, options) {
   fastify.delete('/revoke', {
     onRequest: [fastify.authenticate],
     schema: {
-      body: {
-        type: 'object',
-        required: ['token'],
-        properties: {
-          token: { type: 'string' }
-        }
+      response: {
+        200: { type: 'object' }
       }
     }
   }, async (request, reply) => {
@@ -312,7 +320,12 @@ export default async function pubTokenRoutes(fastify, options) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
-      const { token } = request.body;
+      const token = extractToken(request);
+      if (!token) {
+        const response = new ResponseObject().badRequest('Authorization: Bearer <token> required');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+
       const result = await tokenService.revokeToken(token, request.user.id);
 
       if (!result.revoked) {

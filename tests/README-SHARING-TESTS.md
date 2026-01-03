@@ -89,16 +89,16 @@ Quick manual tests and examples:
 - `DELETE /workspaces/:id/shares/:email` - Revoke share
 
 ### Public Access
-- `GET /pub/workspaces/:id?token=xxx` - Access workspace via token
-- `GET /pub/contexts/:id?token=xxx` - Access context via token
-- `GET /pub/workspaces/:id/documents?token=xxx` - List workspace documents
-- `POST /pub/workspaces/:id/documents?token=xxx` - Insert workspace documents
-- `GET /pub/contexts/:id/documents?token=xxx` - List context documents
-- `POST /pub/contexts/:id/documents?token=xxx` - Insert context documents
+- `GET /pub/workspaces/:id` - Access workspace via token (Authorization header)
+- `GET /pub/contexts/:id` - Access context via token (Authorization header)
+- `GET /pub/workspaces/:id/documents` - List workspace documents (Authorization header)
+- `POST /pub/workspaces/:id/documents` - Insert workspace documents (Authorization header)
+- `GET /pub/contexts/:id/documents` - List context documents (Authorization header)
+- `POST /pub/contexts/:id/documents` - Insert context documents (Authorization header)
 
 ### Token Utilities
 - `POST /pub/tokens/validate` - Validate token
-- `GET /pub/tokens/info?token=xxx` - Get token info
+- `GET /pub/tokens/info` - Get token info (Authorization header)
 - `DELETE /pub/tokens/revoke` - Revoke token
 - `GET /pub/health` - Health check
 
@@ -137,10 +137,6 @@ curl -X POST \
 ### Accessing Shared Resource
 
 ```bash
-# Via query parameter
-curl "http://127.0.0.1:8001/rest/v2/pub/workspaces/workspace-id?token=canvas-abc123..."
-
-# Via Authorization header
 curl -H "Authorization: Bearer canvas-abc123..." \
   "http://127.0.0.1:8001/rest/v2/pub/workspaces/workspace-id"
 ```

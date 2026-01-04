@@ -1,7 +1,6 @@
 'use strict';
 
 import ResponseObject from '../../ResponseObject.js';
-import { generateEphemeralContextId } from '../../../utils/id.js';
 import {
   extractToken,
   checkTokenAccess,
@@ -430,22 +429,8 @@ export default async function pubWorkspaceRoutes(fastify, options) {
       // Use workspace's tree listing capability
       const tree = access.workspace.jsonTree;
 
-      let ephemeralContext;
-      if (access.accessType === 'user' && access.userId) {
-        for (let i = 0; i < 3; i++) {
-          const id = generateEphemeralContextId();
-          try {
-            ephemeralContext = await fastify.contextManager.createContext(access.userId, '/', { id, workspaceId: access.workspace.id });
-            break;
-          } catch (error) {
-            if (error?.message?.includes('already exists')) continue;
-            throw error;
-          }
-        }
-      }
-
       const response = new ResponseObject().found(
-        ephemeralContext ? { tree, ephemeralContext: ephemeralContext.toJSON() } : tree,
+        tree,
         'Workspace tree retrieved successfully'
       );
       return reply.code(response.statusCode).send(response.getResponse());

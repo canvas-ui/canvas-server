@@ -1,7 +1,6 @@
 'use strict';
 
 import ResponseObject from '../../ResponseObject.js';
-import { generateEphemeralContextId } from '../../../utils/id.js';
 
 /**
  * Workspace tree routes handler for the API
@@ -9,19 +8,6 @@ import { generateEphemeralContextId } from '../../../utils/id.js';
  * @param {Object} options - Plugin options
  */
 export default async function workspaceTreeRoutes(fastify, options) {
-  async function createEphemeralContext(userId, workspace) {
-    for (let i = 0; i < 3; i++) {
-      const id = generateEphemeralContextId();
-      try {
-        return await fastify.contextManager.createContext(userId, '/', { id, workspaceId: workspace.id });
-      } catch (error) {
-        if (error?.message?.includes('already exists')) continue;
-        throw error;
-      }
-    }
-    throw new Error('Failed to generate unique ephemeral context id');
-  }
-
   // Helper to get workspace and handle common errors
   async function getWorkspaceInstance(request, reply) {
     const identifier = request.params.id;
@@ -59,8 +45,6 @@ export default async function workspaceTreeRoutes(fastify, options) {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return; // Error already sent
 
-      const ephemeralContext = await createEphemeralContext(request.user.id, workspace);
-
       const treeJsonString = workspace.jsonTree; // Use the getter
       if (treeJsonString === undefined || treeJsonString === null) {
         fastify.log.warn(`Received null or undefined jsonTree for workspace ${request.params.id}`);
@@ -77,10 +61,7 @@ export default async function workspaceTreeRoutes(fastify, options) {
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());
       }
 
-      const responseObject = new ResponseObject().found(
-        { tree: treeData, ephemeralContext: ephemeralContext.toJSON() },
-        'Workspace tree retrieved successfully'
-      );
+      const responseObject = new ResponseObject().found(treeData, 'Workspace tree retrieved successfully');
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
     } catch (error) {
       fastify.log.error(`Get workspace tree error for ID ${request.params.id}: ${error.message}`);

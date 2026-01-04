@@ -520,7 +520,7 @@ class ContextManager extends EventEmitter {
         }
 
         // Remove all special characters
-        contextId = contextId.replace(/[^a-zA-Z0-9]/g, '');
+        contextId = contextId.replace(/[^a-zA-Z0-9-]/g, '');
 
         // Limit to 16 characters
         contextId = contextId.substring(0, 16);

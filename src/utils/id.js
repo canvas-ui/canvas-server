@@ -1,6 +1,7 @@
 import { ulid } from 'ulid';
 import { v4 as uuidv4 } from 'uuid';
 import { customAlphabet } from 'nanoid';
+import { randomBytes } from 'node:crypto';
 
 /**
  * Generate a UUID
@@ -50,9 +51,19 @@ function generateIndexKey(module, key, delimiter = '/') {
     return `${module}${delimiter}${key}`;
 }
 
+/**
+ * Generate an ephemeral context id in format xxxx-xxxx (hex)
+ * @returns {string}
+ */
+function generateEphemeralContextId() {
+    const s = randomBytes(4).toString('hex'); // 8 chars
+    return `${s.slice(0, 4)}-${s.slice(4)}`;
+}
+
 export {
     generateULID,
     generateUUID,
     generateNanoid,
+    generateEphemeralContextId,
     generateIndexKey
 };

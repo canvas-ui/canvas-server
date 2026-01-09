@@ -58,6 +58,10 @@ export default async function workspaceRoutes(fastify, options) {
     prefix: '/:id/services',
     onRequest: [resolveWorkspaceAddress]
   });
+  fastify.register(import('./links.js'), {
+    prefix: '/:id/links',
+    onRequest: [resolveWorkspaceAddress]
+  });
   fastify.register(import('./settings.js'), {
     prefix: '/:id',
     onRequest: [resolveWorkspaceAddress]
@@ -100,9 +104,12 @@ export default async function workspaceRoutes(fastify, options) {
           label: { type: 'string' },
           description: { type: 'string' },
           color: { type: 'string', pattern: '^#[0-9A-Fa-f]{3,6}$' },
+          icon: { type: ['string', 'null'] },
+          homeScreen: { type: 'object' },
           type: { type: 'string', enum: ['workspace', 'universe'] },
           metadata: { type: 'object' },
           acl: { type: 'object' },
+          links: { type: 'object' },
           restApi: { type: 'object' }
         }
       }
@@ -120,8 +127,11 @@ export default async function workspaceRoutes(fastify, options) {
           label: request.body.label || request.body.name,
           description: request.body.description || '',
           color: request.body.color,
+          icon: request.body.icon,
+          homeScreen: request.body.homeScreen,
           metadata: request.body.metadata,
           acl: request.body.acl,
+          links: request.body.links,
           restApi: request.body.restApi
         }
       );
@@ -204,9 +214,12 @@ export default async function workspaceRoutes(fastify, options) {
           label: { type: 'string' },
           description: { type: 'string' },
           color: { type: 'string', pattern: '^#[0-9A-Fa-f]{3,6}$' },
+          icon: { type: ['string', 'null'] },
+          homeScreen: { type: 'object' },
           locked: { type: 'boolean' },
           metadata: { type: 'object' },
           acl: { type: 'object' },
+          links: { type: 'object' },
           restApi: { type: 'object' }
         }
       }

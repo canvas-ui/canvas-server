@@ -453,6 +453,8 @@ class WorkspaceManager extends EventEmitter {
             description: options.description || '',
             owner: userId,
             color: options.color || randomcolor(),
+            icon: options.icon || null,
+            homeScreen: options.homeScreen || {},
             type: options.type || 'workspace',
             status: WORKSPACE_STATUS_CODES.AVAILABLE,
             rootPath: workspaceDir,
@@ -461,7 +463,11 @@ class WorkspaceManager extends EventEmitter {
             reference: reference,
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
-            metadata: options.metadata || {}
+            metadata: options.metadata || {},
+            acl: options.acl || { tokens: {}, users: {} },
+            roles: options.roles || [],
+            services: options.services || { ...WORKSPACE_SERVICES },
+            links: options.links || {},
         };
 
         // Store config

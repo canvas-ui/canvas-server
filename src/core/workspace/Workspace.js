@@ -75,6 +75,9 @@ class Workspace extends EventEmitter {
     get label() { return this.#configStore.get('label', this.name || this.id); }
     get description() { return this.#configStore.get('description'); }
     get color() { return this.#configStore.get('color'); }
+    get icon() { return this.#configStore.get('icon', null); }
+    get homeScreen() { return this.#configStore.get('homeScreen', {}); }
+    get links() { return this.#configStore.get('links', {}); }
     get type() { return this.#configStore.get('type', 'workspace'); }
     get owner() { return this.#configStore.get('owner'); }
     get rootPath() { return this.#rootPath; }
@@ -109,6 +112,80 @@ class Workspace extends EventEmitter {
         services[serviceName] = { ...services[serviceName], ...config };
         this.#configStore.set('services', services);
         this.emit('services.changed', { service: serviceName, config: services[serviceName] });
+    }
+
+    /**
+     * Workspace UI configuration
+     */
+    setIcon(url) {
+        if (url == null || url === '') {
+            this.#configStore.set('icon', null);
+            this.emit('icon.changed', { id: this.id, icon: null });
+            return true;
+        }
+        if (typeof url !== 'string') return false;
+        this.#configStore.set('icon', url);
+        this.emit('icon.changed', { id: this.id, icon: url });
+        return true;
+    }
+
+    setHomeScreen(homeScreen) {
+        if (homeScreen == null) {
+            this.#configStore.set('homeScreen', {});
+            this.emit('homeScreen.changed', { id: this.id, homeScreen: {} });
+            return true;
+        }
+        if (typeof homeScreen !== 'object' || Array.isArray(homeScreen)) return false;
+        this.#configStore.set('homeScreen', homeScreen);
+        this.emit('homeScreen.changed', { id: this.id, homeScreen });
+        return true;
+    }
+
+    /**
+     * Workspace-linked resources
+     *
+     * Stored as:
+     *  {
+     *    links: {
+     *      agents: ["canvas://canvas.local/agents/<id>", ...],
+     *      contexts: [...],
+     *      ...
+     *    }
+     *  }
+     */
+    listLinks(type = null) {
+        const links = this.links || {};
+        if (!type) return links;
+        return Array.isArray(links[type]) ? links[type] : [];
+    }
+
+    addLink(type, ref) {
+        if (!type || typeof type !== 'string') return false;
+        if (!ref || typeof ref !== 'string') return false;
+
+        const links = this.links || {};
+        const arr = Array.isArray(links[type]) ? links[type] : [];
+        if (arr.includes(ref)) return true;
+
+        links[type] = [...arr, ref];
+        this.#configStore.set('links', links);
+        this.emit('links.changed', { id: this.id, type, action: 'add', ref });
+        return true;
+    }
+
+    removeLink(type, ref) {
+        if (!type || typeof type !== 'string') return false;
+        if (!ref || typeof ref !== 'string') return false;
+
+        const links = this.links || {};
+        const arr = Array.isArray(links[type]) ? links[type] : [];
+        if (!arr.length) return true;
+
+        const next = arr.filter(r => r !== ref);
+        links[type] = next;
+        this.#configStore.set('links', links);
+        this.emit('links.changed', { id: this.id, type, action: 'remove', ref });
+        return true;
     }
 
     get db() {
@@ -356,6 +433,8 @@ class Workspace extends EventEmitter {
         return {
             ...this.config,
             id: this.id,
+            icon: this.icon,
+            homeScreen: this.homeScreen,
             status: this.status,
             isActive: this.isActive,
             rootPath: this.rootPath

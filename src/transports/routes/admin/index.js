@@ -308,6 +308,9 @@ export default async function adminRoutes(fastify, options) {
           label: { type: 'string' },
           description: { type: 'string' },
           color: { type: 'string', pattern: '^#[0-9A-Fa-f]{3,6}$' },
+          icon: { type: ['string', 'null'] },
+          homeScreen: { type: 'object' },
+          links: { type: 'object' },
           type: { type: 'string', enum: ['workspace', 'universe'] },
           metadata: { type: 'object' }
         }
@@ -315,7 +318,7 @@ export default async function adminRoutes(fastify, options) {
     }
   }, async (request, reply) => {
     try {
-      const { userId, name, label, description, color, type = 'workspace', metadata } = request.body;
+      const { userId, name, label, description, color, icon, homeScreen, links, type = 'workspace', metadata } = request.body;
 
       // Verify the user exists
       await fastify.users.get(userId);
@@ -329,6 +332,9 @@ export default async function adminRoutes(fastify, options) {
           label: label || name,
           description: description || '',
           color,
+          icon,
+          homeScreen,
+          links,
           metadata
         }
       );

@@ -50,7 +50,10 @@ const WORKSPACE_CONFIG_TEMPLATE = {
     type: 'workspace', // "workspace" or "universe" (user home directory)
     label: 'Workspace',
     color: null,
+    icon: null, // URL string
+    homeScreen: {}, // Arbitrary JSON for UI defaults
     description: '',
+    links: {}, // Portable, workspace-scoped linked resources (by type)
     acl: {
         tokens: {} // Token-based ACL: { "sha256:hash": { permissions: [], description: "", createdAt: "", expiresAt: null } }
     },

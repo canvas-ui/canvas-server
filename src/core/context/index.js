@@ -464,12 +464,41 @@ class ContextManager extends EventEmitter {
             throw new Error('Valid Context ID is required and cannot be a shared context identifier.');
         }
 
-        if (contextId === 'default') {
+        const requestedId = this.#sanitizeContextId(contextId.toString());
+        if (requestedId === 'default') {
             throw new Error('Default context cannot be removed');
         }
 
         try {
-            const contextKey = this.#constructContextKey(userId, contextId);
+            let contextKey = this.#constructContextKey(userId, requestedId);
+            let actualId = requestedId;
+
+            // Backward-compat: contexts created before lowercasing may be stored under mixed-case keys/ids.
+            // Try to locate them by case-insensitive ID match within the owner's contexts.
+            if (!this.#contexts.has(contextKey) && !this.#indexStore.has(contextKey)) {
+                const ownedPrefix = `${userId}/`;
+
+                for (const [key, instance] of this.#contexts) {
+                    if (!key.startsWith(ownedPrefix)) continue;
+                    if ((instance?.id || '').toString().toLowerCase() === requestedId) {
+                        contextKey = key;
+                        actualId = instance.id.toString();
+                        break;
+                    }
+                }
+
+                if (!this.#contexts.has(contextKey) && !this.#indexStore.has(contextKey)) {
+                    const allContexts = this.#indexStore.store || {};
+                    for (const [key, data] of Object.entries(allContexts)) {
+                        if (!key.startsWith(ownedPrefix)) continue;
+                        if ((data?.id || '').toString().toLowerCase() === requestedId) {
+                            contextKey = key;
+                            actualId = data.id.toString();
+                            break;
+                        }
+                    }
+                }
+            }
             let contextWasRemoved = false;
 
             if (this.#contexts.has(contextKey)) {
@@ -490,7 +519,7 @@ class ContextManager extends EventEmitter {
                 this.emit('context.deleted', {
                     contextKey: contextKey,
                     userId: userId,
-                    contextId: contextId.toString()
+                    contextId: actualId
                 });
                 logger.debug(`Context ${contextKey} removed.`);
                 return true;

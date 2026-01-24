@@ -203,6 +203,34 @@ class ContextManager extends EventEmitter {
 
         let contextKey = this.#constructContextKey(ownerUserId, contextId);
 
+        // Backward-compat for older mixed-case IDs: try to locate by case-insensitive match.
+        // (We now canonicalize IDs to lowercase.)
+        if (!this.#contexts.has(contextKey) && !this.#indexStore.has(contextKey)) {
+            const allContexts = this.#indexStore.store || {};
+            const ownerPrefix = ownerUserId ? `${ownerUserId}/` : null;
+
+            // 1) In-memory
+            for (const [key, instance] of this.#contexts) {
+                if (ownerPrefix && !key.startsWith(ownerPrefix)) continue;
+                if ((instance?.id || '').toString().toLowerCase() === contextId) {
+                    contextKey = key;
+                    break;
+                }
+            }
+
+            // 2) Persistent store
+            if (!this.#contexts.has(contextKey) && !this.#indexStore.has(contextKey)) {
+                for (const [key, data] of Object.entries(allContexts)) {
+                    if (ownerPrefix && !key.startsWith(ownerPrefix)) continue;
+                    if ((data?.id || '').toString().toLowerCase() === contextId) {
+                        contextKey = key;
+                        ownerUserId = data.userId;
+                        break;
+                    }
+                }
+            }
+        }
+
         // Check if it's a shared context owned by someone else
         if (ownerUserId === userId && !this.#contexts.has(contextKey) && !this.#indexStore.has(contextKey)) {
             const allContexts = this.#indexStore.store || {};
@@ -530,8 +558,8 @@ class ContextManager extends EventEmitter {
         // Limit to 16 characters
         contextId = contextId.substring(0, 16);
 
-        // Ensure it's a string
-        return contextId.toString().trim();
+        // Canonicalize: treat IDs as case-insensitive
+        return contextId.toString().trim().toLowerCase();
     }
 
     #constructContextKey(userId, contextId) {
@@ -598,6 +626,16 @@ class ContextManager extends EventEmitter {
             const contextKey = this.#constructContextKey(resolvedUserId, contextId);
             if (this.#contexts.has(contextKey) || this.#indexStore.has(contextKey)) {
                 return contextId;
+            }
+
+            // Fallback: older mixed-case IDs stored before canonicalization
+            const allContexts = this.#indexStore.store || {};
+            const ownerPrefix = `${resolvedUserId}/`;
+            for (const [key, data] of Object.entries(allContexts)) {
+                if (!key.startsWith(ownerPrefix)) continue;
+                if ((data?.id || '').toString().toLowerCase() === contextId) {
+                    return data.id;
+                }
             }
 
             return null;

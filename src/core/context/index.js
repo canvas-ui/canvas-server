@@ -519,8 +519,9 @@ class ContextManager extends EventEmitter {
             contextId = 'default';
         }
 
-        // Remove all special characters
-        contextId = contextId.replace(/[^a-zA-Z0-9]/g, '');
+        // Allow: A-Z a-z 0-9 . _ -
+        // (We still strip anything else to keep IDs URL-safe and filesystem-ish.)
+        contextId = contextId.replace(/[^a-zA-Z0-9._-]/g, '');
 
         // Limit to 16 characters
         contextId = contextId.substring(0, 16);

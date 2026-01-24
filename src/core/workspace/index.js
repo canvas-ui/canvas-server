@@ -569,7 +569,8 @@ class WorkspaceManager extends EventEmitter {
      */
 
     resolveWorkspaceId(userId, workspaceName, host = WORKSPACE_DEFAULT_HOST) {
-        const nameKey = `${userId}@${host}:${workspaceName}`;
+        const sanitizedName = this.#sanitizeWorkspaceName(workspaceName || '');
+        const nameKey = `${userId}@${host}:${sanitizedName}`;
         return this.#nameIndex.get(nameKey) || null;
     }
 

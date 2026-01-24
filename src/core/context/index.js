@@ -120,13 +120,17 @@ class ContextManager extends EventEmitter {
             // Determine workspace ID
             let workspaceId;
 
-            // If options.workspaceId is provided (from API), use it directly (it's already a UUID)
+            // If options.workspaceId is provided (from API), use it directly (UUID) or resolve if it's a name
             if (options.workspaceId) {
                 workspaceId = options.workspaceId;
+                // Allow callers to pass a workspace name (e.g. "Work") instead of UUID
+                if (workspaceId && (workspaceId.includes(':') || workspaceId.length < 12)) {
+                    workspaceId = this.#workspaceManager.resolveWorkspaceId(userId, workspaceId) || workspaceId;
+                }
             }
             // Otherwise, resolve from URL or default to universe
-            else if (parsed.workspaceID) {
-                workspaceId = this.#workspaceManager.resolveWorkspaceId(userId, parsed.workspaceID);
+            else if (parsed.workspaceId) {
+                workspaceId = this.#workspaceManager.resolveWorkspaceId(userId, parsed.workspaceId);
             } else {
                 workspaceId = this.#workspaceManager.resolveWorkspaceId(userId, DEFAULT_WORKSPACE_ID);
             }
@@ -137,7 +141,7 @@ class ContextManager extends EventEmitter {
 
             const workspace = await this.#workspaceManager.getWorkspace(workspaceId, userId);
             if (!workspace) {
-                throw new Error(`Workspace not found or not accessible: ${parsed.workspaceID} for user ${userId}`);
+                throw new Error(`Workspace not found or not accessible: ${parsed.workspaceId || workspaceId} for user ${userId}`);
             }
 
             // Ensure workspace is running

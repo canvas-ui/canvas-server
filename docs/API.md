@@ -132,6 +132,19 @@
 
 # Websockets
 
+## Subscriptions
+
+The server uses a push-only socket.io model. Clients **must subscribe** to a channel to receive scoped events.
+
+- Subscribe: `socket.emit('subscribe', { channel: '<channel>' })`
+- Unsubscribe: `socket.emit('unsubscribe', { channel: '<channel>' })`
+- Acks: `subscribed` / `unsubscribed` with `{ channel }`
+
+Channels:
+
+- `workspace:<workspaceId|workspaceName>` (example: `workspace:universe`)
+- `context:<contextId>` (example: `context:work`)
+
 ## Workspaces
 
 ### Workspace Events
@@ -141,6 +154,7 @@
 - `workspace.deleted` - Workspace deleted
 - `workspace.documents.inserted` - Documents inserted into workspace
 - `workspace.documents.updated` - Documents updated in workspace
+- `workspace.documents.removed` - Documents removed from workspace path (non-destructive)
 - `workspace.documents.deleted` - Documents deleted from workspace
 - `workspace.tree.path.inserted` - Path inserted into workspace tree
 - `workspace.tree.path.removed` - Path removed from workspace tree
@@ -156,9 +170,12 @@
 - `context.unlocked` - Context unlocked
 - `context.acl.updated` - Context ACL updated
 - `context.acl.revoked` - Context ACL revoked
-- `context.documents.inserted` - Documents inserted into context
-- `context.documents.updated` - Documents updated in context
-- `context.documents.deleted` - Documents deleted from context
+- `document.inserted` - Document(s) inserted into a context
+- `document.updated` - Document(s) updated in a context
+- `document.removed` - Document removed from a context (non-destructive)
+- `document.removed.batch` - Documents removed from a context (non-destructive, batch)
+- `document.deleted` - Document deleted from DB via a context (owner-only)
+- `document.deleted.batch` - Documents deleted from DB via a context (owner-only, batch)
 - `context.tree.path.inserted` - Path inserted into context tree
 - `context.tree.path.removed` - Path removed from context tree
 - `context.tree.path.moved` - Path moved in context tree

@@ -257,7 +257,7 @@ class Workspace extends EventEmitter {
 
     /**
      * CRUD Methods
-     */
+git st     */
 
     async insert(data, metadata = {}, options = {}) {
         if (!this.isActive) throw new Error('Workspace not active');

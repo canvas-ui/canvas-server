@@ -150,7 +150,7 @@ export class WebDAVHandler {
       'ETag': etag(stat),
       'Last-Modified': httpDate(stat.mtime),
     });
-    createReadStream(abs).pipe(res);
+    await pipeline(createReadStream(abs), res);
   }
 
   async _head({ res, abs }) {

@@ -156,18 +156,17 @@ export async function createServer(options = {}) {
   if (options.agents) server.decorate('agents', options.agents);
   if (options.authService) server.decorate('authService', options.authService);
 
-  // Add hook to handle WebDAV OPTIONS requests before CORS plugin intercepts them
+  // Handle WebDAV OPTIONS before CORS plugin intercepts them
+  const davUrlPattern = /^\/workspaces\/[^/]+\/dav(\/|$)/;
   server.addHook('onRequest', async (request, reply) => {
-    if (request.url.startsWith('/webdav/') && request.method === 'OPTIONS') {
-      // Handle WebDAV OPTIONS directly
+    if (davUrlPattern.test(request.url) && request.method === 'OPTIONS') {
       reply.header('DAV', '1, 2');
       reply.header('MS-Author-Via', 'DAV');
-      reply.header('Allow', 'OPTIONS, GET, HEAD, POST, PUT, DELETE, PROPFIND, PROPPATCH, MKCOL, COPY, MOVE, LOCK, UNLOCK');
+      reply.header('Allow', 'OPTIONS, GET, HEAD, PUT, DELETE, PROPFIND, PROPPATCH, MKCOL, COPY, MOVE, LOCK, UNLOCK');
       reply.header('Access-Control-Allow-Origin', '*');
-      reply.header('Access-Control-Allow-Methods', 'OPTIONS, GET, HEAD, POST, PUT, DELETE, PROPFIND, PROPPATCH, MKCOL, COPY, MOVE, LOCK, UNLOCK');
-      reply.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept, X-App-Name, X-Selected-Session, Cache-Control, Depth, If, Overwrite, Destination');
-      reply.header('Access-Control-Expose-Headers', 'Authorization, Content-Type, DAV, ETag, Lock-Token');
-      reply.header('Access-Control-Allow-Credentials', 'true');
+      reply.header('Access-Control-Allow-Methods', 'OPTIONS, GET, HEAD, PUT, DELETE, PROPFIND, PROPPATCH, MKCOL, COPY, MOVE, LOCK, UNLOCK');
+      reply.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Depth, If, Overwrite, Destination, Lock-Token, Timeout');
+      reply.header('Access-Control-Expose-Headers', 'DAV, ETag, Lock-Token, Content-Type');
       reply.header('Access-Control-Max-Age', '86400');
       return reply.code(200).send();
     }
@@ -183,8 +182,8 @@ export async function createServer(options = {}) {
     maxAge: 86400 // 24 hours
   });
 
-  // Register WebDAV routes AFTER CORS
-  server.register(webdavRoutes); // WebDAV access to workspace home folders
+  // WebDAV routes (scoped plugin — own content-type parsers)
+  server.register(webdavRoutes);
 
   // Add security headers including CSP for browser extension compatibility
   server.addHook('onSend', async (request, reply, payload) => {
@@ -298,8 +297,8 @@ export async function createServer(options = {}) {
       return reply.code(response.statusCode).send(response.getResponse());
     }
 
-    // For WebDAV routes, return a proper WebDAV 404 response
-    if (request.url.startsWith('/webdav/')) {
+    // For WebDAV routes, return a plain 404 (not SPA index.html)
+    if (davUrlPattern.test(request.url)) {
       return reply.code(404).send('Not Found');
     }
 

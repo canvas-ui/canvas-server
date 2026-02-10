@@ -41,8 +41,17 @@ export default async function adminRoutes(fastify, options) {
     try {
       const { status, userType } = request.query;
       const users = await fastify.users.list({ status, userType });
+      const sanitized = (users || []).map((u) => ({
+        id: u.id,
+        name: u.name,
+        email: u.email,
+        userType: u.userType,
+        status: u.status,
+        createdAt: u.createdAt,
+        updatedAt: u.updatedAt,
+      }));
 
-      const response = new ResponseObject().found(users, 'Users retrieved successfully', 200, users.length);
+      const response = new ResponseObject().found(sanitized, 'Users retrieved successfully', 200, sanitized.length);
       return reply.code(response.statusCode).send(response.getResponse());
     } catch (error) {
       fastify.log.error(error);
@@ -67,7 +76,8 @@ export default async function adminRoutes(fastify, options) {
             description: 'Username (3-39 chars, lowercase letters, numbers, underscores, hyphens only)'
           },
           email: { type: 'string', format: 'email' },
-          password: { type: 'string', minLength: 8 },
+          // Policy is enforced by authService; keep schema permissive
+          password: { type: 'string', minLength: 1 },
           userType: { type: 'string', enum: ['user', 'admin'], default: 'user' },
           status: { type: 'string', enum: ['active', 'inactive', 'pending', 'deleted'], default: 'active' }
         }
@@ -76,6 +86,11 @@ export default async function adminRoutes(fastify, options) {
   }, async (request, reply) => {
     try {
       const { name, email, password, userType = 'user', status = 'active' } = request.body;
+
+      // Validate password BEFORE creating the user to avoid orphaned accounts + home dirs
+      if (typeof password === 'string' && password.trim()) {
+        await fastify.authService.validatePasswordComplexity(password);
+      }
 
       // Create user
       const user = await fastify.users.create({
@@ -86,8 +101,14 @@ export default async function adminRoutes(fastify, options) {
       });
 
       // Set password if provided
-      if (password) {
-        await fastify.authService.setPassword(user.id, password);
+      if (typeof password === 'string' && password.trim()) {
+        try {
+          await fastify.authService.setPassword(user.id, password);
+        } catch (e) {
+          // Best-effort rollback so the account doesn't exist without credentials
+          try { await fastify.users.delete(user.id); } catch (_) {}
+          throw e;
+        }
       }
 
       const response = new ResponseObject().created({
@@ -102,7 +123,10 @@ export default async function adminRoutes(fastify, options) {
       return reply.code(response.statusCode).send(response.getResponse());
     } catch (error) {
       fastify.log.error(error);
-      const response = new ResponseObject().serverError(error.message || 'Failed to create user');
+      const statusCode = error?.code === 'ERR_PASSWORD_COMPLEXITY' ? 400 : 500;
+      const response = statusCode === 400
+        ? new ResponseObject().badRequest(error.message || 'Password does not meet complexity requirements', error?.details)
+        : new ResponseObject().serverError(error.message || 'Failed to create user');
       return reply.code(response.statusCode).send(response.getResponse());
     }
   });
@@ -161,6 +185,7 @@ export default async function adminRoutes(fastify, options) {
             pattern: '^[a-z0-9_-]+$'
           },
           email: { type: 'string', format: 'email' },
+          password: { type: 'string', minLength: 8 },
           userType: { type: 'string', enum: ['user', 'admin'] },
           status: { type: 'string', enum: ['active', 'inactive', 'pending', 'deleted'] }
         }
@@ -168,7 +193,19 @@ export default async function adminRoutes(fastify, options) {
     }
   }, async (request, reply) => {
     try {
-      const user = await fastify.users.update(request.params.userId, request.body);
+      const { userId } = request.params;
+      const { password, ...updates } = request.body || {};
+
+      // Ensure user exists (and avoid persisting password in user index)
+      let user = await fastify.users.get(userId);
+
+      if (Object.keys(updates).length) {
+        user = await fastify.users.update(userId, updates);
+      }
+
+      if (typeof password === 'string' && password.trim()) {
+        await fastify.authService.setPassword(userId, password);
+      }
 
       const response = new ResponseObject().success({
         id: user.id,
@@ -182,7 +219,10 @@ export default async function adminRoutes(fastify, options) {
       return reply.code(response.statusCode).send(response.getResponse());
     } catch (error) {
       fastify.log.error(error);
-      const response = new ResponseObject().serverError(error.message || 'Failed to update user');
+      const statusCode = error?.code === 'ERR_PASSWORD_COMPLEXITY' ? 400 : 500;
+      const response = statusCode === 400
+        ? new ResponseObject().badRequest(error.message || 'Password does not meet complexity requirements', error?.details)
+        : new ResponseObject().serverError(error.message || 'Failed to update user');
       return reply.code(response.statusCode).send(response.getResponse());
     }
   });
@@ -207,7 +247,7 @@ export default async function adminRoutes(fastify, options) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
-      await fastify.users.remove(request.params.userId);
+      await fastify.users.delete(request.params.userId);
 
       const response = new ResponseObject().success(true, 'User deleted successfully');
       return reply.code(response.statusCode).send(response.getResponse());
@@ -268,6 +308,9 @@ export default async function adminRoutes(fastify, options) {
           label: { type: 'string' },
           description: { type: 'string' },
           color: { type: 'string', pattern: '^#[0-9A-Fa-f]{3,6}$' },
+          icon: { type: ['string', 'null'] },
+          homeScreen: { type: 'object' },
+          links: { type: 'object' },
           type: { type: 'string', enum: ['workspace', 'universe'] },
           metadata: { type: 'object' }
         }
@@ -275,7 +318,7 @@ export default async function adminRoutes(fastify, options) {
     }
   }, async (request, reply) => {
     try {
-      const { userId, name, label, description, color, type = 'workspace', metadata } = request.body;
+      const { userId, name, label, description, color, icon, homeScreen, links, type = 'workspace', metadata } = request.body;
 
       // Verify the user exists
       await fastify.users.get(userId);
@@ -289,6 +332,9 @@ export default async function adminRoutes(fastify, options) {
           label: label || name,
           description: description || '',
           color,
+          icon,
+          homeScreen,
+          links,
           metadata
         }
       );

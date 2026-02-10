@@ -10,7 +10,6 @@ BASE_URL="http://127.0.0.1:8001/rest/v2"
 TOKEN="${TOKEN:-canvas-59e7b70b39d452005c42764d9bb608d899a047246627615e}"
 
 # Colors
-RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
@@ -58,20 +57,18 @@ pub_call() {
     echo -e "${YELLOW}🌐 $description${NC}"
     local url="$BASE_URL/pub$endpoint"
 
-    if [ -n "$token_param" ]; then
-        url="$url?token=$token_param"
-    fi
-
     echo -e "${BLUE}$method $url${NC}"
 
     if [ -n "$data" ]; then
         echo -e "${BLUE}Data: $data${NC}"
         curl -s -X "$method" \
+             ${token_param:+-H "Authorization: Bearer $token_param"} \
              -H "Content-Type: application/json" \
              -d "$data" \
              "$url" | jq '.' || echo "Response not JSON"
     else
         curl -s -X "$method" \
+             ${token_param:+-H "Authorization: Bearer $token_param"} \
              "$url" | jq '.' || echo "Response not JSON"
     fi
     echo ""
@@ -111,7 +108,7 @@ echo -e "     -d '{\"permissions\":[\"read\",\"write\"],\"description\":\"Test t
 echo -e "     \"$BASE_URL/workspaces/YOUR_WORKSPACE_ID/tokens\""
 echo ""
 echo -e "${BLUE}# Access workspace via token:${NC}"
-echo -e "curl \"$BASE_URL/pub/workspaces/YOUR_WORKSPACE_ID?token=YOUR_TOKEN\""
+echo -e "curl -H \"Authorization: Bearer YOUR_TOKEN\" \"$BASE_URL/pub/workspaces/YOUR_WORKSPACE_ID\""
 echo ""
 echo -e "${BLUE}# Create context token:${NC}"
 echo -e "curl -X POST -H \"Authorization: Bearer $TOKEN\" \\"

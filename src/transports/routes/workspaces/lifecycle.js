@@ -80,10 +80,12 @@ export default async function workspaceLifecycleRoutes(fastify, options) {
 
       // Emit WebSocket event for status change
       try {
-        fastify.broadcastToUser(request.user.id, 'status.changed', {
-          workspaceId: request.params.id,
-          status: workspace.status
-        });
+        const payload = { workspaceId, status: workspace.status };
+        // Canonical workspace event name(s)
+        fastify.broadcastToUser(request.user.id, 'workspace:status:changed', payload);
+        fastify.broadcastToUser(request.user.id, 'workspace.status.changed', payload);
+        // Legacy (un-namespaced) event name
+        fastify.broadcastToUser(request.user.id, 'status.changed', payload);
       } catch (wsError) {
         fastify.log.error(`Failed to broadcast workspace status change: ${wsError.message}`);
         // Continue since this shouldn't fail the request
@@ -142,10 +144,12 @@ export default async function workspaceLifecycleRoutes(fastify, options) {
       };
 
       // Emit WebSocket event for status change
-      fastify.broadcastToUser(request.user.id, 'status.changed', {
-        workspaceId: request.params.id,
-        status: 'inactive'
-      });
+      {
+        const payload = { workspaceId, status: 'inactive' };
+        fastify.broadcastToUser(request.user.id, 'workspace:status:changed', payload);
+        fastify.broadcastToUser(request.user.id, 'workspace.status.changed', payload);
+        fastify.broadcastToUser(request.user.id, 'status.changed', payload);
+      }
 
       const responseObject = new ResponseObject().success(updatedWorkspace, 'Workspace closed successfully');
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
@@ -181,10 +185,12 @@ export default async function workspaceLifecycleRoutes(fastify, options) {
       }
 
       // Emit WebSocket event for status change
-      fastify.broadcastToUser(request.user.id, 'status.changed', {
-        workspaceId: request.params.id,
-        status: 'active'
-      });
+      {
+        const payload = { workspaceId, status: 'active' };
+        fastify.broadcastToUser(request.user.id, 'workspace:status:changed', payload);
+        fastify.broadcastToUser(request.user.id, 'workspace.status.changed', payload);
+        fastify.broadcastToUser(request.user.id, 'status.changed', payload);
+      }
 
       const responseObject = new ResponseObject().success(workspace, 'Workspace started successfully');
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
@@ -220,10 +226,12 @@ export default async function workspaceLifecycleRoutes(fastify, options) {
       }
 
       // Emit WebSocket event for status change
-      fastify.broadcastToUser(request.user.id, 'status.changed', {
-        workspaceId: request.params.id,
-        status: 'inactive'
-      });
+      {
+        const payload = { workspaceId, status: 'inactive' };
+        fastify.broadcastToUser(request.user.id, 'workspace:status:changed', payload);
+        fastify.broadcastToUser(request.user.id, 'workspace.status.changed', payload);
+        fastify.broadcastToUser(request.user.id, 'status.changed', payload);
+      }
 
       const responseObject = new ResponseObject().success(true, 'Workspace stopped successfully');
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());

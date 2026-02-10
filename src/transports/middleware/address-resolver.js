@@ -15,6 +15,16 @@ export function createAddressResolver(resourceType = 'workspace') {
       return; // No ID parameter to process
     }
 
+    // Allow disambiguation for shared resources without putting owner in the path.
+    // Example: GET /contexts/default?ownerId=<ownerUserId>
+    // This keeps routes simple while allowing collisions (same IDs across owners).
+    const ownerId = request.query?.ownerId;
+    if (ownerId && typeof ownerId === 'string' && !addressParam.includes('/')) {
+      request.originalAddress = `${ownerId}/${addressParam}`;
+      request.params.id = `${ownerId}/${addressParam}`;
+      return;
+    }
+
     // Check if it's a user/resource address (contains '/')
     if (addressParam.includes('/')) {
       let resolvedId = null;

@@ -1,484 +1,383 @@
 'use strict';
 
-import webdavServer from 'webdav-server';
-const webdav = webdavServer.v2;
+import { promises as fs, createReadStream, createWriteStream } from 'fs';
+import { pipeline } from 'stream/promises';
 import path from 'path';
-import { existsSync, mkdirSync } from 'fs';
-import { CanvasWebDAVAuthentication } from './auth.js';
+import crypto from 'crypto';
 import { createLogger } from '../../utils/log.js';
 
-const logger = createLogger('webdav:server');
+const logger = createLogger('webdav');
 
-/**
- * Canvas WebDAV Server Manager
- * Manages WebDAV server instance and workspace-to-path mapping
- */
-export class WebDAVServerManager {
-  #userManager = null;
-  #workspaceManager = null;
-  #authentication = null;
+// ── MIME types ──────────────────────────────────────────────────────────────
 
-  constructor(userManager, workspaceManager) {
-    this.#userManager = userManager;
-    this.#workspaceManager = workspaceManager;
-    this.#authentication = new CanvasWebDAVAuthentication(userManager, workspaceManager);
+const MIME = {
+  '.html': 'text/html', '.css': 'text/css', '.js': 'application/javascript',
+  '.json': 'application/json', '.xml': 'application/xml', '.txt': 'text/plain',
+  '.md': 'text/markdown', '.png': 'image/png', '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.svg': 'image/svg+xml',
+  '.webp': 'image/webp', '.pdf': 'application/pdf', '.zip': 'application/zip',
+  '.gz': 'application/gzip', '.tar': 'application/x-tar',
+  '.mp3': 'audio/mpeg', '.mp4': 'video/mp4', '.wav': 'audio/wav',
+};
+const mime = (p) => MIME[path.extname(p).toLowerCase()] || 'application/octet-stream';
+
+// ── XML / URL helpers ───────────────────────────────────────────────────────
+
+const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+const httpDate = (d) => new Date(d).toUTCString();
+const isoDate = (d) => new Date(d).toISOString();
+const encSegments = (p) => p.split('/').map(s => s ? encodeURIComponent(s) : '').join('/');
+const etag = (s) => `"${s.ino}-${s.size}-${Math.floor(s.mtimeMs)}"`;
+
+// ── In-memory lock store (Class 2 WebDAV) ───────────────────────────────────
+
+const locks = new Map();
+const cleanLocks = () => { const now = Date.now(); for (const [t, l] of locks) if (l.expires < now) locks.delete(t); };
+const XML_BODY_LIMIT = 1024 * 1024; // 1MB for XML metadata methods
+
+// ── WebDAV Handler ──────────────────────────────────────────────────────────
+
+export class WebDAVHandler {
+  /** @param {(userId: string, workspace: string) => Promise<string|null>} resolvePath */
+  constructor(resolvePath) {
+    this._resolve = resolvePath;
   }
 
   /**
-   * Initialize - no-op now, kept for compatibility
+   * Main entry point — called from the Fastify route handler after auth.
+   * @param {import('http').ServerResponse} res - raw Node.js response
+   * @param {object} opts
    */
-  async initialize() {
-    logger.debug('WebDAV server manager initialized');
-  }
+  async handle(res, { method, url, headers, body, userId, workspace }) {
+    const homePath = await this._resolve(userId, workspace);
+    if (!homePath) return send(res, 404, 'Workspace not found');
 
-  /**
-   * Create a new WebDAV server instance for this specific request
-   * This ensures complete isolation between concurrent requests
-   */
-  createServerInstance() {
-    logger.debug('Creating new WebDAV server instance for request');
+    const prefix = `/workspaces/${encodeURIComponent(workspace)}/dav`;
+    const decoded = decodeURIComponent(url.split('?')[0]);
+    const rel = decoded.startsWith(prefix) ? (decoded.slice(prefix.length) || '/') : '/';
+    const abs = path.resolve(homePath, '.' + rel);
 
-    // Create WebDAV server with custom authentication that always succeeds
-    const userManager = new webdav.SimpleUserManager();
-    const privilegeManager = new webdav.SimplePathPrivilegeManager();
+    // Path traversal guard
+    const relative = path.relative(homePath, abs);
+    if (relative.startsWith('..') || path.isAbsolute(relative)) return send(res, 403, 'Forbidden');
 
-    // Add a default user for the WebDAV server
-    const defaultUser = userManager.addUser('webdav', 'webdav', false);
-    privilegeManager.setRights(defaultUser, '/', ['all']);
+    res.setHeader('DAV', '1, 2');
+    res.setHeader('MS-Author-Via', 'DAV');
 
-    // Create custom authentication that always succeeds
-    const customAuth = {
-      getUser: (ctx, callback) => {
-        callback(null, defaultUser);
-      },
-      askForAuthentication: (ctx) => {
-        return defaultUser;
+    const ctx = { res, abs, rel, prefix, homePath, headers, body };
+
+    try {
+      switch (method) {
+        case 'OPTIONS':   return this._options(ctx);
+        case 'PROPFIND':  return await this._propfind(ctx);
+        case 'PROPPATCH': return await this._proppatch(ctx);
+        case 'GET':       return await this._get(ctx);
+        case 'HEAD':      return await this._head(ctx);
+        case 'PUT':       return await this._put(ctx);
+        case 'DELETE':    return await this._delete(ctx);
+        case 'MKCOL':     return await this._mkcol(ctx);
+        case 'COPY':      return await this._copyMove(ctx, false);
+        case 'MOVE':      return await this._copyMove(ctx, true);
+        case 'LOCK':      return await this._lock(ctx);
+        case 'UNLOCK':    return await this._unlock(ctx);
+        default:          return send(res, 405, 'Method Not Allowed');
       }
+    } catch (err) {
+      logger.error({ err, method, path: rel }, 'WebDAV request failed');
+      if (!res.headersSent) {
+        const code = err.statusCode || (err.code === 'ENOENT' ? 404 : err.code === 'EACCES' ? 403 : 500);
+        send(res, code, code === 413 ? 'Payload Too Large' : undefined);
+      }
+    }
+  }
+
+  // ── WebDAV method handlers ──────────────────────────────────────────────
+
+  _options({ res }) {
+    res.setHeader('Allow', 'OPTIONS, GET, HEAD, PUT, DELETE, PROPFIND, PROPPATCH, MKCOL, COPY, MOVE, LOCK, UNLOCK');
+    send(res, 200);
+  }
+
+  async _propfind({ res, abs, rel, prefix, headers, body }) {
+    // Drain optional XML body so keep-alive connections remain clean.
+    await readBody(body, XML_BODY_LIMIT);
+    const depth = headers['depth'] ?? '1';
+
+    let stat;
+    try { stat = await fs.stat(abs); }
+    catch { return send(res, 404, 'Not Found'); }
+
+    const entries = [propEntry(stat, prefix, rel)];
+
+    if (stat.isDirectory() && depth !== '0') {
+      try {
+        const children = await fs.readdir(abs, { withFileTypes: true });
+        for (const child of children) {
+          try {
+            const childStat = await fs.stat(path.join(abs, child.name));
+            entries.push(propEntry(childStat, prefix, path.posix.join(rel, child.name)));
+          } catch { /* skip inaccessible */ }
+        }
+      } catch { /* can't list — return just the directory itself */ }
+    }
+
+    sendXml(res, 207, `<?xml version="1.0" encoding="utf-8"?>\n<D:multistatus xmlns:D="DAV:">\n${entries.join('\n')}\n</D:multistatus>`);
+  }
+
+  async _proppatch({ res, abs, rel, prefix, body }) {
+    // We don't persist properties, but still consume request payload safely.
+    await readBody(body, XML_BODY_LIMIT);
+    try { await fs.stat(abs); }
+    catch { return send(res, 404, 'Not Found'); }
+
+    // We don't persist custom properties — just ACK everything (same as rclone)
+    sendXml(res, 207,
+      `<?xml version="1.0" encoding="utf-8"?>\n<D:multistatus xmlns:D="DAV:">\n` +
+      `  <D:response>\n    <D:href>${esc(encSegments(prefix + rel))}</D:href>\n` +
+      `    <D:propstat><D:prop/><D:status>HTTP/1.1 200 OK</D:status></D:propstat>\n` +
+      `  </D:response>\n</D:multistatus>`);
+  }
+
+  async _get({ res, abs }) {
+    let stat;
+    try { stat = await fs.stat(abs); }
+    catch { return send(res, 404, 'Not Found'); }
+
+    if (stat.isDirectory()) {
+      const children = await fs.readdir(abs);
+      const html = `<!DOCTYPE html><html><body><h1>Index</h1><ul>${children.map(c => `<li><a href="${esc(encodeURIComponent(c))}">${esc(c)}</a></li>`).join('')}</ul></body></html>`;
+      return sendBody(res, 200, html, 'text/html; charset=utf-8');
+    }
+
+    res.writeHead(200, {
+      'Content-Type': mime(abs),
+      'Content-Length': stat.size,
+      'ETag': etag(stat),
+      'Last-Modified': httpDate(stat.mtime),
+    });
+    await pipeline(createReadStream(abs), res);
+  }
+
+  async _head({ res, abs }) {
+    let stat;
+    try { stat = await fs.stat(abs); }
+    catch { return send(res, 404); }
+
+    res.writeHead(200, {
+      'Content-Type': stat.isDirectory() ? 'httpd/unix-directory' : mime(abs),
+      'Content-Length': stat.isDirectory() ? 0 : stat.size,
+      'ETag': etag(stat),
+      'Last-Modified': httpDate(stat.mtime),
+    });
+    res.end();
+  }
+
+  async _put({ res, abs, body }) {
+    let existed = true;
+    try { await fs.stat(abs); } catch { existed = false; }
+
+    await fs.mkdir(path.dirname(abs), { recursive: true });
+
+    if (body && typeof body.pipe === 'function') {
+      await pipeline(body, createWriteStream(abs));
+    } else {
+      await fs.writeFile(abs, body || '');
+    }
+
+    send(res, existed ? 204 : 201);
+  }
+
+  async _delete({ res, abs }) {
+    try {
+      const stat = await fs.stat(abs);
+      await (stat.isDirectory() ? fs.rm(abs, { recursive: true }) : fs.unlink(abs));
+      send(res, 204);
+    } catch { send(res, 404, 'Not Found'); }
+  }
+
+  async _mkcol({ res, abs }) {
+    try { await fs.stat(abs); return send(res, 405, 'Already exists'); }
+    catch { /* good, doesn't exist */ }
+
+    try { await fs.stat(path.dirname(abs)); }
+    catch { return send(res, 409, 'Parent does not exist'); }
+
+    await fs.mkdir(abs);
+    send(res, 201);
+  }
+
+  async _copyMove({ res, abs, prefix, homePath, headers }, isMove) {
+    const dest = headers['destination'];
+    if (!dest) return send(res, 400, 'Destination header required');
+
+    let destUrl;
+    try { destUrl = new URL(dest, `http://${headers['host']}`); }
+    catch { return send(res, 400, 'Invalid Destination'); }
+
+    const destDecoded = decodeURIComponent(destUrl.pathname);
+    const destRel = destDecoded.startsWith(prefix) ? (destDecoded.slice(prefix.length) || '/') : null;
+    if (!destRel) return send(res, 502, 'Destination outside WebDAV scope');
+
+    const destAbs = path.resolve(homePath, '.' + destRel);
+    const destRelative = path.relative(homePath, destAbs);
+    if (destRelative.startsWith('..') || path.isAbsolute(destRelative)) return send(res, 403, 'Forbidden');
+
+    const overwrite = (headers['overwrite'] || 'T').toUpperCase() === 'T';
+    let destExisted = true;
+    try { await fs.stat(destAbs); } catch { destExisted = false; }
+
+    if (destExisted && !overwrite) return send(res, 412, 'Destination exists and Overwrite is F');
+    if (destExisted) await fs.rm(destAbs, { recursive: true });
+
+    await fs.mkdir(path.dirname(destAbs), { recursive: true });
+
+    if (isMove) {
+      await fs.rename(abs, destAbs);
+    } else {
+      const stat = await fs.stat(abs);
+      await (stat.isDirectory() ? fs.cp(abs, destAbs, { recursive: true }) : fs.copyFile(abs, destAbs));
+    }
+
+    send(res, destExisted ? 204 : 201);
+  }
+
+  async _lock({ res, abs, prefix, rel, headers, body }) {
+    cleanLocks();
+
+    // Lock refresh
+    const ifHeader = headers['if'];
+    if (ifHeader) {
+      const match = ifHeader.match(/<([^>]+)>/);
+      if (match && locks.has(match[1])) {
+        const lock = locks.get(match[1]);
+        lock.expires = Date.now() + parseTimeout(headers['timeout']);
+        return sendXml(res, 200, lockXml(lock, prefix, rel), { 'Lock-Token': `<${lock.token}>` });
+      }
+    }
+
+    // New lock
+    const bodyStr = await readBody(body, XML_BODY_LIMIT);
+    const ownerMatch = bodyStr.match(/<(?:D:)?owner[^>]*>([\s\S]*?)<\/(?:D:)?owner>/i);
+    const token = `urn:uuid:${crypto.randomUUID()}`;
+    const lock = {
+      token, path: rel,
+      owner: ownerMatch ? ownerMatch[1].trim() : '',
+      exclusive: !bodyStr.includes('<D:shared') && !bodyStr.includes('<shared'),
+      depth: headers['depth'] || 'infinity',
+      expires: Date.now() + parseTimeout(headers['timeout']),
     };
+    locks.set(token, lock);
 
-    const server = new webdav.WebDAVServer({
-      httpAuthentication: customAuth,
-      userManager: userManager,
-      privilegeManager: privilegeManager,
-      lockTimeout: 3600000,
-      strictMode: false
-    });
+    // Create lock-null resource if it doesn't exist
+    let created = false;
+    try { await fs.stat(abs); }
+    catch { await fs.mkdir(path.dirname(abs), { recursive: true }); await fs.writeFile(abs, ''); created = true; }
 
-    logger.debug('WebDAV server instance created');
-    return server;
+    sendXml(res, created ? 201 : 200, lockXml(lock, prefix, rel), { 'Lock-Token': `<${token}>` });
   }
 
-  /**
-   * Shutdown - no-op now since we create instances per request
-   */
-  async shutdown() {
-    logger.debug('WebDAV server manager shutdown (no-op)');
-  }
+  async _unlock({ res, headers }) {
+    cleanLocks();
+    const raw = headers['lock-token'];
+    if (!raw) return send(res, 400, 'Lock-Token header required');
 
-  /**
-   * Map workspace name to physical file system path
-   * Returns the home directory path for the workspace
-   */
-  async getWorkspaceHomePath(userId, workspaceName) {
-    try {
-      // Resolve workspace name to ID
-      const workspaceId = this.#workspaceManager.resolveWorkspaceId(userId, workspaceName);
-      if (!workspaceId) {
-        logger.debug(`Workspace not found: ${workspaceName} for user ${userId}`);
-        return null;
-      }
-
-      // Get workspace for this user
-      const workspace = await this.#workspaceManager.getWorkspace(workspaceId, userId);
-      if (!workspace) {
-        logger.debug(`Workspace not found: ${workspaceName} for user ${userId}`);
-        return null;
-      }
-
-      // Check if user has access
-      const hasAccess = await this.#authentication.checkWorkspaceAccess(userId, workspaceName);
-      if (!hasAccess) {
-        logger.debug(`User ${userId} does not have access to workspace ${workspaceName}`);
-        return null;
-      }
-
-      // Get workspace directory path
-      const workspaceDir = workspace.rootPath || workspace.path;
-      if (!workspaceDir) {
-        logger.debug(`Workspace ${workspaceName} does not have a valid path`);
-        return null;
-      }
-
-      // Return the home subdirectory within the workspace
-      const homePath = path.join(workspaceDir, 'home');
-
-      // Ensure the home directory exists
-      if (!existsSync(homePath)) {
-        logger.debug(`Creating home directory: ${homePath}`);
-        try {
-          mkdirSync(homePath, { recursive: true });
-        } catch (err) {
-          logger.debug(`Failed to create home directory: ${err.message}`);
-          return null;
-        }
-      }
-
-      logger.debug(`Resolved workspace home path: ${homePath}`);
-      return homePath;
-    } catch (error) {
-      logger.debug(`Error resolving workspace home path: ${error.message}`);
-      return null;
-    }
-  }
-
-  /**
-   * Mount a workspace's home directory on a server instance
-   * Each request gets its own server instance, so no race conditions
-   */
-  async mountWorkspace(server, userId, workspaceName) {
-    const homePath = await this.getWorkspaceHomePath(userId, workspaceName);
-
-    if (!homePath) {
-      throw new Error(`Cannot mount workspace: ${workspaceName}`);
-    }
-
-    // Mount at root '/' - security isolation comes from:
-    // 1. Each request has its own server instance
-    // 2. Authentication/authorization in routes
-    // 3. Filesystem already namespaced per user
-    const mountPath = '/';
-
-    logger.debug(`Mounting workspace at ${mountPath} -> ${homePath}`);
-
-    return new Promise((resolve, reject) => {
-      server.setFileSystem(mountPath, new webdav.PhysicalFileSystem(homePath), (success) => {
-        if (success) {
-          logger.debug(`Workspace mounted successfully`);
-          resolve(mountPath);
-        } else {
-          logger.debug(`Failed to mount workspace`);
-          reject(new Error(`Failed to mount workspace: ${workspaceName}`));
-        }
-      });
-    });
-  }
-
-  /**
-   * Handle WebDAV request
-   * This is called from the Fastify route handler
-   */
-  async handleRequest(request, response, userId, workspaceName) {
-    // Create a fresh WebDAV server instance for this request
-    const server = this.createServerInstance();
-
-    try {
-      logger.debug(`=== WebDAV Request Start ===`);
-      logger.debug(`Method: ${request.method}`);
-      logger.debug(`URL: ${request.url}`);
-      logger.debug(`Headers: ${JSON.stringify(request.headers, null, 2)}`);
-      logger.debug(`User: ${userId}, Workspace: ${workspaceName}`);
-
-      // Mount workspace on this request's server instance
-      logger.debug(`Mounting workspace ${workspaceName}...`);
-      await this.mountWorkspace(server, userId, workspaceName);
-      logger.debug(`Workspace ${workspaceName} mounted successfully`);
-
-      // Use Fastify's raw Node.js request/response objects
-      // webdav-server works directly with Node.js http module objects
-      let nodeRequest = request.raw;  // Use 'let' so we can replace it if needed
-      const nodeResponse = response.raw;
-
-      // Rewrite URL to remove /webdav/:workspaceName/home prefix
-      // The WebDAV server is mounted at / (root) for this specific request instance
-      const urlPrefix = `/webdav/${workspaceName}/home`;
-      const originalUrl = nodeRequest.url;
-      let rewrittenUrl = originalUrl;
-
-      if (originalUrl.startsWith(urlPrefix)) {
-        // Strip /webdav/:workspaceName/home prefix
-        rewrittenUrl = originalUrl.substring(urlPrefix.length) || '/';
-      }
-
-      logger.debug(`Original URL: ${originalUrl}`);
-      logger.debug(`Rewritten URL: ${rewrittenUrl}`);
-
-      // Override the URL on the request object
-      nodeRequest.url = rewrittenUrl;
-
-      logger.debug(`Raw request method: ${nodeRequest.method}`);
-      logger.debug(`Raw request headers: ${JSON.stringify(nodeRequest.headers, null, 2)}`);
-
-      // Intercept response to rewrite URLs in XML responses
-      const originalSetHeader = nodeResponse.setHeader.bind(nodeResponse);
-      const originalWriteHead = nodeResponse.writeHead.bind(nodeResponse);
-      const originalWrite = nodeResponse.write.bind(nodeResponse);
-      const originalEnd = nodeResponse.end.bind(nodeResponse);
-
-      let responseBody = [];
-      let headersWritten = false;
-      let isXmlResponse = null; // null = unknown, true = XML, false = not XML
-
-      // Capture content-type from setHeader
-      nodeResponse.setHeader = function(name, value) {
-        logger.debug(`Response setHeader: ${name} = ${value}`);
-        if (name.toLowerCase() === 'content-type' && typeof value === 'string' && isXmlResponse === null) {
-          isXmlResponse = value.includes('xml');
-          logger.debug(`Detected ${isXmlResponse ? 'XML' : 'non-XML'} response early`);
-        }
-        return originalSetHeader(name, value);
-      };
-
-      // Capture content-type from writeHead
-      nodeResponse.writeHead = function(statusCode, statusMessage, headers) {
-        logger.debug(`Response writeHead called: ${statusCode}`);
-        headersWritten = true;
-
-        // Check for content-type in headers if not yet determined
-        if (isXmlResponse === null) {
-          const hdrs = (typeof statusMessage === 'object') ? statusMessage : headers;
-          if (hdrs) {
-            for (const [key, value] of Object.entries(hdrs)) {
-              if (key.toLowerCase() === 'content-type' && typeof value === 'string') {
-                isXmlResponse = value.includes('xml');
-                logger.debug(`Detected ${isXmlResponse ? 'XML' : 'non-XML'} response in writeHead`);
-                break;
-              }
-            }
-          }
-        }
-
-        return originalWriteHead(statusCode, statusMessage, headers);
-      };
-
-      // Capture response body for XML, pass-through for others
-      nodeResponse.write = function(chunk, encoding, callback) {
-        logger.debug(`Response write called: ${chunk ? chunk.length : 0} bytes, isXml=${isXmlResponse}`);
-
-        // If we still don't know content-type, check now
-        if (isXmlResponse === null) {
-          const contentType = nodeResponse.getHeader('content-type') || '';
-          isXmlResponse = contentType.includes('xml');
-          logger.debug(`Late detection: ${isXmlResponse ? 'XML' : 'non-XML'} response`);
-        }
-
-        if (isXmlResponse) {
-          // Buffer XML responses for URL rewriting
-          if (chunk) {
-            responseBody.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, encoding || 'utf8'));
-            logger.debug(`Buffered ${chunk.length} bytes for XML rewriting`);
-          }
-          if (typeof encoding === 'function') callback = encoding;
-          if (callback) callback();
-          return true;
-        } else {
-          // Pass through non-XML responses directly
-          return originalWrite(chunk, encoding, callback);
-        }
-      };
-
-      // Rewrite URLs and send response
-      nodeResponse.end = function(chunk, encoding, callback) {
-        logger.debug(`Response end called, isXml=${isXmlResponse}`);
-
-        if (typeof chunk === 'function') {
-          callback = chunk;
-          chunk = null;
-        } else if (typeof encoding === 'function') {
-          callback = encoding;
-          encoding = null;
-        }
-
-        // Final check for XML if still unknown
-        if (isXmlResponse === null) {
-          const contentType = nodeResponse.getHeader('content-type') || '';
-          isXmlResponse = contentType.includes('xml');
-          logger.debug(`Final detection in end(): ${isXmlResponse ? 'XML' : 'non-XML'} response`);
-        }
-
-        // Rewrite URLs if this is an XML response
-        if (isXmlResponse) {
-          // Add final chunk to buffer if present
-          if (chunk) {
-            responseBody.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, encoding || 'utf8'));
-          }
-
-          if (responseBody.length > 0) {
-            const buffer = Buffer.concat(responseBody);
-            let content = buffer.toString('utf-8');
-
-            logger.debug(`Rewriting URLs in XML response (${buffer.length} bytes)`);
-            // URLs in response will be like: / or /test.txt or /test2/
-            // Need to rewrite to: /webdav/:workspaceName/home/ or /webdav/:workspaceName/home/test.txt
-
-            content = content.replace(
-              /<D:href>(https?:\/\/[^\/]+)?([^<]*)<\/D:href>/gi,
-              (match, protocol, urlPath) => {
-                // Prepend the public URL prefix to all paths
-                if (urlPath === '/' || urlPath === '') {
-                  return `<D:href>${protocol || ''}${urlPrefix}/</D:href>`;
-                } else if (urlPath.startsWith('/')) {
-                  return `<D:href>${protocol || ''}${urlPrefix}${urlPath}</D:href>`;
-                }
-                return match;
-              }
-            );
-
-            const rewrittenBuffer = Buffer.from(content, 'utf-8');
-            logger.debug(`Rewrote ${content.match(/<D:href>/gi)?.length || 0} URLs`);
-
-            // Write headers if not written yet
-            if (!headersWritten) {
-              originalWriteHead(nodeResponse.statusCode || 207, {
-                ...nodeResponse.getHeaders(),
-                'content-length': rewrittenBuffer.length
-              });
-            } else {
-              originalSetHeader('content-length', rewrittenBuffer.length);
-            }
-
-            // Write the rewritten content
-            originalWrite(rewrittenBuffer);
-          }
-          return originalEnd.call(nodeResponse, callback);
-        } else {
-          // Non-XML response - pass through directly (data already streamed via originalWrite in write())
-          logger.debug(`Passing through non-XML end()`);
-          return originalEnd.call(nodeResponse, chunk, encoding, callback);
-        }
-      };
-
-      // Set required WebDAV headers on the response
-      if (!nodeResponse.headersSent) {
-        // Indicate WebDAV compliance levels
-        nodeResponse.setHeader('DAV', '1, 2');
-        nodeResponse.setHeader('MS-Author-Via', 'DAV');
-        logger.debug(`WebDAV headers set: DAV=1,2, MS-Author-Via=DAV`);
-      }
-
-      logger.debug(`Executing WebDAV request...`);
-
-      // Fastify has consumed the request stream, so we need to recreate it
-      const hasBody = nodeRequest.headers['content-length'] && parseInt(nodeRequest.headers['content-length']) > 0;
-      logger.debug(`Request has body: ${hasBody}, content-length: ${nodeRequest.headers['content-length']}`);
-
-      if (hasBody && request.body) {
-        // Fastify parsed the body - we need to create a NEW readable stream for the WebDAV server
-        const { Readable } = await import('stream');
-        const bodyBuffer = Buffer.isBuffer(request.body) ? request.body : Buffer.from(typeof request.body === 'string' ? request.body : JSON.stringify(request.body));
-        logger.debug(`Creating new request stream from ${bodyBuffer.length} byte buffer`);
-
-        // Create a new readable stream from the buffer
-        const bodyStream = Readable.from([bodyBuffer]);
-
-        // Copy critical properties from the original request to the new stream
-        bodyStream.httpVersion = nodeRequest.httpVersion;
-        bodyStream.httpVersionMajor = nodeRequest.httpVersionMajor;
-        bodyStream.httpVersionMinor = nodeRequest.httpVersionMinor;
-        bodyStream.url = nodeRequest.url;
-        bodyStream.method = nodeRequest.method;
-        bodyStream.headers = nodeRequest.headers;
-        bodyStream.rawHeaders = nodeRequest.rawHeaders;
-        bodyStream.socket = nodeRequest.socket;
-        bodyStream.connection = nodeRequest.connection;
-
-        // Replace nodeRequest with the new stream
-        nodeRequest = bodyStream;
-        logger.debug(`Replaced nodeRequest with new readable stream`);
-      }
-
-      // Execute WebDAV request using native Node.js request/response
-      // Wrap in Promise to properly handle async execution
-      await new Promise((resolve, reject) => {
-        let resolved = false;
-        const doResolve = (reason) => {
-          if (!resolved) {
-            resolved = true;
-            logger.debug(`Promise resolving: ${reason}`);
-            resolve();
-          }
-        };
-
-        try {
-          logger.debug(`Calling server.executeRequest with method: ${nodeRequest.method}`);
-
-          // Set up event listeners BEFORE calling executeRequest
-          nodeResponse.on('finish', () => {
-            logger.debug(`WebDAV response finished event`);
-            doResolve('finish');
-          });
-
-          nodeResponse.on('close', () => {
-            logger.debug(`WebDAV response closed event`);
-            doResolve('close');
-          });
-
-          nodeResponse.on('error', (err) => {
-            logger.debug(`WebDAV response error event: ${err.message}`);
-            logger.debug(`Error stack: ${err.stack}`);
-            if (!resolved) {
-              resolved = true;
-              reject(err);
-            }
-          });
-
-          // Call executeRequest - this should trigger the response
-          const result = server.executeRequest(nodeRequest, nodeResponse);
-          logger.debug(`server.executeRequest returned: ${result}`);
-          logger.debug(`Response headersSent: ${nodeResponse.headersSent}`);
-          logger.debug(`Response finished: ${nodeResponse.finished}`);
-          logger.debug(`Response writableEnded: ${nodeResponse.writableEnded}`);
-
-          // Set a timeout to prevent hanging
-          setTimeout(() => {
-            if (!resolved) {
-              logger.debug(`⚠️ WebDAV request timeout after 10s`);
-              logger.debug(`  headersSent: ${nodeResponse.headersSent}`);
-              logger.debug(`  finished: ${nodeResponse.finished}`);
-              logger.debug(`  writableEnded: ${nodeResponse.writableEnded}`);
-
-              // Force end the response if it hasn't been ended
-              if (!nodeResponse.writableEnded && !nodeResponse.finished) {
-                logger.debug(`Force ending response...`);
-                try {
-                  nodeResponse.end();
-                } catch (e) {
-                  logger.debug(`Error force ending: ${e.message}`);
-                }
-              }
-              doResolve('timeout');
-            }
-          }, 10000); // 10 second timeout for debugging
-
-        } catch (err) {
-          logger.debug(`WebDAV execution error: ${err.message}`);
-          logger.debug(`Error stack: ${err.stack}`);
-          if (!resolved) {
-            resolved = true;
-            reject(err);
-          }
-        }
-      });
-
-      logger.debug(`WebDAV request executed successfully`);
-      logger.debug(`=== WebDAV Request End ===`);
-    } catch (error) {
-      logger.debug(`=== WebDAV Error ===`);
-      logger.debug(`Error handling WebDAV request: ${error.message}`);
-      logger.debug(`Stack trace: ${error.stack}`);
-      logger.debug(`Response sent: ${response.sent}`);
-      logger.debug(`Headers sent: ${response.raw.headersSent}`);
-      logger.debug(`=== End Error ===`);
-
-      if (!response.sent && !response.raw.headersSent) {
-        logger.debug(`Sending error response...`);
-        response.code(500).send({
-          error: 'Internal Server Error',
-          message: error.message
-        });
-      }
-    }
+    const token = raw.replace(/^<|>$/g, '');
+    if (!locks.delete(token)) return send(res, 409, 'Lock token not found');
+    send(res, 204);
   }
 }
 
-export default WebDAVServerManager;
+// ── Response helpers ────────────────────────────────────────────────────────
 
+function send(res, code, text) {
+  if (res.headersSent) return;
+  res.writeHead(code, text ? { 'Content-Type': 'text/plain' } : undefined);
+  res.end(text || '');
+}
+
+function sendBody(res, code, body, contentType) {
+  const buf = Buffer.from(body, 'utf-8');
+  res.writeHead(code, { 'Content-Type': contentType, 'Content-Length': buf.length });
+  res.end(buf);
+}
+
+function sendXml(res, code, xml, extraHeaders = {}) {
+  const buf = Buffer.from(xml, 'utf-8');
+  res.writeHead(code, { 'Content-Type': 'application/xml; charset=utf-8', 'Content-Length': buf.length, ...extraHeaders });
+  res.end(buf);
+}
+
+// ── PROPFIND XML generation ─────────────────────────────────────────────────
+
+function propEntry(stat, prefix, rel) {
+  const isDir = stat.isDirectory();
+  const href = esc(encSegments(prefix + rel) + (isDir && !rel.endsWith('/') ? '/' : ''));
+  const name = esc(path.basename(rel) || '/');
+  const props = [
+    `<D:displayname>${name}</D:displayname>`,
+    `<D:resourcetype>${isDir ? '<D:collection/>' : ''}</D:resourcetype>`,
+    `<D:getlastmodified>${httpDate(stat.mtime)}</D:getlastmodified>`,
+    `<D:creationdate>${isoDate(stat.birthtime)}</D:creationdate>`,
+    `<D:getetag>${esc(etag(stat))}</D:getetag>`,
+  ];
+  if (!isDir) {
+    props.push(`<D:getcontentlength>${stat.size}</D:getcontentlength>`);
+    props.push(`<D:getcontenttype>${mime(rel)}</D:getcontenttype>`);
+  }
+  return `  <D:response>\n    <D:href>${href}</D:href>\n    <D:propstat>\n      <D:prop>\n        ${props.join('\n        ')}\n      </D:prop>\n      <D:status>HTTP/1.1 200 OK</D:status>\n    </D:propstat>\n  </D:response>`;
+}
+
+function lockXml(lock, prefix, rel) {
+  const seconds = Math.max(0, Math.round((lock.expires - Date.now()) / 1000));
+  return `<?xml version="1.0" encoding="utf-8"?>\n<D:prop xmlns:D="DAV:">\n  <D:lockdiscovery>\n    <D:activelock>\n` +
+    `      <D:locktype><D:write/></D:locktype>\n` +
+    `      <D:lockscope>${lock.exclusive ? '<D:exclusive/>' : '<D:shared/>'}</D:lockscope>\n` +
+    `      <D:depth>${lock.depth}</D:depth>\n` +
+    `      <D:owner>${lock.owner}</D:owner>\n` +
+    `      <D:timeout>Second-${seconds}</D:timeout>\n` +
+    `      <D:locktoken><D:href>${esc(lock.token)}</D:href></D:locktoken>\n` +
+    `      <D:lockroot><D:href>${esc(encSegments(prefix + rel))}</D:href></D:lockroot>\n` +
+    `    </D:activelock>\n  </D:lockdiscovery>\n</D:prop>`;
+}
+
+// ── Utilities ───────────────────────────────────────────────────────────────
+
+function parseTimeout(header) {
+  if (!header) return 3600_000;
+  const m = header.match(/Second-(\d+)/);
+  return m ? parseInt(m[1]) * 1000 : 3600_000;
+}
+
+async function readBody(body, maxBytes = Infinity) {
+  if (!body) return '';
+  if (Buffer.isBuffer(body)) {
+    if (body.length > maxBytes) throw bodyTooLargeError();
+    return body.toString('utf-8');
+  }
+  if (typeof body === 'string') {
+    if (Buffer.byteLength(body) > maxBytes) throw bodyTooLargeError();
+    return body;
+  }
+  if (typeof body.pipe === 'function') {
+    const chunks = [];
+    let total = 0;
+    for await (const chunk of body) {
+      total += chunk.length;
+      if (total > maxBytes) {
+        if (typeof body.destroy === 'function') body.destroy();
+        throw bodyTooLargeError();
+      }
+      chunks.push(chunk);
+    }
+    return Buffer.concat(chunks).toString('utf-8');
+  }
+  return '';
+}
+
+function bodyTooLargeError() {
+  const err = new Error('Payload Too Large');
+  err.statusCode = 413;
+  return err;
+}
+
+export default WebDAVHandler;

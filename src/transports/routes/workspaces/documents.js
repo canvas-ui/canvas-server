@@ -9,6 +9,13 @@ import { parseDocumentId, parseDocumentIdArray } from '../../../utils/documentId
  * @param {Object} options - Plugin options
  */
 export default async function workspaceDocumentRoutes(fastify, options) {
+  function broadcastWorkspaceDocEvent(workspace, event, payload) {
+    // Clients may subscribe as workspace:<uuid> or workspace:<name> (we currently accept both).
+    // Broadcast to both to avoid "it works on my channel" bugs.
+    try { fastify.broadcastToWorkspace(workspace.id, event, payload); } catch {}
+    try { fastify.broadcastToWorkspace(workspace.name, event, payload); } catch {}
+  }
+
   function enforceClientTags(request, featureArray = []) {
     const out = Array.isArray(featureArray) ? [...featureArray] : [];
     const filtered = out.filter(f =>
@@ -211,6 +218,17 @@ export default async function workspaceDocumentRoutes(fastify, options) {
         contextSpec,
         enforcedFeatureArray
       );
+
+      broadcastWorkspaceDocEvent(workspace, 'workspace.documents.inserted', {
+        workspaceId: workspace.id,
+        workspaceName: workspace.name,
+        contextSpec,
+        featureArray: enforcedFeatureArray,
+        items: itemsToInsert,
+        result: documents,
+        timestamp: new Date().toISOString(),
+      });
+
       const responseObject = new ResponseObject().created(documents, 'Documents inserted successfully');
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
     } catch (error) {
@@ -385,6 +403,14 @@ export default async function workspaceDocumentRoutes(fastify, options) {
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());
       }
 
+      broadcastWorkspaceDocEvent(workspace, 'workspace.documents.updated', {
+        workspaceId: workspace.id,
+        workspaceName: workspace.name,
+        contextSpec: request.body.contextSpec || '/',
+        items: itemsToUpdate,
+        timestamp: new Date().toISOString(),
+      });
+
       const responseObject = new ResponseObject().success(true, 'Documents updated successfully');
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
     } catch (error) {
@@ -444,6 +470,16 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       }
 
       const result = await workspace.db.deleteDocumentArray(documentIds);
+
+      broadcastWorkspaceDocEvent(workspace, 'workspace.documents.deleted', {
+        workspaceId: workspace.id,
+        workspaceName: workspace.name,
+        contextSpec: request.query.contextSpec,
+        featureArray: request.query.featureArray,
+        documentIds,
+        result,
+        timestamp: new Date().toISOString(),
+      });
 
       // Always return 200 with details (DELETE should be idempotent; not-found is not a client error)
       if (result?.failed?.length) {
@@ -526,6 +562,16 @@ export default async function workspaceDocumentRoutes(fastify, options) {
         request.query.contextSpec,
         request.query.featureArray
       );
+
+      broadcastWorkspaceDocEvent(workspace, 'workspace.documents.removed', {
+        workspaceId: workspace.id,
+        workspaceName: workspace.name,
+        contextSpec: request.query.contextSpec,
+        featureArray: request.query.featureArray,
+        documentIds,
+        result,
+        timestamp: new Date().toISOString(),
+      });
 
       // Always return 200 with details (remove should be idempotent; not-found/not-in-context is not a client error)
       if (result?.failed?.length) {

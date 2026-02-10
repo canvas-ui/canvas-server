@@ -26,18 +26,25 @@ const TOKEN_TYPES = {
  */
 class TokenManager {
   #userHomePath;
+  #usersIndex;
 
-  constructor(userHomePath) {
+  constructor(userHomePath, usersIndex) {
     this.#userHomePath = userHomePath;
+    this.#usersIndex = usersIndex || null;
   }
 
   /**
    * Get tokens file path for a user
-   * @param {string} userId - User ID or email
+   * @param {string} userId - User ID
    * @returns {string} - Path to tokens.json
    */
   #getTokensFilePath(userId) {
-    return path.join(this.#userHomePath, userId, 'config', 'tokens.json');
+    const user = this.#usersIndex?.get?.(userId);
+    const email = user?.email;
+    if (!email) {
+      throw new Error(`Cannot resolve token storage path: user ${userId} missing email in users index`);
+    }
+    return path.join(this.#userHomePath, email, 'config', 'tokens.json');
   }
 
   /**
@@ -88,28 +95,10 @@ class TokenManager {
    * @returns {Array<string>} - Array of user IDs
    */
   listUserIds() {
-    const userIds = [];
-
-    if (!fs.existsSync(this.#userHomePath)) {
-      return userIds;
-    }
-
-    try {
-      const entries = fs.readdirSync(this.#userHomePath, { withFileTypes: true });
-
-      for (const entry of entries) {
-        if (entry.isDirectory()) {
-          const tokensPath = this.#getTokensFilePath(entry.name);
-          if (fs.existsSync(tokensPath)) {
-            userIds.push(entry.name);
-          }
-        }
-      }
-    } catch (error) {
-      console.error('[TokenManager] Failed to list user IDs:', error.message);
-    }
-
-    return userIds;
+    // Source of truth: user IDs from the users index.
+    // This keeps auth token verification returning real user IDs (not directory names).
+    const store = this.#usersIndex?.store || {};
+    return Object.keys(store || {});
   }
 }
 
@@ -276,7 +265,8 @@ class AuthService {
 
     // Initialize file-based token manager if user home path is provided
     if (options.userHomePath) {
-      this.#tokenManager = new TokenManager(options.userHomePath);
+      const usersIndex = jim.createIndex('users');
+      this.#tokenManager = new TokenManager(options.userHomePath, usersIndex);
       console.log('[AuthService] TokenManager initialized with user home path:', options.userHomePath);
     }
 

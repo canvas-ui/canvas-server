@@ -302,21 +302,65 @@ class WorkspaceManager extends EventEmitter {
 
         const all = this.#indexStore.store || {};
         const results = [];
+        let userEmail = null;
+
+        if (userId) {
+            try {
+                const u = await this.#users.get(userId);
+                userEmail = u?.email || null;
+            } catch (e) {
+                userEmail = null;
+            }
+        }
 
         for (const key in all) {
             const entry = all[key];
-            if (userId && entry.owner !== userId) continue;
+            const isOwner = !userId || entry.owner === userId;
+            const sharedVia = userEmail ? (entry.acl?.users?.[userEmail] || null) : null;
+            const hasSharedAccess = !!sharedVia;
+
+            if (userId && !isOwner && !hasSharedAccess) continue;
 
             // If workspace is loaded, return runtime status
             if (this.#workspaces.has(entry.id)) {
                 const ws = this.#workspaces.get(entry.id);
-                results.push({
+                const item = {
                     ...entry,
                     status: ws.status,
                     isActive: ws.isActive
-                });
+                };
+                if (userId && !isOwner && hasSharedAccess) {
+                    item.type = 'shared';
+                    item.isShared = true;
+                    item.sharedVia = sharedVia;
+                    try {
+                        const ownerUser = await this.#users.get(entry.owner);
+                        if (ownerUser?.email) item.ownerEmail = ownerUser.email;
+                    } catch {}
+                } else {
+                    try {
+                        const ownerUser = await this.#users.get(entry.owner);
+                        if (ownerUser?.email) item.ownerEmail = ownerUser.email;
+                    } catch {}
+                }
+                results.push(item);
             } else {
-                results.push(entry);
+                const item = { ...entry };
+                if (userId && !isOwner && hasSharedAccess) {
+                    item.type = 'shared';
+                    item.isShared = true;
+                    item.sharedVia = sharedVia;
+                    try {
+                        const ownerUser = await this.#users.get(entry.owner);
+                        if (ownerUser?.email) item.ownerEmail = ownerUser.email;
+                    } catch {}
+                } else {
+                    try {
+                        const ownerUser = await this.#users.get(entry.owner);
+                        if (ownerUser?.email) item.ownerEmail = ownerUser.email;
+                    } catch {}
+                }
+                results.push(item);
             }
         }
         return results;
@@ -409,6 +453,8 @@ class WorkspaceManager extends EventEmitter {
             description: options.description || '',
             owner: userId,
             color: options.color || randomcolor(),
+            icon: options.icon || null,
+            homeScreen: options.homeScreen || {},
             type: options.type || 'workspace',
             status: WORKSPACE_STATUS_CODES.AVAILABLE,
             rootPath: workspaceDir,
@@ -417,7 +463,11 @@ class WorkspaceManager extends EventEmitter {
             reference: reference,
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
-            metadata: options.metadata || {}
+            metadata: options.metadata || {},
+            acl: options.acl || { tokens: {}, users: {} },
+            roles: options.roles || [],
+            services: options.services || { ...WORKSPACE_SERVICES },
+            links: options.links || {},
         };
 
         // Store config
@@ -519,7 +569,8 @@ class WorkspaceManager extends EventEmitter {
      */
 
     resolveWorkspaceId(userId, workspaceName, host = WORKSPACE_DEFAULT_HOST) {
-        const nameKey = `${userId}@${host}:${workspaceName}`;
+        const sanitizedName = this.#sanitizeWorkspaceName(workspaceName || '');
+        const nameKey = `${userId}@${host}:${sanitizedName}`;
         return this.#nameIndex.get(nameKey) || null;
     }
 

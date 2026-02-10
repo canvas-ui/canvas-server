@@ -120,13 +120,17 @@ class ContextManager extends EventEmitter {
             // Determine workspace ID
             let workspaceId;
 
-            // If options.workspaceId is provided (from API), use it directly (it's already a UUID)
+            // If options.workspaceId is provided (from API), use it directly (UUID) or resolve if it's a name
             if (options.workspaceId) {
                 workspaceId = options.workspaceId;
+                // Allow callers to pass a workspace name (e.g. "Work") instead of UUID
+                if (workspaceId && (workspaceId.includes(':') || workspaceId.length < 12)) {
+                    workspaceId = this.#workspaceManager.resolveWorkspaceId(userId, workspaceId) || workspaceId;
+                }
             }
             // Otherwise, resolve from URL or default to universe
-            else if (parsed.workspaceID) {
-                workspaceId = this.#workspaceManager.resolveWorkspaceId(userId, parsed.workspaceID);
+            else if (parsed.workspaceId) {
+                workspaceId = this.#workspaceManager.resolveWorkspaceId(userId, parsed.workspaceId);
             } else {
                 workspaceId = this.#workspaceManager.resolveWorkspaceId(userId, DEFAULT_WORKSPACE_ID);
             }
@@ -137,7 +141,7 @@ class ContextManager extends EventEmitter {
 
             const workspace = await this.#workspaceManager.getWorkspace(workspaceId, userId);
             if (!workspace) {
-                throw new Error(`Workspace not found or not accessible: ${parsed.workspaceID} for user ${userId}`);
+                throw new Error(`Workspace not found or not accessible: ${parsed.workspaceId || workspaceId} for user ${userId}`);
             }
 
             // Ensure workspace is running
@@ -198,6 +202,34 @@ class ContextManager extends EventEmitter {
             !contextIdOrFullIdentifier.toString().includes('/');
 
         let contextKey = this.#constructContextKey(ownerUserId, contextId);
+
+        // Backward-compat for older mixed-case IDs: try to locate by case-insensitive match.
+        // (We now canonicalize IDs to lowercase.)
+        if (!this.#contexts.has(contextKey) && !this.#indexStore.has(contextKey)) {
+            const allContexts = this.#indexStore.store || {};
+            const ownerPrefix = ownerUserId ? `${ownerUserId}/` : null;
+
+            // 1) In-memory
+            for (const [key, instance] of this.#contexts) {
+                if (ownerPrefix && !key.startsWith(ownerPrefix)) continue;
+                if ((instance?.id || '').toString().toLowerCase() === contextId) {
+                    contextKey = key;
+                    break;
+                }
+            }
+
+            // 2) Persistent store
+            if (!this.#contexts.has(contextKey) && !this.#indexStore.has(contextKey)) {
+                for (const [key, data] of Object.entries(allContexts)) {
+                    if (ownerPrefix && !key.startsWith(ownerPrefix)) continue;
+                    if ((data?.id || '').toString().toLowerCase() === contextId) {
+                        contextKey = key;
+                        ownerUserId = data.userId;
+                        break;
+                    }
+                }
+            }
+        }
 
         // Check if it's a shared context owned by someone else
         if (ownerUserId === userId && !this.#contexts.has(contextKey) && !this.#indexStore.has(contextKey)) {
@@ -432,12 +464,41 @@ class ContextManager extends EventEmitter {
             throw new Error('Valid Context ID is required and cannot be a shared context identifier.');
         }
 
-        if (contextId === 'default') {
+        const requestedId = this.#sanitizeContextId(contextId.toString());
+        if (requestedId === 'default') {
             throw new Error('Default context cannot be removed');
         }
 
         try {
-            const contextKey = this.#constructContextKey(userId, contextId);
+            let contextKey = this.#constructContextKey(userId, requestedId);
+            let actualId = requestedId;
+
+            // Backward-compat: contexts created before lowercasing may be stored under mixed-case keys/ids.
+            // Try to locate them by case-insensitive ID match within the owner's contexts.
+            if (!this.#contexts.has(contextKey) && !this.#indexStore.has(contextKey)) {
+                const ownedPrefix = `${userId}/`;
+
+                for (const [key, instance] of this.#contexts) {
+                    if (!key.startsWith(ownedPrefix)) continue;
+                    if ((instance?.id || '').toString().toLowerCase() === requestedId) {
+                        contextKey = key;
+                        actualId = instance.id.toString();
+                        break;
+                    }
+                }
+
+                if (!this.#contexts.has(contextKey) && !this.#indexStore.has(contextKey)) {
+                    const allContexts = this.#indexStore.store || {};
+                    for (const [key, data] of Object.entries(allContexts)) {
+                        if (!key.startsWith(ownedPrefix)) continue;
+                        if ((data?.id || '').toString().toLowerCase() === requestedId) {
+                            contextKey = key;
+                            actualId = data.id.toString();
+                            break;
+                        }
+                    }
+                }
+            }
             let contextWasRemoved = false;
 
             if (this.#contexts.has(contextKey)) {
@@ -458,7 +519,7 @@ class ContextManager extends EventEmitter {
                 this.emit('context.deleted', {
                     contextKey: contextKey,
                     userId: userId,
-                    contextId: contextId.toString()
+                    contextId: actualId
                 });
                 logger.debug(`Context ${contextKey} removed.`);
                 return true;
@@ -519,14 +580,16 @@ class ContextManager extends EventEmitter {
             contextId = 'default';
         }
 
-        // Remove all special characters
-        contextId = contextId.replace(/[^a-zA-Z0-9-]/g, '');
+        // Allow: A-Z a-z 0-9 . _ -
+        // (We still strip anything else to keep IDs URL-safe and filesystem-ish.)
+        contextId = contextId.replace(/[^a-zA-Z0-9._-]/g, '');
+
 
         // Limit to 16 characters
         contextId = contextId.substring(0, 16);
 
-        // Ensure it's a string
-        return contextId.toString().trim();
+        // Canonicalize: treat IDs as case-insensitive
+        return contextId.toString().trim().toLowerCase();
     }
 
     #constructContextKey(userId, contextId) {
@@ -593,6 +656,16 @@ class ContextManager extends EventEmitter {
             const contextKey = this.#constructContextKey(resolvedUserId, contextId);
             if (this.#contexts.has(contextKey) || this.#indexStore.has(contextKey)) {
                 return contextId;
+            }
+
+            // Fallback: older mixed-case IDs stored before canonicalization
+            const allContexts = this.#indexStore.store || {};
+            const ownerPrefix = `${resolvedUserId}/`;
+            for (const [key, data] of Object.entries(allContexts)) {
+                if (!key.startsWith(ownerPrefix)) continue;
+                if ((data?.id || '').toString().toLowerCase() === contextId) {
+                    return data.id;
+                }
             }
 
             return null;

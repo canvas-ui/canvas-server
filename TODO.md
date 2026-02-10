@@ -134,30 +134,27 @@ We need to change the interface for Tree operations in
 
 # Fix Sharing functionality
 
-Sharing functionality for Workspaces and Contexts is no longer working, we will need a 2 punch process, one for the backend implementation and one for the webui. Lets start with the backend (phase #1).
+Sharing functionality for Workspaces and Contexts is no longer working - we will need a 2 punch process, one for the backend implementation and one for the webui.
 
 The following sharing options should be updated/implemented, please do not implement any changes yet, lets fine-tune the design first:
 
-- Token based sharing: User creates a R/RW token for a resource and shares it together with the resource URL with another user
+- Token based sharing: User creates a RO, read+append or a full rw token for a resource and shares it together with the resource URL with another user
   - a pub route currently looks like follows:
     https://canvas-server-url/rest/v2/pub/user@email.tld/workspaces/:workspace_id
     https://canvas-server-url/rest/v2/pub/user@email.tld/contexts/:context_id
-    the above is meant to be user/cli friendly, but may require a design tweak
+    the above is meant to be user/cli friendly, but may require a design tweak due to leakeage of user emails - never leak user emails a wise someone once mentioned
     
   - For workspaces:
     - User - regardless if he is server-local(registered on the current canvas-server remote) or remote - should be able to open a shared workspace / context or even add it via his webUI by specifying the URL and access token. He does not need to be a user on the remote hosting the workspace
-    - Workspace would then be added to his index and appear as a normal workspace with type: remote
-    - Workspace sharing tokens should be stored within the actual workspace.json(in the workspace root folder), hence, when a workspace is exported from canvas-server/remoteA and imported to remoteB, it will still allow access (assuming consumer/user updates its URL)
+    - Workspace would then be added to his index and appear as a normal workspace with type: remote, this part is important, listWorkspaces should return all workspaces including remote / foreign ones
+    - Workspace sharing tokens should be stored within the workspace folder so that when a workspace is exported from canvas-server/remoteA and imported to remoteB, it will still allow access (assuming consumer/user updates its URL)
     
   - For contexts:
     - Same applies for contexts, a user should be able to generate a sharing token for his context
     
   - Q1: Should we support ad-hoc secret links under our pub endpoint with expiration? 
         
-- Username based sharing: User can allow access to his contexts or workspaces based on user email. User email has to be canvas-server local for now but this is not really a requirement given the floating nature of workspaces(one can freely migrate them between a local NAS instance, AWS or some canvas SaaS provider) - with that being said, it may present a security risk so I guess we should not allow arbitrary email IDs to be added
-
-Sharing a workspace or a context this way makes them available to the target user right away due to the way the backend is implemented. As mentioned above, this type of sharing is not portable - iow - if a workspace gets exported, email based permissions would have to be recreated (this may change in the future)
-
+- User email based sharing: User can allow access to his contexts or workspaces based on user email. User can freely migrate his workspace(s) between a local NAS instance, AWS or some canvas SaaS provider - with that being said, it may present a security risk so no idea whether we should implement it at all
 
 # Architectural changes
 

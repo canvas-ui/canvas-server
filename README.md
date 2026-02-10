@@ -2,17 +2,9 @@
 
 Server runtime for the Canvas project
 
-## ! Refactor in progress
+## ! Refactor in progress, use the dev branch for now
 
-**! Use the dev branch for now**  
-
-**On every iteration(refactor) of this project, I actually loose(as in - BREAK -) functionality!**  
-We already had tab management implemented(great showcase for the bitmap-based context tree index), with named sessions and working browser extensions. I decided to **slightly** refactor the context? or workspace manager? don't even remember(git history would show) - 6 months later we still have no working runtime and using AI actually makes things worse!  
-(as we are now in an attention-based economy(creds for coining the term _for me_ to @TechLead, I'll rant about it in some "coding-canvas" live stream session @idnc.streams soon))
-
-Sooo
-
-New approach: **"Do The Simplest Thing That Could Possibly Work(tm)"**  
+Current approach: **"Do The Simplest Thing That Could Possibly Work(tm)"**  
 
 - No federation support
 - No remote workspaces*

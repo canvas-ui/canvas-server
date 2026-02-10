@@ -33,6 +33,7 @@ const etag = (s) => `"${s.ino}-${s.size}-${Math.floor(s.mtimeMs)}"`;
 
 const locks = new Map();
 const cleanLocks = () => { const now = Date.now(); for (const [t, l] of locks) if (l.expires < now) locks.delete(t); };
+const XML_BODY_LIMIT = 1024 * 1024; // 1MB for XML metadata methods
 
 // ── WebDAV Handler ──────────────────────────────────────────────────────────
 
@@ -84,8 +85,8 @@ export class WebDAVHandler {
     } catch (err) {
       logger.error({ err, method, path: rel }, 'WebDAV request failed');
       if (!res.headersSent) {
-        const code = err.code === 'ENOENT' ? 404 : err.code === 'EACCES' ? 403 : 500;
-        send(res, code);
+        const code = err.statusCode || (err.code === 'ENOENT' ? 404 : err.code === 'EACCES' ? 403 : 500);
+        send(res, code, code === 413 ? 'Payload Too Large' : undefined);
       }
     }
   }
@@ -97,7 +98,9 @@ export class WebDAVHandler {
     send(res, 200);
   }
 
-  async _propfind({ res, abs, rel, prefix, headers }) {
+  async _propfind({ res, abs, rel, prefix, headers, body }) {
+    // Drain optional XML body so keep-alive connections remain clean.
+    await readBody(body, XML_BODY_LIMIT);
     const depth = headers['depth'] ?? '1';
 
     let stat;
@@ -121,7 +124,9 @@ export class WebDAVHandler {
     sendXml(res, 207, `<?xml version="1.0" encoding="utf-8"?>\n<D:multistatus xmlns:D="DAV:">\n${entries.join('\n')}\n</D:multistatus>`);
   }
 
-  async _proppatch({ res, abs, rel, prefix }) {
+  async _proppatch({ res, abs, rel, prefix, body }) {
+    // We don't persist properties, but still consume request payload safely.
+    await readBody(body, XML_BODY_LIMIT);
     try { await fs.stat(abs); }
     catch { return send(res, 404, 'Not Found'); }
 
@@ -251,7 +256,7 @@ export class WebDAVHandler {
     }
 
     // New lock
-    const bodyStr = await readBody(body);
+    const bodyStr = await readBody(body, XML_BODY_LIMIT);
     const ownerMatch = bodyStr.match(/<(?:D:)?owner[^>]*>([\s\S]*?)<\/(?:D:)?owner>/i);
     const token = `urn:uuid:${crypto.randomUUID()}`;
     const lock = {
@@ -343,16 +348,36 @@ function parseTimeout(header) {
   return m ? parseInt(m[1]) * 1000 : 3600_000;
 }
 
-async function readBody(body) {
+async function readBody(body, maxBytes = Infinity) {
   if (!body) return '';
-  if (Buffer.isBuffer(body)) return body.toString('utf-8');
-  if (typeof body === 'string') return body;
+  if (Buffer.isBuffer(body)) {
+    if (body.length > maxBytes) throw bodyTooLargeError();
+    return body.toString('utf-8');
+  }
+  if (typeof body === 'string') {
+    if (Buffer.byteLength(body) > maxBytes) throw bodyTooLargeError();
+    return body;
+  }
   if (typeof body.pipe === 'function') {
     const chunks = [];
-    for await (const chunk of body) chunks.push(chunk);
+    let total = 0;
+    for await (const chunk of body) {
+      total += chunk.length;
+      if (total > maxBytes) {
+        if (typeof body.destroy === 'function') body.destroy();
+        throw bodyTooLargeError();
+      }
+      chunks.push(chunk);
+    }
     return Buffer.concat(chunks).toString('utf-8');
   }
   return '';
+}
+
+function bodyTooLargeError() {
+  const err = new Error('Payload Too Large');
+  err.statusCode = 413;
+  return err;
 }
 
 export default WebDAVHandler;

@@ -115,6 +115,20 @@ check "PUT overwrite" "204" "$status"
 status=$(dav -X PUT -H "Content-Type: application/octet-stream" -d "binary data" "$BASE/_test_suite/subdir/nested.bin")
 check "PUT nested file" "201" "$status"
 
+# Regression: verify uploads larger than 1MB work.
+big_bin=$(mktemp)
+big_xml=$(mktemp)
+dd if=/dev/zero of="$big_bin" bs=1M count=2 status=none
+{ printf '<root>'; dd if=/dev/zero bs=1M count=2 status=none | tr '\0' 'a'; printf '</root>'; } > "$big_xml"
+
+status=$(dav -X PUT -H "Content-Type: application/octet-stream" --data-binary "@$big_bin" "$BASE/_test_suite/large.bin")
+check "PUT large binary (>1MB)" "201" "$status"
+
+status=$(dav -X PUT -H "Content-Type: application/xml" --data-binary "@$big_xml" "$BASE/_test_suite/large.xml")
+check "PUT large XML (>1MB)" "201" "$status"
+
+rm -f "$big_bin" "$big_xml"
+
 # ── 4. GET — download files ─────────────────────────────────────────────────
 
 echo "4. GET"

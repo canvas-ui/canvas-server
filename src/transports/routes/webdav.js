@@ -30,16 +30,13 @@ export default async function webdavRoutes(fastify) {
     return homePath;
   });
 
-  // ── Content-type parsers (scoped to this plugin) ────────────────────────
-  // IMPORTANT: bodyLimit must be set explicitly on each parser. Fastify resolves
-  // the limit as parser.bodyLimit || defaultBodyLimit (1MB), NOT the route-level
-  // bodyLimit. Without this, PUT requests >1MB get a silent 413 rejection.
+  // ── Content-type parser (scoped to this plugin) ──────────────────────────
+  // Keep request bodies as streams for all DAV methods. XML bodies are
+  // explicitly drained/limited in the handler methods that use them.
 
   const FILE_LIMIT = 8 * 1024 * 1024 * 1024; // 8GB
 
   fastify.removeAllContentTypeParsers();
-  fastify.addContentTypeParser('application/xml', { parseAs: 'buffer', bodyLimit: 1024 * 1024 }, (_req, buf, done) => done(null, buf));
-  fastify.addContentTypeParser('text/xml', { parseAs: 'buffer', bodyLimit: 1024 * 1024 }, (_req, buf, done) => done(null, buf));
   fastify.addContentTypeParser('*', { bodyLimit: FILE_LIMIT }, (_req, payload, done) => done(null, payload));
 
   // ── Auth preHandler (shared by all DAV routes) ──────────────────────────
@@ -138,7 +135,7 @@ export default async function webdavRoutes(fastify) {
           method: request.method,
           url: request.url,
           headers: request.headers,
-          body: request.body, // Buffer for XML, Readable stream for files
+          body: request.body,
           userId: request.user.id,
           workspace: request.params.workspace,
         });

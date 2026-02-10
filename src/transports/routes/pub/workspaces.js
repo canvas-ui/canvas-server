@@ -412,8 +412,6 @@ export default async function pubWorkspaceRoutes(fastify, options) {
         );
       }
 
-      const { path = '/' } = request.query;
-
       // Use workspace's tree listing capability
       const tree = access.workspace.jsonTree;
 

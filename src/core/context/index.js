@@ -584,6 +584,7 @@ class ContextManager extends EventEmitter {
         // (We still strip anything else to keep IDs URL-safe and filesystem-ish.)
         contextId = contextId.replace(/[^a-zA-Z0-9._-]/g, '');
 
+
         // Limit to 16 characters
         contextId = contextId.substring(0, 16);
 

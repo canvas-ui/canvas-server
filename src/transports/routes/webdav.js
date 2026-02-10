@@ -31,13 +31,16 @@ export default async function webdavRoutes(fastify) {
   });
 
   // ── Content-type parsers (scoped to this plugin) ────────────────────────
+  // IMPORTANT: bodyLimit must be set explicitly on each parser. Fastify resolves
+  // the limit as parser.bodyLimit || defaultBodyLimit (1MB), NOT the route-level
+  // bodyLimit. Without this, PUT requests >1MB get a silent 413 rejection.
+
+  const FILE_LIMIT = 8 * 1024 * 1024 * 1024; // 8GB
 
   fastify.removeAllContentTypeParsers();
-  // Buffer XML bodies (PROPFIND, PROPPATCH, LOCK) — always small
-  fastify.addContentTypeParser('application/xml', { parseAs: 'buffer' }, (_req, buf, done) => done(null, buf));
-  fastify.addContentTypeParser('text/xml', { parseAs: 'buffer' }, (_req, buf, done) => done(null, buf));
-  // Everything else (PUT file uploads etc.) — pass the stream through, don't buffer
-  fastify.addContentTypeParser('*', (_req, payload, done) => done(null, payload));
+  fastify.addContentTypeParser('application/xml', { parseAs: 'buffer', bodyLimit: 1024 * 1024 }, (_req, buf, done) => done(null, buf));
+  fastify.addContentTypeParser('text/xml', { parseAs: 'buffer', bodyLimit: 1024 * 1024 }, (_req, buf, done) => done(null, buf));
+  fastify.addContentTypeParser('*', { bodyLimit: FILE_LIMIT }, (_req, payload, done) => done(null, payload));
 
   // ── Auth preHandler (shared by all DAV routes) ──────────────────────────
 

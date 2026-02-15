@@ -1,248 +1,115 @@
 # Canvas Server
 
-Server runtime for the Canvas project
+Server runtime for the Canvas project.
 
-## ! Refactor in progress, use the dev branch for now
+Data from all sources is indexed and abstracted away from its physical location. Users construct virtual context or directory trees on top of that data. Storage backends (local, NAS, S3) are managed transparently — writes hit local cache first, then sync to backends based on rules.
 
-Current approach: **"Do The Simplest Thing That Could Possibly Work(tm)"**  
-
-- No federation support
-- No remote workspaces*
-- Contexts bound to the canvas-server instance
-
-Sorry Universe for the delay..
-
-## Installation
-
-## Run canvas-server locally
+## Install & Run
 
 ```bash
-$ git clone https://github.com/canvas-ai/canvas-server /path/to/canvas-server
-$ cd /path/to/canvas-server
-$ npm run update-submodules
-$ npm install
-$ npm run dev # or
-$ npm run start
+git clone https://github.com/canvas-ai/canvas-server /path/to/canvas-server
+cd /path/to/canvas-server
+npm run update-submodules
+npm install
+npm run dev
 ```
 
 ## Docker
 
 ```bash
-$ git clone https://github.com/canvas-ai/canvas-server /path/to/canvas-server
-$ cd /path/to/canvas-server
-$ CANVAS_SERVER_HOME=~/.canvas docker-compose up --build
-# or, to ensure you are running the latest and greatest
-# $ docker-compose build --no-cache
-# $ docker-compose up --force-recreate
-# Cleanup
-$ docker-compose down --rmi all
+git clone https://github.com/canvas-ai/canvas-server /path/to/canvas-server
+cd /path/to/canvas-server
+CANVAS_SERVER_HOME=~/.canvas docker-compose up --build
 ```
 
-Supported ENV vars with their defaults:
+## Environment
 
 ```bash
-NODE_ENV: ${NODE_ENV:-production}
-LOG_LEVEL: ${LOG_LEVEL:-info}
-CANVAS_SERVER_MODE: ${CANVAS_SERVER_MODE:-standalone}
-CANVAS_SERVER_HOME: ${CANVAS_SERVER_HOME:-/opt/canvas-server/server}
-CANVAS_USER_HOME: ${CANVAS_USER_HOME:-/opt/canvas-server/users}
-CANVAS_ADMIN_EMAIL: ${CANVAS_ADMIN_EMAIL:-admin@canvas.local}
-CANVAS_ADMIN_PASSWORD: ${CANVAS_ADMIN_PASSWORD:-$(openssl rand -base64 16)}
-CANVAS_ADMIN_RESET: ${CANVAS_ADMIN_RESET:-false}
-CANVAS_DISABLE_API: ${CANVAS_DISABLE_API:-false}
-CANVAS_API_PORT: ${CANVAS_API_PORT:-8001}
-CANVAS_API_HOST: ${CANVAS_API_HOST:-0.0.0.0}
-CANVAS_DISABLE_WEB: ${CANVAS_DISABLE_WEB:-false}
-CANVAS_WEB_PORT: ${CANVAS_WEB_PORT:-8001}
-CANVAS_WEB_HOST: ${CANVAS_WEB_HOST:-0.0.0.0}
-CANVAS_JWT_SECRET: ${CANVAS_JWT_SECRET:-$(openssl rand -base64 32)}
-CANVAS_JWT_TOKEN_EXPIRY: ${CANVAS_JWT_TOKEN_EXPIRY:-7d}
+NODE_ENV=production
+LOG_LEVEL=info
+CANVAS_SERVER_HOME=/opt/canvas-server/server
+CANVAS_USER_HOME=/opt/canvas-server/users
+CANVAS_ADMIN_EMAIL=admin@canvas.local
+CANVAS_ADMIN_PASSWORD=          # required on first run
+CANVAS_ADMIN_RESET=false
+CANVAS_API_PORT=8001
+CANVAS_API_HOST=0.0.0.0
+CANVAS_JWT_SECRET=              # auto-generated if empty
+CANVAS_JWT_TOKEN_EXPIRY=7d
 ```
 
-## Configuration
+## Architecture
 
-### Initial Admin User Creation
+```
+Transports:   REST (/rest/v2)  ·  WebSocket (socket.io)  ·  WebDAV (/dav)
+Core:         Users  ·  Workspaces  ·  Contexts  ·  Roles  ·  Agents
+Storage:      StoreD (cache-first blob storage, multi-backend)
+Index:        SynapsD (LMDB + roaring bitmaps, context/directory trees)
+```
 
-When the Canvas server starts for the first time, it can automatically create an initial admin user if no users exist in the database. This is controlled by environment variables:
+Each workspace owns a StoreD instance. The home directory is just a file backend (`{ driver: 'file', root: './home', watch: true }`). Future backends (S3, SMB) sync via background worker threads.
 
-1. Set `CANVAS_ADMIN_EMAIL` to the desired admin email (defaults to 'admin@canvas.local')
-2. Set `CANVAS_ADMIN_PASSWORD` to the desired admin password (required if admin creation is enabled)
+## WebDAV
 
-Example:
+Workspace data is exposed via WebDAV with three virtual root directories:
+
+```
+/workspaces/:workspace/dav/
+├── Home/          → raw filesystem (workspace home dir, read/write)
+├── Context/       → ContextTree (AND-semantic layer intersections, read-only)
+└── Directories/   → DirectoryTree (traditional VFS paths, read-only)
+```
+
+- **Home/** — the workspace's local home directory, full read/write. Files dropped here are auto-indexed into SynapsD.
+- **Context/** — the virtual context tree. Documents appear as files at their context intersections. Read-only.
+- **Directories/** — traditional directory-based VFS. Documents organized by path. Read-only.
+
+### Mounting
 
 ```bash
-# In .env file or environment variables
-CANVAS_ADMIN_EMAIL=your-email@example.com
-CANVAS_ADMIN_PASSWORD=securepassword
-CANVAS_ADMIN_RESET=false # Reset admin pass
+# URL format
+http(s)://<host>:<port>/workspaces/<workspace>/dav
+
+# Linux (davfs2)
+sudo mount.davfs http://localhost:8001/workspaces/universe/dav ~/canvas
+# or in /etc/fstab:
+# http://localhost:8001/workspaces/universe/dav /home/user/canvas davfs user,noauto 0 0
+
+# macOS (Finder: Go → Connect to Server, or)
+mount_webdav -S http://localhost:8001/workspaces/universe/dav ~/canvas
+
+# Windows (Explorer: Map Network Drive, or)
+net use Z: http://localhost:8001/workspaces/universe/dav /user:your@email.com
 ```
 
-## Update Canvas Server
-
-```bash
-$ cd /path/to/canvas-server
-# Stop the canvas server
-$ npm run stop # or npm run pm2:stop
-$ rm -rf ./node_modules # Ensure we have a clean slate
-# Fetch the latest version of canvas-server from Github
-$ git pull origin main # or dev if you are feeling adventurous
-$ npm run update-submodules
-$ npm install
-$ npm start # or npm run pm2:start
-```
-
-## Make Canvas Server WebUI available remotely
-
-```bash
-# Copy the .env.example file
-$ cp /path/to/canvas-server/src/ui/.env.example /path/to/canvas-server/src/ui/.env
-# Edit as needed, for a local setup you'd want to use your machines hostname or FQDN(if resolvable) or its local IP
-# Rebuild the web ui
-$ npm run build
-# Restart the server
-```
-
-## Scripts
-
-`build-portable-image.sh`: Builds a Docker image for the Canvas Server with a portable configuration.
-`install-ubuntu.sh`: Installs and sets up the Canvas Server on an Ubuntu system. It installs Node.js, clones the Canvas Server repository, and sets up the service.
-`update-git.sh`: Script updates the Canvas Server by pulling the latest changes from the git repository and restarting the service.
-`update-submodules.sh`: Pushes git submodule changes to a remote git repository
+Authenticate with your email + password, or use an API token as the password (username is ignored for token auth).
 
 ## Authentication
 
-Canvas Server supports two types of authentication:
+- **JWT tokens** — web UI sessions
+- **API tokens** (`canvas-*` prefix) — CLI, Electron, browser extensions, programmatic access
+- **Workspace tokens** (`canvas-workspace-*`) — scoped to a single workspace
 
-1. **JWT Token Authentication**: Used for web UI login and normal user sessions, see 
-2. **[API Token Authentication](docs/api-token-auth.md)**: Used for programmatic access (CLI, Electron, browser extensions, curl-based scripts)
+## Roles
 
-## Canvas Roles
+Dockerized services extending Canvas functionality:
 
-Canvas Roles are dockerized services that extend Canvas functionality. There are two types:
+- **Global roles** — server-wide (SSH daemon, MinIO S3, etc.)
+- **Workspace roles** — user-scoped (dev environments, AI agents)
 
-- **Global Roles**: Server-wide services managed by admins (e.g., SSH daemon, MinIO S3)
-- **Workspace Roles**: User-scoped services tied to workspaces (e.g., dev environments, AI agents)
+Configure in `./server/config/roles.json` or via REST API / Web UI.
 
-### Adding Global Roles
-
-Global roles are configured in `./server/config/roles.json` and can auto-start on server boot.
-
-**Option 1: Via Configuration File (Recommended for Auto-Start)**
-
-Edit `./server/config/roles.json`:
-```json
-{
-  "global": [
-    {
-      "id": "canvas-sshd",
-      "name": "Canvas SSH Daemon",
-      "template": "docker.canvas-sshd",
-      "type": "global",
-      "status": "created",
-      "createdAt": "2024-01-01T00:00:00.000Z"
-    }
-  ],
-  "autoStart": ["canvas-sshd"]
-}
-```
-
-Then restart the server. Roles in the `autoStart` array will start automatically.
-
-**Option 2: Via REST API**
+## Update
 
 ```bash
-# Create role
-curl -X POST http://localhost:8001/rest/v2/roles \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "template": "docker.canvas-sshd",
-    "name": "canvas-sshd",
-    "type": "global"
-  }'
-
-# Start role (use roleId from response)
-curl -X POST http://localhost:8001/rest/v2/roles/{roleId}/start \
-  -H "Authorization: Bearer $ADMIN_TOKEN"
+cd /path/to/canvas-server
+npm run stop
+rm -rf ./node_modules
+git pull origin main
+npm run update-submodules
+npm install
+npm start
 ```
-
-**Option 3: Via Web UI**
-
-1. Navigate to `/admin/roles`
-2. Click "Create Role"
-3. Select template (e.g., `docker.canvas-sshd`)
-4. Enter name and select type
-5. Click "Create Role"
-6. Click ▶ (Play) to start
-
-### Available Global Roles
-
-- **canvas-sshd**: SSH/SFTP access to user home directories with chroot isolation
-- **minio-s3**: Self-hosted S3-compatible object storage
-- More templates in `./extensions/roles/`
-
-**Documentation:**
-- [Canvas Roles Setup Guide](docs/CANVAS-ROLES-SETUP.md) - Complete role system documentation
-- [Canvas SSHD Guide](extensions/roles/docker.canvas-sshd/README.md) - SSH access setup
-
-## WebDAV Access
-
-Canvas Server provides WebDAV access to workspace home directories, enabling native file manager integration across Windows, macOS, and Linux. Mount workspace folders as network drives and work with them using your operating system's native file manager.
-
-**Quick Start:**
-```bash
-# Connection URL format
-http(s)://[server]/webdav/[workspace-name]/home
-
-# Mount on Windows
-net use W: http://localhost:3334/webdav/my-workspace/home /user:email
-
-# Mount on macOS
-mount_webdav -S http://localhost:3334/webdav/my-workspace/home ~/mount-point
-
-# Mount on Linux (davfs2)
-mount.davfs http://localhost:3334/webdav/my-workspace/home ~/mount-point
-```
-
-**Documentation:**
-- [WebDAV Access Guide](docs/webdav-access.md) - Complete setup instructions for all platforms
-- [WebDAV Testing Guide](docs/webdav-testing.md) - Testing and verification procedures
-- [WebDAV Quick Reference](docs/webdav-quick-reference.md) - Command reference and examples
-
-## References
-
-### API Documentation
-
-- [Canvas Server API Reference](docs/API.md) - Complete REST API and WebSocket documentation
-
-### DB / Index
-
-- https://www.npmjs.com/package/lmdb
-- https://www.npmjs.com/package/roaring
-
-### Storage
-
-- https://www.npmjs.com/package/cacache
-
-### Roles
-
-- https://www.npmjs.com/package/dockerode
-
-### LLM Integration
-
-- https://www.npmjs.com/package/llamaindex
-
-### Service discovery
-
-- https://avahi.org/
-- https://www.npmjs.com/package/mdns
-
-### CRDT
-
-- https://automerge.org/blog/automerge-3/
-- https://jsonjoy.com/
-- https://docs.yjs.dev/
 
 ---
 This project is funded by [Augmentd Labs](https://augmentd.eu/en/labs)
-

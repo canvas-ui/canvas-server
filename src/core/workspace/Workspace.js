@@ -12,7 +12,7 @@ import { createLogger } from '../../utils/log.js';
 
 // Includes
 import Db from '../../services/synapsd/src/index.js';
-import { parseDocumentId, parseDocumentIdArray } from '../../utils/documentId.js';
+import { parseDocumentId } from '../../utils/documentId.js';
 
 // Constants
 import {
@@ -198,6 +198,11 @@ class Workspace extends EventEmitter {
         return this.#db.tree;
     }
 
+    get directoryTree() {
+        if (!this.isActive || !this.#db?.directoryTree) throw new Error('Directory tree not available');
+        return this.#db.directoryTree;
+    }
+
     get jsonTree() {
         if (!this.isActive || !this.#db) { throw new Error('Workspace not active'); }
         return this.#db.jsonTree;
@@ -257,49 +262,26 @@ class Workspace extends EventEmitter {
 
     /**
      * CRUD Methods
-git st     */
+     */
 
-    async insert(data, metadata = {}, options = {}) {
+    async insert(data, { context = '/', directory = null, features = [], emitEvent = true } = {}) {
         if (!this.isActive) throw new Error('Workspace not active');
-        // data is the document
-        // metadata might contain contextSpec, featureBitmapArray?
-        // options might contain emitEvent?
-
-        // Mapping to Db.insertDocument(document, contextSpec, featureBitmapArray, emitEvent)
-        return await this.db.insertDocument(
-            data,
-            metadata.contextSpec || '/',
-            metadata.featureBitmapArray || [],
-            options.emitEvent !== false
-        );
+        return await this.db.insertDocument(data, { context, directory, features, emitEvent });
     }
 
-    async update(id, data, metadata = {}, options = {}) {
+    async update(id, data, { context = null, directory = null, features = [] } = {}) {
         if (!this.isActive) throw new Error('Workspace not active');
-        // Db.updateDocument(docIdentifier, updateData, contextSpec, featureBitmapArray)
-        return await this.db.updateDocument(
-            id,
-            data,
-            metadata.contextSpec || null,
-            metadata.featureBitmapArray || []
-        );
+        return await this.db.updateDocument(id, data, { context, directory, features });
     }
 
-    async remove(id, metadata = {}, options = {}) {
+    async remove(id, { context = '/', features = [] } = {}) {
         if (!this.isActive) throw new Error('Workspace not active');
-        // Db.removeDocument(docId, contextSpec, featureBitmapArray)
-        return await this.db.removeDocument(
-            id,
-            metadata.contextSpec || '/',
-            metadata.featureBitmapArray || []
-        );
+        return await this.db.removeDocument(id, context, features);
     }
 
     async delete(id) {
         if (!this.isActive) throw new Error('Workspace not active');
-        // Db.deleteDocument(docId)
-        const numericId = parseDocumentId(id, 'Document ID');
-        return await this.db.deleteDocument(numericId);
+        return await this.db.deleteDocument(parseDocumentId(id, 'Document ID'));
     }
 
     async get(id, options = { parse: true }) {
@@ -309,7 +291,6 @@ git st     */
 
     async list(options = {}) {
          if (!this.isActive) throw new Error('Workspace not active');
-         // Db.findDocuments(contextSpec, featureBitmapArray, filterArray, options)
          const { contextSpec = '/', featureBitmapArray = [], filterArray = [], ...rest } = options;
          return await this.db.findDocuments(contextSpec, featureBitmapArray, filterArray, rest);
     }

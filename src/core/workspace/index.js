@@ -15,7 +15,6 @@ import { createLogger } from '../../utils/log.js';
 // Includes
 import Workspace from './Workspace.js';
 import DotfileManager from './services/dotfile/index.js';
-import HomeService from './services/home/index.js';
 import HookService from './services/hook/index.js';
 import ImapService from './services/imap/index.js';
 import GraphService from './services/graph/index.js';
@@ -119,8 +118,6 @@ class WorkspaceManager extends EventEmitter {
 
     // Services
     dotfileService = null;
-    dotfileService = null;
-    homeService = null;
     hookService = null;
     imapService = null;
     graphService = null;
@@ -148,12 +145,6 @@ class WorkspaceManager extends EventEmitter {
             workspaceManager: this
         });
         await this.dotfileService.initialize();
-
-        // Initialize Home Service
-        this.homeService = new HomeService({
-            workspaceManager: this
-        });
-        await this.homeService.initialize();
 
         // Initialize Hook Service
         this.hookService = new HookService({
@@ -209,8 +200,7 @@ class WorkspaceManager extends EventEmitter {
                 result = await this.dotfileService.enable(workspace, userId);
                 break;
             case 'home':
-            case 'home':
-                result = await this.homeService.enable(workspace);
+                result = await workspace.enableHome();
                 break;
             case 'hook':
                 // Hooks are always enabled if service is initialized, but we can toggle specific hooks
@@ -249,7 +239,7 @@ class WorkspaceManager extends EventEmitter {
                 result = await this.dotfileService.disable(workspace);
                 break;
             case 'home':
-                result = await this.homeService.disable(workspace);
+                result = await workspace.disableHome();
                 break;
             default:
                 throw new Error(`Unknown service: ${serviceName}`);
@@ -277,7 +267,7 @@ class WorkspaceManager extends EventEmitter {
             },
             home: {
                 ...config.home,
-                initialized: this.homeService.isEnabled(workspace.id),
+                initialized: workspace.isHomeEnabled,
             },
         };
     }
@@ -638,29 +628,12 @@ class WorkspaceManager extends EventEmitter {
     async #enableConfiguredServices(workspace) {
         const services = workspace.services || {};
 
-        // Enable home service if configured
-        if (services.home?.enabled && !this.homeService.isEnabled(workspace.id)) {
-            try {
-                await this.homeService.enable(workspace);
-                this.#logger.debug({ workspaceId: workspace.id }, 'Home service auto-enabled');
-            } catch (e) {
-                console.warn(`Failed to enable home service for ${workspace.id}: ${e.message}`);
-            }
-        }
+        // Home service is auto-enabled by workspace.start() based on config
     }
 
     async stopWorkspace(workspaceId, userId) {
         const ws = await this.getWorkspace(workspaceId, userId);
         if (!ws) return true;
-
-        // Disable services
-        if (this.homeService.isEnabled(ws.id)) {
-            try {
-                await this.homeService.disable(ws);
-            } catch (e) {
-                console.warn(`Failed to disable home service for ${ws.id}: ${e.message}`);
-            }
-        }
 
         // Stop roles
         if (this.#roles && ws.config.roles && Array.isArray(ws.config.roles)) {

@@ -6,12 +6,15 @@ import path from 'path';
 import Conf from 'conf';
 import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
+import { existsSync } from 'fs';
+import * as fsPromises from 'fs/promises';
 
 // Logging
 import { createLogger } from '../../utils/log.js';
 
 // Includes
 import Db from '../../services/synapsd/src/index.js';
+import Stored from '../../services/stored/src/index.js';
 import { parseDocumentId } from '../../utils/documentId.js';
 
 // Constants
@@ -31,6 +34,7 @@ class Workspace extends EventEmitter {
     #logger;
 
     #db = null;
+    #stored = null;
     #status = WORKSPACE_STATUS_CODES.INACTIVE;
 
     // Managers (injected)
@@ -68,7 +72,7 @@ class Workspace extends EventEmitter {
     }
 
     /*
-    * Getters
+    * Getters / Setters
     */
     get id() { return this.#configStore.get('id'); }
     get name() { return this.#configStore.get('name'); }
@@ -86,9 +90,6 @@ class Workspace extends EventEmitter {
     get config() { return this.#configStore.store; }
     get acl() { return this.#configStore.get('acl'); }
 
-    /**
-     * Get services configuration
-     */
     get services() {
         return this.#configStore.get('services') || {
             dotfiles: { enabled: false },
@@ -96,17 +97,37 @@ class Workspace extends EventEmitter {
         };
     }
 
-    /**
-     * Check if a specific service is enabled
-     */
+    get db() {
+        if (!this.#db) throw new Error('Database not initialized');
+        return this.#db;
+    }
+
+    get stored() { return this.#stored; }
+
+    get tree() {
+        if (!this.isActive || !this.#db?.tree) throw new Error('Tree not available');
+        return this.#db.tree;
+    }
+
+    get directoryTree() {
+        if (!this.isActive || !this.#db?.directoryTree) throw new Error('Directory tree not available');
+        return this.#db.directoryTree;
+    }
+
+    get jsonTree() {
+        if (!this.isActive || !this.#db) { throw new Error('Workspace not active'); }
+        return this.#db.jsonTree;
+    }
+
+    get homePath() {
+        return path.join(this.#rootPath, WORKSPACE_DIRECTORIES.home);
+    }
+
     isServiceEnabled(serviceName) {
         const services = this.services;
         return services[serviceName]?.enabled === true;
     }
 
-    /**
-     * Update service configuration
-     */
     setServiceConfig(serviceName, config) {
         const services = this.services;
         services[serviceName] = { ...services[serviceName], ...config };
@@ -114,9 +135,10 @@ class Workspace extends EventEmitter {
         this.emit('services.changed', { service: serviceName, config: services[serviceName] });
     }
 
-    /**
-     * Workspace UI configuration
-     */
+    // ─────────────────────────────────────────────────────────────────────────
+    // UI Configuration
+    // ─────────────────────────────────────────────────────────────────────────
+
     setIcon(url) {
         if (url == null || url === '') {
             this.#configStore.set('icon', null);
@@ -141,18 +163,10 @@ class Workspace extends EventEmitter {
         return true;
     }
 
-    /**
-     * Workspace-linked resources
-     *
-     * Stored as:
-     *  {
-     *    links: {
-     *      agents: ["canvas://canvas.local/agents/<id>", ...],
-     *      contexts: [...],
-     *      ...
-     *    }
-     *  }
-     */
+    // ─────────────────────────────────────────────────────────────────────────
+    // Links
+    // ─────────────────────────────────────────────────────────────────────────
+
     listLinks(type = null) {
         const links = this.links || {};
         if (!type) return links;
@@ -188,29 +202,9 @@ class Workspace extends EventEmitter {
         return true;
     }
 
-    get db() {
-        if (!this.#db) throw new Error('Database not initialized');
-        return this.#db;
-    }
-
-    get tree() {
-        if (!this.isActive || !this.#db?.tree) throw new Error('Tree not available');
-        return this.#db.tree;
-    }
-
-    get directoryTree() {
-        if (!this.isActive || !this.#db?.directoryTree) throw new Error('Directory tree not available');
-        return this.#db.directoryTree;
-    }
-
-    get jsonTree() {
-        if (!this.isActive || !this.#db) { throw new Error('Workspace not active'); }
-        return this.#db.jsonTree;
-    }
-
-    /*
-    * Lifecycle Methods
-    */
+    // ─────────────────────────────────────────────────────────────────────────
+    // Lifecycle
+    // ─────────────────────────────────────────────────────────────────────────
 
     async start() {
         if (this.isActive) return this;
@@ -218,12 +212,15 @@ class Workspace extends EventEmitter {
         this.#logger.debug({ workspaceId: this.id }, 'Starting workspace');
         try {
             // Initialize DB
-             const dbPath = path.join(this.#rootPath, WORKSPACE_DIRECTORIES.db || 'Db');
-             this.#db = new Db({
-                path: dbPath,
-             });
-
+            const dbPath = path.join(this.#rootPath, WORKSPACE_DIRECTORIES.db || 'Db');
+            this.#db = new Db({ path: dbPath });
             await this.#db.start();
+
+            // Initialize Stored if home service is enabled
+            if (this.isServiceEnabled('home')) {
+                await this.#initializeStored();
+            }
+
             this.#setStatus(WORKSPACE_STATUS_CODES.ACTIVE);
             this.emit('started', { id: this.id });
             return this;
@@ -239,6 +236,10 @@ class Workspace extends EventEmitter {
 
         this.#logger.debug({ workspaceId: this.id }, 'Stopping workspace');
         try {
+            if (this.#stored) {
+                await this.#stored.stop();
+                this.#stored = null;
+            }
             if (this.#db) {
                 await this.#db.shutdown();
                 this.#db = null;
@@ -253,16 +254,28 @@ class Workspace extends EventEmitter {
         }
     }
 
-    #setStatus(status) {
-        if (this.#status !== status) {
-            this.#status = status;
-            this.emit('status.changed', { id: this.id, status });
-        }
+    // ─────────────────────────────────────────────────────────────────────────
+    // Home / Stored Management
+    // ─────────────────────────────────────────────────────────────────────────
+
+    async enableHome() {
+        if (this.#stored) return;
+        await this.#initializeStored();
+        this.#logger.debug({ workspaceId: this.id }, 'Home service enabled');
     }
 
-    /**
-     * CRUD Methods
-     */
+    async disableHome() {
+        if (!this.#stored) return;
+        await this.#stored.stop();
+        this.#stored = null;
+        this.#logger.debug({ workspaceId: this.id }, 'Home service disabled');
+    }
+
+    get isHomeEnabled() { return !!this.#stored; }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // CRUD Methods
+    // ─────────────────────────────────────────────────────────────────────────
 
     async insert(data, { context = '/', directory = null, features = [], emitEvent = true } = {}) {
         if (!this.isActive) throw new Error('Workspace not active');
@@ -300,19 +313,10 @@ class Workspace extends EventEmitter {
         return this.db.clearSync();
     }
 
-    /**
-     * Token Management Methods
-     */
+    // ─────────────────────────────────────────────────────────────────────────
+    // Token Management
+    // ─────────────────────────────────────────────────────────────────────────
 
-    /**
-     * Create a new access token for this workspace
-     * @param {Object} options - Token options
-     * @param {string} options.name - Token name
-     * @param {string} options.description - Token description
-     * @param {Array<string>} options.permissions - Permissions array (e.g., ['read', 'write'])
-     * @param {string|null} options.expiresAt - Expiration date (ISO string) or null
-     * @returns {Object} - Created token with value
-     */
     createToken(options = {}) {
         const tokenId = uuidv4();
         const name = options.name || 'Workspace token';
@@ -320,73 +324,33 @@ class Workspace extends EventEmitter {
         const permissions = options.permissions || ['read', 'write'];
         const expiresAt = options.expiresAt || null;
 
-        // Generate token value with canvas-workspace- prefix
         const randomPart = crypto.randomBytes(24).toString('hex');
         const tokenValue = `canvas-workspace-${randomPart}`;
         const tokenHash = crypto.createHash('sha256').update(tokenValue).digest('hex');
 
-        const token = {
-            id: tokenId,
-            name,
-            description,
-            permissions,
-            createdAt: new Date().toISOString(),
-            expiresAt
-        };
+        const token = { id: tokenId, name, description, permissions, createdAt: new Date().toISOString(), expiresAt };
 
-        // Get current ACL
         const acl = this.#configStore.get('acl') || { tokens: {} };
         if (!acl.tokens) acl.tokens = {};
-
-        // Store with sha256: prefix to match the template structure
         acl.tokens[`sha256:${tokenHash}`] = token;
-
-        // Save to config
         this.#configStore.set('acl', acl);
 
-        // Return token with value (only returned on creation)
-        return {
-            ...token,
-            value: tokenValue,
-            hash: `sha256:${tokenHash}`
-        };
+        return { ...token, value: tokenValue, hash: `sha256:${tokenHash}` };
     }
 
-    /**
-     * List all tokens for this workspace
-     * @returns {Array<Object>} - Array of tokens (without hashes)
-     */
     listTokens() {
         const acl = this.#configStore.get('acl') || { tokens: {} };
-        const tokens = acl.tokens || {};
-
-        return Object.entries(tokens).map(([hash, token]) => ({
-            ...token,
-            hash // Include the hash key for deletion
-        }));
+        return Object.entries(acl.tokens || {}).map(([hash, token]) => ({ ...token, hash }));
     }
 
-    /**
-     * Delete a token by hash
-     * @param {string} hash - Token hash (with sha256: prefix)
-     * @returns {boolean} - True if deleted
-     */
     deleteToken(hash) {
         const acl = this.#configStore.get('acl') || { tokens: {} };
-        if (!acl.tokens || !acl.tokens[hash]) {
-            return false;
-        }
-
+        if (!acl.tokens || !acl.tokens[hash]) return false;
         delete acl.tokens[hash];
         this.#configStore.set('acl', acl);
         return true;
     }
 
-    /**
-     * Verify a token against this workspace's ACL
-     * @param {string} tokenValue - Token value to verify
-     * @returns {Object|null} - Token data if valid, null otherwise
-     */
     verifyToken(tokenValue) {
         if (!tokenValue) return null;
 
@@ -395,19 +359,10 @@ class Workspace extends EventEmitter {
 
         const acl = this.#configStore.get('acl') || { tokens: {} };
         const token = acl.tokens?.[hashKey];
-
         if (!token) return null;
+        if (token.expiresAt && new Date(token.expiresAt) < new Date()) return null;
 
-        // Check if token is expired
-        if (token.expiresAt && new Date(token.expiresAt) < new Date()) {
-            return null;
-        }
-
-        return {
-            ...token,
-            workspaceId: this.id,
-            workspaceName: this.name
-        };
+        return { ...token, workspaceId: this.id, workspaceName: this.name };
     }
 
     toJSON() {
@@ -420,6 +375,147 @@ class Workspace extends EventEmitter {
             isActive: this.isActive,
             rootPath: this.rootPath
         };
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Private — Stored initialization + SynapsD sync
+    // ─────────────────────────────────────────────────────────────────────────
+
+    async #initializeStored() {
+        const homePath = this.homePath;
+        if (!existsSync(homePath)) {
+            await fsPromises.mkdir(homePath, { recursive: true });
+        }
+
+        this.#stored = new Stored({
+            index: { path: path.join(this.#rootPath, 'var', 'stored-index') },
+            cache: { path: path.join(this.#rootPath, 'var', 'stored-cache') },
+            checksums: ['sha256'],
+            primaryChecksum: 'sha256',
+        });
+
+        // Home directory = file backend with watching
+        this.#stored.addBackend('fs:home', {
+            driver: 'file',
+            root: homePath,
+            watch: true,
+        });
+
+        // Wire Stored events → SynapsD document sync
+        this.#stored.on('file:add', (data) => this.#onFileAdd(data));
+        this.#stored.on('file:change', () => {}); // Stored emits unlink+add for changes
+        this.#stored.on('file:unlink', (data) => this.#onFileUnlink(data));
+
+        // Initial scan + sync
+        const files = await this.#stored.scan();
+        await this.#syncInitialFiles(files);
+    }
+
+    async #onFileAdd(data) {
+        if (!this.isActive) return;
+        const { key, checksums, size, mimeType } = data;
+        if (!key || !checksums?.sha256) return;
+
+        const filename = path.basename(key);
+        if (!filename) return;
+
+        const dataPath = `file://{WORKSPACE_ROOT}/home/${key}`;
+        const checksumString = `sha256/${checksums.sha256}`;
+
+        try {
+            const existingDoc = await this.#db.getDocumentByChecksumString(checksumString);
+
+            if (existingDoc) {
+                const dataPaths = existingDoc.metadata?.dataPaths || [];
+                if (!dataPaths.includes(dataPath)) {
+                    dataPaths.push(dataPath);
+                    await this.#db.updateDocument(existingDoc.id, {
+                        metadata: { ...existingDoc.metadata, dataPaths },
+                    });
+                }
+            } else {
+                await this.#db.insertDocument({
+                    schema: 'data/abstraction/file',
+                    checksumArray: [checksumString],
+                    data: { filename, size, mime: mimeType },
+                    metadata: { dataPaths: [dataPath] },
+                }, '/');
+            }
+        } catch (err) {
+            this.#logger.debug(`Error syncing file add ${key}: ${err.message}`);
+        }
+    }
+
+    async #onFileUnlink(data) {
+        if (!this.isActive) return;
+        const { key, checksums, locations } = data;
+        if (!checksums?.sha256) return;
+
+        const dataPath = `file://{WORKSPACE_ROOT}/home/${key}`;
+        const checksumString = `sha256/${checksums.sha256}`;
+
+        try {
+            const existingDoc = await this.#db.getDocumentByChecksumString(checksumString);
+            if (!existingDoc) return;
+
+            const dataPaths = (existingDoc.metadata?.dataPaths || []).filter(p => p !== dataPath);
+
+            if (locations?.length === 0 || dataPaths.length === 0) {
+                await this.#db.deleteDocument(existingDoc.id);
+            } else {
+                await this.#db.updateDocument(existingDoc.id, {
+                    metadata: { ...existingDoc.metadata, dataPaths },
+                });
+            }
+        } catch (err) {
+            this.#logger.debug(`Error syncing file unlink ${key}: ${err.message}`);
+        }
+    }
+
+    async #syncInitialFiles(files) {
+        if (!this.isActive || !files?.length) return;
+
+        let synced = 0;
+        for (const file of files) {
+            if (!file.key || !file.checksums?.sha256) continue;
+            const filename = path.basename(file.key);
+            if (!filename) continue;
+
+            const dataPath = `file://{WORKSPACE_ROOT}/home/${file.key}`;
+            const checksumString = `sha256/${file.checksums.sha256}`;
+
+            try {
+                const existingDoc = await this.#db.getDocumentByChecksumString(checksumString);
+
+                if (existingDoc) {
+                    const dataPaths = existingDoc.metadata?.dataPaths || [];
+                    if (!dataPaths.includes(dataPath)) {
+                        dataPaths.push(dataPath);
+                        await this.#db.updateDocument(existingDoc.id, {
+                            metadata: { ...existingDoc.metadata, dataPaths },
+                        });
+                    }
+                } else {
+                    await this.#db.insertDocument({
+                        schema: 'data/abstraction/file',
+                        checksumArray: [checksumString],
+                        data: { filename, size: file.size, mime: file.mimeType },
+                        metadata: { dataPaths: [dataPath] },
+                    }, '/');
+                }
+                synced++;
+            } catch (err) {
+                this.#logger.debug(`Error syncing initial file ${file.key}: ${err.message}`);
+            }
+        }
+        this.#logger.debug(`Synced ${synced}/${files.length} initial files`);
+    }
+
+    #setStatus(status) {
+        if (this.#status !== status) {
+            this.#status = status;
+            this.emit('status.changed', { id: this.id, status });
+        }
     }
 }
 

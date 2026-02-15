@@ -22,10 +22,9 @@ export default async function webdavRoutes(fastify) {
     if (!workspaceId) return null;
 
     const ws = await fastify.workspaceManager.getWorkspace(workspaceId, userId);
-    const dir = ws?.rootPath || ws?.path;
-    if (!dir) return null;
+    if (!ws?.rootPath) return null;
 
-    const homePath = path.join(dir, 'home');
+    const homePath = ws.homePath || path.join(ws.rootPath, 'home');
     await fs.mkdir(homePath, { recursive: true }).catch(() => {});
     return { homePath, workspace: ws };
   });

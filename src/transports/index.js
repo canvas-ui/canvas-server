@@ -30,6 +30,7 @@ import pingRoute from './routes/ping.js';
 import schemaRoutes from './routes/schemas.js';
 import adminRoutes from './routes/admin/index.js';
 import webdavRoutes from './routes/webdav.js';
+import contextWebdavRoutes from './routes/context-webdav.js';
 import menuRoutes from './routes/menu.js';
 import roleRoutes from './routes/roles/index.js';
 import roleTemplateRoutes from './routes/role-templates/index.js';
@@ -158,6 +159,7 @@ export async function createServer(options = {}) {
 
   // Handle WebDAV OPTIONS before CORS plugin intercepts them
   const davUrlPattern = /^\/workspaces\/[^/]+\/dav(\/|$)/;
+  const ctxDavUrlPattern = /^\/contexts\/[^/]+\/dav(\/|$)/;
   server.addHook('onRequest', async (request, reply) => {
     if (davUrlPattern.test(request.url) && request.method === 'OPTIONS') {
       reply.header('DAV', '1, 2');
@@ -167,6 +169,16 @@ export async function createServer(options = {}) {
       reply.header('Access-Control-Allow-Methods', 'OPTIONS, GET, HEAD, PUT, DELETE, PROPFIND, PROPPATCH, MKCOL, COPY, MOVE, LOCK, UNLOCK');
       reply.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Depth, If, Overwrite, Destination, Lock-Token, Timeout');
       reply.header('Access-Control-Expose-Headers', 'DAV, ETag, Lock-Token, Content-Type');
+      reply.header('Access-Control-Max-Age', '86400');
+      return reply.code(200).send();
+    }
+    if (ctxDavUrlPattern.test(request.url) && request.method === 'OPTIONS') {
+      reply.header('DAV', '1');
+      reply.header('Allow', 'OPTIONS, GET, HEAD, PROPFIND');
+      reply.header('Access-Control-Allow-Origin', '*');
+      reply.header('Access-Control-Allow-Methods', 'OPTIONS, GET, HEAD, PROPFIND');
+      reply.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Depth');
+      reply.header('Access-Control-Expose-Headers', 'DAV, Content-Type');
       reply.header('Access-Control-Max-Age', '86400');
       return reply.code(200).send();
     }
@@ -182,8 +194,9 @@ export async function createServer(options = {}) {
     maxAge: 86400 // 24 hours
   });
 
-  // WebDAV routes (scoped plugin — own content-type parsers)
+  // WebDAV routes (scoped plugins — own content-type parsers)
   server.register(webdavRoutes);
+  server.register(contextWebdavRoutes);
 
   // Add security headers including CSP for browser extension compatibility
   server.addHook('onSend', async (request, reply, payload) => {
@@ -298,7 +311,7 @@ export async function createServer(options = {}) {
     }
 
     // For WebDAV routes, return a plain 404 (not SPA index.html)
-    if (davUrlPattern.test(request.url)) {
+    if (davUrlPattern.test(request.url) || ctxDavUrlPattern.test(request.url)) {
       return reply.code(404).send('Not Found');
     }
 

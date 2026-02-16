@@ -18,15 +18,6 @@ const httpDate = (d) => new Date(d).toUTCString();
 const isoDate = (d) => new Date(d).toISOString();
 const encSegments = (p) => p.split('/').map(s => s ? encodeURIComponent(s) : '').join('/');
 
-const MIME = {
-    '.html': 'text/html', '.css': 'text/css', '.js': 'application/javascript',
-    '.json': 'application/json', '.xml': 'application/xml', '.txt': 'text/plain',
-    '.md': 'text/markdown', '.png': 'image/png', '.jpg': 'image/jpeg',
-    '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.svg': 'image/svg+xml',
-    '.webp': 'image/webp', '.pdf': 'application/pdf', '.zip': 'application/zip',
-};
-const mime = (p) => MIME[path.extname(p).toLowerCase()] || 'application/octet-stream';
-
 /**
  * Context WebDAV Routes — read-only DAV access to a named context's data.
  * Route: /contexts/:context/dav[/*]
@@ -228,8 +219,9 @@ async function head(res, vfs, rel) {
     const info = await vfs.stat(rel);
     if (!info) return send(res, 404);
 
+    const contentType = info.isDir ? 'httpd/unix-directory' : (info.contentType || 'application/octet-stream');
     res.writeHead(200, {
-        'Content-Type': info.isDir ? 'httpd/unix-directory' : mime(rel),
+        'Content-Type': contentType,
         'Content-Length': info.isDir ? 0 : (info.size || 0),
     });
     res.end();
@@ -262,6 +254,7 @@ function propEntry(entry, prefix, rel) {
     const href = esc(encSegments(prefix + rel) + (isDir && !rel.endsWith('/') ? '/' : ''));
     const name = esc(entry.name || path.basename(rel) || 'root');
     const now = new Date();
+    const contentType = entry.contentType || 'application/octet-stream';
     const props = [
         `<D:displayname>${name}</D:displayname>`,
         `<D:resourcetype>${isDir ? '<D:collection/>' : ''}</D:resourcetype>`,
@@ -271,7 +264,7 @@ function propEntry(entry, prefix, rel) {
     ];
     if (!isDir) {
         props.push(`<D:getcontentlength>${entry.size || 0}</D:getcontentlength>`);
-        props.push(`<D:getcontenttype>${mime(rel)}</D:getcontenttype>`);
+        props.push(`<D:getcontenttype>${esc(contentType)}</D:getcontenttype>`);
     }
     return `  <D:response>\n    <D:href>${href}</D:href>\n    <D:propstat>\n      <D:prop>\n        ${props.join('\n        ')}\n      </D:prop>\n      <D:status>HTTP/1.1 200 OK</D:status>\n    </D:propstat>\n  </D:response>`;
 }

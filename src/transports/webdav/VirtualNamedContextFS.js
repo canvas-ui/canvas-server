@@ -3,6 +3,7 @@
 import path from 'path';
 import { existsSync, createReadStream } from 'fs';
 import { stat as fsStat } from 'fs/promises';
+import schemaRegistry from '../../services/synapsd/src/schemas/SchemaRegistry.js';
 
 /**
  * Virtual filesystem for a named context's WebDAV view.
@@ -12,22 +13,24 @@ import { stat as fsStat } from 'fs/promises';
  * /Notes/          → documents with feature 'data/abstraction/note'
  * /Tabs/           → documents with feature 'data/abstraction/tab'
  * /Files/          → documents with feature 'data/abstraction/file'
- * ...etc
+ * ...etc (dynamically derived from SchemaRegistry)
  */
 
-const ABSTRACTIONS = [
-    { folder: 'Notes',    feature: 'data/abstraction/note' },
-    { folder: 'Tabs',     feature: 'data/abstraction/tab' },
-    { folder: 'Files',    feature: 'data/abstraction/file' },
-    { folder: 'Emails',   feature: 'data/abstraction/email' },
-    { folder: 'Messages', feature: 'data/abstraction/message' },
-    { folder: 'Dotfiles', feature: 'data/abstraction/dotfile' },
-    { folder: 'Documents', feature: 'data/abstraction/document' },
-    { folder: 'Contacts', feature: 'data/abstraction/contact' },
-    { folder: 'Devices',  feature: 'data/abstraction/device' },
-];
+// Build folder ↔ feature mapping from SchemaRegistry
+const DATA_PREFIX = 'data/abstraction/';
 
-const FOLDER_MAP = new Map(ABSTRACTIONS.map(a => [a.folder, a.feature]));
+function buildAbstractionMap() {
+    const schemas = schemaRegistry.listSchemas(DATA_PREFIX);
+    const map = new Map();
+    for (const schemaId of schemas) {
+        const slug = schemaId.slice(DATA_PREFIX.length);
+        const folder = slug.charAt(0).toUpperCase() + slug.slice(1) + 's';
+        map.set(folder, schemaId);
+    }
+    return map;
+}
+
+const FOLDER_MAP = buildAbstractionMap();
 
 export default class VirtualNamedContextFS {
     #ctx;
@@ -53,7 +56,11 @@ export default class VirtualNamedContextFS {
                 const sz = local
                     ? (await fsStat(local).catch(() => null))?.size ?? 0
                     : Buffer.byteLength(JSON.stringify(doc, null, 2));
-                return { isDir: false, name: parts[1], size: sz, doc, localFile: local || null };
+                return {
+                    isDir: false, name: parts[1], size: sz,
+                    contentType: docContentType(doc),
+                    doc, localFile: local || null,
+                };
             }
         }
 
@@ -66,7 +73,7 @@ export default class VirtualNamedContextFS {
         // Root → list abstraction folders (only those with documents)
         if (n === '/') {
             const folders = [];
-            for (const { folder, feature } of ABSTRACTIONS) {
+            for (const [folder, feature] of FOLDER_MAP) {
                 const docs = await this.#listDocs(feature, 1);
                 if (docs && docs.length > 0) {
                     folders.push({ name: folder, isDir: true, size: 0 });
@@ -93,7 +100,7 @@ export default class VirtualNamedContextFS {
                 return {
                     stream: createReadStream(info.localFile),
                     size: st.size,
-                    contentType: mimeFor(info.localFile),
+                    contentType: docContentType(info.doc),
                 };
             }
         }
@@ -124,7 +131,7 @@ export default class VirtualNamedContextFS {
             const sz = local
                 ? (await fsStat(local).catch(() => null))?.size ?? 0
                 : Buffer.byteLength(JSON.stringify(doc, null, 2));
-            entries.push({ name, isDir: false, size: sz });
+            entries.push({ name, isDir: false, size: sz, contentType: docContentType(doc) });
         }
 
         return entries;
@@ -175,20 +182,10 @@ function docName(doc) {
     return `${schema}_${doc.id}.json`;
 }
 
-function sanitize(s) {
-    return String(s).replace(/[/\\:*?"<>|]/g, '_').slice(0, 100);
+function docContentType(doc) {
+    return doc.data?.mime || doc.metadata?.contentType || 'application/octet-stream';
 }
 
-const EXT_MIME = {
-    '.html': 'text/html', '.css': 'text/css', '.js': 'application/javascript',
-    '.json': 'application/json', '.xml': 'application/xml', '.txt': 'text/plain',
-    '.md': 'text/markdown', '.png': 'image/png', '.jpg': 'image/jpeg',
-    '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.svg': 'image/svg+xml',
-    '.webp': 'image/webp', '.pdf': 'application/pdf', '.zip': 'application/zip',
-    '.gz': 'application/gzip', '.tar': 'application/x-tar',
-    '.mp3': 'audio/mpeg', '.mp4': 'video/mp4', '.wav': 'audio/wav',
-};
-
-function mimeFor(filePath) {
-    return EXT_MIME[path.extname(filePath).toLowerCase()] || 'application/octet-stream';
+function sanitize(s) {
+    return String(s).replace(/[/\\:*?"<>|]/g, '_').slice(0, 100);
 }

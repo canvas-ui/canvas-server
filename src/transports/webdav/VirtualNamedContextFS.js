@@ -67,8 +67,8 @@ export default class VirtualNamedContextFS {
         if (n === '/') {
             const folders = [];
             for (const { folder, feature } of ABSTRACTIONS) {
-                const result = await this.#listDocs(feature, 1);
-                if (result && result.count > 0) {
+                const docs = await this.#listDocs(feature, 1);
+                if (docs && docs.length > 0) {
                     folders.push({ name: folder, isDir: true, size: 0 });
                 }
             }
@@ -106,13 +106,13 @@ export default class VirtualNamedContextFS {
 
     async #readdirFolder(folderName) {
         const feature = FOLDER_MAP.get(folderName);
-        const result = await this.#listDocs(feature, 1000);
-        if (!result?.documents) return [];
+        const docs = await this.#listDocs(feature, 1000);
+        if (!docs?.length) return [];
 
         const entries = [];
         const used = new Set();
 
-        for (const doc of result.documents) {
+        for (const doc of docs) {
             let name = docName(doc);
             if (used.has(name)) {
                 const e = path.extname(name);
@@ -132,9 +132,9 @@ export default class VirtualNamedContextFS {
 
     async #findDoc(folderName, filename) {
         const feature = FOLDER_MAP.get(folderName);
-        const result = await this.#listDocs(feature, 1000);
-        if (!result?.documents) return null;
-        return result.documents.find(d => docName(d) === filename) || null;
+        const docs = await this.#listDocs(feature, 1000);
+        if (!docs?.length) return null;
+        return docs.find(d => docName(d) === filename) || null;
     }
 
     async #listDocs(feature, limit) {

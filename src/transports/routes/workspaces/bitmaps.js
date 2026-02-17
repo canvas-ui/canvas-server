@@ -3,6 +3,8 @@
 import ResponseObject from '../../ResponseObject.js';
 
 export default async function workspaceBitmapRoutes(fastify, options) {
+  const parseBool = (value) => value === true || value === 'true' || value === 1 || value === '1';
+
   async function getWorkspaceInstance(request, reply) {
     const identifier = request.params.id;
     const userId = request.user.id;
@@ -56,7 +58,7 @@ export default async function workspaceBitmapRoutes(fastify, options) {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return;
 
-      if (request.query.includeRaw === true) {
+      if (parseBool(request.query.includeRaw)) {
         const responseObject = new ResponseObject().badRequest('includeRaw is only supported for exact bitmap paths at /bitmaps/<key>');
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());
       }
@@ -102,9 +104,11 @@ export default async function workspaceBitmapRoutes(fastify, options) {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return;
 
-      const bitmapPath = request.params['*'];
-      const includeData = request.query.includeData === true;
-      const includeRaw = request.query.includeRaw === true;
+      const requestedPath = request.params['*'];
+      const forceRawBySuffix = typeof requestedPath === 'string' && requestedPath.endsWith('.bitmap');
+      const bitmapPath = forceRawBySuffix ? requestedPath.slice(0, -'.bitmap'.length) : requestedPath;
+      const includeData = parseBool(request.query.includeData);
+      const includeRaw = parseBool(request.query.includeRaw) || forceRawBySuffix;
       const exact = await workspace.getBitmap(bitmapPath, { includeData });
 
       if (includeRaw) {
@@ -114,6 +118,10 @@ export default async function workspaceBitmapRoutes(fastify, options) {
         }
 
         const rawBuffer = await workspace.getBitmapRawBuffer(bitmapPath);
+        if (!rawBuffer) {
+          const responseObject = new ResponseObject().notFound(`Bitmap "${bitmapPath}" not found`);
+          return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+        }
         const safeName = bitmapPath.replace(/[^a-z0-9._-]+/gi, '_') || 'bitmap';
         reply.header('Content-Type', 'application/octet-stream');
         reply.header('Content-Disposition', `attachment; filename="${safeName}.roar"`);

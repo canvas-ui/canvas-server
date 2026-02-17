@@ -308,6 +308,32 @@ class Workspace extends EventEmitter {
          return await this.db.findDocuments(contextSpec, featureBitmapArray, filterArray, rest);
     }
 
+    async listBitmaps(prefix = '', { includeData = false } = {}) {
+        if (!this.isActive) throw new Error('Workspace not active');
+        const keys = await this.db.bitmapIndex.listBitmaps(prefix);
+        const bitmaps = await Promise.all(keys.map(async (key) => this.getBitmap(key, { includeData })));
+        return bitmaps.filter(Boolean);
+    }
+
+    async getBitmap(key, { includeData = false } = {}) {
+        if (!this.isActive) throw new Error('Workspace not active');
+        if (!key || typeof key !== 'string') throw new Error('Bitmap key is required');
+
+        const bitmap = await this.db.bitmapIndex.getBitmap(key, false);
+        if (!bitmap) return null;
+
+        const out = {
+            key: bitmap.key,
+            size: bitmap.size,
+            isEmpty: bitmap.isEmpty,
+            min: bitmap.isEmpty ? null : bitmap.minimum(),
+            max: bitmap.isEmpty ? null : bitmap.maximum(),
+        };
+
+        if (includeData) out.ids = bitmap.toArray();
+        return out;
+    }
+
     clearDatabaseSync() {
         if (!this.isActive) { throw new Error('Workspace not active'); }
         return this.db.clearSync();

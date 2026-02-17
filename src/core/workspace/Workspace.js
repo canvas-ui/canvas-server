@@ -334,6 +334,17 @@ class Workspace extends EventEmitter {
         return out;
     }
 
+    async getBitmapRawBuffer(key) {
+        if (!this.isActive) throw new Error('Workspace not active');
+        if (!key || typeof key !== 'string') throw new Error('Bitmap key is required');
+
+        const bitmap = await this.db.bitmapIndex.getBitmap(key, false);
+        if (!bitmap) return null;
+
+        const serialized = bitmap.serialize(true); // Roaring portable format
+        return Buffer.isBuffer(serialized) ? serialized : Buffer.from(serialized);
+    }
+
     clearDatabaseSync() {
         if (!this.isActive) { throw new Error('Workspace not active'); }
         return this.db.clearSync();

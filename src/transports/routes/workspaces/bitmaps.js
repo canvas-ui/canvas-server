@@ -46,7 +46,8 @@ export default async function workspaceBitmapRoutes(fastify, options) {
       querystring: {
         type: 'object',
         properties: {
-          includeData: { type: 'boolean', default: false }
+          includeData: { type: 'boolean', default: false },
+          includeRaw: { type: 'boolean', default: false }
         }
       }
     }
@@ -55,7 +56,14 @@ export default async function workspaceBitmapRoutes(fastify, options) {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return;
 
-      const bitmaps = await workspace.listBitmaps('', { includeData: request.query.includeData === true });
+      if (request.query.includeRaw === true) {
+        const responseObject = new ResponseObject().badRequest('includeRaw is only supported for exact bitmap paths at /bitmaps/<key>');
+        return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+      }
+
+      const bitmaps = await workspace.listBitmaps('', {
+        includeData: request.query.includeData === true
+      });
       const responseObject = new ResponseObject().found(bitmaps, 'Bitmaps retrieved successfully', 200, bitmaps.length, bitmaps.length);
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
     } catch (error) {
@@ -84,7 +92,8 @@ export default async function workspaceBitmapRoutes(fastify, options) {
       querystring: {
         type: 'object',
         properties: {
-          includeData: { type: 'boolean', default: false }
+          includeData: { type: 'boolean', default: false },
+          includeRaw: { type: 'boolean', default: false }
         }
       }
     }
@@ -95,9 +104,24 @@ export default async function workspaceBitmapRoutes(fastify, options) {
 
       const bitmapPath = request.params['*'];
       const includeData = request.query.includeData === true;
+      const includeRaw = request.query.includeRaw === true;
       const exact = await workspace.getBitmap(bitmapPath, { includeData });
 
-      // Exact key wins, prefix list as fallback.
+      if (includeRaw) {
+        if (!exact) {
+          const responseObject = new ResponseObject().notFound(`Bitmap "${bitmapPath}" not found (includeRaw requires exact key match)`);
+          return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+        }
+
+        const rawBuffer = await workspace.getBitmapRawBuffer(bitmapPath);
+        const safeName = bitmapPath.replace(/[^a-z0-9._-]+/gi, '_') || 'bitmap';
+        reply.header('Content-Type', 'application/octet-stream');
+        reply.header('Content-Disposition', `attachment; filename="${safeName}.roar"`);
+        reply.header('X-Bitmap-Key', exact.key);
+        return reply.send(rawBuffer);
+      }
+
+      // Exact key wins, prefix list as fallback (JSON mode only).
       if (exact) {
         const responseObject = new ResponseObject().found(exact, 'Bitmap retrieved successfully');
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());

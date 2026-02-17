@@ -135,6 +135,7 @@ async function handleDav(res, { method, url, headers, body, context, contextPara
     const rel = decoded.startsWith(prefix) ? (decoded.slice(prefix.length) || '/') : '/';
 
     res.setHeader('DAV', '1');
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
 
     const vfs = new VirtualNamedContextFS(context);
 
@@ -255,12 +256,13 @@ function propEntry(entry, prefix, rel) {
     const name = esc(entry.name || path.basename(rel) || 'root');
     const now = new Date();
     const contentType = entry.contentType || 'application/octet-stream';
+    const epoch = now.getTime();
     const props = [
         `<D:displayname>${name}</D:displayname>`,
         `<D:resourcetype>${isDir ? '<D:collection/>' : ''}</D:resourcetype>`,
         `<D:getlastmodified>${httpDate(now)}</D:getlastmodified>`,
         `<D:creationdate>${isoDate(now)}</D:creationdate>`,
-        `<D:getetag>"v-${esc(name)}"</D:getetag>`,
+        `<D:getetag>"v-${esc(name)}-${epoch}"</D:getetag>`,
     ];
     if (!isDir) {
         props.push(`<D:getcontentlength>${entry.size || 0}</D:getcontentlength>`);

@@ -21,8 +21,14 @@ export default async function webdavRoutes(fastify) {
     const workspaceId = fastify.workspaceManager.resolveWorkspaceId(userId, workspace);
     if (!workspaceId) return null;
 
-    const ws = await fastify.workspaceManager.getWorkspace(workspaceId, userId);
+    let ws = await fastify.workspaceManager.getWorkspace(workspaceId, userId);
     if (!ws?.rootPath) return null;
+
+    // Auto-start workspace if inactive (WebDAV may be accessed before web login)
+    if (!ws.isActive) {
+      try { ws = await fastify.workspaceManager.startWorkspace(workspaceId, userId); }
+      catch (err) { logger.warn({ err, workspaceId }, 'Failed to auto-start workspace for WebDAV'); }
+    }
 
     const homePath = ws.homePath || path.join(ws.rootPath, 'home');
     await fs.mkdir(homePath, { recursive: true }).catch(() => {});
@@ -99,7 +105,7 @@ export default async function webdavRoutes(fastify) {
     }
 
     const hasAccess = ws.owner === request.user.id ||
-      (ws.acl || []).some(e => e.userId === request.user.id && e.permissions?.includes('read'));
+      !!(request.user.email && ws.acl?.users?.[request.user.email]);
 
     if (!hasAccess) {
       return reply.code(403).send(new ResponseObject().forbidden('Access denied').getResponse());

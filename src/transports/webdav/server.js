@@ -65,6 +65,7 @@ export class WebDAVHandler {
 
     res.setHeader('DAV', '1, 2');
     res.setHeader('MS-Author-Via', 'DAV');
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
 
     try {
       // ── Route: DAV root → show 3 virtual directories ────────────────
@@ -459,12 +460,13 @@ function virtualPropEntry(entry, prefix, rel) {
   const href = esc(encSegments(prefix + rel) + (isDir && !rel.endsWith('/') ? '/' : ''));
   const name = esc(entry.name || path.basename(rel) || 'root');
   const now = new Date();
+  const epoch = now.getTime();
   const props = [
     `<D:displayname>${name}</D:displayname>`,
     `<D:resourcetype>${isDir ? '<D:collection/>' : ''}</D:resourcetype>`,
     `<D:getlastmodified>${httpDate(now)}</D:getlastmodified>`,
     `<D:creationdate>${isoDate(now)}</D:creationdate>`,
-    `<D:getetag>"v-${esc(name)}"</D:getetag>`,
+    `<D:getetag>"v-${esc(name)}-${epoch}"</D:getetag>`,
   ];
   if (!isDir) {
     props.push(`<D:getcontentlength>${entry.size || 0}</D:getcontentlength>`);

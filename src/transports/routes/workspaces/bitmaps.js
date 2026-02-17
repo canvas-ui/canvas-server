@@ -126,6 +126,10 @@ export default async function workspaceBitmapRoutes(fastify, options) {
         reply.header('Content-Type', 'application/octet-stream');
         reply.header('Content-Disposition', `attachment; filename="${safeName}.roar"`);
         reply.header('X-Bitmap-Key', exact.key);
+        reply.header('X-Bitmap-Cardinality', String(exact.size));
+        reply.header('X-Bitmap-Is-Empty', String(exact.isEmpty));
+        reply.header('X-Bitmap-Min', String(exact.min ?? ''));
+        reply.header('X-Bitmap-Max', String(exact.max ?? ''));
         return reply.send(rawBuffer);
       }
 

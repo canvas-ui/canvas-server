@@ -23,7 +23,8 @@ class Context extends EventEmitter {
 
     // Context properties
     #id;
-    #baseUrl; // With workspace support we need to change the format to workspace://baseUrl/path
+    #scope; // 'workspace' (bound to one workspace) or 'universe' (can cross workspace boundaries)
+    #baseUrl;
     #url;
     #path;
     #pathArray;
@@ -74,6 +75,7 @@ class Context extends EventEmitter {
 
         // Context properties
         this.#id = options.id || uuidv4(); // TODO: Use human-typeable 6-char ULID
+        this.#scope = options.scope || (options.workspace?.type === 'universe' ? 'universe' : 'workspace');
         this.#url = null;
         this.#baseUrl = options.baseUrl || DEFAULT_BASE_URL;
         this.#path = null;
@@ -151,14 +153,15 @@ class Context extends EventEmitter {
                     this.#path = parsedUrl.path;
                     this.#pathArray = parsedUrl.pathArray;
                     this.#contextBitmapArray = [...parsedUrl.pathArray]; // Initialize contextBitmapArray
-                } else {
-                    // Different workspace, store as pending for later switching
+                } else if (this.#scope === 'universe') {
+                    // Universe-scoped: different workspace, store as pending for later switching
                     this.#pendingUrl = url;
-                    // For now, use current workspace as temporary URL
                     this.#url = `${this.#workspace.name}://${parsedUrl.path.replace(/^\//, '')}`;
                     this.#path = parsedUrl.path;
                     this.#pathArray = parsedUrl.pathArray;
-                    this.#contextBitmapArray = [...parsedUrl.pathArray]; // Initialize contextBitmapArray
+                    this.#contextBitmapArray = [...parsedUrl.pathArray];
+                } else {
+                    throw new Error(`Workspace-scoped context cannot target a different workspace: "${parsedUrl.workspaceId}"`);
                 }
             }
         } catch (error) {
@@ -194,6 +197,8 @@ class Context extends EventEmitter {
 
     // Getters / Setters
     get id() { return this.#id; }
+    get scope() { return this.#scope; }
+    get isUniverse() { return this.#scope === 'universe'; }
     get userId() { return this.#userId; }
     get baseUrl() { return this.#baseUrl; }
     get url() { return this.#url; }
@@ -595,6 +600,9 @@ class Context extends EventEmitter {
 
         // If the workspace name is different, switch to the new workspace
         if (targetWorkspaceName !== this.#workspace.name) {
+            if (!this.isUniverse) {
+                throw new Error(`Workspace-scoped context cannot navigate to a different workspace. Target: "${targetWorkspaceName}", current: "${this.#workspace.name}"`);
+            }
             await this.#switchWorkspace(targetWorkspaceName);
         }
 
@@ -1379,6 +1387,7 @@ class Context extends EventEmitter {
     toJSON() {
         return {
             id: this.#id,
+            scope: this.#scope,
             userId: this.#userId,
             url: this.#url,
             baseUrl: this.#baseUrl,

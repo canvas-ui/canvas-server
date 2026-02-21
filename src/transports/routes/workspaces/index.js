@@ -201,6 +201,28 @@ export default async function workspaceRoutes(fastify, options) {
     }
   });
 
+  // List contexts for a workspace
+  fastify.get('/:id/contexts', {
+    onRequest: [fastify.authenticate, resolveWorkspaceAddress, requireWorkspaceRead()],
+    schema: {
+      params: {
+        type: 'object',
+        required: ['id'],
+        properties: { id: { type: 'string' } }
+      }
+    }
+  }, async (request, reply) => {
+    try {
+      const contexts = fastify.contextManager.getContextsForWorkspace(request.workspace.id);
+      const response = new ResponseObject();
+      return reply.code(200).send(response.found(contexts, 'Contexts retrieved successfully', 200, contexts.length).getResponse());
+    } catch (error) {
+      fastify.log.error(error);
+      const response = new ResponseObject().serverError('Failed to list workspace contexts');
+      return reply.code(response.statusCode).send(response.getResponse());
+    }
+  });
+
   // Update workspace
   fastify.patch('/:id', {
     onRequest: [fastify.authenticate, resolveWorkspaceAddress, requireWorkspaceAdmin()],

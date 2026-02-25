@@ -1,260 +1,528 @@
-# REST API
+# API Reference
 
-> **📖 See [API Access Design](./API-ACCESS-DESIGN.md) for comprehensive authentication patterns, resource addressing, and access control documentation.**
+All REST endpoints are prefixed with `/rest/v2` unless noted otherwise.
+All responses use the standard `ResponseObject` envelope (see [Response Format](#response-format)).
 
-## Main entry points
-
-- `/auth`: Authentication and user management routes
-- `/pub`: Shared content and cross-user context access
-- `/workspaces`: Workspace management and operations
-- `/contexts`: Context management and operations
-- `/schemas`: Data abstraction schemas
-- `/ping`: Server status and health checks
-
-## Auth routes
-
-### Authentication Configuration
-- `GET /rest/v2/auth/config` - Get authentication configuration (strategies, domains)
-
-### User Authentication
-- `POST /rest/v2/auth/login` - User login (supports local, IMAP, and auto strategies)
-- `POST /rest/v2/auth/logout` - User logout (client-side token invalidation)
-- `POST /rest/v2/auth/register` - User registration
-- `GET /rest/v2/auth/me` - Get current user profile
-
-### Password Management
-- `PUT /rest/v2/auth/password` - Update user password (requires current password)
-- `POST /rest/v2/auth/forgot-password` - Request password reset email
-- `POST /rest/v2/auth/reset-password` - Reset password with token
-
-### Email Verification
-- `POST /rest/v2/auth/verify-email` - Request email verification
-- `GET /rest/v2/auth/verify-email/:token` - Verify email with token
-
-### API Token Management
-- `GET /rest/v2/auth/tokens` - List user's API tokens
-- `POST /rest/v2/auth/tokens` - Create new API token
-- `PUT /rest/v2/auth/tokens/:tokenId` - Update API token (name/description)
-- `DELETE /rest/v2/auth/tokens/:tokenId` - Delete API token
-
-### Token Verification
-- `POST /rest/v2/auth/token/verify` - Verify JWT or API token validity
-
-## Pub routes
-
-### Shared Context Access
-- `GET /rest/v2/pub/contexts/:contextId` - Get shared context by ID (token-based)
-
-### Shared Document Operations
-- `GET /rest/v2/pub/contexts/:contextId/documents` - List documents in shared context
-- `POST /rest/v2/pub/contexts/:contextId/documents` - Insert documents into shared context
-- `PUT /rest/v2/pub/contexts/:contextId/documents` - Update documents in shared context
-
-## Workspaces
-
-### Workspace Lifecycle
-- `GET /rest/v2/workspaces` - List user's workspaces
-- `POST /rest/v2/workspaces` - Create new workspace
-- `GET /rest/v2/workspaces/:id` - Get workspace by ID
-- `PUT /rest/v2/workspaces/:id` - Update workspace
-- `DELETE /rest/v2/workspaces/:id` - Delete workspace
-
-### Workspace Documents
-- `GET /rest/v2/workspaces/:id/documents` - List documents in workspace
-- `POST /rest/v2/workspaces/:id/documents` - Insert documents into workspace
-- `PUT /rest/v2/workspaces/:id/documents` - Update documents in workspace
-- `DELETE /rest/v2/workspaces/:id/documents` - Delete documents from workspace
-- `DELETE /rest/v2/workspaces/:id/documents/remove` - Remove documents from workspace
-
-### Workspace Tree Operations
-- `GET /rest/v2/workspaces/:id/tree` - Get workspace tree structure
-- `POST /rest/v2/workspaces/:id/tree/paths` - Insert path into workspace tree
-- `DELETE /rest/v2/workspaces/:id/tree/paths` - Remove path from workspace tree
-- `POST /rest/v2/workspaces/:id/tree/paths/move` - Move path in workspace tree
-- `POST /rest/v2/workspaces/:id/tree/paths/copy` - Copy path in workspace tree
-- `POST /rest/v2/workspaces/:id/tree/paths/merge-up` - Merge layer bitmaps upwards
-- `POST /rest/v2/workspaces/:id/tree/paths/merge-down` - Merge layer bitmaps downwards
-
-### Workspace Token Management
-- `GET /rest/v2/workspaces/:id/tokens` - List workspace access tokens
-- `POST /rest/v2/workspaces/:id/tokens` - Create workspace access token
-- `PUT /rest/v2/workspaces/:id/tokens/:tokenId` - Update workspace access token
-- `DELETE /rest/v2/workspaces/:id/tokens/:tokenId` - Delete workspace access token
-
-## Contexts
-
-### Context Lifecycle
-- `GET /rest/v2/contexts` - List user's contexts
-- `POST /rest/v2/contexts` - Create new context
-- `GET /rest/v2/contexts/:id` - Get context by ID
-- `PUT /rest/v2/contexts/:id` - Update context
-- `DELETE /rest/v2/contexts/:id` - Delete context
-
-### Context URL Management
-- `GET /rest/v2/contexts/:id/url` - Get context URL
-- `POST /rest/v2/contexts/:id/url` - Set context URL
-- `GET /rest/v2/contexts/:id/path` - Get context path
-- `GET /rest/v2/contexts/:id/path-array` - Get context path array
-
-### Context Documents
-- `GET /rest/v2/contexts/:id/documents` - List documents in context
-- `POST /rest/v2/contexts/:id/documents` - Insert documents into context
-- `PUT /rest/v2/contexts/:id/documents` - Update documents in context
-- `DELETE /rest/v2/contexts/:id/documents` - Delete documents from context (direct DB deletion)
-- `DELETE /rest/v2/contexts/:id/documents/remove` - Remove documents from context
-- `GET /rest/v2/contexts/:id/documents/by-id/:docId` - Get document by ID
-- `GET /rest/v2/contexts/:id/documents/:docId` - Get document by ID (direct route)
-- `GET /rest/v2/contexts/:id/documents/by-abstraction/:abstraction` - Get documents by abstraction
-- `GET /rest/v2/contexts/:id/documents/by-hash/:algo/:hash` - Get document by hash (owner-only)
-
-### Context Tree Operations
-- `GET /rest/v2/contexts/:id/tree` - Get context tree structure
-- `POST /rest/v2/contexts/:id/tree/paths` - Insert path into context tree
-- `DELETE /rest/v2/contexts/:id/tree/paths` - Remove path from context tree
-- `POST /rest/v2/contexts/:id/tree/paths/move` - Move path in context tree
-- `POST /rest/v2/contexts/:id/tree/paths/copy` - Copy path in context tree
-- `POST /rest/v2/contexts/:id/tree/paths/merge-up` - Merge layer bitmaps upwards
-- `POST /rest/v2/contexts/:id/tree/paths/merge-down` - Merge layer bitmaps downwards
-
-## Schemas
-
-### Schema Management
-- `GET /rest/v2/schemas` - List all data schemas
-- `GET /rest/v2/schemas/data/abstraction/:abstraction` - List schemas by abstraction type
-- `GET /rest/v2/schemas/data/abstraction/:abstraction.json` - Get JSON schema for specific abstraction
-
-## Ping
-
-### Server Status
-- `GET /ping` - Simple ping endpoint
-- `GET /debug` - Debug endpoint (requires authentication)
-- `GET /rest/v2/ping` - Server status with system information
-
-# Websockets
-
-## Subscriptions
-
-The server uses a push-only socket.io model. Clients **must subscribe** to a channel to receive scoped events.
-
-- Subscribe: `socket.emit('subscribe', { channel: '<channel>' })`
-- Unsubscribe: `socket.emit('unsubscribe', { channel: '<channel>' })`
-- Acks: `subscribed` / `unsubscribed` with `{ channel }`
-
-Channels:
-
-- `workspace:<workspaceId|workspaceName>` (example: `workspace:universe`)
-- `context:<contextId>` (example: `context:work`)
-
-## Workspaces
-
-### Workspace Events
-- `workspace.status.changed` - Workspace status changes
-- `workspace.created` - New workspace created
-- `workspace.updated` - Workspace updated
-- `workspace.deleted` - Workspace deleted
-- `workspace.documents.inserted` - Documents inserted into workspace
-- `workspace.documents.updated` - Documents updated in workspace
-- `workspace.documents.removed` - Documents removed from workspace path (non-destructive)
-- `workspace.documents.deleted` - Documents deleted from workspace
-- `workspace.tree.path.inserted` - Path inserted into workspace tree
-- `workspace.tree.path.removed` - Path removed from workspace tree
-- `workspace.tree.path.moved` - Path moved in workspace tree
-- `workspace.tree.path.copied` - Path copied in workspace tree
-
-## Contexts
-
-### Context Events
-- `context.url.set` - Context URL changed
-- `context.updated` - Context updated
-- `context.locked` - Context locked
-- `context.unlocked` - Context unlocked
-- `context.acl.updated` - Context ACL updated
-- `context.acl.revoked` - Context ACL revoked
-- `document.inserted` - Document(s) inserted into a context
-- `document.updated` - Document(s) updated in a context
-- `document.removed` - Document removed from a context (non-destructive)
-- `document.removed.batch` - Documents removed from a context (non-destructive, batch)
-- `document.deleted` - Document deleted from DB via a context (owner-only)
-- `document.deleted.batch` - Documents deleted from DB via a context (owner-only, batch)
-- `context.tree.path.inserted` - Path inserted into context tree
-- `context.tree.path.removed` - Path removed from context tree
-- `context.tree.path.moved` - Path moved in context tree
-- `context.tree.path.copied` - Path copied in context tree
-
-# Common
-
-## ResponseObject
-
-The API uses a standardized `ResponseObject` class for all responses with the following structure:
-
-```javascript
-{
-  status: 'success' | 'error',
-  statusCode: number,
-  message: string,
-  payload: any,
-  count: number | null
-}
-```
-
-### Response Methods
-- `success(payload, message, statusCode, count)` - Generic success response
-- `created(payload, message, statusCode, count)` - Resource creation success
-- `found(payload, message, statusCode, count)` - Resource retrieval success
-- `updated(payload, message, statusCode, count)` - Resource update success
-- `deleted(message, statusCode, count)` - Resource deletion success
-- `notFound(message, payload, statusCode)` - Resource not found
-- `error(message, payload, statusCode)` - Generic error
-- `badRequest(message, payload, statusCode)` - Invalid request
-- `unauthorized(message, payload, statusCode)` - Authentication required
-- `forbidden(message, payload, statusCode)` - Insufficient permissions
-- `conflict(message, payload, statusCode)` - Request conflict
-- `serverError(message, payload, statusCode)` - Internal server error
+---
 
 ## Authentication
 
-The API supports two authentication methods:
+### Auth Configuration & Login
 
-### JWT Tokens
-- Used primarily for web UI authentication
-- Short-lived tokens (default: 1 day)
-- Include user information in payload
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/auth/config` | — | Get auth strategies & password policy |
+| POST | `/auth/login` | Rate-limited | Login (local/IMAP/LDAP/auto) |
+| POST | `/auth/logout` | — | Client-side logout (no-op server-side) |
+| POST | `/auth/register` | Rate-limited | Register new user |
+| GET | `/auth/me` | `authenticateCustom` | Current user profile |
+
+### Password & Email Verification
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| PUT | `/auth/password` | `authenticate` | Change password |
+| POST | `/auth/forgot-password` | Rate-limited | Request password reset email |
+| POST | `/auth/reset-password` | — | Reset password with token |
+| POST | `/auth/verify-email` | Rate-limited | Request verification email |
+| GET | `/auth/verify-email/:token` | — | Verify email with token |
 
 ### API Tokens
-- Long-lived tokens with `canvas-` prefix
-- Used for programmatic access
-- Support token-based workspace sharing via ACLs
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/auth/tokens` | `authenticate` | List user's API tokens |
+| POST | `/auth/tokens` | `authenticate` | Create API token |
+| PUT | `/auth/tokens/:tokenId` | `authenticate` | Update token name/description |
+| DELETE | `/auth/tokens/:tokenId` | `authenticate` | Delete API token |
+| POST | `/auth/token/verify` | — | Verify JWT or API token validity |
+
+### Devices
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| POST | `/auth/devices/register` | `authenticate` | Register device, mint device token |
+| GET | `/auth/devices` | `authenticate` | List user's devices |
+| PATCH | `/auth/devices/:deviceId` | `authenticate` | Rename device |
+
+---
+
+## Workspaces
+
+### Lifecycle
+
+| Method | Path | Auth | ACL | Description |
+|--------|------|------|-----|-------------|
+| GET | `/workspaces` | `authenticate` | — | List user's workspaces |
+| POST | `/workspaces` | `authenticate` | — | Create workspace |
+| GET | `/workspaces/:id` | `authenticate` | read | Get workspace |
+| PATCH | `/workspaces/:id` | `authenticate` | admin | Update workspace config |
+| DELETE | `/workspaces/:id` | `authenticate` | admin | Delete workspace |
+| GET | `/workspaces/:id/status` | `authenticate` | read | Get workspace status |
+| POST | `/workspaces/:id/start` | `authenticate` | admin | Start workspace |
+| POST | `/workspaces/:id/stop` | `authenticate` | admin | Stop workspace |
+| POST | `/workspaces/:id/open` | `authenticate` | admin | Start workspace (alias) |
+| POST | `/workspaces/:id/close` | `authenticate` | admin | Stop workspace (alias) |
+| GET | `/workspaces/:id/contexts` | `authenticate` | read | List workspace's contexts |
+
+### Documents
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/workspaces/:id/documents` | `authenticate` | List/search documents |
+| POST | `/workspaces/:id/documents` | `authenticateClient` | Insert documents |
+| PUT | `/workspaces/:id/documents` | `authenticateClient` | Update documents |
+| DELETE | `/workspaces/:id/documents` | `authenticate` | Hard-delete documents |
+| DELETE | `/workspaces/:id/documents/remove` | `authenticate` | Remove documents from context (soft) |
+| GET | `/workspaces/:id/documents/by-id/:docId` | `authenticate` | Get document by ID |
+| GET | `/workspaces/:id/documents/:docId` | `authenticate` | Get document by ID (shorthand) |
+| GET | `/workspaces/:id/documents/by-abstraction/:abstraction` | `authenticate` | List by abstraction type |
+| GET | `/workspaces/:id/documents/by-hash/:algo/:hash` | `authenticate` | Get document by checksum |
+| DELETE | `/workspaces/:id/documents/clear-database` | `authenticate` | Clear all documents (dev only) |
+
+**Query parameters for GET `/documents`:**
+- `q` / `search` — Full-text search query
+- `contextSpec` — Context specification filter
+- `featureArray` — Feature array filter
+- `filterArray` — Additional filters
+- `limit`, `offset`, `page` — Pagination
+
+### Tree Operations
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/workspaces/:id/tree` | `authenticate` | Get tree structure |
+| POST | `/workspaces/:id/tree/paths` | `authenticate` | Insert path |
+| DELETE | `/workspaces/:id/tree/paths` | `authenticate` | Remove path |
+| POST | `/workspaces/:id/tree/paths/move` | `authenticate` | Move path |
+| POST | `/workspaces/:id/tree/paths/copy` | `authenticate` | Copy path |
+| POST | `/workspaces/:id/tree/paths/merge-up` | `authenticate` | Merge bitmaps upward |
+| POST | `/workspaces/:id/tree/paths/merge-down` | `authenticate` | Merge bitmaps downward |
+| POST | `/workspaces/:id/tree/paths/subtract-up` | `authenticate` | Subtract bitmaps upward |
+| POST | `/workspaces/:id/tree/paths/subtract-down` | `authenticate` | Subtract bitmaps downward |
+| POST | `/workspaces/:id/tree/layers/merge` | `authenticate` | Merge layer bitmaps |
+| POST | `/workspaces/:id/tree/layers/subtract` | `authenticate` | Subtract layer bitmaps |
+
+### Layers
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/workspaces/:id/layers` | `authenticate` | List layers |
+| GET | `/workspaces/:id/layers/:layerId` | `authenticate` | Get layer |
+| PATCH | `/workspaces/:id/layers/:layerId` | `authenticate` | Rename layer |
+| POST | `/workspaces/:id/layers/:layerId/lock` | `authenticate` | Lock layer |
+| POST | `/workspaces/:id/layers/:layerId/unlock` | `authenticate` | Unlock layer |
+| DELETE | `/workspaces/:id/layers/:layerId` | `authenticate` | Delete layer |
+
+### Bitmaps
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/workspaces/:id/bitmaps` | `authenticate` | List bitmaps |
+| GET | `/workspaces/:id/bitmaps/*` | `authenticate` | Get bitmap by path (JSON or raw `.bitmap`) |
+
+### Tokens (workspace sharing)
+
+| Method | Path | Auth | ACL | Description |
+|--------|------|------|-----|-------------|
+| GET | `/workspaces/:id/tokens` | `authenticate` | admin | List access tokens |
+| POST | `/workspaces/:id/tokens` | `authenticate` | admin | Create access token |
+| GET | `/workspaces/:id/tokens/:tokenHash` | `authenticate` | admin | Get token details |
+| PATCH | `/workspaces/:id/tokens/:tokenHash` | `authenticate` | admin | Update token permissions |
+| DELETE | `/workspaces/:id/tokens/:tokenHash` | `authenticate` | admin | Delete token |
+
+### Shares (email-based)
+
+| Method | Path | Auth | ACL | Description |
+|--------|------|------|-----|-------------|
+| GET | `/workspaces/:id/shares` | `authenticate` | admin | List shares |
+| POST | `/workspaces/:id/shares` | `authenticate` | admin | Grant access by email |
+| PUT | `/workspaces/:id/shares/:userEmail` | `authenticate` | admin | Update share permissions |
+| DELETE | `/workspaces/:id/shares/:userEmail` | `authenticate` | admin | Revoke share |
+
+### Links
+
+| Method | Path | Auth | ACL | Description |
+|--------|------|------|-----|-------------|
+| GET | `/workspaces/:id/links` | `authenticate` | read | List all links |
+| GET | `/workspaces/:id/links/:type` | `authenticate` | read | List links by type |
+| POST | `/workspaces/:id/links/:type` | `authenticate` | write | Add link(s) |
+| DELETE | `/workspaces/:id/links/:type` | `authenticate` | write | Remove link(s) |
+
+### Dotfiles
+
+| Method | Path | Auth | ACL | Description |
+|--------|------|------|-----|-------------|
+| GET | `/workspaces/:id/dotfiles` | `authenticate` | read | List dotfiles |
+| POST | `/workspaces/:id/dotfiles` | `authenticate` | write | Create dotfiles |
+| PUT | `/workspaces/:id/dotfiles` | `authenticate` | write | Update dotfiles |
+| DELETE | `/workspaces/:id/dotfiles` | `authenticate` | write | Delete dotfiles |
+| GET | `/workspaces/:id/dotfiles/status` | `authenticate` | read | Git repository status |
+| POST | `/workspaces/:id/dotfiles/init` | `authenticate` | write | Initialize git repository |
+| GET/POST | `/workspaces/:id/dotfiles/git/*` | Basic/Bearer | read/write | Git HTTP backend |
+
+### Services
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/workspaces/:id/services` | `authenticate` | List service statuses |
+| POST | `/workspaces/:id/services/:name/enable` | `authenticate` | Enable service |
+| POST | `/workspaces/:id/services/:name/disable` | `authenticate` | Disable service |
+| GET | `/workspaces/:id/services/:name/config` | `authenticate` | Get service config |
+| PUT | `/workspaces/:id/services/:name/config` | `authenticate` | Update service config |
+
+### Settings
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/workspaces/:id/:workspaceId/settings` | — | Get workspace settings |
+| PUT | `/workspaces/:id/:workspaceId/settings` | — | Update workspace settings |
+
+> **Note:** Settings routes have known bugs — see API-REVIEW.md.
+
+---
+
+## Contexts
+
+### Lifecycle
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/contexts` | `authenticate` | List user's contexts |
+| POST | `/contexts` | `authenticate` | Create context |
+| GET | `/contexts/:id` | `authenticate` | Get context |
+| PUT | `/contexts/:id` | `authenticate` | Update context |
+| DELETE | `/contexts/:id` | `authenticate` | Delete context |
+
+### URL & Path
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/contexts/:id/url` | `authenticate` | Get context URL |
+| POST | `/contexts/:id/url` | `authenticate` | Set context URL |
+| GET | `/contexts/:id/path` | `authenticate` | Get context path |
+| GET | `/contexts/:id/path-array` | `authenticate` | Get context path as array |
+
+### Documents
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/contexts/:id/documents` | `authenticate` | List/search documents |
+| POST | `/contexts/:id/documents` | `authenticate` | Insert documents |
+| POST | `/contexts/:id/documents/batch` | `authenticate` | Insert documents (batch) |
+| PUT | `/contexts/:id/documents` | `authenticate` | Update documents |
+| DELETE | `/contexts/:id/documents` | `authenticate` | Hard-delete documents |
+| DELETE | `/contexts/:id/documents/remove` | `authenticate` | Remove documents (soft) |
+| GET | `/contexts/:id/documents/by-id/:docId` | `authenticate` | Get document by ID |
+| GET | `/contexts/:id/documents/:docId` | `authenticate` | Get document by ID (shorthand) |
+| DELETE | `/contexts/:id/documents/:docId` | `authenticate` | Delete single document |
+| POST | `/contexts/:id/documents/delete` | `authenticate` | Delete documents (legacy) |
+| GET | `/contexts/:id/documents/by-abstraction/:abstraction` | `authenticate` | List by abstraction |
+| GET | `/contexts/:id/documents/by-hash/:algo/:hash` | `authenticate` | Get by checksum |
+
+### Tree Operations
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/contexts/:id/tree` | `authenticate` | Get tree structure |
+| POST | `/contexts/:id/tree/paths` | `authenticate` | Insert path |
+| DELETE | `/contexts/:id/tree/paths` | `authenticate` | Remove path |
+| POST | `/contexts/:id/tree/paths/move` | `authenticate` | Move path |
+| POST | `/contexts/:id/tree/paths/copy` | `authenticate` | Copy path |
+| POST | `/contexts/:id/tree/paths/merge-up` | `authenticate` | Merge bitmaps upward |
+| POST | `/contexts/:id/tree/paths/merge-down` | `authenticate` | Merge bitmaps downward |
+| POST | `/contexts/:id/tree/paths/subtract-up` | `authenticate` | Subtract bitmaps upward |
+| POST | `/contexts/:id/tree/paths/subtract-down` | `authenticate` | Subtract bitmaps downward |
+| POST | `/contexts/:id/tree/layers/merge` | `authenticate` | Merge layer bitmaps |
+| POST | `/contexts/:id/tree/layers/subtract` | `authenticate` | Subtract layer bitmaps |
+
+### Tokens (context sharing)
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/contexts/:id/tokens` | `authenticate` | List access tokens |
+| POST | `/contexts/:id/tokens` | `authenticate` | Create access token |
+| DELETE | `/contexts/:id/tokens/:tokenHash` | `authenticate` | Delete token |
+
+### Shares (email-based)
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/contexts/:id/shares` | `authenticate` | List shares |
+| POST | `/contexts/:id/shares` | `authenticate` | Grant access by email |
+| PUT | `/contexts/:id/shares/:userEmail` | `authenticate` | Update share |
+| DELETE | `/contexts/:id/shares/:userEmail` | `authenticate` | Revoke share |
+
+### Dotfiles
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/contexts/:id/dotfiles` | `authenticate` | List dotfiles |
+| POST | `/contexts/:id/dotfiles` | `authenticate` | Create dotfiles |
+| PUT | `/contexts/:id/dotfiles` | `authenticate` | Update dotfiles |
+| DELETE | `/contexts/:id/dotfiles` | `authenticate` | Delete dotfiles |
+
+### Rules
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/contexts/:id/rules` | `authenticate` | List rules |
+| POST | `/contexts/:id/rules` | `authenticate` | Create rule |
+| PUT | `/contexts/:id/rules/:ruleId` | `authenticate` | Update rule |
+| DELETE | `/contexts/:id/rules/:ruleId` | `authenticate` | Delete rule |
+
+> **Note:** Rules routes have known bugs — see API-REVIEW.md.
+
+---
+
+## Public / Shared Access
+
+### Token-Based Workspace Access
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/pub/workspaces/:id` | Bearer token | Get shared workspace |
+| GET | `/pub/workspaces/:id/documents` | Bearer token | List documents |
+| POST | `/pub/workspaces/:id/documents` | Bearer token | Insert documents |
+| GET | `/pub/workspaces/:id/tree` | Bearer token | Get tree |
+| POST | `/pub/workspaces/:id/start` | `authenticate` | Start shared workspace |
+| POST | `/pub/workspaces/:id/stop` | `authenticate` | Stop shared workspace |
+
+### Token-Based Context Access
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/pub/contexts/:id` | Bearer token / user ACL | Get shared context |
+| GET | `/pub/contexts/:id/documents` | Bearer token / user ACL | List documents |
+| POST | `/pub/contexts/:id/documents` | Bearer token / user ACL | Insert documents |
+| PUT | `/pub/contexts/:id/documents` | Bearer token / user ACL | Update documents |
+
+### Pub Token Management
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| POST | `/pub/tokens/validate` | Bearer `canvas-*` | Validate token for resource |
+| GET | `/pub/tokens/info` | Bearer `canvas-*` | Get token metadata |
+| DELETE | `/pub/tokens/revoke` | `authenticate` | Revoke token (owner) |
+| GET | `/pub/health` | — | Health check |
+
+---
+
+## Schemas
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/schemas` | — | List all schemas |
+| GET | `/schemas/data/abstraction/:abstraction` | — | List schemas by abstraction |
+| GET | `/schemas/data/abstraction/:abstraction.json` | — | Get JSON schema definition |
+
+---
+
+## Roles
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/roles` | `authenticate` | List roles (filter: type/userId/workspaceId/status) |
+| POST | `/roles` | `authenticate` | Create role |
+| GET | `/roles/:roleId` | `authenticate` | Get role |
+| POST | `/roles/:roleId/start` | `authenticate` | Start role |
+| POST | `/roles/:roleId/stop` | `authenticate` | Stop role |
+| POST | `/roles/:roleId/restart` | `authenticate` | Restart role |
+| DELETE | `/roles/:roleId` | `authenticate` | Delete role |
+| GET | `/roles/:roleId/logs` | `authenticate` | Get role logs |
+| GET | `/roles/:roleId/stats` | `authenticate` | Get role stats |
+| GET | `/roles/:roleId/health` | `authenticate` | Get role health |
+
+## Role Templates
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/role-templates` | `authenticate` | List templates |
+| GET | `/role-templates/:name` | `authenticate` | Get template |
+
+---
+
+## Agents
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/agents` | `authenticate` | List agents |
+| POST | `/agents` | `authenticate` | Create agent |
+| GET | `/agents/:id` | `authenticate` | Get agent |
+| PUT | `/agents/:id` | `authenticate` | Update agent |
+| DELETE | `/agents/:id` | `authenticate` | Delete agent |
+| POST | `/agents/:id/start` | `authenticate` | Start agent |
+| POST | `/agents/:id/stop` | `authenticate` | Stop agent |
+| GET | `/agents/:id/status` | `authenticate` | Get agent status |
+| POST | `/agents/:id/chat` | `authenticate` | Chat (non-streaming) |
+| POST | `/agents/:id/chat/stream` | `authenticate` | Chat (SSE streaming) |
+| GET | `/agents/:id/memory` | `authenticate` | Query agent memory |
+| DELETE | `/agents/:id/memory` | `authenticate` | Clear agent memory |
+| GET | `/agents/:id/mcp/tools` | `authenticate` | List MCP tools |
+| POST | `/agents/:id/mcp/tools/:toolName` | `authenticate` | Call MCP tool |
+
+---
+
+## Admin
+
+All admin routes require `authenticate` + admin role.
+
+### Users
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/admin/users` | admin | List users |
+| POST | `/admin/users` | admin | Create user |
+| GET | `/admin/users/:userId` | admin | Get user |
+| PUT | `/admin/users/:userId` | admin | Update user |
+| DELETE | `/admin/users/:userId` | admin | Delete user |
+| GET | `/admin/users/:userId/ssh-keys` | admin | List SSH keys |
+| POST | `/admin/users/:userId/ssh-keys` | admin | Add SSH key |
+| GET | `/admin/users/:userId/ssh-keys/:keyId` | admin | Get SSH key |
+| DELETE | `/admin/users/:userId/ssh-keys/:keyId` | admin | Delete SSH key |
+
+### Workspaces
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/admin/workspaces` | admin | List all workspaces |
+| POST | `/admin/workspaces` | admin | Create workspace for any user |
+| GET | `/admin/workspaces/:id` | admin | Get workspace |
+| PUT | `/admin/workspaces/:id` | admin | Update workspace |
+| DELETE | `/admin/workspaces/:id` | admin | Delete workspace |
+| POST | `/admin/workspaces/:id/reindex-features` | admin | Reindex feature bitmaps |
+
+---
+
+## WebDAV
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| All WebDAV methods | `/workspaces/:workspace/dav/*` | Basic/Bearer | WebDAV filesystem for workspaces |
+| PROPFIND/GET/HEAD | `/contexts/:context/dav/*` | Basic/Bearer | Read-only WebDAV for contexts |
+
+---
+
+## Health
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/ping` (no prefix) | — | Simple ping |
+| GET | `/debug` (no prefix) | `authenticate` | Debug info |
+| GET | `/ping` | — | Structured status with version/uptime |
+| GET | `/menu` | `authenticate` | Dynamic menu based on user role |
+
+---
+
+## WebSocket API
+
+Push-only model over Socket.IO. Clients subscribe to channels to receive scoped events.
+
+### Connection
+
+```javascript
+const socket = io(serverUrl, {
+  auth: { token: 'your-jwt-or-api-token' }
+});
+```
+
+### Subscription
+
+```javascript
+socket.emit('subscribe', { channel: 'workspace:<id>' });
+socket.emit('subscribe', { channel: 'context:<id>' });
+socket.emit('unsubscribe', { channel: 'workspace:<id>' });
+```
+
+### Workspace Events
+
+| Event | Payload | Description |
+|-------|---------|-------------|
+| `workspace.status.changed` | `{ workspaceId, status }` | Status changed |
+| `workspace.created` | workspace data | Workspace created |
+| `workspace.updated` | workspace data | Workspace updated |
+| `workspace.deleted` | `{ workspaceId }` | Workspace deleted |
+| `workspace.documents.inserted` | `{ workspaceId, documents }` | Documents inserted |
+| `workspace.documents.updated` | `{ workspaceId, documents }` | Documents updated |
+| `workspace.documents.removed` | `{ workspaceId, documentIds }` | Documents removed (soft) |
+| `workspace.documents.deleted` | `{ workspaceId, documentIds }` | Documents deleted (hard) |
+| `workspace.tree.path.inserted` | `{ workspaceId, path }` | Tree path inserted |
+| `workspace.tree.path.removed` | `{ workspaceId, path }` | Tree path removed |
+| `workspace.tree.path.moved` | `{ workspaceId, from, to }` | Tree path moved |
+| `workspace.tree.path.copied` | `{ workspaceId, from, to }` | Tree path copied |
+
+### Context Events
+
+| Event | Payload | Description |
+|-------|---------|-------------|
+| `context.url.set` | `{ contextId, url }` | URL changed |
+| `context.updated` | context data | Context updated |
+| `context.locked` | `{ contextId }` | Context locked |
+| `context.unlocked` | `{ contextId }` | Context unlocked |
+| `context.acl.updated` | `{ contextId, acl }` | ACL updated |
+| `context.acl.revoked` | `{ contextId }` | ACL revoked |
+| `document.inserted` | `{ contextId, documents }` | Documents inserted |
+| `document.updated` | `{ contextId, documents }` | Documents updated |
+| `document.removed` | `{ contextId, documentId }` | Document removed |
+| `document.removed.batch` | `{ contextId, documentIds }` | Documents removed (batch) |
+| `document.deleted` | `{ contextId, documentId }` | Document deleted |
+| `document.deleted.batch` | `{ contextId, documentIds }` | Documents deleted (batch) |
+| `context.tree.path.inserted` | `{ contextId, path }` | Tree path inserted |
+| `context.tree.path.removed` | `{ contextId, path }` | Tree path removed |
+| `context.tree.path.moved` | `{ contextId, from, to }` | Tree path moved |
+| `context.tree.path.copied` | `{ contextId, from, to }` | Tree path copied |
+
+### Agent Events
+
+```javascript
+socket.emit('agent:subscribe', { agentId: '<id>' });
+socket.emit('agent:unsubscribe', { agentId: '<id>' });
+socket.emit('agent:chat:stream', { agentId: '<id>', message: '...' });
+```
+
+Agent responses arrive as `agent:chat:chunk` and `agent:chat:done` events.
+
+---
+
+## Response Format
+
+All responses use the `ResponseObject` envelope:
+
+```json
+{
+  "status": "success | error",
+  "statusCode": 200,
+  "message": "Human-readable message",
+  "payload": {},
+  "count": null,
+  "totalCount": null
+}
+```
+
+## Authentication Methods
+
+| Method | Token Format | Use Case |
+|--------|-------------|----------|
+| JWT | Standard Bearer token | Web UI, short-lived (default: 1 day) |
+| API Token | `canvas-*` prefix | Programmatic access, long-lived |
+| Device Token | `canvas-*` prefix | Device integrations |
 
 ## Access Control
 
-### Workspace ACL
-- Owner access: Full permissions (read, write, admin)
-- Token-based access: Configurable permissions per token
-- JWT tokens: Owner-only access
+### Workspace ACL Cascade
+
+1. **Owner** — full access
+2. **Token-based** (API tokens only) — SHA-256 hash matched against `workspace.acl.tokens`
+3. **Email-based** (JWT only) — user email matched against `workspace.acl.users`
 
 ### Context ACL
-- Owner access: Full permissions
-- Shared access: Document-level permissions (documentRead, documentWrite, documentReadWrite)
-- Cross-user context access via `/pub` routes
 
-## Error Handling
+- **Owner** — full access
+- **Token-based** — configurable permissions per token
+- **Email-based** — access levels: `documentRead`, `documentWrite`, `documentReadWrite`
 
-All endpoints return standardized error responses using the `ResponseObject` class. Common error scenarios:
+### Permission Levels
 
-- **401 Unauthorized**: Invalid or missing authentication token
-- **403 Forbidden**: Insufficient permissions for the requested operation
-- **404 Not Found**: Requested resource doesn't exist
-- **409 Conflict**: Resource conflict (e.g., duplicate names)
-- **500 Internal Server Error**: Unexpected server error
-
-## Rate Limiting
-
-Currently no rate limiting is implemented. Consider implementing rate limiting for production deployments.
-
-## CORS
-
-CORS is enabled with the following configuration:
-- Origin: All origins (configurable)
-- Methods: GET, PUT, POST, DELETE, PATCH, OPTIONS
-- Credentials: true
-- Allowed headers: Content-Type, Authorization, Accept, X-App-Name, X-Selected-Session
+- `read` — view resources
+- `write` — create/update/delete resources
+- `admin` — full control including ACL management

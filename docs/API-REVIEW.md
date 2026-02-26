@@ -191,25 +191,62 @@ Routes should be thin — validate input, call core, return response. These viol
 5. **`enforceClientTags`** — move to Context or a document service
 6. **`checkWorkspaceAccess`/`checkContextAccess`** — refactor to use direct lookup instead of listing all resources
 
-### Phase 5: API Design Improvements
+### Phase 5: Document Lifecycle & Storage API
+
+The API needs to support three levels of document operations matching the domain model:
+
+**Removal:**
+
+| Level | Endpoint | Semantics | Status |
+|-------|----------|-----------|--------|
+| Unlink | `DELETE /documents/remove` | Remove bitmap link from virtual path | **Exists** |
+| Index | `DELETE /documents` | Remove from SynapsD, keep on backends | **Exists** |
+| Storage | `DELETE /documents/storage` | Remove from backend(s), optionally from index | **Planned** |
+
+The storage-level deletion should accept:
+```json
+{
+  "documentIds": ["abc", "def"],
+  "backends": ["fs:home", "s3:archive"],
+  "removeFromIndex": false
+}
+```
+When `backends` is omitted → remove from all backends. When `removeFromIndex: true` → also remove from SynapsD.
+
+**Insertion:**
+
+`POST /documents` should grow optional `paths` and `backends` fields:
+```json
+{
+  "documents": [{ "schema": "data/abstraction/file", "data": {...} }],
+  "paths": ["/music/concerts/foo", "/playlists/summer"],
+  "backends": ["fs:home"],
+  "featureArray": [...]
+}
+```
+When `paths` omitted → use current context path (existing behavior).
+When `backends` omitted → use workspace default backends / rules for data type.
+
+This aligns with the existing `metadata.dataPaths[]` pattern in Workspace.js where `#onFileAdd` already tracks multi-backend URIs per document.
+
+### Phase 6: General API Design Improvements
 
 1. **Use PATCH consistently for partial updates** — currently mix of PUT and PATCH
 2. **Consistent plural resource naming** — already mostly good (`/documents`, `/tokens`, `/shares`)
-3. **Remove action verbs from URLs** — `/start`, `/stop`, `/open`, `/close` could become `PATCH /:id/status` with `{ status: 'active' | 'inactive' }`, but pragmatically the current approach is fine for lifecycle operations
-4. **Consistent error responses** — standardize on `new ResponseObject()` instance methods everywhere
-5. **Add pagination metadata** — ensure all list endpoints return `count`/`totalCount` consistently
-6. **Standardize query param naming** — `featureArray` vs `filterArray` naming is not self-documenting; consider `features` and `filters`
-7. **Token-based auth should use index** — hash→token lookup instead of scanning all users/workspaces
+3. **Consistent error responses** — standardize on `new ResponseObject()` instance methods everywhere
+4. **Add pagination metadata** — ensure all list endpoints return `count`/`totalCount` consistently
+5. **Standardize query param naming** — `featureArray` vs `filterArray` naming is not self-documenting; consider `features` and `filters`
+6. **Token-based auth should use index** — hash→token lookup instead of scanning all users/workspaces
 
 ### Summary: Impact vs Effort
 
-| Phase | Impact | Effort | Priority |
-|-------|--------|--------|----------|
-| 1. Fix bugs | Critical | Low | **Now** |
-| 2. Remove dead code | Medium | Low | **Now** |
+| Phase | Impact | Effort | Status |
+|-------|--------|--------|--------|
+| 1. Fix bugs | Critical | Low | **Done** |
+| 2. Remove dead code | Medium | Low | **Done** (~500 lines removed) |
 | 3. Shared middleware | High | Medium | Next sprint |
 | 4. Move logic to core | High | Medium-High | Next sprint |
-| 5. API design | Low-Medium | Low | Ongoing |
+| 5. Document lifecycle & storage API | High | Medium | Next — aligns API with domain model |
+| 6. General API design | Low-Medium | Low | Ongoing |
 
-**Estimated code reduction from Phase 2 alone: ~500-700 lines.**
 **Estimated code reduction from Phase 3+4: ~800-1200 lines** (deduplication + extracted helpers).

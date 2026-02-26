@@ -3,6 +3,39 @@
 All REST endpoints are prefixed with `/rest/v2` unless noted otherwise.
 All responses use the standard `ResponseObject` envelope (see [Response Format](#response-format)).
 
+## Domain Model
+
+A **Workspace** is a bucket for indexing data from any backend (local FS, IMAP, S3, NAS, CIFS, HTTP, streaming sources). Each workspace has:
+
+- **SynapsD** (index/DB) — stores document metadata, checksums, schemas, and bitmap indexes
+- **Stored** (storage) — manages backends where actual data lives. A backend is a driver+config pair (e.g. `fs:home`, `s3:archive`). Currently supports local FS; S3, IMAP, etc. planned.
+- **Tree** — virtual directory structures built on bitmap indexes. Two types: bitmap-based and FS-semantics.
+
+A **Document** is a checksum-addressed indexed object. A single `greatestSongEver.mp3`:
+- Is indexed **once** by checksum (e.g. `sha256/abc123...`)
+- Can be **stored** on multiple backends (tracked via `metadata.dataPaths[]`)
+- Can be **linked** to multiple virtual paths in the tree via bitmap indexes
+
+A **Context** is a user's current position/scope within a workspace — like a cursor pointing at a URL (e.g. `universe://music/concerts`). Operations on a context are scoped to that path in the tree.
+
+### Three Levels of Document Operations
+
+| Operation | What happens | Data in index | Data on backends |
+|-----------|-------------|---------------|------------------|
+| **Unlink** (`/remove`) | Remove bitmap link between document and virtual path | Stays | Stays |
+| **Delete from index** (`DELETE /documents`) | Remove document record from SynapsD | Removed | Stays |
+| **Delete from storage** (`DELETE /documents/storage`) | Remove actual data from backend(s) | Optionally removed | Removed from specified backends |
+
+### Insert Flow
+
+When a document is inserted (e.g. drag-and-drop of a file to `/home/music/concerts/foo`):
+
+1. **Store** — data is persisted to one or more backends (default: configured backends for that data type)
+2. **Index** — document metadata + checksum registered in SynapsD
+3. **Link** — bitmap index updated to link the document to the target virtual path(s)
+
+The API should accept optional `paths[]` and `backends[]` parameters; when omitted, sensible defaults apply (current context path, configured default backends).
+
 ---
 
 ## Authentication
@@ -65,17 +98,34 @@ All responses use the standard `ResponseObject` envelope (see [Response Format](
 
 ### Documents
 
+**Query:**
+
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | GET | `/workspaces/:id/documents` | `authenticate` | List/search documents |
-| POST | `/workspaces/:id/documents` | `authenticateClient` | Insert documents |
-| PUT | `/workspaces/:id/documents` | `authenticateClient` | Update documents |
-| DELETE | `/workspaces/:id/documents` | `authenticate` | Hard-delete documents |
-| DELETE | `/workspaces/:id/documents/remove` | `authenticate` | Remove documents from context (soft) |
-| GET | `/workspaces/:id/documents/by-id/:docId` | `authenticate` | Get document by ID |
-| GET | `/workspaces/:id/documents/:docId` | `authenticate` | Get document by ID (shorthand) |
+| GET | `/workspaces/:id/documents/:docId` | `authenticate` | Get document by ID |
 | GET | `/workspaces/:id/documents/by-abstraction/:abstraction` | `authenticate` | List by abstraction type |
 | GET | `/workspaces/:id/documents/by-hash/:algo/:hash` | `authenticate` | Get document by checksum |
+
+**Mutate:**
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| POST | `/workspaces/:id/documents` | `authenticateClient` | Index + store + link documents |
+| PUT | `/workspaces/:id/documents` | `authenticateClient` | Update document metadata |
+
+**Three-level removal:**
+
+| Method | Path | Auth | Level | Description |
+|--------|------|------|-------|-------------|
+| DELETE | `/workspaces/:id/documents/remove` | `authenticate` | Unlink | Remove from virtual path (bitmap unlink, data stays) |
+| DELETE | `/workspaces/:id/documents` | `authenticate` | Index | Remove from SynapsD index (data stays on backends) |
+| DELETE | `/workspaces/:id/documents/storage` | `authenticate` | Storage | Remove from backend(s) — **planned** |
+
+**Dev:**
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
 | DELETE | `/workspaces/:id/documents/clear-database` | `authenticate` | Clear all documents (dev only) |
 
 **Query parameters for GET `/documents`:**
@@ -84,6 +134,17 @@ All responses use the standard `ResponseObject` envelope (see [Response Format](
 - `featureArray` — Feature array filter
 - `filterArray` — Additional filters
 - `limit`, `offset`, `page` — Pagination
+
+**POST `/documents` body:**
+```json
+{
+  "documents": [{}],
+  "featureArray": ["data/abstraction/file"],
+  "paths": ["/music/concerts/foo"],
+  "backends": ["fs:home"]
+}
+```
+`paths` and `backends` are optional — defaults to current context path and workspace-configured backends.
 
 ### Tree Operations
 
@@ -194,17 +255,32 @@ All responses use the standard `ResponseObject` envelope (see [Response Format](
 
 ### Documents
 
+Context document operations are scoped to the context's current URL path in the tree.
+
+**Query:**
+
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| GET | `/contexts/:id/documents` | `authenticate` | List/search documents |
-| POST | `/contexts/:id/documents` | `authenticate` | Insert documents |
-| PUT | `/contexts/:id/documents` | `authenticate` | Update documents |
-| DELETE | `/contexts/:id/documents` | `authenticate` | Hard-delete documents |
-| DELETE | `/contexts/:id/documents/remove` | `authenticate` | Remove documents (soft) |
+| GET | `/contexts/:id/documents` | `authenticate` | List/search documents at context path |
 | GET | `/contexts/:id/documents/:docId` | `authenticate` | Get document by ID |
-| DELETE | `/contexts/:id/documents/:docId` | `authenticate` | Delete single document |
 | GET | `/contexts/:id/documents/by-abstraction/:abstraction` | `authenticate` | List by abstraction |
 | GET | `/contexts/:id/documents/by-hash/:algo/:hash` | `authenticate` | Get by checksum |
+
+**Mutate:**
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| POST | `/contexts/:id/documents` | `authenticate` | Index + store + link documents |
+| PUT | `/contexts/:id/documents` | `authenticate` | Update document metadata |
+
+**Three-level removal:**
+
+| Method | Path | Auth | Level | Description |
+|--------|------|------|-------|-------------|
+| DELETE | `/contexts/:id/documents/remove` | `authenticate` | Unlink | Remove from context path (bitmap unlink) |
+| DELETE | `/contexts/:id/documents` | `authenticate` | Index | Remove from SynapsD index |
+| DELETE | `/contexts/:id/documents/:docId` | `authenticate` | Index | Remove single document from index |
+| DELETE | `/contexts/:id/documents/storage` | `authenticate` | Storage | Remove from backend(s) — **planned** |
 
 ### Tree Operations
 

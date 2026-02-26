@@ -457,10 +457,10 @@ class ContextManager extends EventEmitter {
         const context = await this.getContext(userId, contextId);
         if (!context) return null;
 
-        if (updates.acl !== undefined) context.updateACL(updates.acl);
+        if (updates.acl !== undefined) await context.updateACL(updates.acl);
         if (updates.rules !== undefined) {
-            for (const rule of (context.rules || [])) context.removeRule(rule.id);
-            for (const rule of updates.rules) context.addRule(rule);
+            for (const rule of (context.rules || [])) await context.removeRule(rule.id);
+            for (const rule of updates.rules) await context.addRule(rule);
         }
 
         this.saveContext(userId, context);

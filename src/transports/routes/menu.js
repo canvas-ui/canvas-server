@@ -8,7 +8,7 @@ import ResponseObject from '../ResponseObject.js';
  * Returns dynamic menu structure based on user role
  */
 export default async function menuRoutes(fastify, options) {
-    fastify.get('/menu', async (request, reply) => {
+    fastify.get('/menu', { onRequest: [fastify.authenticate] }, async (request, reply) => {
         try {
             const userId = request.user.id;
 

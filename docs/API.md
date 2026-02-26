@@ -61,8 +61,6 @@ All responses use the standard `ResponseObject` envelope (see [Response Format](
 | GET | `/workspaces/:id/status` | `authenticate` | read | Get workspace status |
 | POST | `/workspaces/:id/start` | `authenticate` | admin | Start workspace |
 | POST | `/workspaces/:id/stop` | `authenticate` | admin | Stop workspace |
-| POST | `/workspaces/:id/open` | `authenticate` | admin | Start workspace (alias) |
-| POST | `/workspaces/:id/close` | `authenticate` | admin | Stop workspace (alias) |
 | GET | `/workspaces/:id/contexts` | `authenticate` | read | List workspace's contexts |
 
 ### Documents
@@ -171,15 +169,6 @@ All responses use the standard `ResponseObject` envelope (see [Response Format](
 | GET | `/workspaces/:id/services/:name/config` | `authenticate` | Get service config |
 | PUT | `/workspaces/:id/services/:name/config` | `authenticate` | Update service config |
 
-### Settings
-
-| Method | Path | Auth | Description |
-|--------|------|------|-------------|
-| GET | `/workspaces/:id/:workspaceId/settings` | — | Get workspace settings |
-| PUT | `/workspaces/:id/:workspaceId/settings` | — | Update workspace settings |
-
-> **Note:** Settings routes have known bugs — see API-REVIEW.md.
-
 ---
 
 ## Contexts
@@ -209,14 +198,11 @@ All responses use the standard `ResponseObject` envelope (see [Response Format](
 |--------|------|------|-------------|
 | GET | `/contexts/:id/documents` | `authenticate` | List/search documents |
 | POST | `/contexts/:id/documents` | `authenticate` | Insert documents |
-| POST | `/contexts/:id/documents/batch` | `authenticate` | Insert documents (batch) |
 | PUT | `/contexts/:id/documents` | `authenticate` | Update documents |
 | DELETE | `/contexts/:id/documents` | `authenticate` | Hard-delete documents |
 | DELETE | `/contexts/:id/documents/remove` | `authenticate` | Remove documents (soft) |
-| GET | `/contexts/:id/documents/by-id/:docId` | `authenticate` | Get document by ID |
-| GET | `/contexts/:id/documents/:docId` | `authenticate` | Get document by ID (shorthand) |
+| GET | `/contexts/:id/documents/:docId` | `authenticate` | Get document by ID |
 | DELETE | `/contexts/:id/documents/:docId` | `authenticate` | Delete single document |
-| POST | `/contexts/:id/documents/delete` | `authenticate` | Delete documents (legacy) |
 | GET | `/contexts/:id/documents/by-abstraction/:abstraction` | `authenticate` | List by abstraction |
 | GET | `/contexts/:id/documents/by-hash/:algo/:hash` | `authenticate` | Get by checksum |
 
@@ -270,8 +256,6 @@ All responses use the standard `ResponseObject` envelope (see [Response Format](
 | POST | `/contexts/:id/rules` | `authenticate` | Create rule |
 | PUT | `/contexts/:id/rules/:ruleId` | `authenticate` | Update rule |
 | DELETE | `/contexts/:id/rules/:ruleId` | `authenticate` | Delete rule |
-
-> **Note:** Rules routes have known bugs — see API-REVIEW.md.
 
 ---
 

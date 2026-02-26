@@ -148,28 +148,32 @@ Routes should be thin — validate input, call core, return response. These viol
 
 ## Part 4: Simplification Plan
 
-### Phase 1: Fix Crashing Bugs (immediate)
+### Phase 1: Fix Crashing Bugs — DONE
 
-1. **Add `updateContext()` to ContextManager** — implement or wire to existing `saveContext()`
-2. **Fix rules.js** — swap `getContext` params, add userId to `saveContext`, add auth middleware
-3. **Fix ResponseObject static calls** — add static factory methods or fix call sites in settings.js, admin/workspaces.js, admin/users.js, menu.js, rules.js
-4. **Fix documents.js** — instantiate `ResponseObject` in `by-hash` and `DELETE /` handlers
-5. **Fix rate limiter** — add `tooManyRequests()` method to ResponseObject
-6. **Add auth middleware to settings.js** — or better, remove settings.js entirely (see Phase 2)
-7. **Fix duplicate context event delivery** — remove the 4 direct listeners in `transports/index.js`
-8. **Fix workspace channel subscription check** — add `socket.subscriptions.has()` check like context channel
+1. ~~**Add `updateContext()` to ContextManager**~~ ✓
+2. ~~**Fix rules.js**~~ ✓ — swapped params, added auth, fixed saveContext signature
+3. ~~**Fix ResponseObject static calls**~~ ✓ — added static factory methods + `tooManyRequests()`
+4. ~~**Fix documents.js**~~ ✓ — fixed bare `response` variable in by-hash and DELETE /
+5. ~~**Fix rate limiter**~~ ✓ — `tooManyRequests()` method added
+6. ~~**Remove settings.js**~~ ✓ — deleted entirely (was duplicate + broken)
+7. ~~**Fix duplicate context event delivery**~~ ✓ — removed 4 direct listeners from transports/index.js
+8. ~~**Fix workspace channel subscription check**~~ ✓ — added `socket.subscriptions.has()` check
+9. ~~**Fix workspace constructResourceAddress**~~ ✓ — replaced with constructWorkspaceReference
+10. ~~**Fix menu.js options.users**~~ ✓ — uses fastify.users now
+11. ~~**Fix lastActivity never updated**~~ ✓ — updated on ping
+12. ~~**Fix redundant JWT secret ternary**~~ ✓ — simplified
 
-### Phase 2: Remove Dead Routes & Code
+### Phase 2: Remove Dead Routes & Code — DONE
 
-1. **Remove `/open` and `/close`** — aliases for `/start` and `/stop`
-2. **Remove `settings.js`** — duplicates `PATCH /:id` in workspace index, has broken auth, broken ResponseObject usage
-3. **Remove `GET /contexts/:id/documents/by-id/:docId`** — duplicate of `GET /:docId`
-4. **Remove `POST /contexts/:id/documents/delete`** — legacy duplicate of `DELETE /`
-5. **Remove `POST /contexts/:id/documents/batch`** — duplicate of `POST /`
-6. **Consolidate admin user routes** — merge admin/index.js user CRUD with admin/users.js
+1. ~~**Remove `/open` and `/close`**~~ ✓
+2. ~~**Remove `settings.js`**~~ ✓
+3. ~~**Remove `GET /contexts/:id/documents/by-id/:docId`**~~ ✓
+4. ~~**Remove `POST /contexts/:id/documents/delete`**~~ ✓
+5. ~~**Remove `POST /contexts/:id/documents/batch`**~~ ✓
+6. ~~**Remove `admin/workspaces.js`**~~ ✓ — was never registered (dead code)
 7. **Remove unused Workspace convenience methods** — `insert()`, `update()`, `remove()`, `delete()`, `get()`, `list()` (routes use `workspace.db.*` directly, or better: start using these methods and remove direct db access)
 8. **Remove unused Context methods** — old `grantAccess`/`revokeAccess`, single-doc variants if routes only use array variants
-9. **Remove dead imports** — `crypto` in ResponseObject, commented-out code
+9. ~~**Remove dead imports & commented-out code**~~ ✓
 
 ### Phase 3: Extract Shared Middleware
 

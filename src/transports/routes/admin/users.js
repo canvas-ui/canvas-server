@@ -9,13 +9,11 @@ import { createSSHKeyHelpers } from './ssh-keys-helpers.js';
  * Admin-only routes for managing all users
  */
 export default async function adminUsersRoutes(fastify, options) {
-    const { users } = options;
-    const sshKeyHelpers = createSSHKeyHelpers(users);
+    const sshKeyHelpers = createSSHKeyHelpers(fastify.users);
 
-    // Middleware to check admin role
     const checkAdmin = async (request, reply) => {
         const userId = request.user.id;
-        const user = await users.get(userId);
+        const user = await fastify.users.get(userId);
 
         if (!user || user.userType !== 'admin') {
             return reply.code(403).send(ResponseObject.error('Admin access required'));
@@ -29,7 +27,7 @@ export default async function adminUsersRoutes(fastify, options) {
      */
     fastify.get('/', async (request, reply) => {
         try {
-            const allUsers = await users.list();
+            const allUsers = await fastify.users.list();
 
             // Remove sensitive information
             const sanitizedUsers = allUsers.map(user => ({
@@ -56,7 +54,7 @@ export default async function adminUsersRoutes(fastify, options) {
         try {
             const { userId } = request.params;
 
-            const user = await users.get(userId);
+            const user = await fastify.users.get(userId);
             if (!user) {
                 return reply.code(404).send(ResponseObject.error('User not found'));
             }
@@ -88,7 +86,7 @@ export default async function adminUsersRoutes(fastify, options) {
             const { userId } = request.params;
             const { name, email, userType, status } = request.body;
 
-            const user = await users.get(userId);
+            const user = await fastify.users.get(userId);
             if (!user) {
                 return reply.code(404).send(ResponseObject.error('User not found'));
             }
@@ -100,7 +98,7 @@ export default async function adminUsersRoutes(fastify, options) {
             if (userType !== undefined) updates.userType = userType;
             if (status !== undefined) updates.status = status;
 
-            const updatedUser = await users.update(userId, updates);
+            const updatedUser = await fastify.users.update(userId, updates);
 
             return reply.send(ResponseObject.success({
                 message: 'User updated successfully',
@@ -125,7 +123,7 @@ export default async function adminUsersRoutes(fastify, options) {
         try {
             const { userId } = request.params;
 
-            const user = await users.get(userId);
+            const user = await fastify.users.get(userId);
             if (!user) {
                 return reply.code(404).send(ResponseObject.error('User not found'));
             }
@@ -135,7 +133,7 @@ export default async function adminUsersRoutes(fastify, options) {
                 return reply.code(400).send(ResponseObject.error('Cannot delete your own account'));
             }
 
-            await users.remove(userId);
+            await fastify.users.remove(userId);
 
             return reply.send(ResponseObject.success({ message: 'User deleted successfully' }));
         } catch (error) {
@@ -156,7 +154,7 @@ export default async function adminUsersRoutes(fastify, options) {
         try {
             const { userId } = request.params;
 
-            const user = await users.get(userId);
+            const user = await fastify.users.get(userId);
             if (!user) {
                 return reply.code(404).send(ResponseObject.error('User not found'));
             }
@@ -187,7 +185,7 @@ export default async function adminUsersRoutes(fastify, options) {
                 return reply.code(400).send(ResponseObject.error('SSH public key is required'));
             }
 
-            const user = await users.get(userId);
+            const user = await fastify.users.get(userId);
             if (!user) {
                 return reply.code(404).send(ResponseObject.error('User not found'));
             }
@@ -213,7 +211,7 @@ export default async function adminUsersRoutes(fastify, options) {
         try {
             const { userId, keyId } = request.params;
 
-            const user = await users.get(userId);
+            const user = await fastify.users.get(userId);
             if (!user) {
                 return reply.code(404).send(ResponseObject.error('User not found'));
             }
@@ -238,7 +236,7 @@ export default async function adminUsersRoutes(fastify, options) {
         try {
             const { userId, keyId } = request.params;
 
-            const user = await users.get(userId);
+            const user = await fastify.users.get(userId);
             if (!user) {
                 return reply.code(404).send(ResponseObject.error('User not found'));
             }

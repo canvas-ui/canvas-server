@@ -1,138 +1,141 @@
 'use strict';
 
 import ResponseObject from '../../ResponseObject.js';
+import { validateUser } from '../../auth/strategies.js';
 
-/**
- * Context Rules Routes
- *
- * Manages context-specific linking rules
- */
 export default async function contextRulesRoutes(fastify, options) {
-    const { contextManager } = options;
-
-    /**
-     * List all rules for a context
-     */
-    fastify.get('/:contextId/rules', async (request, reply) => {
+    fastify.addHook('preHandler', async (request, reply) => {
         try {
-            const { contextId } = request.params;
-            const userId = request.user.id;
-
-            const context = await contextManager.getContext(contextId, userId);
-            if (!context) {
-                return reply.code(404).send(ResponseObject.error('Context not found'));
-            }
-
-            const rules = context.rules || [];
-            return reply.send(ResponseObject.success({ rules }));
-        } catch (error) {
-            request.log.error(error);
-            return reply.code(500).send(ResponseObject.error(error.message));
+            validateUser(request.user, ['id']);
+        } catch (err) {
+            const response = new ResponseObject().unauthorized(err.message);
+            return reply.code(response.statusCode).send(response.getResponse());
         }
     });
 
-    /**
-     * Add a new rule to a context
-     */
-    fastify.post('/:contextId/rules', async (request, reply) => {
+    fastify.get('/:contextId/rules', {
+        onRequest: [fastify.authenticate],
+    }, async (request, reply) => {
         try {
-            const { contextId } = request.params;
-            const { type, criteria, description } = request.body;
-            const userId = request.user.id;
-
-            if (!type || !criteria) {
-                return reply.code(400).send(ResponseObject.error('Type and criteria are required'));
+            const context = await fastify.contextManager.getContext(request.user.id, request.params.contextId);
+            if (!context) {
+                const response = new ResponseObject().notFound('Context not found');
+                return reply.code(response.statusCode).send(response.getResponse());
             }
 
-            const context = await contextManager.getContext(contextId, userId);
+            const response = new ResponseObject().success({ rules: context.rules || [] });
+            return reply.code(response.statusCode).send(response.getResponse());
+        } catch (error) {
+            request.log.error(error);
+            const response = new ResponseObject().error(error.message);
+            return reply.code(response.statusCode).send(response.getResponse());
+        }
+    });
+
+    fastify.post('/:contextId/rules', {
+        onRequest: [fastify.authenticate],
+        schema: {
+            body: {
+                type: 'object',
+                required: ['type', 'criteria'],
+                properties: {
+                    type: { type: 'string' },
+                    criteria: { type: 'object' },
+                    description: { type: 'string' }
+                }
+            }
+        }
+    }, async (request, reply) => {
+        try {
+            const context = await fastify.contextManager.getContext(request.user.id, request.params.contextId);
             if (!context) {
-                return reply.code(404).send(ResponseObject.error('Context not found'));
+                const response = new ResponseObject().notFound('Context not found');
+                return reply.code(response.statusCode).send(response.getResponse());
             }
 
             const rule = {
                 id: `rule-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-                type,
-                criteria,
-                description: description || '',
+                type: request.body.type,
+                criteria: request.body.criteria,
+                description: request.body.description || '',
                 createdAt: new Date().toISOString(),
             };
 
             context.addRule(rule);
-            await contextManager.saveContext(context);
+            fastify.contextManager.saveContext(request.user.id, context);
 
-            return reply.code(201).send(ResponseObject.success({ rule }));
+            const response = new ResponseObject().created({ rule });
+            return reply.code(response.statusCode).send(response.getResponse());
         } catch (error) {
             request.log.error(error);
-            return reply.code(500).send(ResponseObject.error(error.message));
+            const response = new ResponseObject().error(error.message);
+            return reply.code(response.statusCode).send(response.getResponse());
         }
     });
 
-    /**
-     * Update a rule
-     */
-    fastify.put('/:contextId/rules/:ruleId', async (request, reply) => {
+    fastify.put('/:contextId/rules/:ruleId', {
+        onRequest: [fastify.authenticate],
+    }, async (request, reply) => {
         try {
-            const { contextId, ruleId } = request.params;
-            const { type, criteria, description } = request.body;
-            const userId = request.user.id;
-
-            const context = await contextManager.getContext(contextId, userId);
+            const context = await fastify.contextManager.getContext(request.user.id, request.params.contextId);
             if (!context) {
-                return reply.code(404).send(ResponseObject.error('Context not found'));
+                const response = new ResponseObject().notFound('Context not found');
+                return reply.code(response.statusCode).send(response.getResponse());
             }
 
             const rules = context.rules || [];
-            const ruleIndex = rules.findIndex(r => r.id === ruleId);
-
-            if (ruleIndex === -1) {
-                return reply.code(404).send(ResponseObject.error('Rule not found'));
+            const existing = rules.find(r => r.id === request.params.ruleId);
+            if (!existing) {
+                const response = new ResponseObject().notFound('Rule not found');
+                return reply.code(response.statusCode).send(response.getResponse());
             }
 
-            // Update rule
+            const { type, criteria, description } = request.body;
             const updatedRule = {
-                ...rules[ruleIndex],
-                type: type || rules[ruleIndex].type,
-                criteria: criteria || rules[ruleIndex].criteria,
-                description: description !== undefined ? description : rules[ruleIndex].description,
+                ...existing,
+                type: type || existing.type,
+                criteria: criteria || existing.criteria,
+                description: description !== undefined ? description : existing.description,
                 updatedAt: new Date().toISOString(),
             };
 
-            // Remove old rule and add updated one
-            context.removeRule(ruleId);
+            context.removeRule(request.params.ruleId);
             context.addRule(updatedRule);
-            await contextManager.saveContext(context);
+            fastify.contextManager.saveContext(request.user.id, context);
 
-            return reply.send(ResponseObject.success({ rule: updatedRule }));
+            const response = new ResponseObject().updated({ rule: updatedRule });
+            return reply.code(response.statusCode).send(response.getResponse());
         } catch (error) {
             request.log.error(error);
-            return reply.code(500).send(ResponseObject.error(error.message));
+            const response = new ResponseObject().error(error.message);
+            return reply.code(response.statusCode).send(response.getResponse());
         }
     });
 
-    /**
-     * Delete a rule
-     */
-    fastify.delete('/:contextId/rules/:ruleId', async (request, reply) => {
+    fastify.delete('/:contextId/rules/:ruleId', {
+        onRequest: [fastify.authenticate],
+    }, async (request, reply) => {
         try {
-            const { contextId, ruleId } = request.params;
-            const userId = request.user.id;
-
-            const context = await contextManager.getContext(contextId, userId);
+            const context = await fastify.contextManager.getContext(request.user.id, request.params.contextId);
             if (!context) {
-                return reply.code(404).send(ResponseObject.error('Context not found'));
+                const response = new ResponseObject().notFound('Context not found');
+                return reply.code(response.statusCode).send(response.getResponse());
             }
 
-            const removed = context.removeRule(ruleId);
+            const removed = context.removeRule(request.params.ruleId);
             if (!removed) {
-                return reply.code(404).send(ResponseObject.error('Rule not found'));
+                const response = new ResponseObject().notFound('Rule not found');
+                return reply.code(response.statusCode).send(response.getResponse());
             }
 
-            await contextManager.saveContext(context);
+            fastify.contextManager.saveContext(request.user.id, context);
 
-            return reply.send(ResponseObject.success({ message: 'Rule deleted successfully' }));
+            const response = new ResponseObject().deleted(null, 'Rule deleted successfully');
+            return reply.code(response.statusCode).send(response.getResponse());
         } catch (error) {
             request.log.error(error);
-            return reply.code(500).send(ResponseObject.error(error.message));
+            const response = new ResponseObject().error(error.message);
+            return reply.code(response.statusCode).send(response.getResponse());
         }
     });
 }

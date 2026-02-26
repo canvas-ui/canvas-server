@@ -37,8 +37,12 @@ export default function registerWorkspaceWebSocket(fastify, socket) {
       const userId = socket.user?.id;
 
       if (!workspaceId) {
-        // If event isn't workspace-specific just forward.
         socket.emit(eventName, eventPayload);
+        return;
+      }
+
+      // Only forward if client explicitly subscribed to this workspace channel
+      if (!socket.subscriptions?.has?.(`workspace:${workspaceId}`)) {
         return;
       }
 

@@ -447,6 +447,28 @@ class ContextManager extends EventEmitter {
     }
 
     /**
+     * Update a context's mutable properties
+     * @param {string} userId - User ID
+     * @param {string|number} contextId - Context ID
+     * @param {Object} updates - Fields to update (acl, rules, etc.)
+     * @returns {Promise<Context|null>} Updated context or null if not found
+     */
+    async updateContext(userId, contextId, updates = {}) {
+        const context = await this.getContext(userId, contextId);
+        if (!context) return null;
+
+        if (updates.acl !== undefined) await context.updateACL(updates.acl);
+        if (updates.rules !== undefined) {
+            for (const rule of (context.rules || [])) await context.removeRule(rule.id);
+            for (const rule of updates.rules) await context.addRule(rule);
+        }
+
+        this.saveContext(userId, context);
+        this.emit('context.updated', { ...context.toJSON(), contextId: context.id });
+        return context;
+    }
+
+    /**
      * Remove a context for a user
      * @param {string} userId - User ID
      * @param {string|number} contextId - Context ID

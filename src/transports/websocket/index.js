@@ -272,9 +272,11 @@ export default function setupWebSocketHandlers(fastify) {
     socket.emit('authenticated', { userId: user.id, email: user.email });
     logger.debug(`✅ Sent authentication confirmation to ${socket.id}`);
 
-    // heartbeat
+    // heartbeat — also refreshes the inactivity timer
     socket.on('ping', () => {
       logger.debug(`💗 Heartbeat from ${socket.id}`);
+      const conn = connections.get(socket.id);
+      if (conn) conn.lastActivity = Date.now();
       socket.emit('pong', { time: Date.now() });
     });
 

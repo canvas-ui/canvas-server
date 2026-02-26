@@ -66,10 +66,6 @@ export default async function workspaceRoutes(fastify, options) {
     prefix: '/:id/links',
     onRequest: [resolveWorkspaceAddress]
   });
-  fastify.register(import('./settings.js'), {
-    prefix: '/:id',
-    onRequest: [resolveWorkspaceAddress]
-  });
 
   // List all workspaces
   fastify.get('/', {
@@ -177,19 +173,14 @@ export default async function workspaceRoutes(fastify, options) {
         }
       };
 
-      // Include resource address if it was resolved from user/resource format
       if (request.originalAddress) {
         response.resourceAddress = request.originalAddress;
       } else {
-        // Try to construct resource address from workspace data
         try {
-          const resourceAddress = await fastify.workspaceManager.constructResourceAddress(workspace);
-          if (resourceAddress) {
-            response.resourceAddress = resourceAddress;
-          }
-        } catch (error) {
-          // Ignore errors in address construction
-        }
+          response.resourceAddress = fastify.workspaceManager.constructWorkspaceReference(
+            workspace.owner, workspace.name
+          );
+        } catch (_) {}
       }
 
       const responseObject = new ResponseObject().found(response, 'Workspace retrieved successfully');

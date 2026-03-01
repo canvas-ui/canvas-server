@@ -317,7 +317,9 @@ class WorkspaceManager extends EventEmitter {
                 const item = {
                     ...entry,
                     status: ws.status,
-                    isActive: ws.isActive
+                    isActive: ws.isActive,
+                    documentCount: ws.stats?.documentCount ?? 0,
+                    bitmapCount: ws.stats?.bitmapStoreSize ?? 0
                 };
                 if (userId && !isOwner && hasSharedAccess) {
                     item.type = 'shared';

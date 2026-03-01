@@ -46,6 +46,34 @@ export default async function workspaceLifecycleRoutes(fastify, options) {
     }
   });
 
+  // Get workspace stats (SynapsD database statistics)
+  fastify.get('/stats', {
+    onRequest: [fastify.authenticate, requireWorkspaceRead()],
+    schema: {
+      params: {
+        type: 'object',
+        required: ['id'],
+        properties: {
+          id: { type: 'string' }
+        }
+      }
+    }
+  }, async (request, reply) => {
+    try {
+      const workspace = request.workspace;
+      if (!workspace.isActive) {
+        const responseObject = new ResponseObject().badRequest('Workspace is not active');
+        return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+      }
+      const responseObject = new ResponseObject().found(workspace.stats, 'Workspace stats retrieved successfully');
+      return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+    } catch (error) {
+      fastify.log.error(error);
+      const responseObject = new ResponseObject().serverError('Failed to get workspace stats');
+      return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+    }
+  });
+
   // Start workspace
   fastify.post('/start', {
     onRequest: [fastify.authenticate, requireWorkspaceAdmin()],

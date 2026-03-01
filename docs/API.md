@@ -92,6 +92,7 @@ The API should accept optional `paths[]` and `backends[]` parameters; when omitt
 | PATCH | `/workspaces/:id` | `authenticate` | admin | Update workspace config |
 | DELETE | `/workspaces/:id` | `authenticate` | admin | Delete workspace |
 | GET | `/workspaces/:id/status` | `authenticate` | read | Get workspace status |
+| GET | `/workspaces/:id/stats` | `authenticate` | read | Get workspace database stats |
 | POST | `/workspaces/:id/start` | `authenticate` | admin | Start workspace |
 | POST | `/workspaces/:id/stop` | `authenticate` | admin | Stop workspace |
 | GET | `/workspaces/:id/contexts` | `authenticate` | read | List workspace's contexts |
@@ -155,10 +156,6 @@ The API should accept optional `paths[]` and `backends[]` parameters; when omitt
 | DELETE | `/workspaces/:id/tree/paths` | `authenticate` | Remove path |
 | POST | `/workspaces/:id/tree/paths/move` | `authenticate` | Move path |
 | POST | `/workspaces/:id/tree/paths/copy` | `authenticate` | Copy path |
-| POST | `/workspaces/:id/tree/paths/merge-up` | `authenticate` | Merge bitmaps upward |
-| POST | `/workspaces/:id/tree/paths/merge-down` | `authenticate` | Merge bitmaps downward |
-| POST | `/workspaces/:id/tree/paths/subtract-up` | `authenticate` | Subtract bitmaps upward |
-| POST | `/workspaces/:id/tree/paths/subtract-down` | `authenticate` | Subtract bitmaps downward |
 | POST | `/workspaces/:id/tree/layers/merge` | `authenticate` | Merge layer bitmaps |
 | POST | `/workspaces/:id/tree/layers/subtract` | `authenticate` | Subtract layer bitmaps |
 
@@ -291,10 +288,6 @@ Context document operations are scoped to the context's current URL path in the 
 | DELETE | `/contexts/:id/tree/paths` | `authenticate` | Remove path |
 | POST | `/contexts/:id/tree/paths/move` | `authenticate` | Move path |
 | POST | `/contexts/:id/tree/paths/copy` | `authenticate` | Copy path |
-| POST | `/contexts/:id/tree/paths/merge-up` | `authenticate` | Merge bitmaps upward |
-| POST | `/contexts/:id/tree/paths/merge-down` | `authenticate` | Merge bitmaps downward |
-| POST | `/contexts/:id/tree/paths/subtract-up` | `authenticate` | Subtract bitmaps upward |
-| POST | `/contexts/:id/tree/paths/subtract-down` | `authenticate` | Subtract bitmaps downward |
 | POST | `/contexts/:id/tree/layers/merge` | `authenticate` | Merge layer bitmaps |
 | POST | `/contexts/:id/tree/layers/subtract` | `authenticate` | Subtract layer bitmaps |
 

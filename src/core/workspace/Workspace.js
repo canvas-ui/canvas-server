@@ -102,6 +102,11 @@ class Workspace extends EventEmitter {
         return this.#db;
     }
 
+    get stats() {
+        if (!this.isActive || !this.#db) return null;
+        return this.#db.stats;
+    }
+
     get stored() { return this.#stored; }
 
     get tree() {

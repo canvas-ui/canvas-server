@@ -199,9 +199,6 @@ class WorkspaceManager extends EventEmitter {
             case 'dotfiles':
                 result = await this.dotfileService.enable(workspace, userId);
                 break;
-            case 'home':
-                result = await workspace.enableHome();
-                break;
             case 'hook':
                 // Hooks are always enabled if service is initialized, but we can toggle specific hooks
                 // For now, just return true
@@ -238,9 +235,6 @@ class WorkspaceManager extends EventEmitter {
             case 'dotfiles':
                 result = await this.dotfileService.disable(workspace);
                 break;
-            case 'home':
-                result = await workspace.disableHome();
-                break;
             default:
                 throw new Error(`Unknown service: ${serviceName}`);
         }
@@ -264,10 +258,6 @@ class WorkspaceManager extends EventEmitter {
             dotfiles: {
                 ...config.dotfiles,
                 initialized: this.dotfileService.isEnabled(workspace),
-            },
-            home: {
-                ...config.home,
-                initialized: workspace.isHomeEnabled,
             },
         };
     }

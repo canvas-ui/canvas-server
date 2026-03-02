@@ -6,15 +6,11 @@ import path from 'path';
 import Conf from 'conf';
 import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
-import { existsSync } from 'fs';
-import * as fsPromises from 'fs/promises';
-
 // Logging
 import { createLogger } from '../../utils/log.js';
 
 // Includes
 import Db from '../../services/synapsd/src/index.js';
-import Stored from '../../services/stored/src/index.js';
 import { parseDocumentId } from '../../utils/documentId.js';
 
 // Constants
@@ -22,15 +18,6 @@ import {
     WORKSPACE_STATUS_CODES,
     WORKSPACE_DIRECTORIES,
 } from './lib/constants.js';
-
-const HOME_BACKEND_FEATURE = 'data/backend/home';
-
-const DEFAULT_HOME_EXCLUSIONS = [
-    '.DS_Store', 'Thumbs.db', 'desktop.ini',
-    '.git', '.svn', '.hg',
-    'node_modules', '__pycache__', '.cache',
-    '*.tmp', '*.swp', '*.swo', '*.log',
-];
 
 /*
  * Workspace
@@ -43,7 +30,6 @@ class Workspace extends EventEmitter {
     #logger;
 
     #db = null;
-    #stored = null;
     #status = WORKSPACE_STATUS_CODES.INACTIVE;
 
     // Managers (injected)
@@ -116,8 +102,6 @@ class Workspace extends EventEmitter {
         return this.#db.stats;
     }
 
-    get stored() { return this.#stored; }
-
     get tree() {
         if (!this.isActive || !this.#db?.tree) throw new Error('Tree not available');
         return this.#db.tree;
@@ -135,10 +119,6 @@ class Workspace extends EventEmitter {
 
     get homePath() {
         return path.join(this.#rootPath, WORKSPACE_DIRECTORIES.home);
-    }
-
-    get homeExclusions() {
-        return this.services.home?.exclude || DEFAULT_HOME_EXCLUSIONS;
     }
 
     isServiceEnabled(serviceName) {
@@ -234,9 +214,6 @@ class Workspace extends EventEmitter {
             this.#db = new Db({ path: dbPath });
             await this.#db.start();
 
-            // Initialize Stored — always monitor home directory
-            await this.#initializeStored();
-
             this.#setStatus(WORKSPACE_STATUS_CODES.ACTIVE);
             this.emit('started', { id: this.id });
             return this;
@@ -252,10 +229,6 @@ class Workspace extends EventEmitter {
 
         this.#logger.debug({ workspaceId: this.id }, 'Stopping workspace');
         try {
-            if (this.#stored) {
-                await this.#stored.stop();
-                this.#stored = null;
-            }
             if (this.#db) {
                 await this.#db.shutdown();
                 this.#db = null;
@@ -268,56 +241,6 @@ class Workspace extends EventEmitter {
              this.#setStatus(WORKSPACE_STATUS_CODES.ERROR);
              return false;
         }
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Home / Stored Management
-    // ─────────────────────────────────────────────────────────────────────────
-
-    async enableHome() {
-        if (this.#stored) return;
-        await this.#initializeStored();
-        this.#logger.debug({ workspaceId: this.id }, 'Home service enabled');
-    }
-
-    async disableHome() {
-        if (!this.#stored) return;
-        await this.#stored.stop();
-        this.#stored = null;
-        this.#logger.debug({ workspaceId: this.id }, 'Home service disabled');
-    }
-
-    get isHomeEnabled() { return !!this.#stored; }
-
-    async reindex() {
-        if (!this.isActive) throw new Error('Workspace not active');
-        if (!this.#stored) throw new Error('Stored not initialized');
-
-        const files = await this.#stored.scan();
-
-        // Build set of checksums currently on disk (post-exclusion)
-        const diskChecksums = new Set();
-        const validFiles = [];
-        for (const f of files) {
-            if (!f.key || !f.checksums?.sha256 || this.#isExcluded(f.key)) continue;
-            diskChecksums.add(`sha256/${f.checksums.sha256}`);
-            validFiles.push(f);
-        }
-
-        // Remove stale docs: indexed with home feature but no longer on disk
-        const indexed = await this.#db.findDocuments(null, [HOME_BACKEND_FEATURE]);
-        let removed = 0;
-        for (const doc of indexed) {
-            const checksum = doc.checksumArray?.[0] ?? doc.getPrimaryChecksum?.();
-            if (checksum && !diskChecksums.has(checksum)) {
-                try { await this.#db.deleteDocument(doc.id); removed++; }
-                catch (err) { this.#logger.debug(`reindex: failed to remove stale doc ${doc.id}: ${err.message}`); }
-            }
-        }
-
-        // Sync current files (inserts new, deduplicates existing by checksum)
-        await this.#syncInitialFiles(validFiles);
-        return { synced: validFiles.length, removed };
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -459,160 +382,6 @@ class Workspace extends EventEmitter {
             isActive: this.isActive,
             rootPath: this.rootPath
         };
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Private — Stored initialization + SynapsD sync
-    // ─────────────────────────────────────────────────────────────────────────
-
-    async #initializeStored() {
-        const homePath = this.homePath;
-        if (!existsSync(homePath)) {
-            await fsPromises.mkdir(homePath, { recursive: true });
-        }
-
-        this.#stored = new Stored({
-            index: { path: path.join(this.#rootPath, 'var', 'stored-index') },
-            cache: { path: path.join(this.#rootPath, 'var', 'stored-cache') },
-            checksums: ['sha256'],
-            primaryChecksum: 'sha256',
-        });
-
-        const exclusions = this.homeExclusions;
-        const ignored = (filePath) => {
-            const key = path.relative(homePath, filePath);
-            return this.#isExcluded(key, exclusions);
-        };
-
-        this.#stored.addBackend('fs:home', {
-            driver: 'file',
-            root: homePath,
-            watch: true,
-            ignored,
-        });
-
-        // Wire Stored events → SynapsD document sync
-        this.#stored.on('file:add', (data) => this.#onFileAdd(data));
-        this.#stored.on('file:change', () => {});
-        this.#stored.on('file:unlink', (data) => this.#onFileUnlink(data));
-
-        // Initial scan + sync
-        const files = await this.#stored.scan();
-        await this.#syncInitialFiles(files);
-    }
-
-    #isExcluded(key, exclusions = this.homeExclusions) {
-        const basename = path.basename(key);
-        const parts = key.split(path.sep);
-        for (const pattern of exclusions) {
-            if (basename === pattern) return true;
-            if (parts.includes(pattern)) return true;
-            if (pattern.startsWith('*.') && basename.endsWith(pattern.slice(1))) return true;
-        }
-        return false;
-    }
-
-    async #onFileAdd(data) {
-        if (!this.isActive) return;
-        const { key, checksums, size, mimeType } = data;
-        if (!key || !checksums?.sha256) return;
-        if (this.#isExcluded(key)) return;
-
-        const filename = path.basename(key);
-        if (!filename) return;
-
-        const dataPath = `file://{WORKSPACE_ROOT}/home/${key}`;
-        const checksumString = `sha256/${checksums.sha256}`;
-
-        try {
-            const existingDoc = await this.#db.getDocumentByChecksumString(checksumString);
-
-            if (existingDoc) {
-                const dataPaths = existingDoc.metadata?.dataPaths || [];
-                if (!dataPaths.includes(dataPath)) {
-                    dataPaths.push(dataPath);
-                    await this.#db.updateDocument(existingDoc.id, {
-                        metadata: { ...existingDoc.metadata, dataPaths },
-                    }, { features: [HOME_BACKEND_FEATURE] });
-                }
-            } else {
-                await this.#db.insertDocument({
-                    schema: 'data/abstraction/file',
-                    checksumArray: [checksumString],
-                    data: { filename, size, mime: mimeType },
-                    metadata: { dataPaths: [dataPath] },
-                }, { context: '/', features: [HOME_BACKEND_FEATURE] });
-            }
-        } catch (err) {
-            this.#logger.debug(`Error syncing file add ${key}: ${err.message}`);
-        }
-    }
-
-    async #onFileUnlink(data) {
-        if (!this.isActive) return;
-        const { key, checksums, locations } = data;
-        if (!checksums?.sha256) return;
-        if (key && this.#isExcluded(key)) return;
-
-        const dataPath = `file://{WORKSPACE_ROOT}/home/${key}`;
-        const checksumString = `sha256/${checksums.sha256}`;
-
-        try {
-            const existingDoc = await this.#db.getDocumentByChecksumString(checksumString);
-            if (!existingDoc) return;
-
-            const dataPaths = (existingDoc.metadata?.dataPaths || []).filter(p => p !== dataPath);
-
-            if (locations?.length === 0 || dataPaths.length === 0) {
-                await this.#db.deleteDocument(existingDoc.id);
-            } else {
-                await this.#db.updateDocument(existingDoc.id, {
-                    metadata: { ...existingDoc.metadata, dataPaths },
-                });
-            }
-        } catch (err) {
-            this.#logger.debug(`Error syncing file unlink ${key}: ${err.message}`);
-        }
-    }
-
-    async #syncInitialFiles(files) {
-        if (!this.isActive || !files?.length) return;
-
-        let synced = 0;
-        for (const file of files) {
-            if (!file.key || !file.checksums?.sha256) continue;
-            if (this.#isExcluded(file.key)) continue;
-            const filename = path.basename(file.key);
-            if (!filename) continue;
-
-            const dataPath = `file://{WORKSPACE_ROOT}/home/${file.key}`;
-            const checksumString = `sha256/${file.checksums.sha256}`;
-
-            try {
-                const existingDoc = await this.#db.getDocumentByChecksumString(checksumString);
-
-                if (existingDoc) {
-                    const dataPaths = existingDoc.metadata?.dataPaths || [];
-                    if (!dataPaths.includes(dataPath)) {
-                        dataPaths.push(dataPath);
-                        await this.#db.updateDocument(existingDoc.id, {
-                            metadata: { ...existingDoc.metadata, dataPaths },
-                        }, { features: [HOME_BACKEND_FEATURE] });
-                    }
-                } else {
-                    await this.#db.insertDocument({
-                        schema: 'data/abstraction/file',
-                        checksumArray: [checksumString],
-                        data: { filename, size: file.size, mime: file.mimeType },
-                        metadata: { dataPaths: [dataPath] },
-                    }, { context: '/', features: [HOME_BACKEND_FEATURE] });
-                }
-                synced++;
-            } catch (err) {
-                this.#logger.debug(`Error syncing initial file ${file.key}: ${err.message}`);
-            }
-        }
-        this.#logger.debug(`Synced ${synced}/${files.length} initial files`);
     }
 
     #setStatus(status) {

@@ -23,6 +23,13 @@ import {
     WORKSPACE_DIRECTORIES,
 } from './lib/constants.js';
 
+const DEFAULT_HOME_EXCLUSIONS = [
+    '.DS_Store', 'Thumbs.db', 'desktop.ini',
+    '.git', '.svn', '.hg',
+    'node_modules', '__pycache__', '.cache',
+    '*.tmp', '*.swp', '*.swo', '*.log',
+];
+
 /*
  * Workspace
  */
@@ -128,6 +135,10 @@ class Workspace extends EventEmitter {
         return path.join(this.#rootPath, WORKSPACE_DIRECTORIES.home);
     }
 
+    get homeExclusions() {
+        return this.services.home?.exclude || DEFAULT_HOME_EXCLUSIONS;
+    }
+
     isServiceEnabled(serviceName) {
         const services = this.services;
         return services[serviceName]?.enabled === true;
@@ -221,10 +232,8 @@ class Workspace extends EventEmitter {
             this.#db = new Db({ path: dbPath });
             await this.#db.start();
 
-            // Initialize Stored if home service is enabled
-            if (this.isServiceEnabled('home')) {
-                await this.#initializeStored();
-            }
+            // Initialize Stored — always monitor home directory
+            await this.#initializeStored();
 
             this.#setStatus(WORKSPACE_STATUS_CODES.ACTIVE);
             this.emit('started', { id: this.id });
@@ -277,6 +286,15 @@ class Workspace extends EventEmitter {
     }
 
     get isHomeEnabled() { return !!this.#stored; }
+
+    async reindex() {
+        if (!this.isActive) throw new Error('Workspace not active');
+        if (!this.#stored) throw new Error('Stored not initialized');
+
+        const files = await this.#stored.scan();
+        await this.#syncInitialFiles(files);
+        return { synced: files.length };
+    }
 
     // ─────────────────────────────────────────────────────────────────────────
     // CRUD Methods
@@ -436,16 +454,22 @@ class Workspace extends EventEmitter {
             primaryChecksum: 'sha256',
         });
 
-        // Home directory = file backend with watching
+        const exclusions = this.homeExclusions;
+        const ignored = (filePath) => {
+            const key = path.relative(homePath, filePath);
+            return this.#isExcluded(key, exclusions);
+        };
+
         this.#stored.addBackend('fs:home', {
             driver: 'file',
             root: homePath,
             watch: true,
+            ignored,
         });
 
         // Wire Stored events → SynapsD document sync
         this.#stored.on('file:add', (data) => this.#onFileAdd(data));
-        this.#stored.on('file:change', () => {}); // Stored emits unlink+add for changes
+        this.#stored.on('file:change', () => {});
         this.#stored.on('file:unlink', (data) => this.#onFileUnlink(data));
 
         // Initial scan + sync
@@ -453,10 +477,22 @@ class Workspace extends EventEmitter {
         await this.#syncInitialFiles(files);
     }
 
+    #isExcluded(key, exclusions = this.homeExclusions) {
+        const basename = path.basename(key);
+        const parts = key.split(path.sep);
+        for (const pattern of exclusions) {
+            if (basename === pattern) return true;
+            if (parts.includes(pattern)) return true;
+            if (pattern.startsWith('*.') && basename.endsWith(pattern.slice(1))) return true;
+        }
+        return false;
+    }
+
     async #onFileAdd(data) {
         if (!this.isActive) return;
         const { key, checksums, size, mimeType } = data;
         if (!key || !checksums?.sha256) return;
+        if (this.#isExcluded(key)) return;
 
         const filename = path.basename(key);
         if (!filename) return;
@@ -492,6 +528,7 @@ class Workspace extends EventEmitter {
         if (!this.isActive) return;
         const { key, checksums, locations } = data;
         if (!checksums?.sha256) return;
+        if (key && this.#isExcluded(key)) return;
 
         const dataPath = `file://{WORKSPACE_ROOT}/home/${key}`;
         const checksumString = `sha256/${checksums.sha256}`;
@@ -520,6 +557,7 @@ class Workspace extends EventEmitter {
         let synced = 0;
         for (const file of files) {
             if (!file.key || !file.checksums?.sha256) continue;
+            if (this.#isExcluded(file.key)) continue;
             const filename = path.basename(file.key);
             if (!filename) continue;
 

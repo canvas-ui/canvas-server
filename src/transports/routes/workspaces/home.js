@@ -193,24 +193,30 @@ export default async function homeRoutes(fastify) {
 
       try {
         const stat = await fs.stat(abs);
-        if (stat.isDirectory()) {
-          results.failed.push({ path: filePath, error: 'is a directory' });
-          continue;
-        }
-
-        const checksum = await sha256File(abs);
-        const checksumString = `sha256/${checksum}`;
-        const filename = path.basename(filePath);
+        const name = path.basename(filePath);
         const dataPath = `file://{WORKSPACE_ROOT}/home/${filePath}`;
 
-        await workspace.insert({
-          schema: 'data/abstraction/file',
-          checksumArray: [checksumString],
-          data: { filename, size: stat.size, mime: mime(abs) },
-          metadata: { dataPaths: [dataPath] },
-        }, { context, features: [HOME_BACKEND_FEATURE] });
+        if (stat.isDirectory()) {
+          await workspace.insert({
+            schema: 'data/abstraction/folder',
+            data: { name, path: filePath, backend: 'home' },
+            metadata: { dataPaths: [dataPath] },
+          }, { context, features: [HOME_BACKEND_FEATURE] });
 
-        results.indexed.push({ path: filePath, checksum: checksumString });
+          results.indexed.push({ path: filePath, type: 'folder' });
+        } else {
+          const checksum = await sha256File(abs);
+          const checksumString = `sha256/${checksum}`;
+
+          await workspace.insert({
+            schema: 'data/abstraction/file',
+            checksumArray: [checksumString],
+            data: { filename: name, size: stat.size, mime: mime(abs) },
+            metadata: { dataPaths: [dataPath] },
+          }, { context, features: [HOME_BACKEND_FEATURE] });
+
+          results.indexed.push({ path: filePath, type: 'file', checksum: checksumString });
+        }
       } catch (err) {
         results.failed.push({ path: filePath, error: err.message });
       }

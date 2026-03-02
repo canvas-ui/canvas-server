@@ -84,6 +84,79 @@ net use Z: http://localhost:8001/workspaces/universe/dav /user:your@email.com
 
 Authenticate with your email + password, or use an API token as the password (username is ignored for token auth).
 
+### Rclone mounts (recommended)
+
+```bash
+# Create your your root dirs (Contexts will be merged under Workspaces soon)
+mkdir ~/Workspaces ~/Contexts 
+
+# Create two separate service templates for Workspace and Context mounts
+# Context mounts are somewhat specific, hence need a different cfg
+
+$ nano ~/.config/systemd/user/rclone-context@.service
+[Unit]
+Description=rclone: Remote Canvas Context mount %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/rclone mount %i: %h/Contexts/%i \
+  --vfs-cache-mode off \
+  --dir-cache-time 0 \
+  --no-modtime \
+  --no-checksum \
+  --create-empty-dirs \
+  --config %h/.config/rclone/rclone-contexts.conf
+ExecStop=/usr/bin/fusermount -u %h/Contexts/%i
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+
+
+$ nano ~/.config/systemd/user/rclone-workspace@.service
+[Unit]
+Description=rclone: Remote Canvas Workspace mount %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/rclone mount %i: %h/Workspaces/%i \
+  --vfs-cache-mode full \
+  --vfs-cache-max-size 30G \
+  --create-empty-dirs \
+  --config %h/.config/rclone/rclone-workspaces.conf
+ExecStop=/usr/bin/fusermount -u %h/Workspaces/%i
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+
+
+$ nano ~/.config/rclone/rclone-contexts.conf
+[Universe]
+type = webdav
+url = https://canvas.mydomain.tld/contexts/universe/dav
+vendor = other
+user = myuser
+pass = rclone-encrypted-password
+
+$ nano ~/.config/rclone/rclone-workspaces.conf
+[Universe]
+type = webdav
+url = https://canvas.mydomain.tld/workspaces/universe/dav
+vendor = other
+user = myuser
+pass = rclone-encrypted-password
+
+# Activate both mounts
+$ systemctl --user daemon-reload
+$ systemctl --user enable --now rclone-workspace@Universe
+$ systemctl --user enable --now rclone-context@Universe
+```
+
 ## Authentication
 
 - **JWT tokens** — web UI sessions

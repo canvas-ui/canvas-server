@@ -6,13 +6,12 @@ import path from 'path';
 import Conf from 'conf';
 import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
-
 // Logging
 import { createLogger } from '../../utils/log.js';
 
 // Includes
 import Db from '../../services/synapsd/src/index.js';
-import { parseDocumentId, parseDocumentIdArray } from '../../utils/documentId.js';
+import { parseDocumentId } from '../../utils/documentId.js';
 
 // Constants
 import {
@@ -68,7 +67,7 @@ class Workspace extends EventEmitter {
     }
 
     /*
-    * Getters
+    * Getters / Setters
     */
     get id() { return this.#configStore.get('id'); }
     get name() { return this.#configStore.get('name'); }
@@ -86,9 +85,6 @@ class Workspace extends EventEmitter {
     get config() { return this.#configStore.store; }
     get acl() { return this.#configStore.get('acl'); }
 
-    /**
-     * Get services configuration
-     */
     get services() {
         return this.#configStore.get('services') || {
             dotfiles: { enabled: false },
@@ -96,17 +92,40 @@ class Workspace extends EventEmitter {
         };
     }
 
-    /**
-     * Check if a specific service is enabled
-     */
+    get db() {
+        if (!this.#db) throw new Error('Database not initialized');
+        return this.#db;
+    }
+
+    get stats() {
+        if (!this.isActive || !this.#db) return null;
+        return this.#db.stats;
+    }
+
+    get tree() {
+        if (!this.isActive || !this.#db?.tree) throw new Error('Tree not available');
+        return this.#db.tree;
+    }
+
+    get directoryTree() {
+        if (!this.isActive || !this.#db?.directoryTree) throw new Error('Directory tree not available');
+        return this.#db.directoryTree;
+    }
+
+    get jsonTree() {
+        if (!this.isActive || !this.#db) { throw new Error('Workspace not active'); }
+        return this.#db.jsonTree;
+    }
+
+    get homePath() {
+        return path.join(this.#rootPath, WORKSPACE_DIRECTORIES.home);
+    }
+
     isServiceEnabled(serviceName) {
         const services = this.services;
         return services[serviceName]?.enabled === true;
     }
 
-    /**
-     * Update service configuration
-     */
     setServiceConfig(serviceName, config) {
         const services = this.services;
         services[serviceName] = { ...services[serviceName], ...config };
@@ -114,9 +133,10 @@ class Workspace extends EventEmitter {
         this.emit('services.changed', { service: serviceName, config: services[serviceName] });
     }
 
-    /**
-     * Workspace UI configuration
-     */
+    // ─────────────────────────────────────────────────────────────────────────
+    // UI Configuration
+    // ─────────────────────────────────────────────────────────────────────────
+
     setIcon(url) {
         if (url == null || url === '') {
             this.#configStore.set('icon', null);
@@ -141,18 +161,10 @@ class Workspace extends EventEmitter {
         return true;
     }
 
-    /**
-     * Workspace-linked resources
-     *
-     * Stored as:
-     *  {
-     *    links: {
-     *      agents: ["canvas://canvas.local/agents/<id>", ...],
-     *      contexts: [...],
-     *      ...
-     *    }
-     *  }
-     */
+    // ─────────────────────────────────────────────────────────────────────────
+    // Links
+    // ─────────────────────────────────────────────────────────────────────────
+
     listLinks(type = null) {
         const links = this.links || {};
         if (!type) return links;
@@ -188,24 +200,9 @@ class Workspace extends EventEmitter {
         return true;
     }
 
-    get db() {
-        if (!this.#db) throw new Error('Database not initialized');
-        return this.#db;
-    }
-
-    get tree() {
-        if (!this.isActive || !this.#db?.tree) throw new Error('Tree not available');
-        return this.#db.tree;
-    }
-
-    get jsonTree() {
-        if (!this.isActive || !this.#db) { throw new Error('Workspace not active'); }
-        return this.#db.jsonTree;
-    }
-
-    /*
-    * Lifecycle Methods
-    */
+    // ─────────────────────────────────────────────────────────────────────────
+    // Lifecycle
+    // ─────────────────────────────────────────────────────────────────────────
 
     async start() {
         if (this.isActive) return this;
@@ -213,12 +210,10 @@ class Workspace extends EventEmitter {
         this.#logger.debug({ workspaceId: this.id }, 'Starting workspace');
         try {
             // Initialize DB
-             const dbPath = path.join(this.#rootPath, WORKSPACE_DIRECTORIES.db || 'Db');
-             this.#db = new Db({
-                path: dbPath,
-             });
-
+            const dbPath = path.join(this.#rootPath, WORKSPACE_DIRECTORIES.db || 'Db');
+            this.#db = new Db({ path: dbPath });
             await this.#db.start();
+
             this.#setStatus(WORKSPACE_STATUS_CODES.ACTIVE);
             this.emit('started', { id: this.id });
             return this;
@@ -248,58 +243,28 @@ class Workspace extends EventEmitter {
         }
     }
 
-    #setStatus(status) {
-        if (this.#status !== status) {
-            this.#status = status;
-            this.emit('status.changed', { id: this.id, status });
-        }
+    // ─────────────────────────────────────────────────────────────────────────
+    // CRUD Methods
+    // ─────────────────────────────────────────────────────────────────────────
+
+    async insert(data, { context = '/', directory = null, features = [], emitEvent = true } = {}) {
+        if (!this.isActive) throw new Error('Workspace not active');
+        return await this.db.insertDocument(data, { context, directory, features, emitEvent });
     }
 
-    /**
-     * CRUD Methods
-git st     */
-
-    async insert(data, metadata = {}, options = {}) {
+    async update(id, data, { context = null, directory = null, features = [] } = {}) {
         if (!this.isActive) throw new Error('Workspace not active');
-        // data is the document
-        // metadata might contain contextSpec, featureBitmapArray?
-        // options might contain emitEvent?
-
-        // Mapping to Db.insertDocument(document, contextSpec, featureBitmapArray, emitEvent)
-        return await this.db.insertDocument(
-            data,
-            metadata.contextSpec || '/',
-            metadata.featureBitmapArray || [],
-            options.emitEvent !== false
-        );
+        return await this.db.updateDocument(id, data, { context, directory, features });
     }
 
-    async update(id, data, metadata = {}, options = {}) {
+    async remove(id, { context = '/', features = [] } = {}) {
         if (!this.isActive) throw new Error('Workspace not active');
-        // Db.updateDocument(docIdentifier, updateData, contextSpec, featureBitmapArray)
-        return await this.db.updateDocument(
-            id,
-            data,
-            metadata.contextSpec || null,
-            metadata.featureBitmapArray || []
-        );
-    }
-
-    async remove(id, metadata = {}, options = {}) {
-        if (!this.isActive) throw new Error('Workspace not active');
-        // Db.removeDocument(docId, contextSpec, featureBitmapArray)
-        return await this.db.removeDocument(
-            id,
-            metadata.contextSpec || '/',
-            metadata.featureBitmapArray || []
-        );
+        return await this.db.removeDocument(id, context, features);
     }
 
     async delete(id) {
         if (!this.isActive) throw new Error('Workspace not active');
-        // Db.deleteDocument(docId)
-        const numericId = parseDocumentId(id, 'Document ID');
-        return await this.db.deleteDocument(numericId);
+        return await this.db.deleteDocument(parseDocumentId(id, 'Document ID'));
     }
 
     async get(id, options = { parse: true }) {
@@ -309,9 +274,45 @@ git st     */
 
     async list(options = {}) {
          if (!this.isActive) throw new Error('Workspace not active');
-         // Db.findDocuments(contextSpec, featureBitmapArray, filterArray, options)
          const { contextSpec = '/', featureBitmapArray = [], filterArray = [], ...rest } = options;
          return await this.db.findDocuments(contextSpec, featureBitmapArray, filterArray, rest);
+    }
+
+    async listBitmaps(prefix = '', { includeData = false } = {}) {
+        if (!this.isActive) throw new Error('Workspace not active');
+        const keys = await this.db.bitmapIndex.listBitmaps(prefix);
+        const bitmaps = await Promise.all(keys.map(async (key) => this.getBitmap(key, { includeData })));
+        return bitmaps.filter(Boolean);
+    }
+
+    async getBitmap(key, { includeData = false } = {}) {
+        if (!this.isActive) throw new Error('Workspace not active');
+        if (!key || typeof key !== 'string') throw new Error('Bitmap key is required');
+
+        const bitmap = await this.db.bitmapIndex.getBitmap(key, false);
+        if (!bitmap) return null;
+
+        const out = {
+            key: bitmap.key,
+            size: bitmap.size,
+            isEmpty: bitmap.isEmpty,
+            min: bitmap.isEmpty ? null : bitmap.minimum(),
+            max: bitmap.isEmpty ? null : bitmap.maximum(),
+        };
+
+        if (includeData) out.ids = bitmap.toArray();
+        return out;
+    }
+
+    async getBitmapRawBuffer(key) {
+        if (!this.isActive) throw new Error('Workspace not active');
+        if (!key || typeof key !== 'string') throw new Error('Bitmap key is required');
+
+        const bitmap = await this.db.bitmapIndex.getBitmap(key, false);
+        if (!bitmap) return null;
+
+        const serialized = bitmap.serialize(true); // Roaring portable format
+        return Buffer.isBuffer(serialized) ? serialized : Buffer.from(serialized);
     }
 
     clearDatabaseSync() {
@@ -319,19 +320,10 @@ git st     */
         return this.db.clearSync();
     }
 
-    /**
-     * Token Management Methods
-     */
+    // ─────────────────────────────────────────────────────────────────────────
+    // Token Management
+    // ─────────────────────────────────────────────────────────────────────────
 
-    /**
-     * Create a new access token for this workspace
-     * @param {Object} options - Token options
-     * @param {string} options.name - Token name
-     * @param {string} options.description - Token description
-     * @param {Array<string>} options.permissions - Permissions array (e.g., ['read', 'write'])
-     * @param {string|null} options.expiresAt - Expiration date (ISO string) or null
-     * @returns {Object} - Created token with value
-     */
     createToken(options = {}) {
         const tokenId = uuidv4();
         const name = options.name || 'Workspace token';
@@ -339,73 +331,33 @@ git st     */
         const permissions = options.permissions || ['read', 'write'];
         const expiresAt = options.expiresAt || null;
 
-        // Generate token value with canvas-workspace- prefix
         const randomPart = crypto.randomBytes(24).toString('hex');
         const tokenValue = `canvas-workspace-${randomPart}`;
         const tokenHash = crypto.createHash('sha256').update(tokenValue).digest('hex');
 
-        const token = {
-            id: tokenId,
-            name,
-            description,
-            permissions,
-            createdAt: new Date().toISOString(),
-            expiresAt
-        };
+        const token = { id: tokenId, name, description, permissions, createdAt: new Date().toISOString(), expiresAt };
 
-        // Get current ACL
         const acl = this.#configStore.get('acl') || { tokens: {} };
         if (!acl.tokens) acl.tokens = {};
-
-        // Store with sha256: prefix to match the template structure
         acl.tokens[`sha256:${tokenHash}`] = token;
-
-        // Save to config
         this.#configStore.set('acl', acl);
 
-        // Return token with value (only returned on creation)
-        return {
-            ...token,
-            value: tokenValue,
-            hash: `sha256:${tokenHash}`
-        };
+        return { ...token, value: tokenValue, hash: `sha256:${tokenHash}` };
     }
 
-    /**
-     * List all tokens for this workspace
-     * @returns {Array<Object>} - Array of tokens (without hashes)
-     */
     listTokens() {
         const acl = this.#configStore.get('acl') || { tokens: {} };
-        const tokens = acl.tokens || {};
-
-        return Object.entries(tokens).map(([hash, token]) => ({
-            ...token,
-            hash // Include the hash key for deletion
-        }));
+        return Object.entries(acl.tokens || {}).map(([hash, token]) => ({ ...token, hash }));
     }
 
-    /**
-     * Delete a token by hash
-     * @param {string} hash - Token hash (with sha256: prefix)
-     * @returns {boolean} - True if deleted
-     */
     deleteToken(hash) {
         const acl = this.#configStore.get('acl') || { tokens: {} };
-        if (!acl.tokens || !acl.tokens[hash]) {
-            return false;
-        }
-
+        if (!acl.tokens || !acl.tokens[hash]) return false;
         delete acl.tokens[hash];
         this.#configStore.set('acl', acl);
         return true;
     }
 
-    /**
-     * Verify a token against this workspace's ACL
-     * @param {string} tokenValue - Token value to verify
-     * @returns {Object|null} - Token data if valid, null otherwise
-     */
     verifyToken(tokenValue) {
         if (!tokenValue) return null;
 
@@ -414,19 +366,10 @@ git st     */
 
         const acl = this.#configStore.get('acl') || { tokens: {} };
         const token = acl.tokens?.[hashKey];
-
         if (!token) return null;
+        if (token.expiresAt && new Date(token.expiresAt) < new Date()) return null;
 
-        // Check if token is expired
-        if (token.expiresAt && new Date(token.expiresAt) < new Date()) {
-            return null;
-        }
-
-        return {
-            ...token,
-            workspaceId: this.id,
-            workspaceName: this.name
-        };
+        return { ...token, workspaceId: this.id, workspaceName: this.name };
     }
 
     toJSON() {
@@ -439,6 +382,13 @@ git st     */
             isActive: this.isActive,
             rootPath: this.rootPath
         };
+    }
+
+    #setStatus(status) {
+        if (this.#status !== status) {
+            this.#status = status;
+            this.emit('status.changed', { id: this.id, status });
+        }
     }
 }
 

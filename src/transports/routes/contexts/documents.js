@@ -3,7 +3,6 @@
 import ResponseObject from '../../ResponseObject.js';
 import { parseDocumentId } from '../../../utils/documentId.js';
 import { validateUser } from '../../auth/strategies.js';
-import { resolveContextAddress } from '../../middleware/address-resolver.js';
 
 export default async function documentRoutes(fastify, options) {
   function enforceClientTags(request, featureArray = []) {
@@ -221,62 +220,6 @@ export default async function documentRoutes(fastify, options) {
     }
   });
 
-  // Batch insert documents into context
-  // Path: /batch (relative to /:id/documents)
-  fastify.post('/batch', {
-    onRequest: [fastify.authenticateClient],
-    schema: {
-      body: {
-        type: 'object',
-        required: ['documents'],
-        properties: {
-          featureArray: {
-            type: 'array',
-            items: { type: 'string' }
-          },
-          documents: {
-            type: 'array',
-            items: { type: 'object' },
-            minItems: 1
-          }
-        }
-      }
-    }
-  }, async (request, reply) => {
-    const contextId = request.params.id;
-
-    try {
-      const context = await fastify.contextManager.getContext(request.user.id, contextId);
-      if (!context) {
-        const response = new ResponseObject().notFound('Context not found');
-        return reply.code(response.statusCode).send(response.getResponse());
-      }
-
-      const { featureArray = [], documents } = request.body;
-      const enforcedFeatureArray = enforceClientTags(request, featureArray);
-
-      if (!Array.isArray(documents) || documents.length === 0) {
-        const response = new ResponseObject().badRequest('Documents must be a non-empty array');
-        return reply.code(response.statusCode).send(response.getResponse());
-      }
-
-      console.log(`🔧 Batch insert: Processing ${documents.length} documents for context ${contextId}`);
-
-      const result = await context.insertDocumentArray(request.user.id, documents, enforcedFeatureArray);
-
-      const response = new ResponseObject().created(result, `${documents.length} documents inserted successfully`);
-      return reply.code(response.statusCode).send(response.getResponse());
-    } catch (error) {
-      fastify.log.error(error);
-      if (error.message.startsWith('Access denied')) {
-        const response = new ResponseObject().forbidden(error.message);
-        return reply.code(response.statusCode).send(response.getResponse());
-      }
-      const response = new ResponseObject().error('Failed to batch insert documents');
-      return reply.code(response.statusCode).send(response.getResponse());
-    }
-  });
-
   // Update documents in context
   // Path: / (relative to /:id/documents)
   fastify.put('/', {
@@ -386,7 +329,8 @@ export default async function documentRoutes(fastify, options) {
     try {
       const context = await fastify.contextManager.getContext(request.user.id, contextId);
       if (!context) {
-        return response.notFound(`Context with ID ${contextId} not found or user is not owner (required for direct DB deletion).`);
+        const response = new ResponseObject().notFound(`Context with ID ${contextId} not found or user is not owner (required for direct DB deletion).`);
+        return reply.code(response.statusCode).send(response.getResponse());
       }
 
       // Validate that we have a body
@@ -484,52 +428,6 @@ export default async function documentRoutes(fastify, options) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
       const response = new ResponseObject().error('Failed to remove documents from context');
-        return reply.code(response.statusCode).send(response.getResponse());
-    }
-  });
-
-  // Get document by ID
-  // Path: /by-id/:docId (relative to /:id/documents)
-  fastify.get('/by-id/:docId', {
-    onRequest: [fastify.authenticate],
-    schema: {
-      params: {
-        type: 'object',
-        required: ['docId'], // id is from prefix
-        properties: {
-          // id: { type: 'string' }, // Not needed here, part of prefix
-          docId: { type: 'string' }
-        }
-      }
-    }
-  }, async (request, reply) => {
-
-    const contextId = request.params.id;
-    const docId = request.params.docId;
-
-    try {
-      const context = await fastify.contextManager.getContext(request.user.id, contextId);
-      if (!context) {
-        const response = new ResponseObject().notFound(`Context with ID ${contextId} not found`);
-        return reply.code(response.statusCode).send(response.getResponse());
-      }
-
-      const document = await context.getDocumentById(request.user.id, docId);
-
-      if (!document) {
-        const response = new ResponseObject().notFound(`Document with ID '${docId}' not found in context '${contextId}'.`);
-        return reply.code(response.statusCode).send(response.getResponse());
-      }
-
-      const response = new ResponseObject().success(document, 'Document retrieved successfully');
-        return reply.code(response.statusCode).send(response.getResponse());
-    } catch (error) {
-      fastify.log.error(error);
-      if (error.message.startsWith('Access denied')) {
-        const response = new ResponseObject().forbidden(error.message);
-        return reply.code(response.statusCode).send(response.getResponse());
-      }
-      const response = new ResponseObject().error('Failed to get document by ID');
         return reply.code(response.statusCode).send(response.getResponse());
     }
   });
@@ -656,45 +554,6 @@ export default async function documentRoutes(fastify, options) {
     }
   });
 
-  // Direct delete multiple documents (legacy POST /delete route)
-  fastify.post('/delete', {
-    onRequest: [fastify.authenticate],
-    schema: {
-      body: {
-        type: 'array',
-        items: {
-          anyOf: [
-            { type: 'string' },
-            { type: 'number' }
-          ]
-        },
-        minItems: 1,
-        description: 'Array of document IDs to delete directly from DB (legacy endpoint)'
-      }
-    }
-  }, async (request, reply) => {
-    const contextId = request.params.id;
-    try {
-      const context = await fastify.contextManager.getContext(request.user.id, contextId);
-      if (!context) {
-        const response = new ResponseObject().notFound(`Context ${contextId} not found`);
-        return reply.code(response.statusCode).send(response.getResponse());
-      }
-      const docIds = Array.isArray(request.body) ? request.body : [request.body];
-      const result = await context.deleteDocumentArrayFromDb(request.user.id, docIds);
-      const response = new ResponseObject().deleted(result, 'Documents deleted successfully');
-      return reply.code(response.statusCode).send(response.getResponse());
-    } catch (err) {
-      fastify.log.error(err);
-      if (err.message.startsWith('Access denied')) {
-        const response = new ResponseObject().forbidden(err.message);
-        return reply.code(response.statusCode).send(response.getResponse());
-      }
-      const response = new ResponseObject().error('Failed to delete documents');
-      return reply.code(response.statusCode).send(response.getResponse());
-    }
-  });
-
   // Delete single document by ID
   // Path: /:docId (relative to /:id/documents)
   fastify.delete('/:docId', {
@@ -780,10 +639,12 @@ export default async function documentRoutes(fastify, options) {
       const document = await context.getDocumentByChecksumStringFromDb(request.user.id, checksumString);
 
       if (!document) {
-        return response.notFound(`Document with checksum '${checksumString}' not found via context '${contextId}' (owner access).`);
+        const response = new ResponseObject().notFound(`Document with checksum '${checksumString}' not found via context '${contextId}' (owner access).`);
+        return reply.code(response.statusCode).send(response.getResponse());
       }
 
-      return response.success(document, 'Document retrieved successfully by hash (owner access)');
+      const response = new ResponseObject().success(document, 'Document retrieved successfully by hash (owner access)');
+      return reply.code(response.statusCode).send(response.getResponse());
     } catch (error) {
       fastify.log.error(error);
       if (error.message.startsWith('Access denied')) {

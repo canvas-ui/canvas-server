@@ -52,7 +52,6 @@ export default async function lifecycleRoutes(fastify, options) {
           baseUrl: { type: 'string' },
           description: { type: 'string' },
           workspaceId: { type: 'string' },
-          type: { type: 'string', enum: ['context', 'universe'] },
           metadata: { type: 'object' }
         }
       }
@@ -66,7 +65,6 @@ export default async function lifecycleRoutes(fastify, options) {
         {
           id: request.body.id,
           userId: request.user.id,
-          type: request.body.type || 'context',
           workspaceId: request.body.workspaceId,
           description: request.body.description || '',
           metadata: request.body.metadata,

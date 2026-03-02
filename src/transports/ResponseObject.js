@@ -1,17 +1,29 @@
 'use strict';
 
-import crypto from 'crypto';
-
-// This is a new file I'm creating to standardize our API responses.
 export default class ResponseObject {
     constructor() {
-        this.status = 'error'; // Default to error to ensure explicit success setting
-        this.statusCode = 500; // Default to 500 Internal Server Error
+        this.status = 'error';
+        this.statusCode = 500;
         this.message = null;
         this.payload = null;
-        this.count = null; // Initialize count property
-        this.totalCount = null; // Initialize totalCount property
+        this.count = null;
+        this.totalCount = null;
     }
+
+    // Static factories — allows `ResponseObject.error(msg)` without `new`
+    static success(payload, message, statusCode, count, totalCount) { return new ResponseObject().success(payload, message, statusCode, count, totalCount); }
+    static created(payload, message, statusCode, count) { return new ResponseObject().created(payload, message, statusCode, count); }
+    static found(payload, message, statusCode, count, totalCount) { return new ResponseObject().found(payload, message, statusCode, count, totalCount); }
+    static updated(payload, message, statusCode, count) { return new ResponseObject().updated(payload, message, statusCode, count); }
+    static deleted(payload, message, statusCode, count) { return new ResponseObject().deleted(payload, message, statusCode, count); }
+    static error(message, payload, statusCode) { return new ResponseObject().error(message, payload, statusCode); }
+    static notFound(message, payload, statusCode) { return new ResponseObject().notFound(message, payload, statusCode); }
+    static badRequest(message, payload, statusCode) { return new ResponseObject().badRequest(message, payload, statusCode); }
+    static unauthorized(message, payload, statusCode) { return new ResponseObject().unauthorized(message, payload, statusCode); }
+    static forbidden(message, payload, statusCode) { return new ResponseObject().forbidden(message, payload, statusCode); }
+    static conflict(message, payload, statusCode) { return new ResponseObject().conflict(message, payload, statusCode); }
+    static serverError(message, payload, statusCode) { return new ResponseObject().serverError(message, payload, statusCode); }
+    static tooManyRequests(message, payload, statusCode) { return new ResponseObject().tooManyRequests(message, payload, statusCode); }
 
     // Success: Generic success
     success(payload, message = 'Request successful', statusCode = 200, count = null, totalCount = null) {
@@ -121,6 +133,15 @@ export default class ResponseObject {
 
     // Server Error: Internal server error
     serverError(message = 'Internal server error', payload = null, statusCode = 500) {
+        this.status = 'error';
+        this.statusCode = statusCode;
+        this.message = message;
+        this.payload = payload;
+        return this;
+    }
+
+    // Too Many Requests: Rate limit exceeded
+    tooManyRequests(message = 'Too many requests, please try again later', payload = null, statusCode = 429) {
         this.status = 'error';
         this.statusCode = statusCode;
         this.message = message;

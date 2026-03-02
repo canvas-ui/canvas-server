@@ -118,6 +118,12 @@ export default async function workspaceDocumentRoutes(fastify, options) {
         );
       }
 
+      if (documents.error) {
+        fastify.log.error(`SynapsD error in ${searchQuery ? 'ftsQuery' : 'findDocuments'}: ${documents.error}`);
+        const responseObject = new ResponseObject().error(`Failed to ${searchQuery ? 'search' : 'list'} documents due to a database error.`, documents.error);
+        return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+      }
+
       const responseObject = new ResponseObject().found(documents, searchQuery ? 'Search results retrieved successfully' : 'Documents retrieved successfully', 200, documents.count, documents.totalCount);
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
     } catch (error) {
@@ -328,6 +334,13 @@ export default async function workspaceDocumentRoutes(fastify, options) {
         request.query.filterArray || [],
         { limit: request.query.limit, offset: request.query.offset, page: request.query.page }
       );
+
+      if (documents.error) {
+        fastify.log.error(`SynapsD error in findDocuments (by-abstraction): ${documents.error}`);
+        const responseObject = new ResponseObject().error('Failed to list documents by abstraction due to a database error.', documents.error);
+        return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+      }
+
       const responseObject = new ResponseObject().found(documents, 'Documents retrieved successfully', 200, documents.count, documents.totalCount);
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
     } catch (error) {

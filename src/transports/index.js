@@ -30,10 +30,10 @@ import pingRoute from './routes/ping.js';
 import schemaRoutes from './routes/schemas.js';
 import adminRoutes from './routes/admin/index.js';
 import webdavRoutes from './routes/webdav.js';
+import contextWebdavRoutes from './routes/context-webdav.js';
 import menuRoutes from './routes/menu.js';
 import roleRoutes from './routes/roles/index.js';
 import roleTemplateRoutes from './routes/role-templates/index.js';
-// import { mcpPlugin } from './mcp/index.js'; // DISABLED for now
 
 // WebSocket handlers
 import setupWebSocketHandlers from './websocket/index.js';
@@ -74,8 +74,7 @@ export async function createServer(options = {}) {
 
   // Register fastify-jwt FIRST - needed for request.jwtVerify
   await server.register(fastifyJwt, {
-    // Prefer config file secret if present
-    secret: (authService.getJwtExpiry && env.auth.jwtSecret) ? env.auth.jwtSecret : env.auth.jwtSecret,
+    secret: env.auth.jwtSecret,
     sign: {
       expiresIn: authService.getJwtExpiry ? (authService.getJwtExpiry() || '1d') : '1d'
     },
@@ -158,6 +157,7 @@ export async function createServer(options = {}) {
 
   // Handle WebDAV OPTIONS before CORS plugin intercepts them
   const davUrlPattern = /^\/workspaces\/[^/]+\/dav(\/|$)/;
+  const ctxDavUrlPattern = /^\/contexts\/[^/]+\/dav(\/|$)/;
   server.addHook('onRequest', async (request, reply) => {
     if (davUrlPattern.test(request.url) && request.method === 'OPTIONS') {
       reply.header('DAV', '1, 2');
@@ -167,6 +167,16 @@ export async function createServer(options = {}) {
       reply.header('Access-Control-Allow-Methods', 'OPTIONS, GET, HEAD, PUT, DELETE, PROPFIND, PROPPATCH, MKCOL, COPY, MOVE, LOCK, UNLOCK');
       reply.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Depth, If, Overwrite, Destination, Lock-Token, Timeout');
       reply.header('Access-Control-Expose-Headers', 'DAV, ETag, Lock-Token, Content-Type');
+      reply.header('Access-Control-Max-Age', '86400');
+      return reply.code(200).send();
+    }
+    if (ctxDavUrlPattern.test(request.url) && request.method === 'OPTIONS') {
+      reply.header('DAV', '1');
+      reply.header('Allow', 'OPTIONS, GET, HEAD, PROPFIND');
+      reply.header('Access-Control-Allow-Origin', '*');
+      reply.header('Access-Control-Allow-Methods', 'OPTIONS, GET, HEAD, PROPFIND');
+      reply.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Depth');
+      reply.header('Access-Control-Expose-Headers', 'DAV, Content-Type');
       reply.header('Access-Control-Max-Age', '86400');
       return reply.code(200).send();
     }
@@ -182,8 +192,9 @@ export async function createServer(options = {}) {
     maxAge: 86400 // 24 hours
   });
 
-  // WebDAV routes (scoped plugin — own content-type parsers)
+  // WebDAV routes (scoped plugins — own content-type parsers)
   server.register(webdavRoutes);
+  server.register(contextWebdavRoutes);
 
   // Add security headers including CSP for browser extension compatibility
   server.addHook('onSend', async (request, reply, payload) => {
@@ -233,39 +244,8 @@ export async function createServer(options = {}) {
   // Setup WebSocket handlers
   setupWebSocketHandlers(server);
 
-  // Register event listeners to relay Context events to WebSocket clients
-  if (server.contextManager) {
-    // Listen for context URL changes and other important events
-    server.contextManager.on('context.url.set', (payload) => {
-      if (payload && payload.id) {
-        try {
-          server.broadcastToContext(payload.id, 'context.url.set', payload);
-          logger.debug({ contextId: payload.id }, 'Relayed context.url.set event to WebSocket clients');
-        } catch (error) {
-          console.error(`Error broadcasting context.url.set event: ${error.message}`);
-        }
-      }
-    });
-
-    // Other important context events can be added here in the same pattern
-    server.contextManager.on('context.updated', (payload) => {
-      if (payload && payload.id) {
-        server.broadcastToContext(payload.id, 'context.updated', payload);
-      }
-    });
-
-    server.contextManager.on('context.locked', (payload) => {
-      if (payload && payload.id) {
-        server.broadcastToContext(payload.id, 'context.locked', payload);
-      }
-    });
-
-    server.contextManager.on('context.unlocked', (payload) => {
-      if (payload && payload.id) {
-        server.broadcastToContext(payload.id, 'context.unlocked', payload);
-      }
-    });
-  }
+  // Context events are forwarded via the wildcard listener in websocket/channels/context.js
+  // No additional listeners needed here (would cause duplicate delivery)
 
   // Static file server for the UI
   await server.register(fastifyStatic, {
@@ -287,7 +267,6 @@ export async function createServer(options = {}) {
   server.register(adminRoutes, { prefix: '/rest/v2/admin' });
   server.register(roleRoutes, { prefix: '/rest/v2/roles' });
   server.register(roleTemplateRoutes, { prefix: '/rest/v2/role-templates' });
-  // server.register(mcpPlugin); // TODO: Draft/test only!!! - DISABLED for now
 
   // Global 404 handler
   server.setNotFoundHandler((request, reply) => {
@@ -298,7 +277,7 @@ export async function createServer(options = {}) {
     }
 
     // For WebDAV routes, return a plain 404 (not SPA index.html)
-    if (davUrlPattern.test(request.url)) {
+    if (davUrlPattern.test(request.url) || ctxDavUrlPattern.test(request.url)) {
       return reply.code(404).send('Not Found');
     }
 

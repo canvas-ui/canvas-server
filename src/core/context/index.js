@@ -447,6 +447,28 @@ class ContextManager extends EventEmitter {
     }
 
     /**
+     * Update a context's mutable properties
+     * @param {string} userId - User ID
+     * @param {string|number} contextId - Context ID
+     * @param {Object} updates - Fields to update (acl, rules, etc.)
+     * @returns {Promise<Context|null>} Updated context or null if not found
+     */
+    async updateContext(userId, contextId, updates = {}) {
+        const context = await this.getContext(userId, contextId);
+        if (!context) return null;
+
+        if (updates.acl !== undefined) await context.updateACL(updates.acl);
+        if (updates.rules !== undefined) {
+            for (const rule of (context.rules || [])) await context.removeRule(rule.id);
+            for (const rule of updates.rules) await context.addRule(rule);
+        }
+
+        this.saveContext(userId, context);
+        this.emit('context.updated', { ...context.toJSON(), contextId: context.id });
+        return context;
+    }
+
+    /**
      * Remove a context for a user
      * @param {string} userId - User ID
      * @param {string|number} contextId - Context ID
@@ -799,14 +821,15 @@ class ContextManager extends EventEmitter {
                 userId: contextInstance.userId,
                 acl: contextInstance.acl,
                 name: contextInstance.name || contextInstance.id,
-                url: contextInstance.url
+                url: contextInstance.url,
+                workspaceId: contextInstance.workspaceId,
+                scope: contextInstance.scope,
             });
         }
 
         // Get contexts from persistent store that aren't in memory
         const allContextsInStore = this.#indexStore.store || {};
         for (const [contextKey, contextData] of Object.entries(allContextsInStore)) {
-            // Skip if already in memory cache
             if (!this.#contexts.has(contextKey)) {
                 contexts.push({
                     contextKey,
@@ -814,7 +837,9 @@ class ContextManager extends EventEmitter {
                     userId: contextData.userId,
                     acl: contextData.acl,
                     name: contextData.name,
-                    url: contextData.url
+                    url: contextData.url,
+                    workspaceId: contextData.workspaceId,
+                    scope: contextData.scope,
                 });
             }
         }
@@ -836,6 +861,17 @@ class ContextManager extends EventEmitter {
         }
 
         return this.getAllContexts().filter(context => context.userId === userId);
+    }
+
+    /**
+     * Get all contexts bound to a specific workspace
+     * @param {string} workspaceId - Workspace ID
+     * @returns {Array<Object>} Array of context metadata objects for the workspace
+     */
+    getContextsForWorkspace(workspaceId) {
+        if (!this.#initialized) throw new Error('ContextManager not initialized');
+        if (!workspaceId) throw new Error('Workspace ID is required');
+        return this.getAllContexts().filter(ctx => ctx.workspaceId === workspaceId);
     }
 
     /**

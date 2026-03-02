@@ -54,16 +54,20 @@ export default async function workspaceRoutes(fastify, options) {
     prefix: '/:id/layers',
     onRequest: [resolveWorkspaceAddress]
   });
+  fastify.register(import('./bitmaps.js'), {
+    prefix: '/:id/bitmaps',
+    onRequest: [resolveWorkspaceAddress]
+  });
   fastify.register(import('./services.js'), {
     prefix: '/:id/services',
     onRequest: [resolveWorkspaceAddress]
   });
-  fastify.register(import('./links.js'), {
-    prefix: '/:id/links',
+  fastify.register(import('./home.js'), {
+    prefix: '/:id/home',
     onRequest: [resolveWorkspaceAddress]
   });
-  fastify.register(import('./settings.js'), {
-    prefix: '/:id',
+  fastify.register(import('./links.js'), {
+    prefix: '/:id/links',
     onRequest: [resolveWorkspaceAddress]
   });
 
@@ -173,19 +177,14 @@ export default async function workspaceRoutes(fastify, options) {
         }
       };
 
-      // Include resource address if it was resolved from user/resource format
       if (request.originalAddress) {
         response.resourceAddress = request.originalAddress;
       } else {
-        // Try to construct resource address from workspace data
         try {
-          const resourceAddress = await fastify.workspaceManager.constructResourceAddress(workspace);
-          if (resourceAddress) {
-            response.resourceAddress = resourceAddress;
-          }
-        } catch (error) {
-          // Ignore errors in address construction
-        }
+          response.resourceAddress = fastify.workspaceManager.constructWorkspaceReference(
+            workspace.owner, workspace.name
+          );
+        } catch (_) {}
       }
 
       const responseObject = new ResponseObject().found(response, 'Workspace retrieved successfully');
@@ -194,6 +193,28 @@ export default async function workspaceRoutes(fastify, options) {
       fastify.log.error(error);
       const responseObject = new ResponseObject().serverError('Failed to get workspace');
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+    }
+  });
+
+  // List contexts for a workspace
+  fastify.get('/:id/contexts', {
+    onRequest: [fastify.authenticate, resolveWorkspaceAddress, requireWorkspaceRead()],
+    schema: {
+      params: {
+        type: 'object',
+        required: ['id'],
+        properties: { id: { type: 'string' } }
+      }
+    }
+  }, async (request, reply) => {
+    try {
+      const contexts = fastify.contextManager.getContextsForWorkspace(request.workspace.id);
+      const response = new ResponseObject();
+      return reply.code(200).send(response.found(contexts, 'Contexts retrieved successfully', 200, contexts.length).getResponse());
+    } catch (error) {
+      fastify.log.error(error);
+      const response = new ResponseObject().serverError('Failed to list workspace contexts');
+      return reply.code(response.statusCode).send(response.getResponse());
     }
   });
 

@@ -5,6 +5,8 @@ import { pipeline } from 'stream/promises';
 import path from 'path';
 import crypto from 'crypto';
 import { createLogger } from '../../utils/log.js';
+import VirtualContextFS from './VirtualContextFS.js';
+import VirtualDirectoryFS from './VirtualDirectoryFS.js';
 
 const logger = createLogger('webdav');
 
@@ -33,55 +35,65 @@ const etag = (s) => `"${s.ino}-${s.size}-${Math.floor(s.mtimeMs)}"`;
 
 const locks = new Map();
 const cleanLocks = () => { const now = Date.now(); for (const [t, l] of locks) if (l.expires < now) locks.delete(t); };
-const XML_BODY_LIMIT = 1024 * 1024; // 1MB for XML metadata methods
+const XML_BODY_LIMIT = 1024 * 1024;
+
+// ── Virtual root directories ────────────────────────────────────────────────
+
+const ROOTS = [
+  { name: 'Home', isDir: true, size: 0 },
+  { name: 'Context', isDir: true, size: 0 },
+  { name: 'Directories', isDir: true, size: 0 },
+];
 
 // ── WebDAV Handler ──────────────────────────────────────────────────────────
 
 export class WebDAVHandler {
-  /** @param {(userId: string, workspace: string) => Promise<string|null>} resolvePath */
   constructor(resolvePath) {
     this._resolve = resolvePath;
   }
 
-  /**
-   * Main entry point — called from the Fastify route handler after auth.
-   * @param {import('http').ServerResponse} res - raw Node.js response
-   * @param {object} opts
-   */
-  async handle(res, { method, url, headers, body, userId, workspace }) {
-    const homePath = await this._resolve(userId, workspace);
-    if (!homePath) return send(res, 404, 'Workspace not found');
+  async handle(res, { method, url, headers, body, userId, workspace: workspaceName }) {
+    const resolved = await this._resolve(userId, workspaceName);
+    if (!resolved) return send(res, 404, 'Workspace not found');
 
-    const prefix = `/workspaces/${encodeURIComponent(workspace)}/dav`;
+    const homePath = typeof resolved === 'string' ? resolved : resolved.homePath;
+    const workspace = typeof resolved === 'string' ? null : (resolved.workspace || null);
+
+    const prefix = `/workspaces/${encodeURIComponent(workspaceName)}/dav`;
     const decoded = decodeURIComponent(url.split('?')[0]);
     const rel = decoded.startsWith(prefix) ? (decoded.slice(prefix.length) || '/') : '/';
-    const abs = path.resolve(homePath, '.' + rel);
-
-    // Path traversal guard
-    const relative = path.relative(homePath, abs);
-    if (relative.startsWith('..') || path.isAbsolute(relative)) return send(res, 403, 'Forbidden');
 
     res.setHeader('DAV', '1, 2');
     res.setHeader('MS-Author-Via', 'DAV');
-
-    const ctx = { res, abs, rel, prefix, homePath, headers, body };
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
 
     try {
-      switch (method) {
-        case 'OPTIONS':   return this._options(ctx);
-        case 'PROPFIND':  return await this._propfind(ctx);
-        case 'PROPPATCH': return await this._proppatch(ctx);
-        case 'GET':       return await this._get(ctx);
-        case 'HEAD':      return await this._head(ctx);
-        case 'PUT':       return await this._put(ctx);
-        case 'DELETE':    return await this._delete(ctx);
-        case 'MKCOL':     return await this._mkcol(ctx);
-        case 'COPY':      return await this._copyMove(ctx, false);
-        case 'MOVE':      return await this._copyMove(ctx, true);
-        case 'LOCK':      return await this._lock(ctx);
-        case 'UNLOCK':    return await this._unlock(ctx);
-        default:          return send(res, 405, 'Method Not Allowed');
+      // ── Route: DAV root → show 3 virtual directories ────────────────
+      if (rel === '/') {
+        return await this._handleRoot(res, { method, prefix, headers, body, workspace });
       }
+
+      // ── Route: /Home/* → raw filesystem ─────────────────────────────
+      if (rel === '/Home' || rel.startsWith('/Home/')) {
+        const homeRel = rel === '/Home' ? '/' : rel.slice('/Home'.length);
+        return await this._handleHome(res, { method, prefix: prefix + '/Home', rel: homeRel, homePath, headers, body, workspace });
+      }
+
+      // ── Route: /Context/* → virtual context tree ────────────────────
+      if (rel === '/Context' || rel.startsWith('/Context/')) {
+        if (!workspace?.isActive) return send(res, 503, 'Workspace not active');
+        const vRel = rel === '/Context' ? '/' : rel.slice('/Context'.length);
+        return await this._handleVirtual(res, { method, prefix, rel, vRel, workspace, headers, body, treeType: 'context' });
+      }
+
+      // ── Route: /Directories/* → virtual directory tree ──────────────
+      if (rel === '/Directories' || rel.startsWith('/Directories/')) {
+        if (!workspace?.isActive) return send(res, 503, 'Workspace not active');
+        const vRel = rel === '/Directories' ? '/' : rel.slice('/Directories'.length);
+        return await this._handleVirtual(res, { method, prefix, rel, vRel, workspace, headers, body, treeType: 'directory' });
+      }
+
+      return send(res, 404, 'Not Found');
     } catch (err) {
       logger.error({ err, method, path: rel }, 'WebDAV request failed');
       if (!res.headersSent) {
@@ -91,7 +103,56 @@ export class WebDAVHandler {
     }
   }
 
-  // ── WebDAV method handlers ──────────────────────────────────────────────
+  // ── DAV root (3 virtual directories) ──────────────────────────────────
+
+  async _handleRoot(res, { method, prefix, headers, body }) {
+    if (method === 'OPTIONS') return this._options({ res });
+    if (method === 'GET') {
+      const html = `<!DOCTYPE html><html><body><h1>WebDAV</h1><ul>${
+        ROOTS.map(r => `<li><a href="${esc(encodeURIComponent(r.name))}/">${esc(r.name)}/</a></li>`).join('')
+      }</ul></body></html>`;
+      return sendBody(res, 200, html, 'text/html; charset=utf-8');
+    }
+    if (method !== 'PROPFIND') return send(res, 405, 'Method Not Allowed');
+
+    await readBody(body, XML_BODY_LIMIT);
+    const depth = headers['depth'] ?? '1';
+
+    const entries = [virtualPropEntry({ isDir: true, name: '', size: 0 }, prefix, '/')];
+    if (depth !== '0') {
+      for (const root of ROOTS) {
+        entries.push(virtualPropEntry(root, prefix, '/' + root.name));
+      }
+    }
+
+    sendXml(res, 207, `<?xml version="1.0" encoding="utf-8"?>\n<D:multistatus xmlns:D="DAV:">\n${entries.join('\n')}\n</D:multistatus>`);
+  }
+
+  // ── /Home — raw filesystem methods ────────────────────────────────────
+
+  async _handleHome(res, { method, prefix, rel, homePath, headers, body, workspace }) {
+    const abs = path.resolve(homePath, '.' + rel);
+    const relative = path.relative(homePath, abs);
+    if (relative.startsWith('..') || path.isAbsolute(relative)) return send(res, 403, 'Forbidden');
+
+    const ctx = { res, abs, rel, prefix, homePath, headers, body, workspace };
+
+    switch (method) {
+      case 'OPTIONS':   return this._options(ctx);
+      case 'PROPFIND':  return await this._propfind(ctx);
+      case 'PROPPATCH': return await this._proppatch(ctx);
+      case 'GET':       return await this._get(ctx);
+      case 'HEAD':      return await this._head(ctx);
+      case 'PUT':       return await this._put(ctx);
+      case 'DELETE':    return await this._delete(ctx);
+      case 'MKCOL':     return await this._mkcol(ctx);
+      case 'COPY':      return await this._copyMove(ctx, false);
+      case 'MOVE':      return await this._copyMove(ctx, true);
+      case 'LOCK':      return await this._lock(ctx);
+      case 'UNLOCK':    return await this._unlock(ctx);
+      default:          return send(res, 405, 'Method Not Allowed');
+    }
+  }
 
   _options({ res }) {
     res.setHeader('Allow', 'OPTIONS, GET, HEAD, PUT, DELETE, PROPFIND, PROPPATCH, MKCOL, COPY, MOVE, LOCK, UNLOCK');
@@ -99,7 +160,6 @@ export class WebDAVHandler {
   }
 
   async _propfind({ res, abs, rel, prefix, headers, body }) {
-    // Drain optional XML body so keep-alive connections remain clean.
     await readBody(body, XML_BODY_LIMIT);
     const depth = headers['depth'] ?? '1';
 
@@ -118,19 +178,17 @@ export class WebDAVHandler {
             entries.push(propEntry(childStat, prefix, path.posix.join(rel, child.name)));
           } catch { /* skip inaccessible */ }
         }
-      } catch { /* can't list — return just the directory itself */ }
+      } catch { /* can't list */ }
     }
 
     sendXml(res, 207, `<?xml version="1.0" encoding="utf-8"?>\n<D:multistatus xmlns:D="DAV:">\n${entries.join('\n')}\n</D:multistatus>`);
   }
 
   async _proppatch({ res, abs, rel, prefix, body }) {
-    // We don't persist properties, but still consume request payload safely.
     await readBody(body, XML_BODY_LIMIT);
     try { await fs.stat(abs); }
     catch { return send(res, 404, 'Not Found'); }
 
-    // We don't persist custom properties — just ACK everything (same as rclone)
     sendXml(res, 207,
       `<?xml version="1.0" encoding="utf-8"?>\n<D:multistatus xmlns:D="DAV:">\n` +
       `  <D:response>\n    <D:href>${esc(encSegments(prefix + rel))}</D:href>\n` +
@@ -197,7 +255,7 @@ export class WebDAVHandler {
 
   async _mkcol({ res, abs }) {
     try { await fs.stat(abs); return send(res, 405, 'Already exists'); }
-    catch { /* good, doesn't exist */ }
+    catch { /* good */ }
 
     try { await fs.stat(path.dirname(abs)); }
     catch { return send(res, 409, 'Parent does not exist'); }
@@ -244,7 +302,6 @@ export class WebDAVHandler {
   async _lock({ res, abs, prefix, rel, headers, body }) {
     cleanLocks();
 
-    // Lock refresh
     const ifHeader = headers['if'];
     if (ifHeader) {
       const match = ifHeader.match(/<([^>]+)>/);
@@ -255,7 +312,6 @@ export class WebDAVHandler {
       }
     }
 
-    // New lock
     const bodyStr = await readBody(body, XML_BODY_LIMIT);
     const ownerMatch = bodyStr.match(/<(?:D:)?owner[^>]*>([\s\S]*?)<\/(?:D:)?owner>/i);
     const token = `urn:uuid:${crypto.randomUUID()}`;
@@ -268,7 +324,6 @@ export class WebDAVHandler {
     };
     locks.set(token, lock);
 
-    // Create lock-null resource if it doesn't exist
     let created = false;
     try { await fs.stat(abs); }
     catch { await fs.mkdir(path.dirname(abs), { recursive: true }); await fs.writeFile(abs, ''); created = true; }
@@ -284,6 +339,97 @@ export class WebDAVHandler {
     const token = raw.replace(/^<|>$/g, '');
     if (!locks.delete(token)) return send(res, 409, 'Lock token not found');
     send(res, 204);
+  }
+
+  // ── Virtual tree handlers (Context + Directories) ─────────────────────
+
+  async _handleVirtual(res, { method, prefix, rel, vRel, workspace, headers, body, treeType }) {
+    try {
+      switch (method) {
+        case 'OPTIONS':  return this._options({ res });
+        case 'PROPFIND': return await this._vPropfind(res, { prefix, rel, vRel, workspace, headers, body, treeType });
+        case 'GET':      return await this._vGet(res, { prefix, rel, vRel, workspace, treeType });
+        case 'HEAD':     return await this._vHead(res, { vRel, workspace, treeType });
+        default:         return send(res, 403, 'Virtual tree is read-only');
+      }
+    } catch (err) {
+      logger.error({ err, method, path: vRel, treeType }, 'Virtual WebDAV request failed');
+      if (!res.headersSent) send(res, 500);
+    }
+  }
+
+  async _vPropfind(res, { prefix, rel, vRel, workspace, headers, body, treeType }) {
+    await readBody(body, XML_BODY_LIMIT);
+    const depth = headers['depth'] ?? '1';
+
+    const vfs = treeType === 'directory'
+      ? new VirtualDirectoryFS(workspace)
+      : new VirtualContextFS(workspace);
+
+    const info = await vfs.stat(vRel);
+    if (!info) return send(res, 404, 'Not Found');
+
+    const entries = [virtualPropEntry(info, prefix, rel)];
+
+    if (info.isDir && depth !== '0') {
+      const children = await vfs.readdir(vRel);
+      if (children) {
+        for (const child of children) {
+          const childRel = rel.endsWith('/') ? rel + child.name : rel + '/' + child.name;
+          entries.push(virtualPropEntry(child, prefix, childRel));
+        }
+      }
+    }
+
+    sendXml(res, 207, `<?xml version="1.0" encoding="utf-8"?>\n<D:multistatus xmlns:D="DAV:">\n${entries.join('\n')}\n</D:multistatus>`);
+  }
+
+  async _vGet(res, { prefix, vRel, workspace, treeType }) {
+    const vfs = treeType === 'directory'
+      ? new VirtualDirectoryFS(workspace)
+      : new VirtualContextFS(workspace);
+
+    const info = await vfs.stat(vRel);
+    if (!info) return send(res, 404, 'Not Found');
+
+    if (info.isDir) {
+      const children = await vfs.readdir(vRel) || [];
+      const html = `<!DOCTYPE html><html><body><h1>${esc(treeType === 'directory' ? 'Directories' : 'Context')}: ${esc(vRel)}</h1><ul>${
+        children.map(c => {
+          const suffix = c.isDir ? '/' : '';
+          return `<li><a href="${esc(encodeURIComponent(c.name))}${suffix}">${esc(c.name)}${suffix}</a></li>`;
+        }).join('')
+      }</ul></body></html>`;
+      return sendBody(res, 200, html, 'text/html; charset=utf-8');
+    }
+
+    const content = await vfs.getContent(vRel);
+    if (!content) return send(res, 404, 'Not Found');
+
+    if (content.stream) {
+      res.writeHead(200, { 'Content-Type': content.contentType, 'Content-Length': content.size });
+      await pipeline(content.stream, res);
+    } else if (content.buffer) {
+      res.writeHead(200, { 'Content-Type': content.contentType, 'Content-Length': content.buffer.length });
+      res.end(content.buffer);
+    } else {
+      send(res, 500);
+    }
+  }
+
+  async _vHead(res, { vRel, workspace, treeType }) {
+    const vfs = treeType === 'directory'
+      ? new VirtualDirectoryFS(workspace)
+      : new VirtualContextFS(workspace);
+
+    const info = await vfs.stat(vRel);
+    if (!info) return send(res, 404);
+
+    res.writeHead(200, {
+      'Content-Type': info.isDir ? 'httpd/unix-directory' : mime(vRel),
+      'Content-Length': info.isDir ? 0 : (info.size || 0),
+    });
+    res.end();
   }
 }
 
@@ -308,6 +454,26 @@ function sendXml(res, code, xml, extraHeaders = {}) {
 }
 
 // ── PROPFIND XML generation ─────────────────────────────────────────────────
+
+function virtualPropEntry(entry, prefix, rel) {
+  const isDir = entry.isDir;
+  const href = esc(encSegments(prefix + rel) + (isDir && !rel.endsWith('/') ? '/' : ''));
+  const name = esc(entry.name || path.basename(rel) || 'root');
+  const now = new Date();
+  const epoch = now.getTime();
+  const props = [
+    `<D:displayname>${name}</D:displayname>`,
+    `<D:resourcetype>${isDir ? '<D:collection/>' : ''}</D:resourcetype>`,
+    `<D:getlastmodified>${httpDate(now)}</D:getlastmodified>`,
+    `<D:creationdate>${isoDate(now)}</D:creationdate>`,
+    `<D:getetag>"v-${esc(name)}-${epoch}"</D:getetag>`,
+  ];
+  if (!isDir) {
+    props.push(`<D:getcontentlength>${entry.size || 0}</D:getcontentlength>`);
+    props.push(`<D:getcontenttype>${mime(rel)}</D:getcontenttype>`);
+  }
+  return `  <D:response>\n    <D:href>${href}</D:href>\n    <D:propstat>\n      <D:prop>\n        ${props.join('\n        ')}\n      </D:prop>\n      <D:status>HTTP/1.1 200 OK</D:status>\n    </D:propstat>\n  </D:response>`;
+}
 
 function propEntry(stat, prefix, rel) {
   const isDir = stat.isDirectory();

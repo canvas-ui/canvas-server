@@ -23,7 +23,8 @@ class Context extends EventEmitter {
 
     // Context properties
     #id;
-    #baseUrl; // With workspace support we need to change the format to workspace://baseUrl/path
+    #scope; // 'workspace' (bound to one workspace) or 'universe' (can cross workspace boundaries)
+    #baseUrl;
     #url;
     #path;
     #pathArray;
@@ -74,6 +75,7 @@ class Context extends EventEmitter {
 
         // Context properties
         this.#id = options.id || uuidv4(); // TODO: Use human-typeable 6-char ULID
+        this.#scope = options.scope || (options.workspace?.type === 'universe' ? 'universe' : 'workspace');
         this.#url = null;
         this.#baseUrl = options.baseUrl || DEFAULT_BASE_URL;
         this.#path = null;
@@ -151,14 +153,15 @@ class Context extends EventEmitter {
                     this.#path = parsedUrl.path;
                     this.#pathArray = parsedUrl.pathArray;
                     this.#contextBitmapArray = [...parsedUrl.pathArray]; // Initialize contextBitmapArray
-                } else {
-                    // Different workspace, store as pending for later switching
+                } else if (this.#scope === 'universe') {
+                    // Universe-scoped: different workspace, store as pending for later switching
                     this.#pendingUrl = url;
-                    // For now, use current workspace as temporary URL
                     this.#url = `${this.#workspace.name}://${parsedUrl.path.replace(/^\//, '')}`;
                     this.#path = parsedUrl.path;
                     this.#pathArray = parsedUrl.pathArray;
-                    this.#contextBitmapArray = [...parsedUrl.pathArray]; // Initialize contextBitmapArray
+                    this.#contextBitmapArray = [...parsedUrl.pathArray];
+                } else {
+                    throw new Error(`Workspace-scoped context cannot target a different workspace: "${parsedUrl.workspaceId}"`);
                 }
             }
         } catch (error) {
@@ -194,6 +197,8 @@ class Context extends EventEmitter {
 
     // Getters / Setters
     get id() { return this.#id; }
+    get scope() { return this.#scope; }
+    get isUniverse() { return this.#scope === 'universe'; }
     get userId() { return this.#userId; }
     get baseUrl() { return this.#baseUrl; }
     get url() { return this.#url; }
@@ -595,6 +600,9 @@ class Context extends EventEmitter {
 
         // If the workspace name is different, switch to the new workspace
         if (targetWorkspaceName !== this.#workspace.name) {
+            if (!this.isUniverse) {
+                throw new Error(`Workspace-scoped context cannot navigate to a different workspace. Target: "${targetWorkspaceName}", current: "${this.#workspace.name}"`);
+            }
             await this.#switchWorkspace(targetWorkspaceName);
         }
 
@@ -823,19 +831,18 @@ class Context extends EventEmitter {
             throw new Error('Document is required');
         }
 
-        // We always update context bitmaps
-        const contextArray = [
-            //...this.#contextBitmapArray,
+        // Build context path string for DB
+        const contextSpec = this.#convertContextArrayToPath([
             ...this.#pathArray,
             ...this.#serverContextArray,
             ...this.#clientContextArray,
-        ];
+        ]);
 
         // We always index with all features
         featureArray = [...this.#featureBitmapArray, ...featureArray];
 
         // Insert the document
-        const result = this.#db.insertDocument(document, contextArray, featureArray, options);
+        const result = this.#db.insertDocument(document, contextSpec, featureArray);
 
         // Prepare document data for events
         const documentId = document.id || result.id;
@@ -877,21 +884,19 @@ class Context extends EventEmitter {
             throw new Error('Document array must be an array');
         }
 
-        // We always update context bitmaps
-        const contextArray = [
-            //...this.#contextBitmapArray,
+        // Build context path string for DB
+        const contextSpec = this.#convertContextArrayToPath([
             ...this.#pathArray,
             ...this.#serverContextArray,
             ...this.#clientContextArray,
-        ];
+        ]);
 
-
-        logger.debug('#insertDocumentArray: contextArray:', this.#contextBitmapArray);
+        logger.debug('#insertDocumentArray: contextSpec:', contextSpec);
         logger.debug('#insertDocumentArray: Received featureArray:', featureArray);
         logger.debug('#insertDocumentArray: Received options:', options);
 
-        // Insert the documents (handle async results)
-        const result = await Promise.resolve(this.#db.insertDocumentArray(documentArray, contextArray, featureArray));
+        // Insert the documents
+        const result = await this.#db.insertDocumentArray(documentArray, contextSpec, featureArray);
 
         // Prepare document data for events - handle different result formats
         let documentIds = [];
@@ -943,34 +948,6 @@ class Context extends EventEmitter {
         return result;
     }
 
-    async getDocument(accessingUserId, documentId, featureArray = [], filterArray = [], options = {}) {
-        if (!this.checkPermission(accessingUserId, 'documentRead')) {
-            throw new Error('Access denied: User requires documentRead permission.');
-        }
-        if (!this.#workspace || !this.#workspace.db) {
-            throw new Error('Workspace or database not available');
-        }
-
-        let baseContexts = [...this.#contextBitmapArray]; // Start with a copy
-
-        let serverContexts = [];
-        if (options.includeServerContext && this.#serverContextArray && this.#serverContextArray.length > 0) {
-            serverContexts = this.#serverContextArray;
-        }
-
-        let clientContexts = [];
-        if (options.includeClientContext && this.#clientContextArray && this.#clientContextArray.length > 0) {
-            clientContexts = this.#clientContextArray;
-        }
-
-        // Combine them into a flat array
-        const contextArray = [...new Set([...baseContexts, ...serverContexts, ...clientContexts])];
-
-        // Then use this flat contextArray for DB operations.
-        const document = this.#db.findDocuments(documentId, contextArray, featureArray, filterArray);
-        return document;
-    }
-
     async getDocumentById(accessingUserId, id, options = { parse: true }) {
         // This is a direct DB access method, only context owner should call it.
         if (accessingUserId !== this.#userId) {
@@ -980,8 +957,7 @@ class Context extends EventEmitter {
             throw new Error('Workspace or database not available');
         }
 
-        // Pass the context's pathArray as the contextSpec to the DB method
-        const result = await this.#workspace.db.getDocumentById(id, this.#pathArray, options);
+        const result = await this.#workspace.db.getDocumentById(id, options);
         return result;
     }
 
@@ -993,35 +969,8 @@ class Context extends EventEmitter {
             throw new Error('Workspace or database not available');
         }
 
-        const result = await this.#workspace.db.getDocumentsByIdArray(idArray, this.#pathArray, options);
+        const result = await this.#workspace.db.getDocumentsByIdArray(idArray, options);
         return result;
-    }
-
-    async getDocumentArray(accessingUserId, documentIdArray, featureArray = [], filterArray = [], options = {}) {
-        if (!this.checkPermission(accessingUserId, 'documentRead')) {
-            throw new Error('Access denied: User requires documentRead permission.');
-        }
-        if (!this.#workspace || !this.#workspace.db) {
-            throw new Error('Workspace or database not available');
-        }
-
-        let baseContexts = [...this.#contextBitmapArray]; // Start with a copy
-
-        let serverContexts = [];
-        if (options.includeServerContext && this.#serverContextArray && this.#serverContextArray.length > 0) {
-            serverContexts = this.#serverContextArray;
-        }
-
-        let clientContexts = [];
-        if (options.includeClientContext && this.#clientContextArray && this.#clientContextArray.length > 0) {
-            clientContexts = this.#clientContextArray;
-        }
-
-        // Combine them into a flat array
-        const contextArray = [...new Set([...baseContexts, ...serverContexts, ...clientContexts])];
-
-        const documents = this.#db.findDocuments(documentIdArray, contextArray, featureArray, filterArray, options);
-        return documents;
     }
 
     async hasDocument(accessingUserId, id, featureBitmapArray = []) {
@@ -1032,7 +981,8 @@ class Context extends EventEmitter {
             throw new Error('Workspace or database not available');
         }
 
-        const result = await this.#workspace.db.hasDocument(id, this.#contextBitmapArray, featureBitmapArray);
+        const contextSpec = this.#convertContextArrayToPath(this.#contextBitmapArray);
+        const result = await this.#workspace.db.hasDocument(id, contextSpec, featureBitmapArray);
         return result;
     }
 
@@ -1044,7 +994,8 @@ class Context extends EventEmitter {
             throw new Error('Workspace or database not available');
         }
 
-        const result = await this.#workspace.db.hasDocumentByChecksum(checksum, this.#contextBitmapArray, featureBitmapArray);
+        const contextSpec = this.#convertContextArrayToPath(this.#contextBitmapArray);
+        const result = await this.#workspace.db.hasDocumentByChecksum(checksum, contextSpec, featureBitmapArray);
         return result;
     }
 
@@ -1133,16 +1084,15 @@ class Context extends EventEmitter {
             throw new Error('Document is required');
         }
 
-        // We always update context bitmaps
-        const contextArray = [
-            //...this.#contextBitmapArray,
+        // Build context path string for DB
+        const contextSpec = this.#convertContextArrayToPath([
             ...this.#pathArray,
             ...this.#serverContextArray,
             ...this.#clientContextArray,
-        ];
+        ]);
 
-        // Update the document
-        const result = this.#db.updateDocument(document, contextArray, featureArray);
+        // Update the document — DB expects (id, updateData, contextSpec, features)
+        const result = this.#db.updateDocument(document.id, document, contextSpec, featureArray);
 
         // Prepare document data for events
         const documentEventPayload = {
@@ -1173,16 +1123,15 @@ class Context extends EventEmitter {
             throw new Error('Document array must be an array');
         }
 
-        // We always update context bitmaps
-        const contextArray = [
-            //...this.#contextBitmapArray,
+        // Build context path string for DB
+        const contextSpec = this.#convertContextArrayToPath([
             ...this.#pathArray,
             ...this.#serverContextArray,
             ...this.#clientContextArray,
-        ];
+        ]);
 
         // Update the documents
-        const result = this.#db.updateDocumentArray(documentArray, contextArray, featureArray);
+        const result = this.#db.updateDocumentArray(documentArray, contextSpec, featureArray);
 
         // Prepare document data for events
         const documentIds = documentArray.map(doc => doc.id);
@@ -1220,8 +1169,9 @@ class Context extends EventEmitter {
 
         try {
             // We remove document from the current context not from the database
-            logger.debug(`#removeDocument: Calling db.removeDocument with documentId: ${documentId}, contextArray: ${JSON.stringify(this.#contextBitmapArray)}, featureArray: ${JSON.stringify(featureArray)}, options: ${JSON.stringify(options)}`);
-            const result = this.#db.removeDocument(documentId, this.#contextBitmapArray, featureArray, options);
+            const contextSpec = this.#convertContextArrayToPath(this.#contextBitmapArray);
+            logger.debug(`#removeDocument: Calling db.removeDocument with documentId: ${documentId}, contextSpec: ${contextSpec}, featureArray: ${JSON.stringify(featureArray)}, options: ${JSON.stringify(options)}`);
+            const result = this.#db.removeDocument(documentId, contextSpec, featureArray, options);
             logger.debug(`#removeDocument: Database removal successful, result: ${JSON.stringify(result)}`);
 
             // Prepare document data for events
@@ -1278,8 +1228,9 @@ class Context extends EventEmitter {
             logger.debug(`#removeDocumentArray: Document ID conversion successful - using: ${JSON.stringify(numericDocumentIdArray)}`);
 
             // We remove documents from the current context not from the database
-            logger.debug(`#removeDocumentArray: Calling db.removeDocumentArray with documentIds: ${JSON.stringify(numericDocumentIdArray)}, contextArray: ${JSON.stringify(this.#contextBitmapArray)}, featureArray: ${JSON.stringify(featureArray)}, options: ${JSON.stringify(options)}`);
-            const result = this.#db.removeDocumentArray(numericDocumentIdArray, this.#contextBitmapArray, featureArray, options);
+            const contextSpec = this.#convertContextArrayToPath(this.#contextBitmapArray);
+            logger.debug(`#removeDocumentArray: Calling db.removeDocumentArray with documentIds: ${JSON.stringify(numericDocumentIdArray)}, contextSpec: ${contextSpec}, featureArray: ${JSON.stringify(featureArray)}, options: ${JSON.stringify(options)}`);
+            const result = this.#db.removeDocumentArray(numericDocumentIdArray, contextSpec, featureArray, options);
             logger.debug(`#removeDocumentArray: Database removal successful, result: ${JSON.stringify(result)}`);
 
             // Prepare document data for events
@@ -1337,12 +1288,10 @@ class Context extends EventEmitter {
         // Parse and validate document ID
         const numericDocumentId = parseDocumentId(documentId, 'Document ID');
         logger.debug(`#deleteDocumentFromDb: Document ID validation passed - using: ${numericDocumentId}`);
-        logger.debug(`#deleteDocumentFromDb: Context pathArray: ${JSON.stringify(this.#pathArray)}`);
 
         try {
-            // Completely delete the document from the database, respecting the context
-            logger.debug(`#deleteDocumentFromDb: Calling db.deleteDocument with documentId: ${numericDocumentId}, pathArray: ${JSON.stringify(this.#pathArray)}`);
-            const result = this.#db.deleteDocument(numericDocumentId, this.#pathArray);
+            logger.debug(`#deleteDocumentFromDb: Calling db.deleteDocument with documentId: ${numericDocumentId}`);
+            const result = this.#db.deleteDocument(numericDocumentId);
             logger.debug(`#deleteDocumentFromDb: Database deletion successful, result: ${JSON.stringify(result)}`);
 
             // Prepare document data for events
@@ -1402,11 +1351,9 @@ class Context extends EventEmitter {
             logger.debug(`#deleteDocumentArrayFromDb: Converting document IDs to numbers`);
             const numericDocumentIdArray = parseDocumentIdArray(documentIdArray, 'Document ID array');
             logger.debug(`#deleteDocumentArrayFromDb: Document ID conversion successful - using: ${JSON.stringify(numericDocumentIdArray)}`);
-            logger.debug(`#deleteDocumentArrayFromDb: Context pathArray: ${JSON.stringify(this.#pathArray)}`);
 
-            // Completely delete the documents from the database, respecting the context
-            logger.debug(`#deleteDocumentArrayFromDb: Calling db.deleteDocumentArray with documentIds: ${JSON.stringify(numericDocumentIdArray)}, pathArray: ${JSON.stringify(this.#pathArray)}, options: ${JSON.stringify(options)}`);
-            const result = this.#db.deleteDocumentArray(numericDocumentIdArray, this.#pathArray, options);
+            logger.debug(`#deleteDocumentArrayFromDb: Calling db.deleteDocumentArray with documentIds: ${JSON.stringify(numericDocumentIdArray)}`);
+            const result = this.#db.deleteDocumentArray(numericDocumentIdArray);
             logger.debug(`#deleteDocumentArrayFromDb: Database deletion successful, result: ${JSON.stringify(result)}`);
 
             // Prepare document data for events
@@ -1440,6 +1387,7 @@ class Context extends EventEmitter {
     toJSON() {
         return {
             id: this.#id,
+            scope: this.#scope,
             userId: this.#userId,
             url: this.#url,
             baseUrl: this.#baseUrl,
@@ -1473,19 +1421,17 @@ class Context extends EventEmitter {
             throw new Error('Checksum string is required.');
         }
 
-        // Step 1: Get the document by checksum, ensuring it's within the current context's path.
-        // The updated SynapsD method handles the contextSpec (this.#pathArray).
-        const documentInContext = await this.#workspace.db.getDocumentByChecksumString(checksumString, this.#pathArray);
+        const documentInContext = await this.#workspace.db.getDocumentByChecksumString(checksumString);
 
         if (!documentInContext) {
             logger.debug(`Document with checksum '${checksumString}' not found within context path '${this.#path}'.`);
             return null;
         }
 
-        // Step 2: If featureArray is provided, perform an additional check for features.
-        // We use this.#contextBitmapArray for the hasDocument call as it represents the fully resolved context for this Context instance.
+        // If featureArray is provided, verify the document matches those features in this context
         if (featureArray && featureArray.length > 0) {
-            const matchesFeatures = await this.#workspace.db.hasDocument(documentInContext.id, this.#contextBitmapArray, featureArray);
+            const contextSpec = this.#convertContextArrayToPath(this.#contextBitmapArray);
+            const matchesFeatures = await this.#workspace.db.hasDocument(documentInContext.id, contextSpec, featureArray);
             if (!matchesFeatures) {
                 logger.debug(`Document ID '${documentInContext.id}' (checksum '${checksumString}') found in context path '${this.#path}' but does not match featureArray: [${featureArray.join(', ')}].`);
                 return null;
@@ -1509,8 +1455,7 @@ class Context extends EventEmitter {
             throw new Error('Checksum string is required.');
         }
 
-        // We assume getDocumentByChecksumString returns the parsed document object or null
-        const document = await this.#workspace.db.getDocumentByChecksumString(checksumString, this.#pathArray);
+        const document = await this.#workspace.db.getDocumentByChecksumString(checksumString);
 
         if (!document) {
             logger.debug(`Document with checksum '${checksumString}' not found in database.`);

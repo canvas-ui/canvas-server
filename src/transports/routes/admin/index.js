@@ -258,6 +258,32 @@ export default async function adminRoutes(fastify, options) {
     }
   });
 
+  // Database Maintenance Routes
+
+  // Reindex feature bitmaps for a workspace (admin only)
+  fastify.post('/workspaces/:workspaceId/reindex-features', {
+    onRequest: [fastify.authenticate, requireAdmin],
+    schema: { params: { type: 'object', required: ['workspaceId'], properties: { workspaceId: { type: 'string' } } } }
+  }, async (request, reply) => {
+    try {
+      const identifier = request.params.workspaceId;
+      const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(identifier);
+      const workspaceId = isUUID ? identifier : fastify.workspaceManager.resolveWorkspaceId(request.user.id, identifier);
+      const ws = workspaceId ? await fastify.workspaceManager.getWorkspace(workspaceId, request.user.id) : null;
+      if (!ws?.isActive) {
+        const response = new ResponseObject().badRequest('Workspace not found or not active');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+      const indexed = await ws.db.reindexFeatures();
+      const response = new ResponseObject().success({ indexed }, `Reindexed ${indexed} documents`);
+      return reply.code(response.statusCode).send(response.getResponse());
+    } catch (error) {
+      fastify.log.error(error);
+      const response = new ResponseObject().serverError(error.message || 'Failed to reindex features');
+      return reply.code(response.statusCode).send(response.getResponse());
+    }
+  });
+
   // Workspace Management Routes
 
   // List all workspaces (admin only)

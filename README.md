@@ -49,6 +49,10 @@ Index:        SynapsD (LMDB + roaring bitmaps, context/directory trees)
 
 Each workspace owns a StoreD instance. The home directory is just a file backend (`{ driver: 'file', root: './home', watch: true }`). Future backends (S3, SMB) sync via background worker threads.
 
+## REST + Websocket transports
+
+- [API Documentation](docs/API.md)
+
 ## WebDAV
 
 Workspace data is exposed via WebDAV with three virtual root directories:

@@ -23,6 +23,8 @@ import {
     WORKSPACE_DIRECTORIES,
 } from './lib/constants.js';
 
+const HOME_BACKEND_FEATURE = 'data/backend/home';
+
 const DEFAULT_HOME_EXCLUSIONS = [
     '.DS_Store', 'Thumbs.db', 'desktop.ini',
     '.git', '.svn', '.hg',
@@ -292,8 +294,30 @@ class Workspace extends EventEmitter {
         if (!this.#stored) throw new Error('Stored not initialized');
 
         const files = await this.#stored.scan();
-        await this.#syncInitialFiles(files);
-        return { synced: files.length };
+
+        // Build set of checksums currently on disk (post-exclusion)
+        const diskChecksums = new Set();
+        const validFiles = [];
+        for (const f of files) {
+            if (!f.key || !f.checksums?.sha256 || this.#isExcluded(f.key)) continue;
+            diskChecksums.add(`sha256/${f.checksums.sha256}`);
+            validFiles.push(f);
+        }
+
+        // Remove stale docs: indexed with home feature but no longer on disk
+        const indexed = await this.#db.findDocuments(null, [HOME_BACKEND_FEATURE]);
+        let removed = 0;
+        for (const doc of indexed) {
+            const checksum = doc.checksumArray?.[0] ?? doc.getPrimaryChecksum?.();
+            if (checksum && !diskChecksums.has(checksum)) {
+                try { await this.#db.deleteDocument(doc.id); removed++; }
+                catch (err) { this.#logger.debug(`reindex: failed to remove stale doc ${doc.id}: ${err.message}`); }
+            }
+        }
+
+        // Sync current files (inserts new, deduplicates existing by checksum)
+        await this.#syncInitialFiles(validFiles);
+        return { synced: validFiles.length, removed };
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -509,7 +533,7 @@ class Workspace extends EventEmitter {
                     dataPaths.push(dataPath);
                     await this.#db.updateDocument(existingDoc.id, {
                         metadata: { ...existingDoc.metadata, dataPaths },
-                    });
+                    }, { features: [HOME_BACKEND_FEATURE] });
                 }
             } else {
                 await this.#db.insertDocument({
@@ -517,7 +541,7 @@ class Workspace extends EventEmitter {
                     checksumArray: [checksumString],
                     data: { filename, size, mime: mimeType },
                     metadata: { dataPaths: [dataPath] },
-                }, '/');
+                }, { context: '/', features: [HOME_BACKEND_FEATURE] });
             }
         } catch (err) {
             this.#logger.debug(`Error syncing file add ${key}: ${err.message}`);
@@ -573,7 +597,7 @@ class Workspace extends EventEmitter {
                         dataPaths.push(dataPath);
                         await this.#db.updateDocument(existingDoc.id, {
                             metadata: { ...existingDoc.metadata, dataPaths },
-                        });
+                        }, { features: [HOME_BACKEND_FEATURE] });
                     }
                 } else {
                     await this.#db.insertDocument({
@@ -581,7 +605,7 @@ class Workspace extends EventEmitter {
                         checksumArray: [checksumString],
                         data: { filename, size: file.size, mime: file.mimeType },
                         metadata: { dataPaths: [dataPath] },
-                    }, '/');
+                    }, { context: '/', features: [HOME_BACKEND_FEATURE] });
                 }
                 synced++;
             } catch (err) {

@@ -6,6 +6,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { createLogger } from '../../utils/log.js';
 import VirtualContextFS from './VirtualContextFS.js';
+import VirtualContextsFS from './VirtualContextsFS.js';
 import VirtualDirectoryFS from './VirtualDirectoryFS.js';
 
 const logger = createLogger('webdav');
@@ -42,6 +43,7 @@ const XML_BODY_LIMIT = 1024 * 1024;
 const ROOTS = [
   { name: 'Home', isDir: true, size: 0 },
   { name: 'Context', isDir: true, size: 0 },
+  { name: 'Contexts', isDir: true, size: 0 },
   { name: 'Directories', isDir: true, size: 0 },
 ];
 
@@ -58,6 +60,7 @@ export class WebDAVHandler {
 
     const homePath = typeof resolved === 'string' ? resolved : resolved.homePath;
     const workspace = typeof resolved === 'string' ? null : (resolved.workspace || null);
+    const contextManager = typeof resolved === 'string' ? null : (resolved.contextManager || null);
 
     const prefix = `/workspaces/${encodeURIComponent(workspaceName)}/dav`;
     const decoded = decodeURIComponent(url.split('?')[0]);
@@ -84,6 +87,15 @@ export class WebDAVHandler {
         if (!workspace?.isActive) return send(res, 503, 'Workspace not active');
         const vRel = rel === '/Context' ? '/' : rel.slice('/Context'.length);
         return await this._handleVirtual(res, { method, prefix, rel, vRel, workspace, headers, body, treeType: 'context' });
+      }
+
+      // ── Route: /Contexts/* → per-context abstraction folders ────────
+      if (rel === '/Contexts' || rel.startsWith('/Contexts/')) {
+        if (!workspace?.isActive) return send(res, 503, 'Workspace not active');
+        if (!contextManager) return send(res, 503, 'Context manager not available');
+        const vRel = rel === '/Contexts' ? '/' : rel.slice('/Contexts'.length);
+        const vfs = new VirtualContextsFS(workspace, userId, contextManager);
+        return await this._handleVirtual(res, { method, prefix, rel, vRel, headers, body, vfs, treeType: 'contexts' });
       }
 
       // ── Route: /Directories/* → virtual directory tree ──────────────
@@ -343,13 +355,17 @@ export class WebDAVHandler {
 
   // ── Virtual tree handlers (Context + Directories) ─────────────────────
 
-  async _handleVirtual(res, { method, prefix, rel, vRel, workspace, headers, body, treeType }) {
+  async _handleVirtual(res, { method, prefix, rel, vRel, workspace, headers, body, vfs: prebuiltVfs, treeType }) {
+    const vfs = prebuiltVfs || (treeType === 'directory'
+      ? new VirtualDirectoryFS(workspace)
+      : new VirtualContextFS(workspace));
+
     try {
       switch (method) {
         case 'OPTIONS':  return this._options({ res });
-        case 'PROPFIND': return await this._vPropfind(res, { prefix, rel, vRel, workspace, headers, body, treeType });
-        case 'GET':      return await this._vGet(res, { prefix, rel, vRel, workspace, treeType });
-        case 'HEAD':     return await this._vHead(res, { vRel, workspace, treeType });
+        case 'PROPFIND': return await this._vPropfind(res, { prefix, rel, vRel, headers, body, vfs, treeType });
+        case 'GET':      return await this._vGet(res, { vRel, vfs, treeType });
+        case 'HEAD':     return await this._vHead(res, { vRel, vfs });
         default:         return send(res, 403, 'Virtual tree is read-only');
       }
     } catch (err) {
@@ -358,13 +374,9 @@ export class WebDAVHandler {
     }
   }
 
-  async _vPropfind(res, { prefix, rel, vRel, workspace, headers, body, treeType }) {
+  async _vPropfind(res, { prefix, rel, vRel, headers, body, vfs }) {
     await readBody(body, XML_BODY_LIMIT);
     const depth = headers['depth'] ?? '1';
-
-    const vfs = treeType === 'directory'
-      ? new VirtualDirectoryFS(workspace)
-      : new VirtualContextFS(workspace);
 
     const info = await vfs.stat(vRel);
     if (!info) return send(res, 404, 'Not Found');
@@ -384,17 +396,14 @@ export class WebDAVHandler {
     sendXml(res, 207, `<?xml version="1.0" encoding="utf-8"?>\n<D:multistatus xmlns:D="DAV:">\n${entries.join('\n')}\n</D:multistatus>`);
   }
 
-  async _vGet(res, { prefix, vRel, workspace, treeType }) {
-    const vfs = treeType === 'directory'
-      ? new VirtualDirectoryFS(workspace)
-      : new VirtualContextFS(workspace);
-
+  async _vGet(res, { vRel, vfs, treeType }) {
     const info = await vfs.stat(vRel);
     if (!info) return send(res, 404, 'Not Found');
 
     if (info.isDir) {
       const children = await vfs.readdir(vRel) || [];
-      const html = `<!DOCTYPE html><html><body><h1>${esc(treeType === 'directory' ? 'Directories' : 'Context')}: ${esc(vRel)}</h1><ul>${
+      const label = { directory: 'Directories', contexts: 'Contexts', context: 'Context' }[treeType] || treeType;
+      const html = `<!DOCTYPE html><html><body><h1>${esc(label)}: ${esc(vRel)}</h1><ul>${
         children.map(c => {
           const suffix = c.isDir ? '/' : '';
           return `<li><a href="${esc(encodeURIComponent(c.name))}${suffix}">${esc(c.name)}${suffix}</a></li>`;
@@ -417,11 +426,7 @@ export class WebDAVHandler {
     }
   }
 
-  async _vHead(res, { vRel, workspace, treeType }) {
-    const vfs = treeType === 'directory'
-      ? new VirtualDirectoryFS(workspace)
-      : new VirtualContextFS(workspace);
-
+  async _vHead(res, { vRel, vfs }) {
     const info = await vfs.stat(vRel);
     if (!info) return send(res, 404);
 

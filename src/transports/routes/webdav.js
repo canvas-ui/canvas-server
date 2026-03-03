@@ -32,7 +32,7 @@ export default async function webdavRoutes(fastify) {
 
     const homePath = ws.homePath || path.join(ws.rootPath, 'home');
     await fs.mkdir(homePath, { recursive: true }).catch(() => {});
-    return { homePath, workspace: ws };
+    return { homePath, workspace: ws, contextManager: fastify.contextManager };
   });
 
   // ── Content-type parser (scoped to this plugin) ──────────────────────────

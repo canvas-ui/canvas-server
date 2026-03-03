@@ -92,7 +92,7 @@ Authenticate with your email + password, or use an API token as the password (us
 
 ```bash
 # Create your your root dirs (Contexts will be merged under Workspaces soon)
-mkdir ~/Workspaces ~/Contexts 
+mkdir -p ~/Workspaces/{foo,bar,baz} ~/Contexts/{foo,bar,baz} 
 
 # Create two separate service templates for Workspace and Context mounts
 # Context mounts are somewhat specific, hence need a different cfg
@@ -110,7 +110,6 @@ ExecStart=/usr/bin/rclone mount %i: %h/Contexts/%i \
   --dir-cache-time 0 \
   --no-modtime \
   --no-checksum \
-  --create-empty-dirs \
   --config %h/.config/rclone/rclone-contexts.conf
 ExecStop=/usr/bin/fusermount -u %h/Contexts/%i
 Restart=on-failure
@@ -130,7 +129,6 @@ Type=simple
 ExecStart=/usr/bin/rclone mount %i: %h/Workspaces/%i \
   --vfs-cache-mode full \
   --vfs-cache-max-size 30G \
-  --create-empty-dirs \
   --config %h/.config/rclone/rclone-workspaces.conf
 ExecStop=/usr/bin/fusermount -u %h/Workspaces/%i
 Restart=on-failure

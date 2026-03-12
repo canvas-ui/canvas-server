@@ -272,10 +272,31 @@ class Workspace extends EventEmitter {
         return await this.db.getDocumentById(id, options);
     }
 
+    async find(spec = {}) {
+        if (!this.isActive) throw new Error('Workspace not active');
+        return await this.db.find(spec);
+    }
+
     async list(options = {}) {
-         if (!this.isActive) throw new Error('Workspace not active');
-         const { contextSpec = '/', featureBitmapArray = [], filterArray = [], ...rest } = options;
-         return await this.db.findDocuments(contextSpec, featureBitmapArray, filterArray, rest);
+        if (!this.isActive) throw new Error('Workspace not active');
+
+        const {
+            context,
+            contextSpec = '/',
+            attributes,
+            featureBitmapArray = [],
+            filters,
+            filterArray = [],
+            ...rest
+        } = options;
+
+        return await this.find({
+            context: context ?? contextSpec,
+            attributes: attributes ?? this.#legacyFeaturesToAttributes(featureBitmapArray),
+            filters,
+            filterArray,
+            ...rest,
+        });
     }
 
     async listBitmaps(prefix = '', { includeData = false } = {}) {
@@ -313,6 +334,21 @@ class Workspace extends EventEmitter {
 
         const serialized = bitmap.serialize(true); // Roaring portable format
         return Buffer.isBuffer(serialized) ? serialized : Buffer.from(serialized);
+    }
+
+    #legacyFeaturesToAttributes(featureBitmapArray = []) {
+        const allOf = [];
+        const noneOf = [];
+
+        for (const key of (Array.isArray(featureBitmapArray) ? featureBitmapArray : [featureBitmapArray]).filter(Boolean)) {
+            if (typeof key === 'string' && key.startsWith('!')) {
+                noneOf.push(key.slice(1));
+            } else {
+                allOf.push(key);
+            }
+        }
+
+        return { allOf, noneOf };
     }
 
     clearDatabaseSync() {

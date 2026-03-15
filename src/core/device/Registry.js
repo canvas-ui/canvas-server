@@ -3,6 +3,7 @@
 import path from 'path';
 import fs from 'fs/promises';
 import { createLogger } from '../../utils/log.js';
+import { buildDeviceFeatureTags } from '../../utils/device-features.js';
 
 const DEVICE_SCHEMA = 'data/abstraction/device';
 
@@ -80,9 +81,15 @@ class DeviceRegistry {
     async ensureWorkspaceBinding(workspace, device = {}) {
         const deviceId = this.#requireDeviceId(device.deviceId);
         const now = new Date().toISOString();
-        const featureArray = [DEVICE_SCHEMA, `client/device/id/${deviceId}`];
-        const docs = await workspace.db.findDocuments('/', featureArray, [], { limit: 2 });
-        const existing = Array.isArray(docs) ? docs[0] : null;
+        const featureArray = [DEVICE_SCHEMA, ...buildDeviceFeatureTags({
+            deviceId,
+            deviceOs: device.platform || device.os,
+            deviceType: device.type,
+        })];
+        const docs = await workspace.db.findDocuments('/', [DEVICE_SCHEMA], [], { limit: 500 });
+        const existing = Array.isArray(docs)
+            ? docs.find((document) => document?.data?.deviceId === deviceId) || null
+            : null;
         const data = pickDefined({
             ...(existing?.data || {}),
             deviceId,

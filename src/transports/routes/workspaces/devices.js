@@ -5,10 +5,6 @@ import { requireWorkspaceRead, requireWorkspaceWrite } from '../../middleware/wo
 
 const DEVICE_SCHEMA = 'data/abstraction/device';
 
-function deviceFeatures(deviceId) {
-  return [DEVICE_SCHEMA, `client/device/id/${deviceId}`];
-}
-
 function serializeDeviceDocument(document) {
   return {
     id: document.id,
@@ -17,8 +13,10 @@ function serializeDeviceDocument(document) {
 }
 
 async function findWorkspaceDeviceDoc(workspace, deviceId) {
-  const docs = await workspace.db.findDocuments('/', deviceFeatures(deviceId), [], { limit: 2 });
-  return Array.isArray(docs) ? docs[0] || null : null;
+  const docs = await workspace.db.findDocuments('/', [DEVICE_SCHEMA], [], { limit: 500 });
+  return Array.isArray(docs)
+    ? docs.find((document) => document?.data?.deviceId === deviceId) || null
+    : null;
 }
 
 export default async function workspaceDeviceRoutes(fastify, options) {
@@ -181,8 +179,10 @@ export default async function workspaceDeviceRoutes(fastify, options) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
-      const docs = await request.workspace.db.findDocuments('/', deviceFeatures(deviceId), [], { limit: 100 });
-      const matches = Array.isArray(docs) ? docs : [];
+      const docs = await request.workspace.db.findDocuments('/', [DEVICE_SCHEMA], [], { limit: 500 });
+      const matches = Array.isArray(docs)
+        ? docs.filter((document) => document?.data?.deviceId === deviceId)
+        : [];
       if (!matches.length) {
         const response = new ResponseObject().notFound('Workspace device not found');
         return reply.code(response.statusCode).send(response.getResponse());

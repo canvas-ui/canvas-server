@@ -6,6 +6,7 @@ import ldapAuthStrategy from './ldap-strategy.js';
 import createError from '@fastify/error';
 import { authService as _authService } from './service.js';
 import ResponseObject from '../ResponseObject.js';
+import { normalizeDeviceOs, normalizeDeviceType } from '../../utils/device-features.js';
 
 // Export the auth service and strategies
 export { authService, imapAuthStrategy, ldapAuthStrategy };
@@ -110,10 +111,34 @@ function buildClientIdentity(request, options = {}) {
   return {
     ...(resolvedDeviceId ? { deviceId: resolvedDeviceId } : {}),
     appKey: getAppKey(request, options.appKey || 'unknown'),
+    ...(options.deviceOs ? { deviceOs: normalizeDeviceOs(options.deviceOs) } : {}),
+    ...(options.deviceType ? { deviceType: normalizeDeviceType(options.deviceType) } : {}),
     authMode: options.authMode || 'unknown',
     registeredDevice: Boolean(options.deviceId || explicitDeviceId),
     syntheticDevice: !options.deviceId && !explicitDeviceId && Boolean(options.fallbackToServer),
   };
+}
+
+async function enrichClientIdentity(request, userId, client = {}) {
+  if (!client?.deviceId || !client.registeredDevice || !request.server?.deviceRegistry || !userId) {
+    return client;
+  }
+
+  try {
+    const device = await request.server.deviceRegistry.getDevice(userId, client.deviceId);
+    if (!device) {
+      return client;
+    }
+
+    return {
+      ...client,
+      ...(normalizeDeviceOs(device.platform || device.os) ? { deviceOs: normalizeDeviceOs(device.platform || device.os) } : {}),
+      ...(normalizeDeviceType(device.type) ? { deviceType: normalizeDeviceType(device.type) } : {}),
+    };
+  } catch (error) {
+    request.log?.warn?.({ err: error, userId, deviceId: client.deviceId }, 'Failed to enrich client identity');
+    return client;
+  }
 }
 
 /**
@@ -227,11 +252,11 @@ export async function verifyJWT(request, reply) {
   request.user = essentialUserData; // Set request.user directly
   console.log(`[Auth/JWT] User ${essentialUserData.id} authenticated via JWT (set on request.user)`);
 
-  request.client = buildClientIdentity(request, {
+  request.client = await enrichClientIdentity(request, essentialUserData.id, buildClientIdentity(request, {
     appKey: 'canvas-web',
     authMode: 'jwt',
     fallbackToServer: true,
-  });
+  }));
 }
 
 /**
@@ -380,11 +405,11 @@ export async function verifyApiToken(request, reply) {
   console.log(`[Auth/API] Preparing to authenticate user: ${essentialUserData.id}`);
   request.user = essentialUserData; // Set request.user directly
   request.token = tokenResult.tokenId; // Keep this for API token specific logic if any
-  request.client = buildClientIdentity(request, {
+  request.client = await enrichClientIdentity(request, essentialUserData.id, buildClientIdentity(request, {
     appKey: 'unknown',
     authMode: 'api',
     fallbackToServer: false,
-  });
+  }));
 
   // If this is a resource token, add resource metadata to request
   if (isResourceToken) {
@@ -454,12 +479,12 @@ export async function verifyDeviceToken(request, reply) {
     status: user.status || 'active'
   };
 
-  request.client = buildClientIdentity(request, {
+  request.client = await enrichClientIdentity(request, request.user.id, buildClientIdentity(request, {
     deviceId: tokenResult.deviceId,
     appKey: 'unknown',
     authMode: 'device',
     fallbackToServer: false,
-  });
+  }));
   request.token = tokenResult.tokenId;
 }
 

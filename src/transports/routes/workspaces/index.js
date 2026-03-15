@@ -66,7 +66,8 @@ export default async function workspaceRoutes(fastify, options) {
         device = await fastify.deviceRegistry.upsertDevice(request.user.id, {
           deviceId: client.deviceId,
           name: client.deviceId,
-          type: 'device',
+          platform: client.deviceOs,
+          type: client.deviceType || 'device',
         });
       }
       if (!device) {

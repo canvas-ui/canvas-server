@@ -3,21 +3,11 @@
 import ResponseObject from '../../ResponseObject.js';
 import { parseDocumentId } from '../../../utils/documentId.js';
 import { validateUser } from '../../auth/strategies.js';
+import { mergeDeviceFeatureTags } from '../../../utils/device-features.js';
 
 export default async function documentRoutes(fastify, options) {
   function enforceClientTags(request, featureArray = []) {
-    const out = Array.isArray(featureArray) ? [...featureArray] : [];
-    const filtered = out.filter(f =>
-      typeof f === 'string' &&
-      !f.startsWith('client/device/id/') &&
-      !f.startsWith('client/app/id/')
-    );
-
-    const deviceId = request.client?.deviceId;
-    const appKey = request.client?.appKey;
-    if (deviceId) filtered.push(`client/device/id/${deviceId}`);
-    if (appKey) filtered.push(`client/app/id/${appKey}`);
-    return filtered;
+    return mergeDeviceFeatureTags(featureArray, request.client);
   }
 
   // Add a pre-handler hook to ensure user is authenticated and valid for all context document routes

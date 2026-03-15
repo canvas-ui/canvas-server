@@ -80,6 +80,7 @@ class Users extends EventEmitter {
 
     get rootPath() { return this.#rootPath; }
     get users() { return Array.from(this.#users.values()); }
+    get indexStore() { return this.#indexStore; }
     get workspaceManager() { return this.#workspaceManager; }
 
     /**

@@ -23,6 +23,7 @@ const logger = createLogger('server');
 import WorkspaceManager from './core/workspace/index.js';
 import Users from './core/user/index.js';
 import ContextManager from './core/context/index.js';
+import DeviceRegistry from './core/device/Registry.js';
 import Roles from './core/role/index.js';
 import Agents from './core/agent/index.js';
 
@@ -49,6 +50,7 @@ class Server extends EventEmitter {
 
     // Global services
     #authService;
+    #deviceRegistry;
     #apiServer;
 
     constructor(options = {}) {
@@ -117,6 +119,14 @@ class Server extends EventEmitter {
         return this.#authService;
     }
 
+    get deviceRegistry() {
+        if (!this.#initialized) {
+            throw new Error('DeviceRegistry not initialized');
+        }
+
+        return this.#deviceRegistry;
+    }
+
     /**
      * Initialize Canvas Server
      */
@@ -136,6 +146,12 @@ class Server extends EventEmitter {
         // Inject authService into users for token generation
         this.#users.setAuthService(this.#authService);
 
+        this.#deviceRegistry = new DeviceRegistry({
+            userHomePath: env.user.home,
+            usersIndex: this.#users.indexStore,
+            logger: createLogger('device-registry'),
+        });
+
         // Create admin user if needed
         if (env.admin?.email) {
             await this.#createAdminUser();
@@ -152,7 +168,8 @@ class Server extends EventEmitter {
                 dotfileManager: this.#workspaceManager.dotfileService, // Access via WorkspaceManager
                 roles: this.#roles,
                 agents: this.#agents,
-                authService: this.#authService
+                authService: this.#authService,
+                deviceRegistry: this.#deviceRegistry,
             });
         }
 

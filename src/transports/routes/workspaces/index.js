@@ -11,6 +11,8 @@ import { resolveWorkspaceAddress } from '../../middleware/address-resolver.js';
  * @param {Object} options - Plugin options
  */
 export default async function workspaceRoutes(fastify, options) {
+  const isUuid = (value) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value || '');
+
   /**
    * Helper function to validate user is authenticated and has an email
    * @param {Object} request - Fastify request
@@ -24,6 +26,58 @@ export default async function workspaceRoutes(fastify, options) {
     }
     return true;
   };
+
+  async function resolveWorkspaceForBinding(request) {
+    if (request.workspace) {
+      return request.workspace;
+    }
+
+    const identifier = request.params?.id;
+    const userId = request.user?.id;
+    if (!identifier || !userId) {
+      return null;
+    }
+
+    const workspaceId = isUuid(identifier)
+      ? identifier
+      : await fastify.workspaceManager.resolveWorkspaceId(userId, identifier);
+
+    if (!workspaceId) {
+      return null;
+    }
+
+    return fastify.workspaceManager.getWorkspace(workspaceId, userId);
+  }
+
+  fastify.addHook('preHandler', async (request) => {
+    const client = request.client;
+    if (!client?.registeredDevice || !client.deviceId || !request.user?.id || !request.params?.id || !fastify.deviceRegistry) {
+      return;
+    }
+
+    try {
+      const workspace = await resolveWorkspaceForBinding(request);
+      if (!workspace) {
+        return;
+      }
+
+      let device = await fastify.deviceRegistry.touchDevice(request.user.id, client.deviceId);
+      if (!device && client.authMode === 'device') {
+        device = await fastify.deviceRegistry.upsertDevice(request.user.id, {
+          deviceId: client.deviceId,
+          name: client.deviceId,
+          type: 'device',
+        });
+      }
+      if (!device) {
+        return;
+      }
+
+      await fastify.deviceRegistry.ensureWorkspaceBinding(workspace, device);
+    } catch (error) {
+      fastify.log.warn({ err: error, deviceId: client.deviceId, workspaceId: request.params?.id }, 'Failed to sync workspace device');
+    }
+  });
 
   // Register sub-routes
   fastify.register(import('./documents.js'), {

@@ -81,6 +81,41 @@ export function validateUser(user, requiredProps = ['id', 'name', 'email']) {
   return validatedUser;
 }
 
+function getAppKey(request, fallback = 'unknown') {
+  return String(request.headers['x-app-name'] || '').trim() || fallback;
+}
+
+function getRequestedDeviceId(request) {
+  const raw =
+    request.headers['x-canvas-device-id'] ||
+    request.headers['x-device-id'];
+  const deviceId = String(raw || '').trim();
+  return deviceId || null;
+}
+
+function getSyntheticServerDeviceId(request) {
+  const host =
+    String(request.headers['x-forwarded-host'] || request.headers.host || '').trim() ||
+    'canvas-server';
+  return `server/${host}`;
+}
+
+function buildClientIdentity(request, options = {}) {
+  const explicitDeviceId = getRequestedDeviceId(request);
+  const resolvedDeviceId =
+    options.deviceId ||
+    explicitDeviceId ||
+    (options.fallbackToServer ? getSyntheticServerDeviceId(request) : null);
+
+  return {
+    ...(resolvedDeviceId ? { deviceId: resolvedDeviceId } : {}),
+    appKey: getAppKey(request, options.appKey || 'unknown'),
+    authMode: options.authMode || 'unknown',
+    registeredDevice: Boolean(options.deviceId || explicitDeviceId),
+    syntheticDevice: !options.deviceId && !explicitDeviceId && Boolean(options.fallbackToServer),
+  };
+}
+
 /**
  * Verify JWT for authenticated routes
  * @param {Object} request - Fastify request object
@@ -192,17 +227,11 @@ export async function verifyJWT(request, reply) {
   request.user = essentialUserData; // Set request.user directly
   console.log(`[Auth/JWT] User ${essentialUserData.id} authenticated via JWT (set on request.user)`);
 
-  // Provide stable client identity for server-side tagging during ingest.
-  // For JWT-authenticated requests, we treat the canvas-server instance as the "device"
-  // (useful when a user connects to multiple canvas-server instances).
-  const appKey = String(request.headers['x-app-name'] || '').trim() || 'canvas-web';
-  const host =
-    String(request.headers['x-forwarded-host'] || request.headers.host || '').trim() ||
-    'canvas-server';
-  request.client = {
-    deviceId: `server/${host}`,
-    appKey,
-  };
+  request.client = buildClientIdentity(request, {
+    appKey: 'canvas-web',
+    authMode: 'jwt',
+    fallbackToServer: true,
+  });
 }
 
 /**
@@ -351,6 +380,11 @@ export async function verifyApiToken(request, reply) {
   console.log(`[Auth/API] Preparing to authenticate user: ${essentialUserData.id}`);
   request.user = essentialUserData; // Set request.user directly
   request.token = tokenResult.tokenId; // Keep this for API token specific logic if any
+  request.client = buildClientIdentity(request, {
+    appKey: 'unknown',
+    authMode: 'api',
+    fallbackToServer: false,
+  });
 
   // If this is a resource token, add resource metadata to request
   if (isResourceToken) {
@@ -420,11 +454,12 @@ export async function verifyDeviceToken(request, reply) {
     status: user.status || 'active'
   };
 
-  const appKey = String(request.headers['x-app-name'] || '').trim() || 'unknown';
-  request.client = {
+  request.client = buildClientIdentity(request, {
     deviceId: tokenResult.deviceId,
-    appKey
-  };
+    appKey: 'unknown',
+    authMode: 'device',
+    fallbackToServer: false,
+  });
   request.token = tokenResult.tokenId;
 }
 

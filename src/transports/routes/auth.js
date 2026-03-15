@@ -462,8 +462,8 @@ export default async function authRoutes(fastify, options) {
   });
 
   /**
-   * Devices: register/list/rename
-   * Stored as SynapsD docs in the user's Universe workspace.
+   * Devices: register/list/update
+   * Stored in the per-user server-side device registry.
    */
 
   async function getUniverseWorkspace(request, reply) {
@@ -489,6 +489,15 @@ export default async function authRoutes(fastify, options) {
     return ws;
   }
 
+  async function revokeDeviceTokens(userId, deviceId) {
+    const tokens = await fastify.authService.listTokens(userId);
+    const matches = (tokens || []).filter((token) => token.type === 'device' && token.deviceId === deviceId);
+
+    for (const token of matches) {
+      await fastify.authService.deleteToken(userId, token.id);
+    }
+  }
+
   // Register a device and mint a device-scoped token
   fastify.post('/devices/register', {
     onRequest: [fastify.authenticate],
@@ -496,9 +505,11 @@ export default async function authRoutes(fastify, options) {
       body: {
         type: 'object',
         properties: {
+          deviceId: { type: 'string' },
           name: { type: 'string' },
           hostname: { type: 'string' },
           fqdn: { type: 'string' },
+          description: { type: 'string' },
           platform: { type: 'string' },
           arch: { type: 'string' },
           type: { type: 'string' }
@@ -507,33 +518,28 @@ export default async function authRoutes(fastify, options) {
     }
   }, async (request, reply) => {
     try {
-      const ws = await getUniverseWorkspace(request, reply);
-      if (!ws) return;
+      if (!fastify.deviceRegistry) {
+        throw new Error('Device registry not available');
+      }
 
-      // Generate a new device ID (server-minted)
-      const newDeviceId = uuidv4();
-
-      const now = new Date().toISOString();
       const input = request.body || {};
+      const newDeviceId = String(input.deviceId || '').trim() || uuidv4();
       const name =
         String(input.name || '').trim() ||
         String(input.fqdn || '').trim() ||
         String(input.hostname || '').trim() ||
         'unknown-device';
+      const description = String(input.description || '').trim() || undefined;
+      const device = await fastify.deviceRegistry.upsertDevice(request.user.id, {
+        deviceId: newDeviceId,
+        name,
+        description,
+        platform: input.platform,
+        arch: input.arch,
+        type: input.type,
+      });
 
-      // Upsert device doc in Universe workspace
-      await ws.db.insertDocument({
-        schema: 'data/abstraction/device',
-        data: {
-          id: newDeviceId,
-          name,
-          platform: input.platform,
-          arch: input.arch,
-          type: input.type,
-          createdAt: now,
-          lastSeen: now,
-        }
-      }, '/', ['data/abstraction/device']);
+      await revokeDeviceTokens(request.user.id, newDeviceId);
 
       // Mint a device token (canvas-...)
       const token = await fastify.authService.createToken(request.user.id, {
@@ -545,9 +551,8 @@ export default async function authRoutes(fastify, options) {
       });
 
       const response = new ResponseObject().created({
-        deviceId: newDeviceId,
+        ...device,
         token: token.value,
-        name,
       }, 'Device registered');
       return reply.code(response.statusCode).send(response.getResponse());
     } catch (error) {
@@ -562,19 +567,11 @@ export default async function authRoutes(fastify, options) {
     onRequest: [fastify.authenticate],
   }, async (request, reply) => {
     try {
-      const ws = await getUniverseWorkspace(request, reply);
-      if (!ws) return;
+      if (!fastify.deviceRegistry) {
+        throw new Error('Device registry not available');
+      }
 
-      const docs = await ws.db.findDocuments('/', ['data/abstraction/device'], [], { limit: 500 });
-      const devices = (docs || []).map(d => ({
-        id: d.data?.id,
-        name: d.data?.name,
-        platform: d.data?.platform,
-        arch: d.data?.arch,
-        type: d.data?.type,
-        createdAt: d.data?.createdAt,
-        lastSeen: d.data?.lastSeen,
-      })).filter(d => d.id);
+      const devices = await fastify.deviceRegistry.listDevices(request.user.id);
 
       const response = new ResponseObject().found(devices, 'Devices retrieved successfully', 200, devices.length);
       return reply.code(response.statusCode).send(response.getResponse());
@@ -585,7 +582,7 @@ export default async function authRoutes(fastify, options) {
     }
   });
 
-  // Rename a device
+  // Update a device
   fastify.patch('/devices/:deviceId', {
     onRequest: [fastify.authenticate],
     schema: {
@@ -598,46 +595,45 @@ export default async function authRoutes(fastify, options) {
       },
       body: {
         type: 'object',
-        required: ['name'],
         properties: {
-          name: { type: 'string' }
+          name: { type: 'string' },
+          description: { type: 'string' }
         }
       }
     }
   }, async (request, reply) => {
     try {
-      const ws = await getUniverseWorkspace(request, reply);
-      if (!ws) return;
+      if (!fastify.deviceRegistry) {
+        throw new Error('Device registry not available');
+      }
 
       const deviceId = request.params.deviceId;
-      const newName = String(request.body?.name || '').trim();
-      if (!newName) {
-        const response = new ResponseObject().badRequest('name is required');
+      const name = request.body?.name === undefined ? undefined : String(request.body.name || '').trim();
+      const description = request.body?.description === undefined ? undefined : String(request.body.description || '').trim();
+
+      if (name !== undefined && !name) {
+        const response = new ResponseObject().badRequest('name must not be empty');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+      if (name === undefined && description === undefined) {
+        const response = new ResponseObject().badRequest('name or description is required');
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
-      const docs = await ws.db.findDocuments('/', ['data/abstraction/device'], [], { limit: 500 });
-      const existing = (docs || []).find(d => d.data?.id === deviceId);
-      if (!existing) {
-        const response = new ResponseObject().notFound('Device not found');
-        return reply.code(response.statusCode).send(response.getResponse());
-      }
+      const device = await fastify.deviceRegistry.updateDevice(request.user.id, deviceId, {
+        ...(name !== undefined ? { name } : {}),
+        ...(description !== undefined ? { description } : {}),
+      });
 
-      const now = new Date().toISOString();
-      await ws.db.insertDocument({
-        schema: 'data/abstraction/device',
-        data: {
-          ...existing.data,
-          name: newName,
-          lastSeen: now,
-        }
-      }, '/', ['data/abstraction/device']);
-
-      const response = new ResponseObject().success({ id: deviceId, name: newName }, 'Device renamed');
+      const response = new ResponseObject().success(device, 'Device updated');
       return reply.code(response.statusCode).send(response.getResponse());
     } catch (error) {
       fastify.log.error(error);
-      const response = new ResponseObject().serverError('Failed to rename device');
+      if (error.message?.includes('not found')) {
+        const response = new ResponseObject().notFound('Device not found');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+      const response = new ResponseObject().serverError('Failed to update device');
       return reply.code(response.statusCode).send(response.getResponse());
     }
   });

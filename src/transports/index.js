@@ -154,6 +154,7 @@ export async function createServer(options = {}) {
   if (options.roles) server.decorate('roles', options.roles);
   if (options.agents) server.decorate('agents', options.agents);
   if (options.authService) server.decorate('authService', options.authService);
+  if (options.deviceRegistry) server.decorate('deviceRegistry', options.deviceRegistry);
 
   // Handle WebDAV OPTIONS before CORS plugin intercepts them
   const davUrlPattern = /^\/workspaces\/[^/]+\/dav(\/|$)/;
@@ -356,6 +357,8 @@ export async function startTransportServer(options = {}) {
     fastify.decorate('agents', options.agents);
   if (!fastify.hasDecorator('authService') && options.authService)
     fastify.decorate('authService', options.authService);
+  if (!fastify.hasDecorator('deviceRegistry') && options.deviceRegistry)
+    fastify.decorate('deviceRegistry', options.deviceRegistry);
 
   // Start listening
   const port = options.port || env.server.api.port;

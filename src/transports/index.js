@@ -39,14 +39,10 @@ import roleTemplateRoutes from './routes/role-templates/index.js';
 import setupWebSocketHandlers from './websocket/index.js';
 
 // Logging
-import { createLogger } from '../utils/log.js';
+import { createLogger, logger as rootLogger } from '../utils/log.js';
 const logger = createLogger('transports');
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
-// Custom Error for Auth Failure
-import createError from '@fastify/error';
-const AuthError = createError('FST_AUTH_FAILED', 'Authentication Failed: %s', 401);
 
 /**
  * Create and configure the Fastify server
@@ -54,19 +50,11 @@ const AuthError = createError('FST_AUTH_FAILED', 'Authentication Failed: %s', 40
  * @returns {FastifyInstance} - Configured Fastify instance
  */
 export async function createServer(options = {}) {
+  const fastifyLogger = options.logger || rootLogger.child({ module: 'http' });
   const server = Fastify({
-    logger: options.logger || {
-      level: env.server.logLevel || 'info',
-      transport: {
-        target: 'pino-pretty'
-      },
-      // Disable request/response logging
-      serializers: {
-        req: () => undefined,  // Skip request logging
-        res: () => undefined   // Skip response logging
-      }
-    },
+    logger: fastifyLogger,
     trustProxy: true,
+    disableRequestLogging: true,
     // Disable response validation for better performance during development
     disableResponseValidation: true,
     ignoreTrailingSlash: true
@@ -116,14 +104,14 @@ export async function createServer(options = {}) {
       await server.verifyJWT(request, reply);
       return; // Success
     } catch (jwtError) {
-      console.log(`[Auth/Custom] JWT failed: ${jwtError.message}`);
+      request.log.debug({ err: jwtError }, 'JWT authentication failed, trying API token');
 
       try {
         // Try API token if JWT fails
         await server.verifyApiToken(request, reply);
         return; // Success
       } catch (apiError) {
-        console.log(`[Auth/Custom] API token failed: ${apiError.message}`);
+        request.log.warn({ err: apiError }, 'Authentication failed');
 
         // Both failed - send error response and close connection
         const statusCode = apiError.statusCode || 401;
@@ -135,7 +123,7 @@ export async function createServer(options = {}) {
 
         // Force close the connection after sending the response
         setImmediate(() => {
-          console.log('Forcing connection close after authentication failure');
+          request.log.info('Forcing connection close after authentication failure');
           if (reply.raw.socket && !reply.raw.socket.destroyed) {
             reply.raw.socket.end();
           }
@@ -160,6 +148,8 @@ export async function createServer(options = {}) {
   const davUrlPattern = /^\/workspaces\/[^/]+\/dav(\/|$)/;
   const ctxDavUrlPattern = /^\/contexts\/[^/]+\/dav(\/|$)/;
   server.addHook('onRequest', async (request, reply) => {
+    request.requestStartAt = Date.now();
+
     if (davUrlPattern.test(request.url) && request.method === 'OPTIONS') {
       reply.header('DAV', '1, 2');
       reply.header('MS-Author-Via', 'DAV');
@@ -181,6 +171,29 @@ export async function createServer(options = {}) {
       reply.header('Access-Control-Max-Age', '86400');
       return reply.code(200).send();
     }
+  });
+
+  server.addHook('onResponse', async (request, reply) => {
+    const durationMs = Date.now() - (request.requestStartAt || Date.now());
+    const payload = {
+      method: request.method,
+      url: request.url,
+      statusCode: reply.statusCode,
+      durationMs,
+      userId: request.user?.id || null,
+    };
+
+    if (reply.statusCode >= 500) {
+      request.log.error(payload, 'request failed');
+      return;
+    }
+
+    if (reply.statusCode >= 400) {
+      request.log.warn(payload, 'request completed with client error');
+      return;
+    }
+
+    request.log.info(payload, 'request completed');
   });
 
   // Register plugins
@@ -289,8 +302,7 @@ export async function createServer(options = {}) {
 
   // Global error handler
   server.setErrorHandler((error, request, reply) => {
-    server.log.error('Global error handler called:', error);
-    console.log('Global error handler called:', error.message, 'statusCode:', error.statusCode);
+    request.log.error({ err: error, statusCode: error.statusCode }, 'Global error handler called');
 
     // Only send error response if a response hasn't been sent yet
     if (!reply.sent) {
@@ -300,8 +312,7 @@ export async function createServer(options = {}) {
       if (statusCode === 401) {
         // Set Connection: close header to signal connection should be closed
         reply.header('Connection', 'close');
-        server.log.info('Authentication failed - closing connection');
-        console.log('Authentication failed - closing connection');
+        request.log.info('Authentication failed - closing connection');
 
         // Create and send the error response
         const response = new ResponseObject();
@@ -312,8 +323,7 @@ export async function createServer(options = {}) {
 
         // Force close the connection after sending the response
         setImmediate(() => {
-          server.log.info('Forcing connection close after authentication failure');
-          console.log('Forcing connection close after authentication failure');
+          request.log.info('Forcing connection close after authentication failure');
           if (reply.raw.socket && !reply.raw.socket.destroyed) {
             reply.raw.socket.end();
           }
@@ -325,7 +335,7 @@ export async function createServer(options = {}) {
         reply.code(response.statusCode).send(response.getResponse());
       }
     } else {
-      console.log('Reply already sent - not handling error');
+      request.log.debug('Reply already sent - not handling error');
     }
   });
 

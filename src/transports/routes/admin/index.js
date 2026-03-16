@@ -2,6 +2,7 @@
 
 import ResponseObject from '../../ResponseObject.js';
 import { validateUser } from '../../auth/strategies.js';
+import { readRecentLogs, subscribeToLogs } from '../../../utils/log.js';
 
 /**
  * Admin routes handler for the API
@@ -9,6 +10,12 @@ import { validateUser } from '../../auth/strategies.js';
  * @param {Object} options - Plugin options
  */
 export default async function adminRoutes(fastify, options) {
+
+  const parseLogFilters = (query = {}) => ({
+    tail: query.tail,
+    level: typeof query.level === 'string' ? query.level : undefined,
+    module: typeof query.module === 'string' ? query.module : undefined,
+  });
 
   /**
    * Middleware to check if user is admin
@@ -31,6 +38,73 @@ export default async function adminRoutes(fastify, options) {
       return reply.code(response.statusCode).send(response.getResponse());
     }
   };
+
+  fastify.get('/logs', {
+    onRequest: [fastify.authenticate, requireAdmin]
+  }, async (request, reply) => {
+    try {
+      const filters = parseLogFilters(request.query);
+      const logs = await readRecentLogs(filters);
+      const response = new ResponseObject().success({ logs });
+      return reply.code(response.statusCode).send(response.getResponse());
+    } catch (error) {
+      request.log.error({ err: error }, 'Failed to read server logs');
+      const response = new ResponseObject().serverError('Failed to read server logs');
+      return reply.code(response.statusCode).send(response.getResponse());
+    }
+  });
+
+  fastify.get('/logs/stream', {
+    onRequest: [fastify.authenticate, requireAdmin]
+  }, async (request, reply) => {
+    const filters = parseLogFilters(request.query);
+
+    reply.hijack();
+    reply.raw.writeHead(200, {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+
+    const writeEvent = (type, payload) => {
+      if (reply.raw.destroyed) {
+        return;
+      }
+
+      if (type) {
+        reply.raw.write(`event: ${type}\n`);
+      }
+
+      reply.raw.write(`data: ${JSON.stringify(payload)}\n\n`);
+    };
+
+    writeEvent('ready', { ok: true });
+
+    const unsubscribe = subscribeToLogs((entry) => {
+      writeEvent('log', entry);
+    }, filters);
+
+    const heartbeat = setInterval(() => {
+      if (!reply.raw.destroyed) {
+        reply.raw.write(': keepalive\n\n');
+      }
+    }, 15000);
+
+    const closeStream = () => {
+      clearInterval(heartbeat);
+      unsubscribe();
+      reply.raw.off('close', closeStream);
+      reply.raw.off('error', closeStream);
+
+      if (!reply.raw.destroyed) {
+        reply.raw.end();
+      }
+    };
+
+    reply.raw.on('close', closeStream);
+    reply.raw.on('error', closeStream);
+  });
 
   // User Management Routes
 

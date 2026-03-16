@@ -162,6 +162,7 @@ class Server extends EventEmitter {
             this.#apiServer = await startTransportServer({
                 port: env.server.api.port,
                 host: env.server.api.host,
+                logger: createLogger('http'),
                 users: this.#users,
                 workspaceManager: this.#workspaceManager,
                 contextManager: this.#contextManager,

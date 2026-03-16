@@ -51,6 +51,14 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  */
 export async function createServer(options = {}) {
   const fastifyLogger = options.logger || rootLogger.child({ module: 'http' });
+  const buildAuthFailure = (strategy, error) => ({
+    strategy,
+    message: error?.message || 'Authentication failed',
+    statusCode: error?.statusCode || 401,
+  });
+  const getPrimaryAuthFailure = (failures = []) => failures.find((failure) => (
+    failure.message !== 'Not a JWT token' && failure.message !== 'Not an API token'
+  )) || failures[failures.length - 1] || null;
   const server = Fastify({
     logger: fastifyLogger,
     trustProxy: true,
@@ -79,11 +87,34 @@ export async function createServer(options = {}) {
   await server.register(fastifyAuth);
 
   // Define the 'authenticate' decorator using the chained strategies.
-  // @fastify/auth will try them in order until one succeeds.
-  server.decorate('authenticate', server.auth([
-    server.verifyJWT,
-    server.verifyApiToken
-  ], { relation: 'or' }));
+  // Keep the auth chain explicit so logs reflect the actual failure.
+  server.decorate('authenticate', async (request, reply) => {
+    const failures = [];
+
+    try {
+      await server.verifyJWT(request, reply);
+      request.authStrategy = 'jwt';
+      return;
+    } catch (jwtError) {
+      failures.push(buildAuthFailure('jwt', jwtError));
+      request.log.debug({ reason: jwtError.message }, 'JWT authentication failed, trying API token');
+    }
+
+    try {
+      await server.verifyApiToken(request, reply);
+      request.authStrategy = 'api';
+      return;
+    } catch (apiError) {
+      failures.push(buildAuthFailure('api', apiError));
+      request.authFailures = failures;
+
+      const primaryFailure = getPrimaryAuthFailure(failures);
+      const error = new Error(primaryFailure?.message || 'Authentication failed');
+      error.statusCode = primaryFailure?.statusCode || 401;
+      error.authFailures = failures;
+      throw error;
+    }
+  });
 
   // Device-only authentication (for integrations)
   server.decorate('authenticateDevice', server.auth([
@@ -100,36 +131,28 @@ export async function createServer(options = {}) {
   // Create a custom authentication decorator that handles errors properly
   server.decorate('authenticateCustom', async (request, reply) => {
     try {
-      // Try JWT first
-      await server.verifyJWT(request, reply);
-      return; // Success
-    } catch (jwtError) {
-      request.log.debug({ err: jwtError }, 'JWT authentication failed, trying API token');
-
-      try {
-        // Try API token if JWT fails
-        await server.verifyApiToken(request, reply);
-        return; // Success
-      } catch (apiError) {
-        request.log.warn({ err: apiError }, 'Authentication failed');
-
-        // Both failed - send error response and close connection
-        const statusCode = apiError.statusCode || 401;
+      await server.authenticate(request, reply);
+      return;
+    } catch (authError) {
+      const statusCode = authError.statusCode || 401;
+      if (statusCode === 401) {
         reply.header('Connection', 'close');
+        request.log.warn({ authFailures: authError.authFailures || request.authFailures || [] }, 'Authentication failed');
+      } else {
+        request.log.error({ err: authError, statusCode }, 'Authentication handler failed');
+      }
 
-        const response = new ResponseObject();
-        response.error(apiError.message || 'Authentication failed', [apiError], statusCode);
-        reply.code(statusCode).send(response.getResponse());
+      const response = new ResponseObject();
+      response.error(authError.message || 'Authentication failed', null, statusCode);
+      reply.code(statusCode).send(response.getResponse());
 
-        // Force close the connection after sending the response
+      if (statusCode === 401) {
         setImmediate(() => {
           request.log.info('Forcing connection close after authentication failure');
           if (reply.raw.socket && !reply.raw.socket.destroyed) {
             reply.raw.socket.end();
           }
         });
-
-        return; // Don't throw - we've handled the error
       }
     }
   });
@@ -302,12 +325,18 @@ export async function createServer(options = {}) {
 
   // Global error handler
   server.setErrorHandler((error, request, reply) => {
-    request.log.error({ err: error, statusCode: error.statusCode }, 'Global error handler called');
+    const statusCode = error.statusCode || 500;
+    if (statusCode === 401) {
+      request.log.warn({
+        statusCode,
+        authFailures: error.authFailures || request.authFailures || [],
+      }, 'Authentication failed');
+    } else {
+      request.log.error({ err: error, statusCode }, 'Global error handler called');
+    }
 
     // Only send error response if a response hasn't been sent yet
     if (!reply.sent) {
-      const statusCode = error.statusCode || 500;
-
       // For authentication errors (401), close the connection to prevent resource exhaustion
       if (statusCode === 401) {
         // Set Connection: close header to signal connection should be closed

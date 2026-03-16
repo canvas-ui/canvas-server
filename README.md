@@ -53,6 +53,32 @@ Each workspace owns a StoreD instance. The home directory is just a file backend
 
 - [API Documentation](docs/API.md)
 
+## Logs
+
+Server logs are written to stdout and to:
+
+```bash
+$CANVAS_SERVER_HOME/log/canvas-server.log
+```
+
+Admin users can inspect logs in the web UI at:
+
+```bash
+/admin/logs
+```
+
+Admin API access:
+
+```bash
+# Tail recent log lines
+GET /rest/v2/admin/logs?tail=200&level=info&module=auth
+
+# Live stream logs
+GET /rest/v2/admin/logs/stream?tail=200&level=info&module=auth
+```
+
+Both endpoints require admin authentication.
+
 ## WebDAV
 
 Workspace data is exposed via WebDAV with three virtual root directories:

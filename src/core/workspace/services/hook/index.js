@@ -159,16 +159,41 @@ class HookService extends EventEmitter {
                 timestamp: new Date().toISOString(),
             };
 
+            const db = workspace.isActive ? workspace.db : null;
+            const tree = workspace.isActive ? workspace.tree : null;
+            const emit = async (name, nextPayload = {}) => {
+                workspace.emit(name, {
+                    ...(nextPayload && typeof nextPayload === 'object' ? nextPayload : { value: nextPayload }),
+                    workspaceId: workspace.id,
+                    source: 'hook',
+                });
+            };
+            const insert = async (document, options = {}) => workspace.insert(document, options);
+            const update = async (id, document, options = {}) => workspace.update(id, document, options);
+            const remove = async (id, options = {}) => workspace.remove(id, options);
+            const deleteDocument = async (id) => workspace.delete(id);
+            const get = async (id, options = { parse: true }) => workspace.get(id, options);
+            const find = async (spec = {}) => workspace.find(spec);
+
             await run({
                 event,
                 payload,
+                eventName,
                 workspace,
-                db: workspace.isActive ? workspace.db : null,
+                db,
+                tree,
                 logger,
+                emit,
+                insert,
+                update,
+                remove,
+                deleteDocument,
+                get,
+                find,
                 link: async (documentId, contexts = []) => {
                     const targets = Array.isArray(contexts) ? contexts : [contexts];
                     for (const context of targets.filter(Boolean)) {
-                        await workspace.insert(documentId, { context, emitEvent: true });
+                        await insert(documentId, { context, emitEvent: true });
                     }
                 },
             });

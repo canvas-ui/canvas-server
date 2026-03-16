@@ -206,6 +206,9 @@ class WorkspaceManager extends EventEmitter {
             case 'dotfiles':
                 result = await this.dotfileService.enable(workspace, userId);
                 break;
+            case 'home':
+                result = true;
+                break;
             case 'hook':
                 // Hooks are always enabled if service is initialized, but we can toggle specific hooks
                 // For now, just return true
@@ -242,6 +245,9 @@ class WorkspaceManager extends EventEmitter {
             case 'dotfiles':
                 result = await this.dotfileService.disable(workspace);
                 break;
+            case 'home':
+                result = true;
+                break;
             case 'imap':
                 result = await this.imapService.disable(workspace);
                 break;
@@ -268,6 +274,10 @@ class WorkspaceManager extends EventEmitter {
             dotfiles: {
                 ...config.dotfiles,
                 initialized: this.dotfileService.isEnabled(workspace),
+            },
+            home: {
+                ...config.home,
+                initialized: config.home?.enabled === true,
             },
             imap: await this.imapService.getWorkspaceStatus(workspace),
         };

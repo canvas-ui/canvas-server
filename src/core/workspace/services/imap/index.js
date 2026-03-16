@@ -96,10 +96,18 @@ class ImapService extends EventEmitter {
         const mailboxId = String(mailboxInput.id || '').trim() || this.#generateMailboxId(mailboxInput);
         const index = config.mailboxes.findIndex((entry) => entry.id === mailboxId);
         const current = index >= 0 ? config.mailboxes[index] : null;
-        const mailbox = this.#normalizeMailbox({
+        const nextInput = {
             ...current,
             ...mailboxInput,
             id: mailboxId,
+        };
+
+        if (current && typeof mailboxInput.password === 'string' && mailboxInput.password.length === 0) {
+            nextInput.password = current.password;
+        }
+
+        const mailbox = this.#normalizeMailbox({
+            ...nextInput,
         });
 
         if (index >= 0) {
@@ -567,6 +575,12 @@ class ImapService extends EventEmitter {
         return emailDoc;
     }
 
+    #getEmailFeatures(emailDoc, mailbox) {
+        return Email.getFeatureBitmapArray(emailDoc, {
+            mailboxPath: mailbox.folder,
+        });
+    }
+
     async #fetchMailboxEmails(workspace, mailbox) {
         logger.debug(`Fetching IMAP emails for workspace ${workspace.id}, mailbox ${mailbox.id}`);
 
@@ -643,7 +657,11 @@ class ImapService extends EventEmitter {
                                         folderPath: box?.name,
                                     });
 
-                                    const docId = await workspace.insert(emailDoc, { context: '/', emitEvent: true });
+                                    const docId = await workspace.insert(emailDoc, {
+                                        context: '/',
+                                        features: this.#getEmailFeatures(emailDoc, mailbox),
+                                        emitEvent: true,
+                                    });
                                     emailDoc.id = docId;
                                     emails.push(emailDoc);
 

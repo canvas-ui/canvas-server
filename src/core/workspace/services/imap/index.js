@@ -13,6 +13,7 @@ const logger = createLogger('imap-service');
 const DEFAULT_FOLDER = 'INBOX';
 const DEFAULT_POLL_INTERVAL = 60000;
 const DEFAULT_MODE = 'poll';
+const IMAP_FETCH_BATCH_SIZE = 200;
 
 class ImapService extends EventEmitter {
     #workspaceManager;
@@ -581,6 +582,130 @@ class ImapService extends EventEmitter {
         });
     }
 
+    #buildFetchRange(identifiers = []) {
+        const values = identifiers
+            .map((value) => Number(value))
+            .filter((value) => Number.isInteger(value) && value > 0)
+            .sort((a, b) => a - b);
+
+        if (!values.length) {
+            return '';
+        }
+
+        const ranges = [];
+        let start = values[0];
+        let end = values[0];
+
+        for (let index = 1; index < values.length; index += 1) {
+            const value = values[index];
+            if (value === end + 1) {
+                end = value;
+                continue;
+            }
+
+            ranges.push(start === end ? `${start}` : `${start}:${end}`);
+            start = value;
+            end = value;
+        }
+
+        ranges.push(start === end ? `${start}` : `${start}:${end}`);
+        return ranges.join(',');
+    }
+
+    #buildFetchBatches(identifiers = [], batchSize = IMAP_FETCH_BATCH_SIZE) {
+        const values = identifiers
+            .map((value) => Number(value))
+            .filter((value) => Number.isInteger(value) && value > 0);
+        const batches = [];
+
+        for (let index = 0; index < values.length; index += batchSize) {
+            const range = this.#buildFetchRange(values.slice(index, index + batchSize));
+            if (range) {
+                batches.push(range);
+            }
+        }
+
+        return batches;
+    }
+
+    async #fetchEmailBatch(imap, source, workspace, mailbox, box, emails, onUid) {
+        return new Promise((resolve, reject) => {
+            const fetch = imap.fetch(source, { bodies: '' });
+            const pendingMessages = [];
+
+            fetch.on('message', (msg, seqno) => {
+                const chunks = [];
+                let attributes = {};
+                let doneMessage;
+                const messageDone = new Promise((resolveMessage) => {
+                    doneMessage = resolveMessage;
+                });
+                pendingMessages.push(messageDone);
+
+                msg.on('body', (stream) => {
+                    stream.on('data', (chunk) => {
+                        chunks.push(Buffer.from(chunk));
+                    });
+                });
+
+                msg.once('attributes', (attrs) => {
+                    attributes = attrs || {};
+                    onUid(Number(attributes.uid) || 0);
+                });
+
+                msg.once('end', async () => {
+                    try {
+                        const rawBuffer = Buffer.concat(chunks);
+                        const parsed = await simpleParser(rawBuffer);
+                        const emailDoc = await this.#buildEmailDocument(workspace, parsed, rawBuffer, {
+                            uid: attributes.uid,
+                            seqno,
+                            flags: attributes.flags,
+                            provider: 'imap',
+                            accountId: mailbox.user,
+                            folderName: box?.name,
+                            folderPath: box?.name,
+                        });
+
+                        const docId = await workspace.insert(emailDoc, {
+                            context: '/',
+                            features: this.#getEmailFeatures(emailDoc, mailbox),
+                            emitEvent: true,
+                        });
+                        emailDoc.id = docId;
+                        emails.push(emailDoc);
+
+                        workspace.emit('source.imap.email.received', {
+                            workspaceId: workspace.id,
+                            document: emailDoc,
+                            account: {
+                                user: mailbox.user,
+                                host: mailbox.host,
+                            },
+                            mailbox: {
+                                id: mailbox.id,
+                                path: box?.name || mailbox.folder,
+                            },
+                            uid: attributes.uid,
+                            seqno,
+                            flags: attributes.flags || [],
+                            source: 'imap',
+                        });
+                    } catch (parseError) {
+                        logger.debug(`Error parsing email for ${workspace.id}/${mailbox.id}: ${parseError.message}`);
+                    } finally {
+                        doneMessage();
+                    }
+                });
+            });
+
+            fetch.once('error', reject);
+            fetch.once('end', () => {
+                Promise.all(pendingMessages).then(() => resolve()).catch(reject);
+            });
+        });
+    }
+
     async #fetchMailboxEmails(workspace, mailbox) {
         logger.debug(`Fetching IMAP emails for workspace ${workspace.id}, mailbox ${mailbox.id}`);
 
@@ -624,76 +749,35 @@ class ImapService extends EventEmitter {
                             finish(null, { inserted: 0, lastUid: mailbox.lastUid || 0 });
                             return;
                         }
+                        const fetchBatches = this.#buildFetchBatches(results);
+                        maxUid = Math.max(maxUid, ...results.map((value) => Number(value) || 0));
 
-                        const fetch = imap.fetch(results, { bodies: '' });
-                        fetch.on('message', (msg, seqno) => {
-                            const chunks = [];
-                            let attributes = {};
+                        void (async () => {
+                            try {
+                                for (const fetchRange of fetchBatches) {
+                                    await this.#fetchEmailBatch(
+                                        imap,
+                                        fetchRange,
+                                        workspace,
+                                        mailbox,
+                                        box,
+                                        emails,
+                                        (uid) => {
+                                            if (uid > maxUid) {
+                                                maxUid = uid;
+                                            }
+                                        },
+                                    );
+                                }
 
-                            msg.on('body', (stream) => {
-                                stream.on('data', (chunk) => {
-                                    chunks.push(Buffer.from(chunk));
+                                finish(null, {
+                                    inserted: emails.length,
+                                    lastUid: maxUid,
                                 });
-                            });
-
-                            msg.once('attributes', (attrs) => {
-                                attributes = attrs || {};
-                                if (Number(attributes.uid) > maxUid) {
-                                    maxUid = Number(attributes.uid);
-                                }
-                            });
-
-                            msg.once('end', async () => {
-                                try {
-                                    const rawBuffer = Buffer.concat(chunks);
-                                    const parsed = await simpleParser(rawBuffer);
-                                    const emailDoc = await this.#buildEmailDocument(workspace, parsed, rawBuffer, {
-                                        uid: attributes.uid,
-                                        seqno,
-                                        flags: attributes.flags,
-                                        provider: 'imap',
-                                        accountId: mailbox.user,
-                                        folderName: box?.name,
-                                        folderPath: box?.name,
-                                    });
-
-                                    const docId = await workspace.insert(emailDoc, {
-                                        context: '/',
-                                        features: this.#getEmailFeatures(emailDoc, mailbox),
-                                        emitEvent: true,
-                                    });
-                                    emailDoc.id = docId;
-                                    emails.push(emailDoc);
-
-                                    workspace.emit('source.imap.email.received', {
-                                        workspaceId: workspace.id,
-                                        document: emailDoc,
-                                        account: {
-                                            user: mailbox.user,
-                                            host: mailbox.host,
-                                        },
-                                        mailbox: {
-                                            id: mailbox.id,
-                                            path: box?.name || mailbox.folder,
-                                        },
-                                        uid: attributes.uid,
-                                        seqno,
-                                        flags: attributes.flags || [],
-                                        source: 'imap',
-                                    });
-                                } catch (parseError) {
-                                    logger.debug(`Error parsing email for ${workspace.id}/${mailbox.id}: ${parseError.message}`);
-                                }
-                            });
-                        });
-
-                        fetch.once('error', finish);
-                        fetch.once('end', () => {
-                            finish(null, {
-                                inserted: emails.length,
-                                lastUid: maxUid,
-                            });
-                        });
+                            } catch (fetchError) {
+                                finish(fetchError);
+                            }
+                        })();
                     });
                 });
             });

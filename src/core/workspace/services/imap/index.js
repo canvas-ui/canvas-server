@@ -13,6 +13,7 @@ const logger = createLogger('imap-service');
 const DEFAULT_FOLDER = 'INBOX';
 const DEFAULT_POLL_INTERVAL = 60000;
 const DEFAULT_MODE = 'poll';
+const DEFAULT_INITIAL_SYNC_DAYS = 30;
 const IMAP_FETCH_BATCH_SIZE = 200;
 
 class ImapService extends EventEmitter {
@@ -325,6 +326,11 @@ class ImapService extends EventEmitter {
             throw new Error(`Mailbox "${id}" has invalid poll interval`);
         }
 
+        const initialSyncDays = Number(mailbox.initialSyncDays ?? DEFAULT_INITIAL_SYNC_DAYS);
+        if (!Number.isInteger(initialSyncDays) || initialSyncDays < 0) {
+            throw new Error(`Mailbox "${id}" has invalid initial sync window`);
+        }
+
         const mode = mailbox.mode || DEFAULT_MODE;
         if (mode !== 'poll') {
             throw new Error(`Mailbox "${id}" uses unsupported mode "${mode}"`);
@@ -342,6 +348,7 @@ class ImapService extends EventEmitter {
             folder: String(mailbox.folder || DEFAULT_FOLDER).trim() || DEFAULT_FOLDER,
             mode,
             pollInterval,
+            initialSyncDays,
             lastUid: Math.max(0, Number(mailbox.lastUid || 0)),
             lastSyncAt: mailbox.lastSyncAt || null,
             lastError: mailbox.lastError || null,
@@ -361,6 +368,7 @@ class ImapService extends EventEmitter {
             folder: mailbox.folder,
             mode: mailbox.mode,
             pollInterval: mailbox.pollInterval,
+            initialSyncDays: mailbox.initialSyncDays,
             lastUid: mailbox.lastUid || 0,
             lastSyncAt: mailbox.lastSyncAt || null,
             lastError: mailbox.lastError || null,
@@ -628,6 +636,27 @@ class ImapService extends EventEmitter {
         return batches;
     }
 
+    #formatSearchDate(date) {
+        const day = date.getDate();
+        const month = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][date.getMonth()];
+        const year = date.getFullYear();
+        return `${month} ${day}, ${year}`;
+    }
+
+    #getSearchCriteria(mailbox) {
+        if (mailbox.lastUid > 0) {
+            return [['UID', `${mailbox.lastUid + 1}:*`]];
+        }
+
+        if ((mailbox.initialSyncDays || 0) > 0) {
+            const since = new Date();
+            since.setDate(since.getDate() - mailbox.initialSyncDays);
+            return [['SINCE', this.#formatSearchDate(since)]];
+        }
+
+        return ['ALL'];
+    }
+
     async #fetchEmailBatch(imap, source, workspace, mailbox, box, emails, onUid) {
         return new Promise((resolve, reject) => {
             const fetch = imap.fetch(source, { bodies: '' });
@@ -735,9 +764,7 @@ class ImapService extends EventEmitter {
                         return;
                     }
 
-                    const criteria = mailbox.lastUid > 0
-                        ? [['UID', `${mailbox.lastUid + 1}:*`]]
-                        : ['ALL'];
+                    const criteria = this.#getSearchCriteria(mailbox);
 
                     imap.search(criteria, (searchError, results) => {
                         if (searchError) {

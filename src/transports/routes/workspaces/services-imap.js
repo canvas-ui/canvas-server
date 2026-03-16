@@ -19,6 +19,7 @@ function mailboxSchema(required = []) {
             folder: { type: 'string' },
             mode: { type: 'string', enum: ['poll'] },
             pollInterval: { type: 'integer' },
+            initialSyncDays: { type: 'integer' },
             lastUid: { type: 'integer' },
         },
     };

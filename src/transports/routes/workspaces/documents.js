@@ -570,7 +570,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());
       }
 
-      const result = await workspace.db.deleteDocumentArray(documentIds);
+      const result = await workspace.db.deleteDocumentArray(documentIds, { emitEvent: false });
 
       broadcastWorkspaceDocEvent(workspace, 'workspace.documents.purged', {
         workspaceId: workspace.id,

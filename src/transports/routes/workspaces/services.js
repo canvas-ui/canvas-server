@@ -196,6 +196,10 @@ export default async function workspaceServicesRoutes(fastify, options) {
             const configPath = path.join(configDir, `${serviceName}.json`);
             await fs.writeFile(configPath, JSON.stringify(config, null, 2), 'utf-8');
 
+            if (serviceName === 'imap' && fastify.workspaceManager?.imapService && workspace.isServiceEnabled('imap')) {
+                await fastify.workspaceManager.imapService.reload(workspace);
+            }
+
             const response = new ResponseObject().success({
                 message: `Configuration for ${serviceName} updated successfully`,
                 config

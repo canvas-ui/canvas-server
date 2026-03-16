@@ -8,7 +8,7 @@ const logger = createLogger('hook:linker');
  * LinkerHook
  *
  * System hook that implements the Context Linker logic.
- * Listens for document.insert events and links documents to contexts based on rules.
+ * Listens for document.inserted events and links documents to contexts based on rules.
  */
 class LinkerHook {
     #contextManager;
@@ -16,7 +16,7 @@ class LinkerHook {
 
     constructor(options = {}) {
         this.id = 'system:linker';
-        this.events = ['document.insert', 'email.received', 'chat.message']; // Listen to specific events
+        this.events = ['document.inserted', 'chat.message'];
         this.#contextManager = options.contextManager;
         this.#workspaceManager = options.workspaceManager;
     }
@@ -37,7 +37,7 @@ class LinkerHook {
         logger.debug(`Processing document ${document.id} for linking...`);
 
         // Get workspace for DB access
-        const workspace = await this.#workspaceManager.getWorkspace(workspaceId, document.userId || 'system');
+        const workspace = await this.#workspaceManager.getWorkspace(workspaceId);
         if (!workspace) return;
 
         // First, apply rule-based linking
@@ -160,7 +160,7 @@ class LinkerHook {
     async #linkDocumentToContext(document, contextMeta, workspaceId) {
         logger.debug(`Linking document ${document.id} to context ${contextMeta.id}`);
 
-        const workspace = await this.#workspaceManager.getWorkspace(workspaceId, contextMeta.userId);
+        const workspace = await this.#workspaceManager.getWorkspace(workspaceId);
         if (!workspace) return;
 
         const contextBitmapArray = contextMeta.contextBitmapArray || [];

@@ -2,6 +2,7 @@
 
 // Utils
 import EventEmitter from 'eventemitter2';
+import * as fsPromises from 'fs/promises';
 import path from 'path';
 import Conf from 'conf';
 import crypto from 'crypto';
@@ -17,6 +18,7 @@ import { parseDocumentId } from '../../utils/documentId.js';
 import {
     WORKSPACE_STATUS_CODES,
     WORKSPACE_DIRECTORIES,
+    WORKSPACE_SERVICES,
 } from './lib/constants.js';
 
 /*
@@ -31,13 +33,20 @@ class Workspace extends EventEmitter {
 
     #db = null;
     #status = WORKSPACE_STATUS_CODES.INACTIVE;
+    #runtimeListeners = [];
 
     // Managers (injected)
     #storageManager = null;
     #roleManager = null;
 
     constructor(options) {
-        super(options.eventEmitterOptions);
+        super({
+            wildcard: true,
+            delimiter: '.',
+            newListener: false,
+            maxListeners: 100,
+            ...(options.eventEmitterOptions || {})
+        });
         this.options = options;
 
         if (!options.rootPath) {
@@ -86,9 +95,9 @@ class Workspace extends EventEmitter {
     get acl() { return this.#configStore.get('acl'); }
 
     get services() {
-        return this.#configStore.get('services') || {
-            dotfiles: { enabled: false },
-            home: { enabled: false, transports: ['webdav'] },
+        return {
+            ...WORKSPACE_SERVICES,
+            ...(this.#configStore.get('services') || {}),
         };
     }
 
@@ -119,6 +128,14 @@ class Workspace extends EventEmitter {
 
     get homePath() {
         return path.join(this.#rootPath, WORKSPACE_DIRECTORIES.home);
+    }
+
+    get dataPath() {
+        return path.join(this.#rootPath, WORKSPACE_DIRECTORIES.data);
+    }
+
+    get hooksPath() {
+        return path.join(this.#rootPath, WORKSPACE_DIRECTORIES.hooks);
     }
 
     isServiceEnabled(serviceName) {
@@ -209,10 +226,16 @@ class Workspace extends EventEmitter {
 
         this.#logger.debug({ workspaceId: this.id }, 'Starting workspace');
         try {
+            await Promise.all([
+                fsPromises.mkdir(this.dataPath, { recursive: true }),
+                fsPromises.mkdir(this.hooksPath, { recursive: true }),
+            ]);
+
             // Initialize DB
             const dbPath = path.join(this.#rootPath, WORKSPACE_DIRECTORIES.db || 'Db');
             this.#db = new Db({ path: dbPath });
             await this.#db.start();
+            this.#bindRuntimeEvents();
 
             this.#setStatus(WORKSPACE_STATUS_CODES.ACTIVE);
             this.emit('started', { id: this.id });
@@ -230,6 +253,7 @@ class Workspace extends EventEmitter {
         this.#logger.debug({ workspaceId: this.id }, 'Stopping workspace');
         try {
             if (this.#db) {
+                this.#unbindRuntimeEvents();
                 await this.#db.shutdown();
                 this.#db = null;
             }
@@ -425,6 +449,49 @@ class Workspace extends EventEmitter {
             this.#status = status;
             this.emit('status.changed', { id: this.id, status });
         }
+    }
+
+    #bindRuntimeEvents() {
+        this.#unbindRuntimeEvents();
+        if (!this.#db) { return; }
+
+        this.#runtimeListeners = [
+            this.#createRuntimeListener(this.#db, 'db'),
+            this.#createRuntimeListener(this.#db.tree, 'tree'),
+        ].filter(Boolean);
+    }
+
+    #unbindRuntimeEvents() {
+        for (const binding of this.#runtimeListeners) {
+            binding.emitter.off('**', binding.listener);
+        }
+        this.#runtimeListeners = [];
+    }
+
+    #createRuntimeListener(emitter, source) {
+        if (!emitter?.on) { return null; }
+
+        const workspace = this;
+        const listener = function (payload = {}) {
+            const eventName = this.event;
+            if (!eventName) { return; }
+
+            const eventPayload = payload && typeof payload === 'object'
+                ? { ...payload }
+                : { value: payload };
+
+            if (!eventPayload.workspaceId) {
+                eventPayload.workspaceId = workspace.id;
+            }
+            if (!eventPayload.source) {
+                eventPayload.source = source;
+            }
+
+            workspace.emit(eventName, eventPayload);
+        };
+
+        emitter.on('**', listener);
+        return { emitter, listener };
     }
 }
 

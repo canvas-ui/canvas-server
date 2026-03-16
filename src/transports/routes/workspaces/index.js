@@ -121,6 +121,10 @@ export default async function workspaceRoutes(fastify, options) {
     prefix: '/:id/services',
     onRequest: [resolveWorkspaceAddress]
   });
+  fastify.register(import('./services-imap.js'), {
+    prefix: '/:id/services/imap',
+    onRequest: [resolveWorkspaceAddress]
+  });
   fastify.register(import('./home.js'), {
     prefix: '/:id/home',
     onRequest: [resolveWorkspaceAddress]

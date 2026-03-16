@@ -16,7 +16,9 @@ const WORKSPACE_CONFIG_FILENAME = 'workspace.json';
 const WORKSPACE_DIRECTORIES = {
     db: 'db',
     config: 'config',
+    data: 'data',
     home: 'home',
+    hooks: 'hooks',
     roles: 'roles',
     var: 'var', // For Unix sockets
     dotfiles: 'dotfiles.git', // Bare git repository for dotfiles
@@ -25,6 +27,9 @@ const WORKSPACE_DIRECTORIES = {
 // Available workspace services
 const WORKSPACE_SERVICES = {
     dotfiles: {
+        enabled: false,
+    },
+    imap: {
         enabled: false,
     },
     home: {

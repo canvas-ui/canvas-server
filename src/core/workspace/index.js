@@ -109,6 +109,7 @@ class WorkspaceManager extends EventEmitter {
     #logger;
 
     #workspaces = new Map(); // Runtime cache
+    #workspaceListeners = new Map();
     #initialized = false;
     #defaultRootPath;
 
@@ -124,7 +125,13 @@ class WorkspaceManager extends EventEmitter {
     chatService = null;
 
     constructor(options = {}) {
-        super(options.eventEmitterOptions);
+        super({
+            wildcard: true,
+            delimiter: '.',
+            newListener: false,
+            maxListeners: 100,
+            ...(options.eventEmitterOptions || {})
+        });
 
         if (!options.defaultRootPath) throw new Error('defaultRootPath required');
         if (!options.indexStore) throw new Error('indexStore required');
@@ -235,6 +242,9 @@ class WorkspaceManager extends EventEmitter {
             case 'dotfiles':
                 result = await this.dotfileService.disable(workspace);
                 break;
+            case 'imap':
+                result = await this.imapService.disable(workspace);
+                break;
             default:
                 throw new Error(`Unknown service: ${serviceName}`);
         }
@@ -259,6 +269,7 @@ class WorkspaceManager extends EventEmitter {
                 ...config.dotfiles,
                 initialized: this.dotfileService.isEnabled(workspace),
             },
+            imap: await this.imapService.getWorkspaceStatus(workspace),
         };
     }
 
@@ -363,6 +374,7 @@ class WorkspaceManager extends EventEmitter {
         if (this.#workspaces.has(workspaceId)) {
             const ws = this.#workspaces.get(workspaceId);
             if (userId && ws.owner !== userId) return null; // Access denied or wrong workspace
+            this.#registerWorkspaceInstance(ws);
             return ws;
         }
 
@@ -387,6 +399,7 @@ class WorkspaceManager extends EventEmitter {
             });
 
             this.#workspaces.set(workspaceId, workspace);
+            this.#registerWorkspaceInstance(workspace);
 
             return workspace;
         } catch (err) {
@@ -530,6 +543,7 @@ class WorkspaceManager extends EventEmitter {
         if (!ws) return false;
 
         await ws.stop();
+        this.#unregisterWorkspaceInstance(workspaceId);
         this.#workspaces.delete(workspaceId);
 
         const entry = this.#findInIndex(workspaceId);
@@ -707,6 +721,39 @@ class WorkspaceManager extends EventEmitter {
 
     #sanitizeWorkspaceName(name) {
         return name.toLowerCase().replace(/[^a-z0-9-_]/g, '');
+    }
+
+    #registerWorkspaceInstance(workspace) {
+        if (!workspace || this.#workspaceListeners.has(workspace.id)) { return; }
+
+        const manager = this;
+        const listener = function (payload = {}) {
+            const eventName = this.event;
+            if (!eventName) { return; }
+
+            const eventPayload = payload && typeof payload === 'object'
+                ? { ...payload }
+                : { value: payload };
+
+            if (!eventPayload.workspaceId) {
+                eventPayload.workspaceId = workspace.id;
+            }
+
+            manager.emit(eventName, eventPayload);
+        };
+
+        workspace.on('**', listener);
+        this.#workspaceListeners.set(workspace.id, { workspace, listener });
+        this.hookService?.trackWorkspace(workspace);
+    }
+
+    #unregisterWorkspaceInstance(workspaceId) {
+        const binding = this.#workspaceListeners.get(workspaceId);
+        if (!binding) { return; }
+
+        binding.workspace.off('**', binding.listener);
+        this.#workspaceListeners.delete(workspaceId);
+        this.hookService?.untrackWorkspace(workspaceId);
     }
 
     async #createSubdirectories(dir) {

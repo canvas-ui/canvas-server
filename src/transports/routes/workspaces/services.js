@@ -3,6 +3,7 @@
 import ResponseObject from '../../ResponseObject.js';
 import path from 'path';
 import fs from 'fs/promises';
+import { requireWorkspaceRead, requireWorkspaceWrite } from '../../middleware/workspace-acl.js';
 
 /**
  * Workspace Services Routes
@@ -14,25 +15,16 @@ export default async function workspaceServicesRoutes(fastify, options) {
      * List all services and their status
      */
     fastify.get('/', {
-        onRequest: [fastify.authenticate]
+        onRequest: [fastify.authenticate, requireWorkspaceRead()]
     }, async (request, reply) => {
         try {
-            const { id: workspaceId, workspaceId: paramWorkspaceId } = request.params;
-            const userId = request.user.id;
-
-            const resolvedWorkspaceId = workspaceId || paramWorkspaceId;
-            if (!resolvedWorkspaceId) {
-                const response = new ResponseObject().badRequest('Workspace id is required');
-                return reply.code(response.statusCode).send(response.getResponse());
-            }
-
-            const workspace = await fastify.workspaceManager.getWorkspace(resolvedWorkspaceId, userId);
+            const workspace = request.workspace;
             if (!workspace) {
                 const response = new ResponseObject().notFound('Workspace not found');
                 return reply.code(response.statusCode).send(response.getResponse());
             }
 
-            const servicesStatus = await fastify.workspaceManager.getServicesStatus(resolvedWorkspaceId, userId);
+            const servicesStatus = await fastify.workspaceManager.getServicesStatus(workspace.id, request.user.id);
 
             const response = new ResponseObject().success(servicesStatus);
             return reply.code(response.statusCode).send(response.getResponse());
@@ -47,25 +39,17 @@ export default async function workspaceServicesRoutes(fastify, options) {
      * Enable a service
      */
     fastify.post('/:serviceName/enable', {
-        onRequest: [fastify.authenticate]
+        onRequest: [fastify.authenticate, requireWorkspaceWrite()]
     }, async (request, reply) => {
         try {
-            const { id: workspaceId, workspaceId: paramWorkspaceId, serviceName } = request.params;
-            const userId = request.user.id;
-
-            const resolvedWorkspaceId = workspaceId || paramWorkspaceId;
-            if (!resolvedWorkspaceId) {
-                const response = new ResponseObject().badRequest('Workspace id is required');
-                return reply.code(response.statusCode).send(response.getResponse());
-            }
-
-            const workspace = await fastify.workspaceManager.getWorkspace(resolvedWorkspaceId, userId);
+            const { serviceName } = request.params;
+            const workspace = request.workspace;
             if (!workspace) {
                 const response = new ResponseObject().notFound('Workspace not found');
                 return reply.code(response.statusCode).send(response.getResponse());
             }
 
-            const result = await fastify.workspaceManager.enableService(resolvedWorkspaceId, userId, serviceName);
+            const result = await fastify.workspaceManager.enableService(workspace.id, request.user.id, serviceName);
 
             const response = new ResponseObject().success({
                 message: `Service ${serviceName} enabled successfully`,
@@ -83,25 +67,17 @@ export default async function workspaceServicesRoutes(fastify, options) {
      * Disable a service
      */
     fastify.post('/:serviceName/disable', {
-        onRequest: [fastify.authenticate]
+        onRequest: [fastify.authenticate, requireWorkspaceWrite()]
     }, async (request, reply) => {
         try {
-            const { id: workspaceId, workspaceId: paramWorkspaceId, serviceName } = request.params;
-            const userId = request.user.id;
-
-            const resolvedWorkspaceId = workspaceId || paramWorkspaceId;
-            if (!resolvedWorkspaceId) {
-                const response = new ResponseObject().badRequest('Workspace id is required');
-                return reply.code(response.statusCode).send(response.getResponse());
-            }
-
-            const workspace = await fastify.workspaceManager.getWorkspace(resolvedWorkspaceId, userId);
+            const { serviceName } = request.params;
+            const workspace = request.workspace;
             if (!workspace) {
                 const response = new ResponseObject().notFound('Workspace not found');
                 return reply.code(response.statusCode).send(response.getResponse());
             }
 
-            const result = await fastify.workspaceManager.disableService(resolvedWorkspaceId, userId, serviceName);
+            const result = await fastify.workspaceManager.disableService(workspace.id, request.user.id, serviceName);
 
             const response = new ResponseObject().success({
                 message: `Service ${serviceName} disabled successfully`,
@@ -119,19 +95,11 @@ export default async function workspaceServicesRoutes(fastify, options) {
      * Get service configuration
      */
     fastify.get('/:serviceName/config', {
-        onRequest: [fastify.authenticate]
+        onRequest: [fastify.authenticate, requireWorkspaceRead()]
     }, async (request, reply) => {
         try {
-            const { id: workspaceId, workspaceId: paramWorkspaceId, serviceName } = request.params;
-            const userId = request.user.id;
-
-            const resolvedWorkspaceId = workspaceId || paramWorkspaceId;
-            if (!resolvedWorkspaceId) {
-                const response = new ResponseObject().badRequest('Workspace id is required');
-                return reply.code(response.statusCode).send(response.getResponse());
-            }
-
-            const workspace = await fastify.workspaceManager.getWorkspace(resolvedWorkspaceId, userId);
+            const { serviceName } = request.params;
+            const workspace = request.workspace;
             if (!workspace) {
                 const response = new ResponseObject().notFound('Workspace not found');
                 return reply.code(response.statusCode).send(response.getResponse());
@@ -164,25 +132,18 @@ export default async function workspaceServicesRoutes(fastify, options) {
      * Update service configuration
      */
     fastify.put('/:serviceName/config', {
-        onRequest: [fastify.authenticate]
+        onRequest: [fastify.authenticate, requireWorkspaceWrite()]
     }, async (request, reply) => {
         try {
-            const { id: workspaceId, workspaceId: paramWorkspaceId, serviceName } = request.params;
+            const { serviceName } = request.params;
             const { config } = request.body;
-            const userId = request.user.id;
-
-            const resolvedWorkspaceId = workspaceId || paramWorkspaceId;
-            if (!resolvedWorkspaceId) {
-                const response = new ResponseObject().badRequest('Workspace id is required');
-                return reply.code(response.statusCode).send(response.getResponse());
-            }
 
             if (!config) {
                 const response = new ResponseObject().badRequest('Config is required');
                 return reply.code(response.statusCode).send(response.getResponse());
             }
 
-            const workspace = await fastify.workspaceManager.getWorkspace(resolvedWorkspaceId, userId);
+            const workspace = request.workspace;
             if (!workspace) {
                 const response = new ResponseObject().notFound('Workspace not found');
                 return reply.code(response.statusCode).send(response.getResponse());

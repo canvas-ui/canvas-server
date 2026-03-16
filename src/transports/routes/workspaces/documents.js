@@ -511,6 +511,91 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     }
   });
 
+  // Purge all documents matching the current listing filter
+  fastify.delete('/purge', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      params: {
+        type: 'object',
+        required: ['id'],
+        properties: {
+          id: { type: 'string' }
+        }
+      },
+      querystring: {
+        type: 'object',
+        properties: {
+          contextSpec: { type: 'string', default: '/' },
+          featureArray: {
+            type: 'array',
+            items: { type: 'string' },
+            default: []
+          },
+          filterArray: {
+            type: 'array',
+            items: { type: 'string' },
+            default: []
+          }
+        }
+      }
+    }
+  }, async (request, reply) => {
+    try {
+      const workspace = await getWorkspaceInstance(request, reply);
+      if (!workspace) return;
+
+      const matches = await workspace.db.findDocuments(
+        request.query.contextSpec,
+        request.query.featureArray,
+        request.query.filterArray || [],
+        { parse: false, limit: 0 }
+      );
+
+      if (matches.error) {
+        fastify.log.error(`SynapsD error in purge findDocuments: ${matches.error}`);
+        const responseObject = new ResponseObject().error('Failed to purge documents due to a database error.', matches.error);
+        return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+      }
+
+      const documentIds = matches
+        .map((document) => Number(document?.id))
+        .filter((id) => Number.isInteger(id) && id > 0);
+
+      if (documentIds.length === 0) {
+        const responseObject = new ResponseObject().success({
+          requested: 0,
+          deleted: 0,
+          result: { successful: [], failed: [], count: 0 }
+        }, 'No matching documents to purge');
+        return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+      }
+
+      const result = await workspace.db.deleteDocumentArray(documentIds);
+
+      broadcastWorkspaceDocEvent(workspace, 'workspace.documents.purged', {
+        workspaceId: workspace.id,
+        workspaceName: workspace.name,
+        contextSpec: request.query.contextSpec,
+        featureArray: request.query.featureArray,
+        filterArray: request.query.filterArray || [],
+        requested: documentIds.length,
+        result,
+        timestamp: new Date().toISOString(),
+      });
+
+      const responseObject = new ResponseObject().deleted({
+        requested: documentIds.length,
+        deleted: result?.successful?.length || 0,
+        result,
+      }, 'Documents purged successfully', 200, result?.successful?.length || 0);
+      return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+    } catch (error) {
+      fastify.log.error(error);
+      const responseObject = new ResponseObject().serverError('Failed to purge documents');
+      return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+    }
+  });
+
   // Remove documents
   fastify.delete('/remove', {
     onRequest: [fastify.authenticate],

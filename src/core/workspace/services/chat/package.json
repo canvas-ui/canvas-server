@@ -4,8 +4,8 @@
     "description": "Slack and Teams integration service for Canvas",
     "type": "module",
     "dependencies": {
-        "@slack/web-api": "^6.11.2",
+        "@slack/web-api": "^6.13.0",
         "@microsoft/microsoft-graph-client": "^3.0.7",
-        "@azure/identity": "^4.0.0"
+        "@azure/identity": "^4.13.0"
     }
 }

@@ -5,6 +5,6 @@
     "type": "module",
     "dependencies": {
         "imap": "^0.8.19",
-        "mailparser": "^3.6.5"
+        "mailparser": "^3.9.4"
     }
 }

@@ -1,0 +1,9 @@
+{
+  "name": "@canvas/agent-core",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1"
+  }
+}

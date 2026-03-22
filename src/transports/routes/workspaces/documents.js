@@ -2,6 +2,7 @@
 
 import ResponseObject from '../../ResponseObject.js';
 import { parseDocumentId, parseDocumentIdArray } from '../../../utils/documentId.js';
+import { resolveMountedDocumentScope, DEFAULT_DOCUMENT_DATASET } from '../../../core/workspace/lib/documentDataset.js';
 
 /**
  * Workspace document routes handler for the API
@@ -29,6 +30,10 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     if (deviceId) filtered.push(`client/device/id/${deviceId}`);
     if (appKey) filtered.push(`client/app/id/${appKey}`);
     return filtered;
+  }
+
+  function resolveScope({ dataset = DEFAULT_DOCUMENT_DATASET, contextSpec = '/' } = {}) {
+    return resolveMountedDocumentScope({ dataset, contextSpec });
   }
   async function getWorkspaceInstance(request, reply) {
     const identifier = request.params.id;
@@ -71,6 +76,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       querystring: {
         type: 'object',
         properties: {
+          dataset: { type: 'string' },
           contextSpec: { type: 'string', default: '/' },
           featureArray: {
             type: 'array',
@@ -98,23 +104,27 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       // Check if this is a search query
       const searchQuery = request.query.q || request.query.search;
       let documents;
+      const scope = resolveScope({
+        dataset: request.query.dataset,
+        contextSpec: request.query.contextSpec,
+      });
 
       if (searchQuery) {
         // Use full-text search
         documents = await workspace.db.ftsQuery(
           searchQuery,
-          request.query.contextSpec,
+          scope.contextSpec,
           request.query.featureArray,
           request.query.filterArray || [],
-          { limit: request.query.limit, offset: request.query.offset, page: request.query.page }
+          { limit: request.query.limit, offset: request.query.offset, page: request.query.page, dataset: scope.dataset }
         );
       } else {
         // Use regular document listing
         documents = await workspace.db.findDocuments(
-          request.query.contextSpec,
+          scope.contextSpec,
           request.query.featureArray,
           request.query.filterArray || [],
-          { limit: request.query.limit, offset: request.query.offset, page: request.query.page }
+          { limit: request.query.limit, offset: request.query.offset, page: request.query.page, dataset: scope.dataset }
         );
       }
 
@@ -149,6 +159,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
           {
             type: 'object',
             properties: {
+              dataset: { type: 'string' },
               contextSpec: { type: 'string' },
               featureArray: {
                 type: 'array',
@@ -204,8 +215,10 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       // Normalize input: allow top-level array of IDs, or object with documentIds/documents
       const isTopLevelArray = Array.isArray(request.body);
       const contextSpec = isTopLevelArray ? '/' : (request.body.contextSpec || '/');
+      const dataset = isTopLevelArray ? DEFAULT_DOCUMENT_DATASET : (request.body.dataset || DEFAULT_DOCUMENT_DATASET);
       const featureArray = isTopLevelArray ? [] : (request.body.featureArray || []);
       const enforcedFeatureArray = enforceClientTags(request, featureArray);
+      const scope = resolveScope({ dataset, contextSpec });
 
       let itemsToInsert;
       if (isTopLevelArray) {
@@ -221,14 +234,18 @@ export default async function workspaceDocumentRoutes(fastify, options) {
 
       const documents = await workspace.db.insertDocumentArray(
         itemsToInsert,
-        contextSpec,
-        enforcedFeatureArray
+        {
+          context: scope.contextSpec,
+          features: enforcedFeatureArray,
+          dataset: scope.dataset,
+        }
       );
 
       broadcastWorkspaceDocEvent(workspace, 'workspace.documents.inserted', {
         workspaceId: workspace.id,
         workspaceName: workspace.name,
         contextSpec,
+        dataset: scope.dataset,
         featureArray: enforcedFeatureArray,
         items: itemsToInsert,
         result: documents,
@@ -259,6 +276,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       querystring: {
         type: 'object',
         properties: {
+          dataset: { type: 'string' },
           contextSpec: { type: 'string', default: '/' },
           featureArray: {
             type: 'array',
@@ -273,7 +291,11 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return;
 
-      const document = await workspace.db.getDocumentById(request.params.docId);
+      const scope = resolveScope({
+        dataset: request.query.dataset,
+        contextSpec: request.query.contextSpec,
+      });
+      const document = await workspace.db.getDocumentById(request.params.docId, { dataset: scope.dataset });
       if (!document) {
         const responseObject = new ResponseObject().notFound(`Document with ID ${request.params.docId} not found`);
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());
@@ -303,6 +325,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       querystring: {
         type: 'object',
         properties: {
+          dataset: { type: 'string' },
           contextSpec: { type: 'string', default: '/' },
           featureArray: {
             type: 'array',
@@ -327,12 +350,16 @@ export default async function workspaceDocumentRoutes(fastify, options) {
 
       // Create derived feature array with abstraction path
       const derivedFeatureArray = [`data/abstraction/${request.params.abstraction}`, ...request.query.featureArray];
+      const scope = resolveScope({
+        dataset: request.query.dataset,
+        contextSpec: request.query.contextSpec,
+      });
 
       const documents = await workspace.db.findDocuments(
-        request.query.contextSpec,
+        scope.contextSpec,
         derivedFeatureArray,
         request.query.filterArray || [],
-        { limit: request.query.limit, offset: request.query.offset, page: request.query.page }
+        { limit: request.query.limit, offset: request.query.offset, page: request.query.page, dataset: scope.dataset }
       );
 
       if (documents.error) {
@@ -364,6 +391,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       body: {
         type: 'object',
         properties: {
+          dataset: { type: 'string' },
           contextSpec: { type: 'string', default: '/' },
           featureArray: {
             type: 'array',
@@ -410,7 +438,14 @@ export default async function workspaceDocumentRoutes(fastify, options) {
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());
       }
 
-      const success = await workspace.db.updateDocumentArray(itemsToUpdate);
+      const scope = resolveScope({
+        dataset: request.body.dataset,
+        contextSpec: request.body.contextSpec || '/',
+      });
+      const success = await workspace.db.updateDocumentArray(itemsToUpdate, {
+        context: scope.contextSpec,
+        dataset: scope.dataset,
+      });
       if (!success) {
         const responseObject = new ResponseObject().badRequest('Failed to update documents');
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());
@@ -420,6 +455,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
         workspaceId: workspace.id,
         workspaceName: workspace.name,
         contextSpec: request.body.contextSpec || '/',
+        dataset: scope.dataset,
         items: itemsToUpdate,
         timestamp: new Date().toISOString(),
       });
@@ -447,6 +483,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       querystring: {
         type: 'object',
         properties: {
+          dataset: { type: 'string' },
           contextSpec: { type: 'string', default: '/' },
           featureArray: {
             type: 'array',
@@ -482,12 +519,17 @@ export default async function workspaceDocumentRoutes(fastify, options) {
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());
       }
 
-      const result = await workspace.db.deleteDocumentArray(documentIds);
+      const scope = resolveScope({
+        dataset: request.query.dataset,
+        contextSpec: request.query.contextSpec,
+      });
+      const result = await workspace.db.deleteDocumentArray(documentIds, { dataset: scope.dataset });
 
       broadcastWorkspaceDocEvent(workspace, 'workspace.documents.deleted', {
         workspaceId: workspace.id,
         workspaceName: workspace.name,
         contextSpec: request.query.contextSpec,
+        dataset: scope.dataset,
         featureArray: request.query.featureArray,
         documentIds,
         result,
@@ -535,6 +577,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       querystring: {
         type: 'object',
         properties: {
+          dataset: { type: 'string' },
           contextSpec: { type: 'string', default: '/' },
           featureArray: {
             type: 'array',
@@ -570,16 +613,24 @@ export default async function workspaceDocumentRoutes(fastify, options) {
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());
       }
 
+      const scope = resolveScope({
+        dataset: request.query.dataset,
+        contextSpec: request.query.contextSpec,
+      });
       const result = await workspace.db.removeDocumentArray(
         documentIds,
-        request.query.contextSpec,
-        request.query.featureArray
+        {
+          context: scope.contextSpec,
+          features: request.query.featureArray,
+          dataset: scope.dataset,
+        }
       );
 
       broadcastWorkspaceDocEvent(workspace, 'workspace.documents.removed', {
         workspaceId: workspace.id,
         workspaceName: workspace.name,
         contextSpec: request.query.contextSpec,
+        dataset: scope.dataset,
         featureArray: request.query.featureArray,
         documentIds,
         result,
@@ -629,6 +680,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       querystring: {
         type: 'object',
         properties: {
+          dataset: { type: 'string' },
           contextSpec: { type: 'string', default: '/' },
           featureArray: {
             type: 'array',
@@ -652,7 +704,11 @@ export default async function workspaceDocumentRoutes(fastify, options) {
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());
       }
 
-      const document = await workspace.db.getDocumentById(documentId);
+      const scope = resolveScope({
+        dataset: request.query.dataset,
+        contextSpec: request.query.contextSpec,
+      });
+      const document = await workspace.db.getDocumentById(documentId, { dataset: scope.dataset });
 
       if (!document) {
         const responseObject = new ResponseObject().notFound(`Document with ID ${request.params.docId} not found`);
@@ -699,7 +755,11 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       if (!workspace) return;
 
       const checksumString = `${request.params.algo}/${request.params.hash}`;
-      const document = await workspace.db.getDocumentByChecksumString(checksumString);
+      const scope = resolveScope({
+        dataset: request.query.dataset,
+        contextSpec: request.query.contextSpec,
+      });
+      const document = await workspace.db.getDocumentByChecksumString(checksumString, { dataset: scope.dataset });
       if (!document) {
         const responseObject = new ResponseObject().notFound(`Document with checksum ${checksumString} not found`);
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());

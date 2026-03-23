@@ -18,6 +18,13 @@ import {
     WORKSPACE_STATUS_CODES,
     WORKSPACE_DIRECTORIES,
 } from './lib/constants.js';
+import {
+    buildMountedIncomingTree,
+    resolveMountedDocumentScope,
+    DEFAULT_DOCUMENT_DATASET,
+    INCOMING_DOCUMENT_DATASET,
+    normalizeDocumentDataset,
+} from './lib/documentDataset.js';
 
 /*
  * Workspace
@@ -247,35 +254,47 @@ class Workspace extends EventEmitter {
     // CRUD Methods
     // ─────────────────────────────────────────────────────────────────────────
 
-    async insert(data, { context = '/', directory = null, features = [], emitEvent = true } = {}) {
+    async insert(data, { context = '/', directory = null, features = [], emitEvent = true, dataset = DEFAULT_DOCUMENT_DATASET } = {}) {
         if (!this.isActive) throw new Error('Workspace not active');
-        return await this.db.insertDocument(data, { context, directory, features, emitEvent });
+        const scope = resolveMountedDocumentScope({ dataset, contextSpec: context });
+        return await this.db.insertDocument(data, { context: scope.contextSpec, directory, features, emitEvent, dataset: scope.dataset });
     }
 
-    async update(id, data, { context = null, directory = null, features = [] } = {}) {
+    async update(id, data, { context = null, directory = null, features = [], dataset = DEFAULT_DOCUMENT_DATASET } = {}) {
         if (!this.isActive) throw new Error('Workspace not active');
-        return await this.db.updateDocument(id, data, { context, directory, features });
+        const scope = context === null
+            ? { dataset: normalizeDocumentDataset(dataset), contextSpec: null }
+            : resolveMountedDocumentScope({ dataset, contextSpec: context });
+        return await this.db.updateDocument(id, data, { context: scope.contextSpec, directory, features, dataset: scope.dataset });
     }
 
-    async remove(id, { context = '/', features = [] } = {}) {
+    async remove(id, { context = '/', features = [], dataset = DEFAULT_DOCUMENT_DATASET } = {}) {
         if (!this.isActive) throw new Error('Workspace not active');
-        return await this.db.removeDocument(id, context, features);
+        const scope = resolveMountedDocumentScope({ dataset, contextSpec: context });
+        return await this.db.removeDocument(id, { context: scope.contextSpec, features, dataset: scope.dataset });
     }
 
-    async delete(id) {
+    async delete(id, { dataset = DEFAULT_DOCUMENT_DATASET } = {}) {
         if (!this.isActive) throw new Error('Workspace not active');
-        return await this.db.deleteDocument(parseDocumentId(id, 'Document ID'));
+        return await this.db.deleteDocument(parseDocumentId(id, 'Document ID'), { dataset });
     }
 
-    async get(id, options = { parse: true }) {
+    async get(id, options = { parse: true, dataset: DEFAULT_DOCUMENT_DATASET }) {
         if (!this.isActive) throw new Error('Workspace not active');
         return await this.db.getDocumentById(id, options);
     }
 
     async list(options = {}) {
          if (!this.isActive) throw new Error('Workspace not active');
-         const { contextSpec = '/', featureBitmapArray = [], filterArray = [], ...rest } = options;
-         return await this.db.findDocuments(contextSpec, featureBitmapArray, filterArray, rest);
+         const { contextSpec = '/', featureBitmapArray = [], filterArray = [], dataset = DEFAULT_DOCUMENT_DATASET, ...rest } = options;
+         const scope = resolveMountedDocumentScope({ dataset, contextSpec });
+         return await this.db.findDocuments(scope.contextSpec, featureBitmapArray, filterArray, { ...rest, dataset: scope.dataset });
+    }
+
+    async getMountedTree() {
+        if (!this.isActive || !this.#db) { throw new Error('Workspace not active'); }
+        const incomingTree = await this.#db.getJsonTreeForDataset(INCOMING_DOCUMENT_DATASET);
+        return buildMountedIncomingTree(this.#db.jsonTree, incomingTree);
     }
 
     async listBitmaps(prefix = '', { includeData = false } = {}) {

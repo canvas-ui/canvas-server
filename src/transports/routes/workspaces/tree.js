@@ -1,6 +1,7 @@
 'use strict';
 
 import ResponseObject from '../../ResponseObject.js';
+import { isIncomingMountPath } from '../../../core/workspace/lib/documentDataset.js';
 
 /**
  * Workspace tree routes handler for the API
@@ -8,6 +9,13 @@ import ResponseObject from '../../ResponseObject.js';
  * @param {Object} options - Plugin options
  */
 export default async function workspaceTreeRoutes(fastify, options) {
+  function rejectMountedPathMutation(path, reply) {
+    if (!isIncomingMountPath(path)) return false;
+    const responseObject = new ResponseObject().badRequest('The /.incoming mount is read-only. Write to the incoming dataset instead.');
+    reply.code(responseObject.statusCode).send(responseObject.getResponse());
+    return true;
+  }
+
   // Helper to get workspace and handle common errors
   async function getWorkspaceInstance(request, reply) {
     const identifier = request.params.id;
@@ -45,7 +53,7 @@ export default async function workspaceTreeRoutes(fastify, options) {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return; // Error already sent
 
-      const treeJsonString = workspace.jsonTree; // Use the getter
+      const treeJsonString = await workspace.getMountedTree();
       if (treeJsonString === undefined || treeJsonString === null) {
         fastify.log.warn(`Received null or undefined jsonTree for workspace ${request.params.id}`);
         const responseObject = new ResponseObject().serverError('Failed to retrieve valid tree data from workspace.');
@@ -100,6 +108,7 @@ export default async function workspaceTreeRoutes(fastify, options) {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return;
+      if (rejectMountedPathMutation(request.body.path, reply)) return;
 
       const result = await workspace.tree.insertPath(
         request.body.path,
@@ -150,6 +159,7 @@ export default async function workspaceTreeRoutes(fastify, options) {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return;
+      if (rejectMountedPathMutation(request.body.from, reply) || rejectMountedPathMutation(request.body.to, reply)) return;
 
       const success = await workspace.tree.movePath(request.body.from, request.body.to, request.body.recursive);
       if (!success) {
@@ -195,6 +205,7 @@ export default async function workspaceTreeRoutes(fastify, options) {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return;
+      if (rejectMountedPathMutation(request.body.from, reply) || rejectMountedPathMutation(request.body.to, reply)) return;
 
       const success = await workspace.tree.copyPath(request.body.from, request.body.to, request.body.recursive);
       if (!success) {
@@ -240,6 +251,7 @@ export default async function workspaceTreeRoutes(fastify, options) {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return;
+      if (rejectMountedPathMutation(request.query.path, reply)) return;
 
       const success = await workspace.tree.removePath(request.query.path, request.query.recursive);
       if (!success) {

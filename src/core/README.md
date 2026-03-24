@@ -76,7 +76,7 @@
 
 ### Device Manager
 
-- **Status:** DESCOPED (to be assessed in future)
+- Documentation tbd
 
 ## Storage Strategy
 

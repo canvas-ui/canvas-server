@@ -1,0 +1,19 @@
+Importing all documents like emails and chat messages or even random ad-hoc files a user extracts -> tests -> syncs(by accident including non-relevant temporary files) into the main index ("/") may get messy very fast, I have two ideas how to solve this:
+
+a) A dedicated ingestion dataset that would be used to setup rules and hooks based on which data would them be imported to the main context trees(besides manual midnight-commander like link/unlink) OR
+b) treat "/" as special and use it as a ingestion point as is currently the caew but which may - without proper cleanup automation - polute the index.
+
+I am inclined to go with a) and
+- Have a separate "incoming" LMDB dataset in synapsd for all incoming data originating primarily from workers (user could still direct-insert data into paths)
+- Mount the incoming dataset into the workspace trees(both, contextTree and directoryTree) as "special" mounts under:
+  - `/.incoming/email/<account>/sent` or /received etc
+  - `/.incoming/chat/<provider>/<channel>`
+  - `/.incoming/files/<connector>`
+
+- All importers/workers write raw docs to the "incoming" dataset
+- Rules/hooks read from there
+- Matched docs get linked/promoted into real contexts
+- Unmatched docs stay in ingest with retention/cleanup
+- Default search excludes /.incoming unless explicitly requested
+
+

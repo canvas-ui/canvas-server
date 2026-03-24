@@ -7,6 +7,7 @@ import { WebClient } from '@slack/web-api';
 import { Client as TeamsClient } from '@microsoft/microsoft-graph-client';
 import { ClientSecretCredential } from '@azure/identity';
 import { createLogger } from '../../../../utils/log.js';
+import { getIncomingMessageContext } from '../../../../utils/incoming-documents.js';
 
 const logger = createLogger('chat-service');
 
@@ -189,7 +190,7 @@ class ChatService extends EventEmitter {
         const clientData = this.#slackClients.get(workspaceId);
         if (!clientData) return [];
 
-        const { client, userId, channels } = clientData;
+        const { client, config, userId, channels } = clientData;
         const messages = [];
 
         try {
@@ -244,7 +245,9 @@ class ChatService extends EventEmitter {
                         if (this.#hookService) {
                             const workspace = await this.#workspaceManager.getWorkspace(workspaceId, userId);
                             if (workspace) {
-                                const docId = await workspace.db.insertDocument(chatDoc, '/', [], false);
+                                const accountId = message.team || config.team || config.workspace || workspaceId;
+                                const contextSpec = getIncomingMessageContext('slack', accountId, channelName || channelId);
+                                const docId = await workspace.db.insertDocument(chatDoc, contextSpec, [], false);
                                 chatDoc.id = docId;
 
                                 await this.#hookService.dispatchEvent('chat.message', { document: chatDoc }, workspaceId);
@@ -322,7 +325,8 @@ class ChatService extends EventEmitter {
                         if (this.#hookService) {
                             const workspace = await this.#workspaceManager.getWorkspace(workspaceId, userId);
                             if (workspace) {
-                                const docId = await workspace.db.insertDocument(chatDoc, '/', [], false);
+                                const contextSpec = getIncomingMessageContext('teams', userPrincipalName || teamId, channel.displayName || channel.id);
+                                const docId = await workspace.db.insertDocument(chatDoc, contextSpec, [], false);
                                 chatDoc.id = docId;
 
                                 await this.#hookService.dispatchEvent('chat.message', { document: chatDoc }, workspaceId);

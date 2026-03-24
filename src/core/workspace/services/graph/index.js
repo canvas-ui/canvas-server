@@ -6,6 +6,7 @@ import fs from 'fs';
 import { Client } from '@microsoft/microsoft-graph-client';
 import { ClientSecretCredential } from '@azure/identity';
 import { createLogger } from '../../../../utils/log.js';
+import { getIncomingEmailContext } from '../../../../utils/incoming-documents.js';
 
 const logger = createLogger('graph-service');
 
@@ -186,7 +187,8 @@ class GraphService extends EventEmitter {
                 if (this.#hookService) {
                     const workspace = await this.#workspaceManager.getWorkspace(workspaceId, userId);
                     if (workspace) {
-                        const docId = await workspace.db.insertDocument(emailDoc, '/', [], false);
+                        const contextSpec = getIncomingEmailContext('graph', userPrincipalName, 'inbox');
+                        const docId = await workspace.db.insertDocument(emailDoc, contextSpec, [], false);
                         emailDoc.id = docId;
 
                         await this.#hookService.dispatchEvent('source.graph.email.received', { document: emailDoc }, workspaceId);

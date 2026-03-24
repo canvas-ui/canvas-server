@@ -7,6 +7,7 @@ import fs from 'fs';
 import Imap from 'imap';
 import { simpleParser } from 'mailparser';
 import { createLogger } from '../../../../utils/log.js';
+import { getIncomingEmailContext } from '../../../../utils/incoming-documents.js';
 import Email from '../../../../services/synapsd/src/schemas/abstractions/Email.js';
 
 const logger = createLogger('imap-service');
@@ -696,8 +697,9 @@ class ImapService extends EventEmitter {
                             folderPath: box?.name,
                         });
 
+                        const incomingContext = getIncomingEmailContext('imap', mailbox.user, box?.name || mailbox.folder || 'inbox');
                         const docId = await workspace.insert(emailDoc, {
-                            context: '/',
+                            context: incomingContext,
                             features: this.#getEmailFeatures(emailDoc, mailbox),
                             emitEvent: true,
                         });

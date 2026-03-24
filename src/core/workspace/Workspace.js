@@ -12,7 +12,13 @@ import { createLogger } from '../../utils/log.js';
 
 // Includes
 import Db from '../../services/synapsd/src/index.js';
+import Stored from '../../services/stored/src/index.js';
 import { parseDocumentId } from '../../utils/documentId.js';
+import {
+    INCOMING_ROOT_CONTEXT,
+    getIncomingFileContextFromStoredLocation,
+    shouldExcludeIncoming,
+} from '../../utils/incoming-documents.js';
 
 // Constants
 import {
@@ -26,14 +32,18 @@ import {
  */
 
 class Workspace extends EventEmitter {
+    static HOME_STORED_BACKEND = 'fs:home';
+    static HOME_BACKEND_FEATURE = 'data/backend/home';
 
     #rootPath = null;
     #configStore = null;
     #logger;
 
     #db = null;
+    #stored = null;
     #status = WORKSPACE_STATUS_CODES.INACTIVE;
     #runtimeListeners = [];
+    #storedListeners = [];
 
     // Managers (injected)
     #storageManager = null;
@@ -104,6 +114,10 @@ class Workspace extends EventEmitter {
     get db() {
         if (!this.#db) throw new Error('Database not initialized');
         return this.#db;
+    }
+
+    get stored() {
+        return this.#stored;
     }
 
     get stats() {
@@ -228,6 +242,7 @@ class Workspace extends EventEmitter {
         try {
             await Promise.all([
                 fsPromises.mkdir(this.dataPath, { recursive: true }),
+                fsPromises.mkdir(this.homePath, { recursive: true }),
                 fsPromises.mkdir(this.hooksPath, { recursive: true }),
             ]);
 
@@ -236,6 +251,7 @@ class Workspace extends EventEmitter {
             this.#db = new Db({ path: dbPath });
             await this.#db.start();
             this.#bindRuntimeEvents();
+            await this.#startStoredHomeIndex();
 
             this.#setStatus(WORKSPACE_STATUS_CODES.ACTIVE);
             this.emit('started', { id: this.id });
@@ -252,6 +268,7 @@ class Workspace extends EventEmitter {
 
         this.#logger.debug({ workspaceId: this.id }, 'Stopping workspace');
         try {
+            await this.#stopStoredHomeIndex();
             if (this.#db) {
                 this.#unbindRuntimeEvents();
                 await this.#db.shutdown();
@@ -311,6 +328,7 @@ class Workspace extends EventEmitter {
             featureBitmapArray = [],
             filters,
             filterArray = [],
+            includeIncoming = false,
             ...rest
         } = options;
 
@@ -319,6 +337,7 @@ class Workspace extends EventEmitter {
             attributes: attributes ?? this.#legacyFeaturesToAttributes(featureBitmapArray),
             filters,
             filterArray,
+            ...(shouldExcludeIncoming(context ?? contextSpec, includeIncoming) ? { excludeContextSpec: INCOMING_ROOT_CONTEXT } : {}),
             ...rest,
         });
     }
@@ -442,6 +461,284 @@ class Workspace extends EventEmitter {
             isActive: this.isActive,
             rootPath: this.rootPath
         };
+    }
+
+    async #startStoredHomeIndex() {
+        if (this.#stored) { return; }
+
+        try {
+            this.#stored = new Stored({
+                index: { path: path.join(this.dataPath, 'stored-index') },
+                checksums: ['sha256', 'md5'],
+                primaryChecksum: 'sha256',
+            });
+
+            this.#stored.addBackend(Workspace.HOME_STORED_BACKEND, {
+                driver: 'file',
+                root: this.homePath,
+                watch: true,
+                provider: 'fs',
+                account: 'home',
+                container: 'workspace-home',
+            });
+
+            this.#bindStoredRuntimeEvents();
+            await this.#syncStoredHomeSnapshot();
+        } catch (error) {
+            this.#logger.warn({ workspaceId: this.id, error: error.message }, 'Stored home indexing unavailable');
+            await this.#stopStoredHomeIndex();
+        }
+    }
+
+    async #stopStoredHomeIndex() {
+        this.#unbindStoredRuntimeEvents();
+        if (!this.#stored) { return; }
+
+        try {
+            await this.#stored.stop();
+        } catch (error) {
+            this.#logger.warn({ workspaceId: this.id, error: error.message }, 'Failed to stop stored home indexing');
+        } finally {
+            this.#stored = null;
+        }
+    }
+
+    #bindStoredRuntimeEvents() {
+        this.#unbindStoredRuntimeEvents();
+        if (!this.#stored?.on) { return; }
+
+        const eventMap = {
+            'file:add': (payload) => this.#upsertStoredFileDocument(payload),
+            'file:change': (payload) => this.#upsertStoredFileDocument(payload),
+            'file:unlink': (payload) => this.#unlinkStoredFileDocument(payload),
+        };
+
+        this.#storedListeners = Object.entries(eventMap).map(([eventName, handler]) => {
+            const listener = async (payload = {}) => {
+                try {
+                    await handler(payload);
+                } catch (error) {
+                    this.#logger.warn({ workspaceId: this.id, eventName, error: error.message }, 'Stored file sync failed');
+                }
+            };
+
+            this.#stored.on(eventName, listener);
+            return { eventName, listener };
+        });
+    }
+
+    #unbindStoredRuntimeEvents() {
+        if (!this.#stored?.off) {
+            this.#storedListeners = [];
+            return;
+        }
+
+        for (const { eventName, listener } of this.#storedListeners) {
+            this.#stored.off(eventName, listener);
+        }
+        this.#storedListeners = [];
+    }
+
+    async #syncStoredHomeSnapshot() {
+        if (!this.#stored) { return; }
+
+        const files = await this.#stored.scan(Workspace.HOME_STORED_BACKEND);
+        for (const file of files) {
+            await this.#upsertStoredFileDocument(file);
+        }
+    }
+
+    async #upsertStoredFileDocument(storedFile = {}) {
+        const checksumArray = this.#buildStoredChecksumArray(storedFile.checksums);
+        if (checksumArray.length === 0) { return null; }
+
+        const meta = this.#getStoredMetadata(storedFile);
+        const locations = this.#resolveStoredLocations(storedFile, meta, true);
+        const incomingContexts = this.#buildStoredIncomingContexts(locations);
+        if (incomingContexts.length === 0) { return null; }
+
+        const primaryChecksum = checksumArray[0];
+        const existingDocument = await this.db.getDocumentByChecksumString(primaryChecksum).catch(() => null);
+        const currentIncomingContexts = this.#getDocumentIncomingFileContexts(existingDocument);
+        const documentData = this.#buildStoredFileDocument(storedFile, checksumArray, locations, existingDocument);
+        const features = this.#buildStoredFileFeatures(locations);
+
+        let documentId;
+        if (existingDocument?.id) {
+            documentId = await this.update(existingDocument.id, documentData, {
+                context: incomingContexts,
+                features,
+            });
+        } else {
+            documentId = await this.insert(documentData, {
+                context: incomingContexts,
+                features,
+            });
+        }
+
+        await this.#removeStoredIncomingContexts(documentId, currentIncomingContexts, incomingContexts);
+        return documentId;
+    }
+
+    async #unlinkStoredFileDocument(storedFile = {}) {
+        const checksumArray = this.#buildStoredChecksumArray(storedFile.checksums);
+        if (checksumArray.length === 0) { return null; }
+
+        const existingDocument = await this.db.getDocumentByChecksumString(checksumArray[0]).catch(() => null);
+        if (!existingDocument?.id) { return null; }
+
+        const meta = this.#getStoredMetadata(storedFile);
+        const locations = this.#resolveStoredLocations(storedFile, meta, false);
+        const incomingContexts = this.#buildStoredIncomingContexts(locations);
+        const currentIncomingContexts = this.#getDocumentIncomingFileContexts(existingDocument);
+        const documentData = this.#buildStoredFileDocument(storedFile, checksumArray, locations, existingDocument);
+        const features = this.#buildStoredFileFeatures(locations);
+
+        await this.update(existingDocument.id, documentData, { features });
+        await this.#removeStoredIncomingContexts(existingDocument.id, currentIncomingContexts, incomingContexts);
+        return existingDocument.id;
+    }
+
+    #getStoredMetadata(storedFile = {}) {
+        if (!this.#stored) { return null; }
+        if (storedFile.id && this.#stored.has(storedFile.id)) {
+            return this.#stored.stat(storedFile.id);
+        }
+        if (storedFile.backend && storedFile.key) {
+            return this.#stored.stat(`${storedFile.backend}:${storedFile.key}`);
+        }
+        return null;
+    }
+
+    #resolveStoredLocations(storedFile = {}, meta = null, allowFallback = true) {
+        if (Array.isArray(storedFile.locations) && storedFile.locations.length > 0) {
+            return storedFile.locations;
+        }
+        if (Array.isArray(meta?.locations) && meta.locations.length > 0) {
+            return meta.locations;
+        }
+        return allowFallback && storedFile.backend && storedFile.key
+            ? [this.#buildStoredLocation(storedFile.backend, storedFile.key)]
+            : [];
+    }
+
+    #buildStoredLocation(backendName, key) {
+        const backend = this.#stored?.getBackend(backendName);
+        const config = backend?.config || {};
+        const [providerHint, ...accountHintParts] = String(backendName || '').split(':').filter(Boolean);
+
+        return {
+            backend: backendName,
+            driver: config.driver || null,
+            key,
+            synced: true,
+            source: {
+                provider: config.provider || providerHint || config.driver || 'unknown',
+                account: config.account || (accountHintParts.length > 0 ? accountHintParts.join(':') : (providerHint || backendName || 'default')),
+                container: config.container || config.bucket || config.share || config.folder || (config.root ? path.basename(path.resolve(config.root)) : 'root'),
+                path: key,
+            },
+        };
+    }
+
+    #buildStoredChecksumArray(checksums = {}) {
+        const priority = ['sha256', 'sha1', 'md5'];
+        return Object.entries(checksums || {})
+            .filter(([, value]) => typeof value === 'string' && value.length > 0)
+            .sort(([algoA], [algoB]) => {
+                const idxA = priority.indexOf(algoA);
+                const idxB = priority.indexOf(algoB);
+                return (idxA === -1 ? priority.length : idxA) - (idxB === -1 ? priority.length : idxB) || algoA.localeCompare(algoB);
+            })
+            .map(([algorithm, hash]) => `${algorithm}/${hash}`);
+    }
+
+    #buildStoredIncomingContexts(locations = []) {
+        return Array.from(new Set(
+            locations
+                .map((location) => getIncomingFileContextFromStoredLocation(location))
+                .filter(Boolean)
+        ));
+    }
+
+    #buildStoredFileFeatures(locations = []) {
+        const features = [];
+
+        for (const location of locations) {
+            if (location.backend === Workspace.HOME_STORED_BACKEND) {
+                features.push(Workspace.HOME_BACKEND_FEATURE);
+            }
+            if (location?.source?.provider) {
+                features.push(`data/source/${location.source.provider}`);
+            }
+        }
+
+        return Array.from(new Set(features));
+    }
+
+    #buildStoredFileDocument(storedFile = {}, checksumArray = [], locations = [], existingDocument = null) {
+        const key = storedFile.key || existingDocument?.data?.path || '';
+        const filename = key ? path.basename(key) : (existingDocument?.data?.filename || 'file');
+        const size = Number.isFinite(storedFile.size) ? storedFile.size : existingDocument?.data?.size;
+        const mimeType = storedFile.mimeType || existingDocument?.data?.mime;
+        const incomingContexts = this.#buildStoredIncomingContexts(locations);
+        const dataPaths = this.#buildStoredDataPaths(locations);
+        const data = {
+            ...(existingDocument?.data || {}),
+            filename,
+            path: key,
+            backend: storedFile.backend || existingDocument?.data?.backend || Workspace.HOME_STORED_BACKEND,
+        };
+
+        if (Number.isFinite(size)) {
+            data.size = size;
+        } else {
+            delete data.size;
+        }
+
+        if (typeof mimeType === 'string' && mimeType.length > 0) {
+            data.mime = mimeType;
+        } else {
+            delete data.mime;
+        }
+
+        return {
+            schema: 'data/abstraction/file',
+            checksumArray: checksumArray.length > 0 ? checksumArray : (existingDocument?.checksumArray || []),
+            data,
+            metadata: {
+                ...(existingDocument?.metadata || {}),
+                dataPaths,
+                locations,
+                incomingContexts,
+            },
+        };
+    }
+
+    #buildStoredDataPaths(locations = []) {
+        return Array.from(new Set(locations.flatMap((location) => {
+            if (!location?.key) { return []; }
+            if (location.backend === Workspace.HOME_STORED_BACKEND) {
+                return [
+                    `file://{WORKSPACE_ROOT}/home/${location.key}`,
+                    `stored://${location.backend}/${location.key}`,
+                ];
+            }
+            return [`stored://${location.backend}/${location.key}`];
+        })));
+    }
+
+    #getDocumentIncomingFileContexts(document) {
+        return Array.isArray(document?.metadata?.incomingContexts)
+            ? document.metadata.incomingContexts.filter((context) => typeof context === 'string' && context.startsWith(`${INCOMING_ROOT_CONTEXT}/file/`))
+            : [];
+    }
+
+    async #removeStoredIncomingContexts(docId, currentContexts = [], nextContexts = []) {
+        const staleContexts = currentContexts.filter((context) => !nextContexts.includes(context));
+        for (const context of staleContexts) {
+            await this.remove(docId, { context });
+        }
     }
 
     #setStatus(status) {

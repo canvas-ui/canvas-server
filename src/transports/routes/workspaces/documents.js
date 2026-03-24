@@ -3,6 +3,10 @@
 import ResponseObject from '../../ResponseObject.js';
 import { parseDocumentId, parseDocumentIdArray } from '../../../utils/documentId.js';
 import { mergeDeviceFeatureTags } from '../../../utils/device-features.js';
+import {
+  INCOMING_ROOT_CONTEXT,
+  shouldExcludeIncoming,
+} from '../../../utils/incoming-documents.js';
 
 /**
  * Workspace document routes handler for the API
@@ -20,6 +24,21 @@ export default async function workspaceDocumentRoutes(fastify, options) {
   function enforceClientTags(request, featureArray = []) {
     return mergeDeviceFeatureTags(featureArray, request.client);
   }
+
+  function buildReadOptions(contextSpec, includeIncoming, options = {}) {
+    if (!shouldExcludeIncoming(contextSpec, includeIncoming)) {
+      return options;
+    }
+    return { ...options, excludeContextSpec: INCOMING_ROOT_CONTEXT };
+  }
+
+  function getInsertContextSpec(body, isTopLevelArray) {
+    if (isTopLevelArray) { return '/'; }
+    if (body?.contextSpec) { return body.contextSpec; }
+    if (body?.documentIds) { return '/'; }
+    return null;
+  }
+
   async function getWorkspaceInstance(request, reply) {
     const identifier = request.params.id;
     const userId = request.user.id;
@@ -76,7 +95,8 @@ export default async function workspaceDocumentRoutes(fastify, options) {
           offset: { type: 'integer' },
           page: { type: 'integer' },
           q: { type: 'string' },
-          search: { type: 'string' }
+          search: { type: 'string' },
+          includeIncoming: { type: 'boolean', default: false }
         }
       }
     }
@@ -96,7 +116,11 @@ export default async function workspaceDocumentRoutes(fastify, options) {
           request.query.contextSpec,
           request.query.featureArray,
           request.query.filterArray || [],
-          { limit: request.query.limit, offset: request.query.offset, page: request.query.page }
+          buildReadOptions(request.query.contextSpec, request.query.includeIncoming, {
+            limit: request.query.limit,
+            offset: request.query.offset,
+            page: request.query.page,
+          })
         );
       } else {
         // Use regular document listing
@@ -104,7 +128,11 @@ export default async function workspaceDocumentRoutes(fastify, options) {
           request.query.contextSpec,
           request.query.featureArray,
           request.query.filterArray || [],
-          { limit: request.query.limit, offset: request.query.offset, page: request.query.page }
+          buildReadOptions(request.query.contextSpec, request.query.includeIncoming, {
+            limit: request.query.limit,
+            offset: request.query.offset,
+            page: request.query.page,
+          })
         );
       }
 
@@ -193,7 +221,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
 
       // Normalize input: allow top-level array of IDs, or object with documentIds/documents
       const isTopLevelArray = Array.isArray(request.body);
-      const contextSpec = isTopLevelArray ? '/' : (request.body.contextSpec || '/');
+      const contextSpec = getInsertContextSpec(request.body, isTopLevelArray);
       const featureArray = isTopLevelArray ? [] : (request.body.featureArray || []);
       const enforcedFeatureArray = enforceClientTags(request, featureArray);
 
@@ -206,6 +234,11 @@ export default async function workspaceDocumentRoutes(fastify, options) {
         itemsToInsert = Array.isArray(request.body.documents) ? request.body.documents : [request.body.documents];
       } else {
         const responseObject = new ResponseObject().badRequest('Body must include either "documents" or "documentIds", or be an array of IDs');
+        return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+      }
+
+      if (!contextSpec && !isTopLevelArray && request.body.documents) {
+        const responseObject = new ResponseObject().badRequest('Raw document imports require an explicit `contextSpec` under `/.incoming/<abstraction>/<provider>/<account>/...`');
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());
       }
 
@@ -304,6 +337,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
             items: { type: 'string' },
             default: []
           },
+          includeIncoming: { type: 'boolean', default: false },
           limit: { type: 'integer' },
           offset: { type: 'integer' },
           page: { type: 'integer' }
@@ -322,7 +356,11 @@ export default async function workspaceDocumentRoutes(fastify, options) {
         request.query.contextSpec,
         derivedFeatureArray,
         request.query.filterArray || [],
-        { limit: request.query.limit, offset: request.query.offset, page: request.query.page }
+        buildReadOptions(request.query.contextSpec, request.query.includeIncoming, {
+          limit: request.query.limit,
+          offset: request.query.offset,
+          page: request.query.page,
+        })
       );
 
       if (documents.error) {
@@ -535,7 +573,8 @@ export default async function workspaceDocumentRoutes(fastify, options) {
             type: 'array',
             items: { type: 'string' },
             default: []
-          }
+          },
+          includeIncoming: { type: 'boolean', default: false }
         }
       }
     }
@@ -548,7 +587,10 @@ export default async function workspaceDocumentRoutes(fastify, options) {
         request.query.contextSpec,
         request.query.featureArray,
         request.query.filterArray || [],
-        { parse: false, limit: 0 }
+        buildReadOptions(request.query.contextSpec, request.query.includeIncoming, {
+          parse: false,
+          limit: 0,
+        })
       );
 
       if (matches.error) {

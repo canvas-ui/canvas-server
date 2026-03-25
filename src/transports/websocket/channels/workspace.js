@@ -2,6 +2,7 @@ import { createLogger } from '../../../utils/log.js';
 import crypto from 'crypto';
 
 const logger = createLogger('websocket:workspace');
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * Register workspace-update websocket forwarding for a specific socket.
@@ -33,23 +34,28 @@ export default function registerWorkspaceWebSocket(fastify, socket) {
   const wildcardListener = async function (eventPayload) {
     try {
       const eventName = this.event; // event string from EventEmitter2
-      const workspaceId = eventPayload?.workspaceId || eventPayload?.id;
+      const workspaceIdentifiers = [
+        eventPayload?.workspaceId,
+        eventPayload?.workspaceName,
+        eventPayload?.id
+      ].filter(Boolean);
       const userId = socket.user?.id;
 
-      if (!workspaceId) {
+      if (workspaceIdentifiers.length === 0) {
         socket.emit(eventName, eventPayload);
         return;
       }
 
       // Only forward if client explicitly subscribed to this workspace channel
-      if (!socket.subscriptions?.has?.(`workspace:${workspaceId}`)) {
+      const hasSubscription = workspaceIdentifiers.some((identifier) => socket.subscriptions?.has?.(`workspace:${identifier}`));
+      if (!hasSubscription) {
         return;
       }
 
       // Verify access using token-based ACL validation
-      const hasAccess = await validateWorkspaceAccess(socket, workspaceId);
+      const hasAccess = await validateWorkspaceAccess(socket, workspaceIdentifiers);
       if (!hasAccess) {
-        logger.debug(`Access denied for user ${userId} to workspace ${workspaceId} – not forwarding ${eventName}`);
+        logger.debug(`Access denied for user ${userId} to workspace ${workspaceIdentifiers.join(', ')} – not forwarding ${eventName}`);
         return;
       }
 
@@ -75,10 +81,10 @@ export default function registerWorkspaceWebSocket(fastify, socket) {
 /**
  * Validate workspace access using token-based ACLs
  * @param {Socket} socket - Authenticated socket with user info
- * @param {string} workspaceIdentifier - Workspace ID or name to validate access for
+ * @param {string|string[]} workspaceIdentifierInput - Workspace ID or name to validate access for
  * @returns {Promise<boolean>} True if access is granted, false otherwise
  */
-async function validateWorkspaceAccess(socket, workspaceIdentifier) {
+async function validateWorkspaceAccess(socket, workspaceIdentifierInput) {
   try {
     const userId = socket.user?.id;
     if (!userId) {
@@ -97,20 +103,21 @@ async function validateWorkspaceAccess(socket, workspaceIdentifier) {
       return false;
     }
 
+    const workspaceIdentifiers = Array.isArray(workspaceIdentifierInput)
+      ? workspaceIdentifierInput.filter(Boolean)
+      : [workspaceIdentifierInput].filter(Boolean);
+
     try {
-      // Check if identifier is a workspace ID (12 chars) or name
-      const isWorkspaceId = workspaceIdentifier.length === 12 && /^[a-zA-Z0-9]+$/.test(workspaceIdentifier);
+      for (const workspaceIdentifier of workspaceIdentifiers) {
+        const isWorkspaceId = UUID_RE.test(workspaceIdentifier);
+        const workspace = isWorkspaceId
+          ? await workspaceManager.getWorkspaceById(workspaceIdentifier, userId)
+          : await workspaceManager.getWorkspaceByName(userId, workspaceIdentifier, userId);
 
-      let workspace;
-      if (isWorkspaceId) {
-        workspace = await workspaceManager.getWorkspaceById(workspaceIdentifier, userId);
-      } else {
-        workspace = await workspaceManager.getWorkspaceByName(userId, workspaceIdentifier, userId);
-      }
-
-      if (workspace) {
-        logger.debug(`Owner access granted for workspace ${workspaceIdentifier}`);
-        return true;
+        if (workspace) {
+          logger.debug(`Owner access granted for workspace ${workspaceIdentifier}`);
+          return true;
+        }
       }
     } catch (error) {
       logger.debug(`Owner access check failed: ${error.message}`);
@@ -123,64 +130,34 @@ async function validateWorkspaceAccess(socket, workspaceIdentifier) {
     const tokenHash = `sha256:${crypto.createHash('sha256').update(token).digest('hex')}`;
     const allWorkspaces = await workspaceManager.listWorkspaces();
 
-    // Check if identifier is a workspace ID (UUID format) or name
-    const isWorkspaceId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(workspaceIdentifier);
-
-    if (isWorkspaceId) {
-      // Direct lookup by workspace ID
-      let workspaceEntry = null;
-
-      // Search for workspace by ID across all users
-      for (const entry of allWorkspaces) {
-        if (entry.id === workspaceIdentifier) {
-          workspaceEntry = entry;
-          break;
+    for (const workspaceIdentifier of workspaceIdentifiers) {
+      const isWorkspaceId = UUID_RE.test(workspaceIdentifier);
+      for (const workspaceEntry of allWorkspaces) {
+        const matches = isWorkspaceId
+          ? workspaceEntry.id === workspaceIdentifier
+          : workspaceEntry.name === workspaceIdentifier;
+        if (!matches) {
+          continue;
         }
-      }
 
-      if (workspaceEntry) {
         const tokens = workspaceEntry.acl?.tokens || {};
         const tokenData = tokens[tokenHash];
 
-        if (tokenData) {
-          // Check expiration
-          if (tokenData.expiresAt && new Date() > new Date(tokenData.expiresAt)) {
-            logger.debug(`Token has expired for workspace ${workspaceIdentifier}`);
-            return false;
-          }
-
-          // WebSocket access requires at least read permission
-          if (tokenData.permissions.includes('read')) {
-            logger.debug(`Token access granted for workspace ${workspaceIdentifier}`);
-            return true;
-          }
+        if (!tokenData) {
+          continue;
         }
-      }
-    } else {
-      // Search through all workspaces for a matching name and token
-      for (const workspaceEntry of allWorkspaces) {
-        if (workspaceEntry.name === workspaceIdentifier) {
-          const tokens = workspaceEntry.acl?.tokens || {};
-          const tokenData = tokens[tokenHash];
-
-          if (tokenData) {
-            // Check expiration
-            if (tokenData.expiresAt && new Date() > new Date(tokenData.expiresAt)) {
-              logger.debug(`Token has expired for workspace ${workspaceIdentifier}`);
-              continue;
-            }
-
-            // WebSocket access requires at least read permission
-            if (tokenData.permissions.includes('read')) {
-              logger.debug(`Token access granted for workspace ${workspaceIdentifier}`);
-              return true;
-            }
-          }
+        if (tokenData.expiresAt && new Date() > new Date(tokenData.expiresAt)) {
+          logger.debug(`Token has expired for workspace ${workspaceIdentifier}`);
+          continue;
+        }
+        if (tokenData.permissions.includes('read')) {
+          logger.debug(`Token access granted for workspace ${workspaceIdentifier}`);
+          return true;
         }
       }
     }
 
-    logger.debug(`No valid access found for workspace ${workspaceIdentifier}`);
+    logger.debug(`No valid access found for workspace ${workspaceIdentifiers.join(', ')}`);
     return false;
 
   } catch (error) {

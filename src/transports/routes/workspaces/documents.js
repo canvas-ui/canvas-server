@@ -35,7 +35,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
   function getInsertContextSpec(body, isTopLevelArray) {
     if (isTopLevelArray) { return '/'; }
     if (body?.contextSpec) { return body.contextSpec; }
-    if (body?.documentIds) { return '/'; }
+    if (body?.documents || body?.documentIds) { return '/'; }
     return null;
   }
 
@@ -234,11 +234,6 @@ export default async function workspaceDocumentRoutes(fastify, options) {
         itemsToInsert = Array.isArray(request.body.documents) ? request.body.documents : [request.body.documents];
       } else {
         const responseObject = new ResponseObject().badRequest('Body must include either "documents" or "documentIds", or be an array of IDs');
-        return reply.code(responseObject.statusCode).send(responseObject.getResponse());
-      }
-
-      if (!contextSpec && !isTopLevelArray && request.body.documents) {
-        const responseObject = new ResponseObject().badRequest('Raw document imports require an explicit `contextSpec` under `/.incoming/<abstraction>/<provider>/<account>/...`');
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());
       }
 

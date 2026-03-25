@@ -1,3 +1,16 @@
+# UI
+- shared headless domain/components package
+- platform-specific shells for web/electron/mobile
+- no browser-assumption leakage in core components
+- app logic split from rendering early
+
+
+
+
+
+
+
+
 workspace
   - config
     - workspace.json

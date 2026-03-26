@@ -637,7 +637,7 @@ export default async function documentRoutes(fastify, options) {
       }
 
       const checksumString = `${algo}/${hash}`;
-      const document = await context.getDocumentByChecksumStringFromDb(request.user.id, checksumString);
+      const document = await context.getByChecksumString(request.user.id, checksumString);
 
       if (!document) {
         const response = new ResponseObject().notFound(`Document with checksum '${checksumString}' not found via context '${contextId}' (owner access).`);

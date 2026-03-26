@@ -1261,27 +1261,6 @@ class Context extends EventEmitter {
         return documentInContext;
     }
 
-    async getDocumentByChecksumStringFromDb(accessingUserId, checksumString) {
-        // This is a direct DB access method, only context owner should call it.
-        if (accessingUserId !== this.#userId) {
-            throw new Error('Access denied: This operation is only available to the context owner.');
-        }
-        if (!this.#workspace || !this.#workspace.db) {
-            throw new Error('Workspace or database not available');
-        }
-        if (!checksumString || typeof checksumString !== 'string') {
-            throw new Error('Checksum string is required.');
-        }
-
-        const document = await this.#workspace.getByChecksumString(checksumString);
-
-        if (!document) {
-            logger.debug(`Document with checksum '${checksumString}' not found in database.`);
-            return null;
-        }
-        return document;
-    }
-
     /**
      * Setup event forwarding from workspace to context
      * @private

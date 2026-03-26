@@ -85,8 +85,12 @@ export default async function workspaceRoutes(fastify, options) {
     prefix: '/:id/documents',
     onRequest: [resolveWorkspaceAddress]
   });
+  fastify.register(import('./trees.js'), {
+    prefix: '/:id/trees',
+    onRequest: [resolveWorkspaceAddress]
+  });
   fastify.register(import('./tree.js'), {
-    prefix: '/:id/tree',
+    prefix: '/:id/trees/:treeNameOrTreeId',
     onRequest: [resolveWorkspaceAddress]
   });
   fastify.register(import('./lifecycle.js'), {
@@ -111,10 +115,6 @@ export default async function workspaceRoutes(fastify, options) {
   });
   fastify.register(import('./devices.js'), {
     prefix: '/:id/devices',
-    onRequest: [resolveWorkspaceAddress]
-  });
-  fastify.register(import('./layers.js'), {
-    prefix: '/:id/layers',
     onRequest: [resolveWorkspaceAddress]
   });
   fastify.register(import('./bitmaps.js'), {

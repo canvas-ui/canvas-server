@@ -189,16 +189,12 @@ class LinkerService extends EventEmitter {
             // If we want them to show up in the context view, the context view probably queries by context path.
             // So we MUST add the context path to the document.
 
-            const currentContexts = existingDoc.context || [];
-            const newContexts = [...new Set([...currentContexts, ...contextBitmapArray])];
-
-            // Also add the tag
-            const currentFeatures = existingDoc.features || [];
-            const newFeatures = [...new Set([...currentFeatures, contextTag])];
-
             await workspace.db.updateDocument(document.id, {
                 // We don't change data, just indexes
-            }, newContexts, newFeatures);
+            }, {
+                context: workspace.getContextTreeSelector(contextMeta.path || '/', contextMeta.treeId || null),
+                features: [contextTag],
+            });
 
             logger.debug(`Linked document ${document.id} to context ${contextMeta.id}`);
             this.emit('document.linked', { documentId: document.id, contextId: contextMeta.id });

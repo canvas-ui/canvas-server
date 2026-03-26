@@ -221,6 +221,7 @@ export default async function pubWorkspaceRoutes(fastify, options) {
       querystring: {
         type: 'object',
         properties: {
+          treeNameOrTreeId: { type: 'string' },
           limit: { type: 'integer' },
           offset: { type: 'integer' },
           page: { type: 'integer' }
@@ -253,12 +254,12 @@ export default async function pubWorkspaceRoutes(fastify, options) {
         );
       }
 
-      const { limit, offset, page } = request.query;
+      const { limit, offset, page, treeNameOrTreeId = null } = request.query;
       const options = { limit, offset, page };
 
       // Use workspace's document listing capability
       const dbResult = await access.workspace.db.findDocuments(
-        '/', // contextSpec
+        access.workspace.getContextTreeSelector('/', treeNameOrTreeId),
         [], // featureArray
         [], // filterArray
         options
@@ -301,7 +302,8 @@ export default async function pubWorkspaceRoutes(fastify, options) {
         required: ['documents'],
         properties: {
           documents: { type: 'array', minItems: 1 },
-          featureArray: { type: 'array' }
+          featureArray: { type: 'array' },
+          treeNameOrTreeId: { type: 'string' }
         }
       }
     }
@@ -331,7 +333,7 @@ export default async function pubWorkspaceRoutes(fastify, options) {
         );
       }
 
-      const { documents, featureArray = [] } = request.body;
+      const { documents, featureArray = [], treeNameOrTreeId = null } = request.body;
 
       // Convert raw documents to proper format with schema
       const documentArray = documents.map(doc => ({
@@ -341,7 +343,7 @@ export default async function pubWorkspaceRoutes(fastify, options) {
 
       const result = await access.workspace.db.insertDocumentArray(
         documentArray,
-        '/', // contextSpec - use root context
+        access.workspace.getContextTreeSelector('/', treeNameOrTreeId),
         featureArray
       );
 
@@ -412,8 +414,7 @@ export default async function pubWorkspaceRoutes(fastify, options) {
         );
       }
 
-      // Use workspace's tree listing capability
-      const tree = access.workspace.jsonTree;
+      const tree = access.workspace.getDefaultContextTree().buildJsonTree();
 
       const response = new ResponseObject().found(
         tree,

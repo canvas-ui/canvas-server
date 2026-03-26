@@ -42,9 +42,8 @@ const XML_BODY_LIMIT = 1024 * 1024;
 
 const ROOTS = [
   { name: 'Home', isDir: true, size: 0 },
-  { name: 'Context', isDir: true, size: 0 },
   { name: 'Contexts', isDir: true, size: 0 },
-  { name: 'Directories', isDir: true, size: 0 },
+  { name: 'Trees', isDir: true, size: 0 },
 ];
 
 // ── WebDAV Handler ──────────────────────────────────────────────────────────
@@ -82,13 +81,6 @@ export class WebDAVHandler {
         return await this._handleHome(res, { method, prefix: prefix + '/Home', rel: homeRel, homePath, headers, body, workspace });
       }
 
-      // ── Route: /Context/* → virtual context tree ────────────────────
-      if (rel === '/Context' || rel.startsWith('/Context/')) {
-        if (!workspace?.isActive) return send(res, 503, 'Workspace not active');
-        const vRel = rel === '/Context' ? '/' : rel.slice('/Context'.length);
-        return await this._handleVirtual(res, { method, prefix, rel, vRel, workspace, headers, body, treeType: 'context' });
-      }
-
       // ── Route: /Contexts/* → per-context abstraction folders ────────
       if (rel === '/Contexts' || rel.startsWith('/Contexts/')) {
         if (!workspace?.isActive) return send(res, 503, 'Workspace not active');
@@ -98,11 +90,42 @@ export class WebDAVHandler {
         return await this._handleVirtual(res, { method, prefix, rel, vRel, headers, body, vfs, treeType: 'contexts' });
       }
 
-      // ── Route: /Directories/* → virtual directory tree ──────────────
-      if (rel === '/Directories' || rel.startsWith('/Directories/')) {
+      // ── Route: /Trees/* → named tree views ───────────────────────────
+      if (rel === '/Trees' || rel.startsWith('/Trees/')) {
         if (!workspace?.isActive) return send(res, 503, 'Workspace not active');
-        const vRel = rel === '/Directories' ? '/' : rel.slice('/Directories'.length);
-        return await this._handleVirtual(res, { method, prefix, rel, vRel, workspace, headers, body, treeType: 'directory' });
+        const treesRel = rel === '/Trees' ? '/' : rel.slice('/Trees'.length);
+        const parts = treesRel.split('/').filter(Boolean);
+
+        if (parts.length === 0) {
+          const trees = await workspace.listTrees();
+          const vfs = {
+            stat: async (vPath) => vPath === '/' ? { isDir: true, name: 'Trees', size: 0 } : null,
+            readdir: async () => trees.map((tree) => ({ name: tree.name, isDir: true, size: 0 })),
+            getContent: async () => null,
+          };
+          return await this._handleVirtual(res, { method, prefix, rel, vRel: '/', headers, body, vfs, treeType: 'trees' });
+        }
+
+        let tree = null;
+        try {
+          tree = workspace.getTree(parts[0]);
+        } catch {
+          return send(res, 404, 'Tree not found');
+        }
+        const treePath = '/' + parts.slice(1).join('/');
+        const vfs = tree.type === 'directory'
+          ? new VirtualDirectoryFS(workspace, tree)
+          : new VirtualContextFS(workspace, tree);
+        return await this._handleVirtual(res, {
+          method,
+          prefix,
+          rel,
+          vRel: parts.length > 1 ? treePath : '/',
+          headers,
+          body,
+          vfs,
+          treeType: tree.type,
+        });
       }
 
       return send(res, 404, 'Not Found');
@@ -353,7 +376,7 @@ export class WebDAVHandler {
     send(res, 204);
   }
 
-  // ── Virtual tree handlers (Context + Directories) ─────────────────────
+  // ── Virtual tree handlers ──────────────────────────────────────────────
 
   async _handleVirtual(res, { method, prefix, rel, vRel, workspace, headers, body, vfs: prebuiltVfs, treeType }) {
     const vfs = prebuiltVfs || (treeType === 'directory'
@@ -402,7 +425,7 @@ export class WebDAVHandler {
 
     if (info.isDir) {
       const children = await vfs.readdir(vRel) || [];
-      const label = { directory: 'Directories', contexts: 'Contexts', context: 'Context' }[treeType] || treeType;
+      const label = { directory: 'Tree', contexts: 'Contexts', context: 'Tree', trees: 'Trees' }[treeType] || treeType;
       const html = `<!DOCTYPE html><html><body><h1>${esc(label)}: ${esc(vRel)}</h1><ul>${
         children.map(c => {
           const suffix = c.isDir ? '/' : '';

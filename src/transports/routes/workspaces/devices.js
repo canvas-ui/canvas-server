@@ -13,7 +13,7 @@ function serializeDeviceDocument(document) {
 }
 
 async function findWorkspaceDeviceDoc(workspace, deviceId) {
-  const docs = await workspace.db.findDocuments('/', [DEVICE_SCHEMA], [], { limit: 500 });
+  const docs = await workspace.db.findDocuments(workspace.getContextTreeSelector('/'), [DEVICE_SCHEMA], [], { limit: 500 });
   return Array.isArray(docs)
     ? docs.find((document) => document?.data?.deviceId === deviceId) || null
     : null;
@@ -42,7 +42,7 @@ export default async function workspaceDeviceRoutes(fastify, options) {
   }, async (request, reply) => {
     try {
       const documents = await request.workspace.db.findDocuments(
-        '/',
+        request.workspace.getContextTreeSelector('/'),
         [DEVICE_SCHEMA],
         [],
         { limit: request.query.limit, offset: request.query.offset, page: request.query.page }
@@ -179,7 +179,7 @@ export default async function workspaceDeviceRoutes(fastify, options) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
-      const docs = await request.workspace.db.findDocuments('/', [DEVICE_SCHEMA], [], { limit: 500 });
+      const docs = await request.workspace.db.findDocuments(request.workspace.getContextTreeSelector('/'), [DEVICE_SCHEMA], [], { limit: 500 });
       const matches = Array.isArray(docs)
         ? docs.filter((document) => document?.data?.deviceId === deviceId)
         : [];

@@ -91,7 +91,7 @@ class LinkerHook {
             // We need to query synapsd for a contact with this email
             // Assuming contacts have schema 'data/abstraction/contact' and data.email field
             const contactDocs = await workspace.db.findDocuments(
-                null, // no specific context
+                workspace.getContextTreeSelector('/'),
                 ['data/abstraction/contact'], // feature filter
                 [], // no additional filters
                 { parse: true }
@@ -113,7 +113,10 @@ class LinkerHook {
             logger.debug(`Found contact document ${contactDoc.id} for ${senderEmail}`);
 
             // Get all context bitmaps that contain this contact
-            const contextBitmaps = await workspace.db.getBitmapsForDocument(contactDoc.id, 'context/');
+            const contextBitmaps = await workspace.db.getBitmapsForDocument(
+                contactDoc.id,
+                'context/',
+            );
 
             if (contextBitmaps.length === 0) {
                 logger.debug(`Contact ${contactDoc.id} is not in any contexts`);
@@ -177,15 +180,12 @@ class LinkerHook {
             const existingDoc = await workspace.db.getDocument(document.id);
             if (!existingDoc) return;
 
-            const currentContexts = existingDoc.context || [];
-            const newContexts = [...new Set([...currentContexts, ...contextBitmapArray])];
-
-            const currentFeatures = existingDoc.features || [];
-            const newFeatures = [...new Set([...currentFeatures, contextTag])];
-
             await workspace.db.updateDocument(document.id, {
                 // No data change
-            }, newContexts, newFeatures);
+            }, {
+                context: workspace.getContextTreeSelector(contextMeta.path || '/', contextMeta.treeId || null),
+                features: [contextTag],
+            });
 
             logger.debug(`Linked document ${document.id} to context ${contextMeta.id}`);
 

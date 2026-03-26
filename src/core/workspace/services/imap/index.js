@@ -699,7 +699,7 @@ class ImapService extends EventEmitter {
 
                         const incomingContext = getIncomingEmailContext('imap', mailbox.user, box?.name || mailbox.folder || 'inbox');
                         const docId = await workspace.insert(emailDoc, {
-                            context: incomingContext,
+                            context: workspace.getContextTreeSelector(incomingContext),
                             features: this.#getEmailFeatures(emailDoc, mailbox),
                             emitEvent: true,
                         });

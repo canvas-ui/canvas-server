@@ -17,6 +17,12 @@ const DEFAULT_BASE_URL = '/';
 
 /**
  * Context
+ *
+ * A Context models where a user and their bound devices are focused right now.
+ * It is not the same thing as a ContextTree.
+ *
+ * - Context: runtime focus/navigation state
+ * - ContextTree: indexed view used to resolve and query context paths
  */
 
 class Context extends EventEmitter {
@@ -50,7 +56,8 @@ class Context extends EventEmitter {
     // Workspace references
     #workspace; // Current workspace instance
     #db; // workspace.db
-    #tree; // workspace.tree
+    #tree; // bound context tree
+    #treeId;
     #workspaceManager; // Workspace manager instance
     #contextManager; // Context manager instance
     #workspaceEventHandlers; // Event handlers for workspace event forwarding
@@ -92,7 +99,8 @@ class Context extends EventEmitter {
         this.#workspace = options.workspace;
         this.#workspaceManager = options.workspaceManager;
         this.#db = this.#workspace.db;
-        this.#tree = this.#workspace.tree;
+        this.#treeId = options.treeId || this.#workspace.getDefaultContextTree()?.id || null;
+        this.#tree = this.#workspace.getContextTree(this.#treeId);
         this.#color = this.#workspace.color;
 
         // Context manager references
@@ -208,7 +216,7 @@ class Context extends EventEmitter {
     get workspace() { return this.#workspace; }
     get workspaceId() { return this.#workspace.id; }
     get workspaceName() { return this.#workspace.name; }
-    get tree() { return this.#tree.toJSON(); }
+    get treeId() { return this.#treeId; }
     get color() { return this.#color; }
     get pendingUrl() { return this.#pendingUrl; }
     get bitmapArrays() {
@@ -253,6 +261,13 @@ class Context extends EventEmitter {
 
         // Join parts with '/' and ensure leading slash
         return '/' + pathParts.join('/');
+    }
+
+    #buildContextSelector(contextArray = this.#contextBitmapArray) {
+        return {
+            tree: this.#treeId,
+            path: this.#convertContextArrayToPath(contextArray),
+        };
     }
 
     /**
@@ -607,7 +622,7 @@ class Context extends EventEmitter {
         }
 
         // Create the URL path in the current workspace
-        const contextLayers = await this.#workspace.tree.insertPath(parsed.path);
+        const contextLayers = await this.#tree.insertPath(parsed.path);
         this.#contextBitmapArray = parsed.pathArray;
         logger.debug(`ContextPath: ${parsed.path}, contextLayer IDs: ${JSON.stringify(contextLayers)}`);
 
@@ -668,6 +683,19 @@ class Context extends EventEmitter {
         await this.#contextManager.saveContext(this.#userId, this);
 
         return Promise.resolve(this);
+    }
+
+    async setTree(nameOrId) {
+        if (this.#isLocked) {
+            throw new Error('Context is locked');
+        }
+        const tree = this.#workspace.getContextTree(nameOrId);
+        this.#tree = tree;
+        this.#treeId = tree.id;
+        this.#updatedAt = new Date().toISOString();
+        await this.#contextManager.saveContext(this.#userId, this);
+        this.emit('context.tree.set', { id: this.#id, treeId: this.#treeId });
+        return this;
     }
 
     async lock() {
@@ -732,7 +760,12 @@ class Context extends EventEmitter {
             const newWorkspaceInstance = await this.#workspaceManager.getWorkspace(this.#userId, workspaceName, this.#userId);
             this.#workspace = newWorkspaceInstance;
             this.#db = this.#workspace.db;
-            this.#tree = this.#workspace.tree;
+            try {
+                this.#tree = this.#workspace.getContextTree(this.#treeId);
+            } catch {
+                this.#tree = this.#workspace.getDefaultContextTree();
+                this.#treeId = this.#tree?.id || null;
+            }
             this.#color = this.#workspace.color;
 
             // Set up event forwarding for the new workspace
@@ -832,7 +865,7 @@ class Context extends EventEmitter {
         }
 
         // Build context path string for DB
-        const contextSpec = this.#convertContextArrayToPath([
+        const contextSpec = this.#buildContextSelector([
             ...this.#pathArray,
             ...this.#serverContextArray,
             ...this.#clientContextArray,
@@ -885,7 +918,7 @@ class Context extends EventEmitter {
         }
 
         // Build context path string for DB
-        const contextSpec = this.#convertContextArrayToPath([
+        const contextSpec = this.#buildContextSelector([
             ...this.#pathArray,
             ...this.#serverContextArray,
             ...this.#clientContextArray,
@@ -981,7 +1014,7 @@ class Context extends EventEmitter {
             throw new Error('Workspace or database not available');
         }
 
-        const contextSpec = this.#convertContextArrayToPath(this.#contextBitmapArray);
+        const contextSpec = this.#buildContextSelector(this.#contextBitmapArray);
         const result = await this.#workspace.db.hasDocument(id, contextSpec, featureBitmapArray);
         return result;
     }
@@ -994,7 +1027,7 @@ class Context extends EventEmitter {
             throw new Error('Workspace or database not available');
         }
 
-        const contextSpec = this.#convertContextArrayToPath(this.#contextBitmapArray);
+        const contextSpec = this.#buildContextSelector(this.#contextBitmapArray);
         const result = await this.#workspace.db.hasDocumentByChecksum(checksum, contextSpec, featureBitmapArray);
         return result;
     }
@@ -1030,7 +1063,7 @@ class Context extends EventEmitter {
 
         // Convert context array to path string for query operations
         // SynapsD query operations expect a single path string, not an array
-        const contextSpec = this.#convertContextArrayToPath(contextArray);
+        const contextSpec = this.#buildContextSelector(contextArray);
         logger.debug('#listDocuments: Converted contextSpec:', contextSpec);
 
         // Pass options through to enable pagination
@@ -1063,7 +1096,7 @@ class Context extends EventEmitter {
         const contextArray = [...new Set([...baseContexts, ...serverContexts, ...clientContexts])];
 
         // Convert context array to path string for query operations
-        const contextSpec = this.#convertContextArrayToPath(contextArray);
+        const contextSpec = this.#buildContextSelector(contextArray);
         logger.debug('#ftsQuery: Converted contextSpec:', contextSpec);
 
         const documents = await this.#db.ftsQuery(queryString, contextSpec, featureArray, filterArray, options);
@@ -1085,7 +1118,7 @@ class Context extends EventEmitter {
         }
 
         // Build context path string for DB
-        const contextSpec = this.#convertContextArrayToPath([
+        const contextSpec = this.#buildContextSelector([
             ...this.#pathArray,
             ...this.#serverContextArray,
             ...this.#clientContextArray,
@@ -1124,7 +1157,7 @@ class Context extends EventEmitter {
         }
 
         // Build context path string for DB
-        const contextSpec = this.#convertContextArrayToPath([
+        const contextSpec = this.#buildContextSelector([
             ...this.#pathArray,
             ...this.#serverContextArray,
             ...this.#clientContextArray,
@@ -1169,7 +1202,7 @@ class Context extends EventEmitter {
 
         try {
             // We remove document from the current context not from the database
-            const contextSpec = this.#convertContextArrayToPath(this.#contextBitmapArray);
+            const contextSpec = this.#buildContextSelector(this.#contextBitmapArray);
             logger.debug(`#removeDocument: Calling db.removeDocument with documentId: ${documentId}, contextSpec: ${contextSpec}, featureArray: ${JSON.stringify(featureArray)}, options: ${JSON.stringify(options)}`);
             const result = this.#db.removeDocument(documentId, contextSpec, featureArray, options);
             logger.debug(`#removeDocument: Database removal successful, result: ${JSON.stringify(result)}`);
@@ -1228,7 +1261,7 @@ class Context extends EventEmitter {
             logger.debug(`#removeDocumentArray: Document ID conversion successful - using: ${JSON.stringify(numericDocumentIdArray)}`);
 
             // We remove documents from the current context not from the database
-            const contextSpec = this.#convertContextArrayToPath(this.#contextBitmapArray);
+            const contextSpec = this.#buildContextSelector(this.#contextBitmapArray);
             logger.debug(`#removeDocumentArray: Calling db.removeDocumentArray with documentIds: ${JSON.stringify(numericDocumentIdArray)}, contextSpec: ${contextSpec}, featureArray: ${JSON.stringify(featureArray)}, options: ${JSON.stringify(options)}`);
             const result = this.#db.removeDocumentArray(numericDocumentIdArray, contextSpec, featureArray, options);
             logger.debug(`#removeDocumentArray: Database removal successful, result: ${JSON.stringify(result)}`);
@@ -1395,6 +1428,7 @@ class Context extends EventEmitter {
             pathArray: this.#pathArray,
             workspaceId: this.#workspace?.id,
             workspaceName: this.#workspace?.name,
+            treeId: this.#treeId,
             color: this.#color,
             acl: this.#acl,
             createdAt: this.#createdAt,
@@ -1430,7 +1464,7 @@ class Context extends EventEmitter {
 
         // If featureArray is provided, verify the document matches those features in this context
         if (featureArray && featureArray.length > 0) {
-            const contextSpec = this.#convertContextArrayToPath(this.#contextBitmapArray);
+            const contextSpec = this.#buildContextSelector(this.#contextBitmapArray);
             const matchesFeatures = await this.#workspace.db.hasDocument(documentInContext.id, contextSpec, featureArray);
             if (!matchesFeatures) {
                 logger.debug(`Document ID '${documentInContext.id}' (checksum '${checksumString}') found in context path '${this.#path}' but does not match featureArray: [${featureArray.join(', ')}].`);

@@ -86,7 +86,8 @@ class DeviceRegistry {
             deviceOs: device.platform || device.os,
             deviceType: device.type,
         })];
-        const docs = await workspace.db.findDocuments('/', [DEVICE_SCHEMA], [], { limit: 500 });
+        const context = workspace.getContextTreeSelector('/');
+        const docs = await workspace.db.findDocuments(context, [DEVICE_SCHEMA], [], { limit: 500 });
         const existing = Array.isArray(docs)
             ? docs.find((document) => document?.data?.deviceId === deviceId) || null
             : null;
@@ -103,14 +104,14 @@ class DeviceRegistry {
         });
 
         if (existing?.id) {
-            await workspace.db.updateDocument(existing.id, { data }, '/', featureArray);
+            await workspace.db.updateDocument(existing.id, { data }, context, featureArray);
             return { id: existing.id, created: false, data };
         }
 
         const id = await workspace.db.insertDocument({
             schema: DEVICE_SCHEMA,
             data,
-        }, '/', featureArray);
+        }, context, featureArray);
 
         return { id, created: true, data };
     }

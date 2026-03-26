@@ -25,17 +25,23 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     return mergeDeviceFeatureTags(featureArray, request.client);
   }
 
-  function buildReadOptions(contextSpec, includeIncoming, options = {}) {
-    if (!shouldExcludeIncoming(contextSpec, includeIncoming)) {
+  function resolveContextSelector(workspace, source = {}, fallbackPath = '/') {
+    return workspace.getContextTreeSelector(source?.contextSpec ?? fallbackPath, source?.treeNameOrTreeId ?? null);
+  }
+
+  function buildReadOptions(contextSelector, includeIncoming, options = {}) {
+    if (!shouldExcludeIncoming(contextSelector?.path, includeIncoming)) {
       return options;
     }
     return { ...options, excludeContextSpec: INCOMING_ROOT_CONTEXT };
   }
 
-  function getInsertContextSpec(body, isTopLevelArray) {
-    if (isTopLevelArray) { return '/'; }
-    if (body?.contextSpec) { return body.contextSpec; }
-    if (body?.documents || body?.documentIds) { return '/'; }
+  function getInsertContextSelector(workspace, body, isTopLevelArray) {
+    if (isTopLevelArray) { return workspace.getContextTreeSelector('/'); }
+    if (body?.contextSpec || body?.treeNameOrTreeId) {
+      return resolveContextSelector(workspace, body, '/');
+    }
+    if (body?.documents || body?.documentIds) { return workspace.getContextTreeSelector('/'); }
     return null;
   }
 
@@ -80,6 +86,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       querystring: {
         type: 'object',
         properties: {
+          treeNameOrTreeId: { type: 'string' },
           contextSpec: { type: 'string', default: '/' },
           featureArray: {
             type: 'array',
@@ -104,6 +111,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return;
+      const contextSelector = resolveContextSelector(workspace, request.query, '/');
 
       // Check if this is a search query
       const searchQuery = request.query.q || request.query.search;
@@ -113,10 +121,10 @@ export default async function workspaceDocumentRoutes(fastify, options) {
         // Use full-text search
         documents = await workspace.db.ftsQuery(
           searchQuery,
-          request.query.contextSpec,
+          contextSelector,
           request.query.featureArray,
           request.query.filterArray || [],
-          buildReadOptions(request.query.contextSpec, request.query.includeIncoming, {
+          buildReadOptions(contextSelector, request.query.includeIncoming, {
             limit: request.query.limit,
             offset: request.query.offset,
             page: request.query.page,
@@ -125,10 +133,10 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       } else {
         // Use regular document listing
         documents = await workspace.db.findDocuments(
-          request.query.contextSpec,
+          contextSelector,
           request.query.featureArray,
           request.query.filterArray || [],
-          buildReadOptions(request.query.contextSpec, request.query.includeIncoming, {
+          buildReadOptions(contextSelector, request.query.includeIncoming, {
             limit: request.query.limit,
             offset: request.query.offset,
             page: request.query.page,
@@ -167,6 +175,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
           {
             type: 'object',
             properties: {
+              treeNameOrTreeId: { type: 'string' },
               contextSpec: { type: 'string' },
               featureArray: {
                 type: 'array',
@@ -221,7 +230,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
 
       // Normalize input: allow top-level array of IDs, or object with documentIds/documents
       const isTopLevelArray = Array.isArray(request.body);
-      const contextSpec = getInsertContextSpec(request.body, isTopLevelArray);
+      const contextSpec = getInsertContextSelector(workspace, request.body, isTopLevelArray);
       const featureArray = isTopLevelArray ? [] : (request.body.featureArray || []);
       const enforcedFeatureArray = enforceClientTags(request, featureArray);
 
@@ -277,6 +286,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       querystring: {
         type: 'object',
         properties: {
+          treeNameOrTreeId: { type: 'string' },
           contextSpec: { type: 'string', default: '/' },
           featureArray: {
             type: 'array',
@@ -321,6 +331,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       querystring: {
         type: 'object',
         properties: {
+          treeNameOrTreeId: { type: 'string' },
           contextSpec: { type: 'string', default: '/' },
           featureArray: {
             type: 'array',
@@ -343,15 +354,16 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return;
+      const contextSelector = resolveContextSelector(workspace, request.query, '/');
 
       // Create derived feature array with abstraction path
       const derivedFeatureArray = [`data/abstraction/${request.params.abstraction}`, ...request.query.featureArray];
 
       const documents = await workspace.db.findDocuments(
-        request.query.contextSpec,
+        contextSelector,
         derivedFeatureArray,
         request.query.filterArray || [],
-        buildReadOptions(request.query.contextSpec, request.query.includeIncoming, {
+        buildReadOptions(contextSelector, request.query.includeIncoming, {
           limit: request.query.limit,
           offset: request.query.offset,
           page: request.query.page,
@@ -387,6 +399,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       body: {
         type: 'object',
         properties: {
+          treeNameOrTreeId: { type: 'string' },
           contextSpec: { type: 'string', default: '/' },
           featureArray: {
             type: 'array',
@@ -433,7 +446,8 @@ export default async function workspaceDocumentRoutes(fastify, options) {
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());
       }
 
-      const success = await workspace.db.updateDocumentArray(itemsToUpdate);
+      const contextSelector = resolveContextSelector(workspace, request.body, '/');
+      const success = await workspace.db.updateDocumentArray(itemsToUpdate, contextSelector, request.body.featureArray || []);
       if (!success) {
         const responseObject = new ResponseObject().badRequest('Failed to update documents');
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());
@@ -442,7 +456,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       broadcastWorkspaceDocEvent(workspace, 'workspace.documents.updated', {
         workspaceId: workspace.id,
         workspaceName: workspace.name,
-        contextSpec: request.body.contextSpec || '/',
+        contextSpec: contextSelector,
         items: itemsToUpdate,
         timestamp: new Date().toISOString(),
       });
@@ -470,6 +484,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       querystring: {
         type: 'object',
         properties: {
+          treeNameOrTreeId: { type: 'string' },
           contextSpec: { type: 'string', default: '/' },
           featureArray: {
             type: 'array',
@@ -494,6 +509,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return;
+      const contextSelector = resolveContextSelector(workspace, request.query, '/');
 
       // Normalize + validate IDs (SynapsD requires numbers; invalid IDs should 400 with a useful message)
       const rawIds = Array.isArray(request.body) ? request.body : [request.body];
@@ -510,7 +526,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       broadcastWorkspaceDocEvent(workspace, 'workspace.documents.deleted', {
         workspaceId: workspace.id,
         workspaceName: workspace.name,
-        contextSpec: request.query.contextSpec,
+        contextSpec: contextSelector,
         featureArray: request.query.featureArray,
         documentIds,
         result,
@@ -558,6 +574,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       querystring: {
         type: 'object',
         properties: {
+          treeNameOrTreeId: { type: 'string' },
           contextSpec: { type: 'string', default: '/' },
           featureArray: {
             type: 'array',
@@ -577,12 +594,13 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return;
+      const contextSelector = resolveContextSelector(workspace, request.query, '/');
 
       const matches = await workspace.db.findDocuments(
-        request.query.contextSpec,
+        contextSelector,
         request.query.featureArray,
         request.query.filterArray || [],
-        buildReadOptions(request.query.contextSpec, request.query.includeIncoming, {
+        buildReadOptions(contextSelector, request.query.includeIncoming, {
           parse: false,
           limit: 0,
         })
@@ -612,7 +630,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       broadcastWorkspaceDocEvent(workspace, 'workspace.documents.purged', {
         workspaceId: workspace.id,
         workspaceName: workspace.name,
-        contextSpec: request.query.contextSpec,
+        contextSpec: contextSelector,
         featureArray: request.query.featureArray,
         filterArray: request.query.filterArray || [],
         requested: documentIds.length,
@@ -647,6 +665,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       querystring: {
         type: 'object',
         properties: {
+          treeNameOrTreeId: { type: 'string' },
           contextSpec: { type: 'string', default: '/' },
           featureArray: {
             type: 'array',
@@ -671,6 +690,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return;
+      const contextSelector = resolveContextSelector(workspace, request.query, '/');
 
       // Normalize + validate IDs (SynapsD requires numbers; invalid IDs should 400 with a useful message)
       const rawIds = Array.isArray(request.body) ? request.body : [request.body];
@@ -684,14 +704,14 @@ export default async function workspaceDocumentRoutes(fastify, options) {
 
       const result = await workspace.db.removeDocumentArray(
         documentIds,
-        request.query.contextSpec,
+        contextSelector,
         request.query.featureArray
       );
 
       broadcastWorkspaceDocEvent(workspace, 'workspace.documents.removed', {
         workspaceId: workspace.id,
         workspaceName: workspace.name,
-        contextSpec: request.query.contextSpec,
+        contextSpec: contextSelector,
         featureArray: request.query.featureArray,
         documentIds,
         result,
@@ -704,7 +724,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
           workspace: request.params.id,
           userId: request.user?.id,
           op: 'workspace.documents.remove',
-          contextSpec: request.query.contextSpec,
+          contextSpec: contextSelector,
           requested: documentIds.length,
           successful: result.successful?.length || 0,
           failed: result.failed?.length || 0,
@@ -741,6 +761,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       querystring: {
         type: 'object',
         properties: {
+          treeNameOrTreeId: { type: 'string' },
           contextSpec: { type: 'string', default: '/' },
           featureArray: {
             type: 'array',

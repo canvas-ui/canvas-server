@@ -39,7 +39,8 @@ export default async function treeRoutes(fastify, options) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
-      const treeData = workspace.jsonTree;
+      const tree = workspace.getContextTree(context.treeId);
+      const treeData = tree.buildJsonTree();
 
       if (treeData === undefined || treeData === null) {
         fastify.log.warn(`Received null or undefined jsonTree for context ${contextId} from workspace ${workspace.id}`);
@@ -93,7 +94,8 @@ export default async function treeRoutes(fastify, options) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
-      const result = await workspace.tree.insertPath(
+      const tree = workspace.getContextTree(context.treeId);
+      const result = await tree.insertPath(
         request.body.path,
         null,
         request.body.autoCreateLayers === undefined ? true : request.body.autoCreateLayers
@@ -151,7 +153,8 @@ export default async function treeRoutes(fastify, options) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
-      const success = await workspace.tree.removePath(
+      const tree = workspace.getContextTree(context.treeId);
+      const success = await tree.removePath(
         request.query.path,
         request.query.recursive || false
       );
@@ -206,7 +209,8 @@ export default async function treeRoutes(fastify, options) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
-      const success = await workspace.tree.movePath(
+      const tree = workspace.getContextTree(context.treeId);
+      const success = await tree.movePath(
         request.body.from,
         request.body.to,
         request.body.recursive || false
@@ -262,7 +266,8 @@ export default async function treeRoutes(fastify, options) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
-      const success = await workspace.tree.copyPath(
+      const tree = workspace.getContextTree(context.treeId);
+      const success = await tree.copyPath(
         request.body.from,
         request.body.to,
         request.body.recursive || false
@@ -317,7 +322,8 @@ export default async function treeRoutes(fastify, options) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
-      const result = await workspace.tree.mergeLayer(request.body.layerId, request.body.targetLayers);
+      const tree = workspace.getContextTree(context.treeId);
+      const result = await tree.mergeLayer(request.body.layerId, request.body.targetLayers);
       if (result.error) {
         const response = new ResponseObject().badRequest(result.error);
         return reply.code(response.statusCode).send(response.getResponse());
@@ -369,7 +375,8 @@ export default async function treeRoutes(fastify, options) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
-      const result = await workspace.tree.subtractLayer(request.body.layerId, request.body.targetLayers);
+      const tree = workspace.getContextTree(context.treeId);
+      const result = await tree.subtractLayer(request.body.layerId, request.body.targetLayers);
       if (result.error) {
         const response = new ResponseObject().badRequest(result.error);
         return reply.code(response.statusCode).send(response.getResponse());

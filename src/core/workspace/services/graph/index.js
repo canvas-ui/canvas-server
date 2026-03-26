@@ -188,7 +188,12 @@ class GraphService extends EventEmitter {
                     const workspace = await this.#workspaceManager.getWorkspace(workspaceId, userId);
                     if (workspace) {
                         const contextSpec = getIncomingEmailContext('graph', userPrincipalName, 'inbox');
-                        const docId = await workspace.db.insertDocument(emailDoc, contextSpec, [], false);
+                        const docId = await workspace.db.insertDocument(
+                            emailDoc,
+                            workspace.getContextTreeSelector(contextSpec),
+                            [],
+                            false,
+                        );
                         emailDoc.id = docId;
 
                         await this.#hookService.dispatchEvent('source.graph.email.received', { document: emailDoc }, workspaceId);

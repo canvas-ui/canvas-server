@@ -125,21 +125,6 @@ class Workspace extends EventEmitter {
         return this.#db.stats;
     }
 
-    get tree() {
-        if (!this.isActive || !this.#db?.tree) throw new Error('Tree not available');
-        return this.#db.tree;
-    }
-
-    get directoryTree() {
-        if (!this.isActive || !this.#db?.directoryTree) throw new Error('Directory tree not available');
-        return this.#db.directoryTree;
-    }
-
-    get jsonTree() {
-        if (!this.isActive || !this.#db) { throw new Error('Workspace not active'); }
-        return this.#db.jsonTree;
-    }
-
     get homePath() {
         return path.join(this.#rootPath, WORKSPACE_DIRECTORIES.home);
     }
@@ -290,17 +275,26 @@ class Workspace extends EventEmitter {
 
     async insert(data, { context = '/', directory = null, features = [], emitEvent = true } = {}) {
         if (!this.isActive) throw new Error('Workspace not active');
-        return await this.db.insertDocument(data, { context, directory, features, emitEvent });
+        return await this.db.insertDocument(data, {
+            context: this.#normalizeTreeSelector('context', context, '/'),
+            directory: directory == null ? null : this.#normalizeTreeSelector('directory', directory, '/'),
+            features,
+            emitEvent,
+        });
     }
 
     async update(id, data, { context = null, directory = null, features = [] } = {}) {
         if (!this.isActive) throw new Error('Workspace not active');
-        return await this.db.updateDocument(id, data, { context, directory, features });
+        return await this.db.updateDocument(id, data, {
+            context: context == null ? null : this.#normalizeTreeSelector('context', context, '/'),
+            directory: directory == null ? null : this.#normalizeTreeSelector('directory', directory, '/'),
+            features,
+        });
     }
 
     async remove(id, { context = '/', features = [] } = {}) {
         if (!this.isActive) throw new Error('Workspace not active');
-        return await this.db.removeDocument(id, context, features);
+        return await this.db.removeDocument(id, this.#normalizeTreeSelector('context', context, '/'), features);
     }
 
     async delete(id) {
@@ -332,14 +326,62 @@ class Workspace extends EventEmitter {
             ...rest
         } = options;
 
+        const normalizedContext = this.#normalizeTreeSelector('context', context ?? contextSpec, '/');
+
         return await this.find({
-            context: context ?? contextSpec,
+            context: normalizedContext,
             attributes: attributes ?? this.#legacyFeaturesToAttributes(featureBitmapArray),
             filters,
             filterArray,
-            ...(shouldExcludeIncoming(context ?? contextSpec, includeIncoming) ? { excludeContextSpec: INCOMING_ROOT_CONTEXT } : {}),
+            ...(shouldExcludeIncoming(normalizedContext?.path, includeIncoming) ? { excludeContextSpec: INCOMING_ROOT_CONTEXT } : {}),
             ...rest,
         });
+    }
+
+    getTree(nameOrId) {
+        if (!this.isActive) throw new Error('Workspace not active');
+        const tree = this.#db.getTree(nameOrId);
+        if (!tree) throw new Error(`Tree not found: ${nameOrId}`);
+        return tree;
+    }
+
+    async listTrees(type = null) {
+        if (!this.isActive) throw new Error('Workspace not active');
+        return await this.#db.listTrees(type);
+    }
+
+    getDefaultContextTree() {
+        if (!this.isActive) throw new Error('Workspace not active');
+        const tree = this.#db.getDefaultContextTree();
+        if (!tree) throw new Error('Default context tree not available');
+        return tree;
+    }
+
+    getDefaultDirectoryTree() {
+        if (!this.isActive) throw new Error('Workspace not active');
+        const tree = this.#db.getDefaultDirectoryTree();
+        if (!tree) throw new Error('Default directory tree not available');
+        return tree;
+    }
+
+    getContextTree(nameOrId) {
+        const tree = nameOrId ? this.getTree(nameOrId) : this.getDefaultContextTree();
+        if (tree.type !== 'context') throw new Error(`Tree is not a context tree: ${nameOrId}`);
+        return tree;
+    }
+
+    getDirectoryTree(nameOrId) {
+        const tree = nameOrId ? this.getTree(nameOrId) : this.getDefaultDirectoryTree();
+        if (tree.type !== 'directory') throw new Error(`Tree is not a directory tree: ${nameOrId}`);
+        return tree;
+    }
+
+    getContextTreeSelector(path = '/', treeNameOrId = null) {
+        return this.#normalizeTreeSelector('context', { tree: treeNameOrId, path }, '/');
+    }
+
+    getDirectoryTreeSelector(path = '/', treeNameOrId = null) {
+        return this.#normalizeTreeSelector('directory', { tree: treeNameOrId, path }, '/');
     }
 
     async listBitmaps(prefix = '', { includeData = false } = {}) {
@@ -392,6 +434,28 @@ class Workspace extends EventEmitter {
         }
 
         return { allOf, noneOf };
+    }
+
+    #normalizeTreeSelector(type, selector, defaultPath = '/') {
+        if (selector == null) {
+            return null;
+        }
+
+        if (typeof selector !== 'object') {
+            throw new Error(`Invalid ${type} selector`);
+        }
+
+        const path = selector.path ?? selector[type] ?? defaultPath;
+        const tree = selector.tree ?? selector.treeId ?? null;
+        const resolvedTree = tree
+            ? (type === 'context' ? this.getContextTree(tree) : this.getDirectoryTree(tree))
+            : (type === 'context' ? this.getDefaultContextTree() : this.getDefaultDirectoryTree());
+
+        return {
+            ...selector,
+            tree: resolvedTree.id,
+            path,
+        };
     }
 
     clearDatabaseSync() {
@@ -566,12 +630,12 @@ class Workspace extends EventEmitter {
         let documentId;
         if (existingDocument?.id) {
             documentId = await this.update(existingDocument.id, documentData, {
-                context: incomingContexts,
+                context: this.getContextTreeSelector(incomingContexts),
                 features,
             });
         } else {
             documentId = await this.insert(documentData, {
-                context: incomingContexts,
+                context: this.getContextTreeSelector(incomingContexts),
                 features,
             });
         }
@@ -754,7 +818,6 @@ class Workspace extends EventEmitter {
 
         this.#runtimeListeners = [
             this.#createRuntimeListener(this.#db, 'db'),
-            this.#createRuntimeListener(this.#db.tree, 'tree'),
         ].filter(Boolean);
     }
 

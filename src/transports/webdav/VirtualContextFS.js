@@ -14,8 +14,12 @@ import { stat as fsStat } from 'fs/promises';
  */
 export default class VirtualContextFS {
     #ws;
+    #tree;
 
-    constructor(workspace) { this.#ws = workspace; }
+    constructor(workspace, tree = null) {
+        this.#ws = workspace;
+        this.#tree = tree || workspace.getDefaultContextTree();
+    }
 
     // ── Public API ───────────────────────────────────────────────────────────
 
@@ -25,7 +29,7 @@ export default class VirtualContextFS {
      */
     async stat(vPath) {
         const n = norm(vPath);
-        const tree = this.#ws.tree;
+        const tree = this.#tree;
 
         // Tree node → directory
         if (n === '/' || tree.pathExists(n)) {
@@ -54,7 +58,7 @@ export default class VirtualContextFS {
      */
     async readdir(vPath) {
         const n = norm(vPath);
-        const tree = this.#ws.tree;
+        const tree = this.#tree;
         if (n !== '/' && !tree.pathExists(n)) return null;
 
         const entries = [];
@@ -121,7 +125,7 @@ export default class VirtualContextFS {
     // ── Private helpers ──────────────────────────────────────────────────────
 
     #treeNode(vPath) {
-        const json = this.#ws.tree.buildJsonTree();
+        const json = this.#tree.buildJsonTree();
         if (vPath === '/') return json;
         let node = json;
         for (const s of vPath.split('/').filter(Boolean)) {
@@ -133,7 +137,7 @@ export default class VirtualContextFS {
 
     async #findDoc(treePath, filename) {
         try {
-            const docs = await this.#ws.tree.findDocuments(treePath, [], [], { parse: true, limit: 1000 });
+            const docs = await this.#tree.findDocuments(treePath, [], [], { parse: true, limit: 1000 });
             return Array.isArray(docs) ? docs.find(d => docName(d) === filename) || null : null;
         } catch { return null; }
     }

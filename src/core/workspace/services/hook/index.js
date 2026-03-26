@@ -160,7 +160,7 @@ class HookService extends EventEmitter {
             };
 
             const db = workspace.isActive ? workspace.db : null;
-            const tree = workspace.isActive ? workspace.tree : null;
+            const tree = workspace.isActive ? workspace.getDefaultContextTree() : null;
             const emit = async (name, nextPayload = {}) => {
                 workspace.emit(name, {
                     ...(nextPayload && typeof nextPayload === 'object' ? nextPayload : { value: nextPayload }),

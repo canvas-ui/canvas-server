@@ -139,6 +139,17 @@ class Agent extends EventEmitter {
         return this.#db;
     }
 
+    getContextTreeSelector(path = '/', treeNameOrId = null) {
+        const tree = treeNameOrId ? this.db.getTree(treeNameOrId) : this.db.getDefaultContextTree();
+        if (!tree || tree.type !== 'context') {
+            throw new Error(`Context tree not available: ${treeNameOrId || 'default'}`);
+        }
+        return {
+            tree: tree.id,
+            path,
+        };
+    }
+
     get mcpServer() {
         if (!this.#mcpServer) {
             throw new Error(`MCP Server not initialized for agent ${this.id}`);
@@ -467,7 +478,7 @@ class Agent extends EventEmitter {
     /**
      * Store data in agent memory
      * @param {Object} data - Data to store
-     * @param {string} [contextSpec='/'] - Context specification
+     * @param {string|Object} [contextSpec='/'] - Context path or selector
      * @returns {Promise<Object>} Storage result
      */
     async storeMemory(data, contextSpec = '/') {
@@ -495,13 +506,16 @@ class Agent extends EventEmitter {
             }
         };
 
-        return await this.db.insertDocument(document, contextSpec, [], true);
+        const contextSelector = typeof contextSpec === 'object' && contextSpec !== null
+            ? contextSpec
+            : this.getContextTreeSelector(contextSpec);
+        return await this.db.insertDocument(document, contextSelector, [], true);
     }
 
     /**
      * Query agent memory
      * @param {string} query - Search query
-     * @param {string} [contextSpec='/'] - Context specification
+     * @param {string|Object} [contextSpec='/'] - Context path or selector
      * @param {Object} [options={}] - Query options
      * @returns {Promise<Array>} Query results
      */
@@ -511,8 +525,11 @@ class Agent extends EventEmitter {
         }
 
         try {
+            const contextSelector = typeof contextSpec === 'object' && contextSpec !== null
+                ? contextSpec
+                : this.getContextTreeSelector(contextSpec);
             // Use full-text search if available
-            const results = await this.db.ftsQuery(query, [], [], [], false);
+            const results = await this.db.ftsQuery(query, contextSelector, [], [], { parse: true, ...options });
             // Extract data from wrapped documents, handle null/undefined results
             if (!results || !Array.isArray(results)) {
                 return [];
@@ -521,7 +538,10 @@ class Agent extends EventEmitter {
         } catch (err) {
             logger.debug(`Memory query failed, falling back to document search: ${err.message}`);
             // Fallback to document search
-            const docs = await this.db.findDocuments(contextSpec, [], [], { parse: true });
+            const contextSelector = typeof contextSpec === 'object' && contextSpec !== null
+                ? contextSpec
+                : this.getContextTreeSelector(contextSpec);
+            const docs = await this.db.findDocuments(contextSelector, [], [], { parse: true, ...options });
             // Extract data from wrapped documents, handle null/undefined results
             if (!docs || !Array.isArray(docs)) {
                 return [];

@@ -247,12 +247,10 @@ class ChatService extends EventEmitter {
                             if (workspace) {
                                 const accountId = message.team || config.team || config.workspace || workspaceId;
                                 const contextSpec = getIncomingMessageContext('slack', accountId, channelName || channelId);
-                                const docId = await workspace.db.insertDocument(
-                                    chatDoc,
-                                    workspace.getContextTreeSelector(contextSpec),
-                                    [],
-                                    false,
-                                );
+                                const docId = await workspace.db.put(chatDoc, {
+                                    context: workspace.getContextTreeSelector(contextSpec),
+                                    emitEvent: false,
+                                });
                                 chatDoc.id = docId;
 
                                 await this.#hookService.dispatchEvent('chat.message', { document: chatDoc }, workspaceId);
@@ -331,12 +329,10 @@ class ChatService extends EventEmitter {
                             const workspace = await this.#workspaceManager.getWorkspace(workspaceId, userId);
                             if (workspace) {
                                 const contextSpec = getIncomingMessageContext('teams', userPrincipalName || teamId, channel.displayName || channel.id);
-                                const docId = await workspace.db.insertDocument(
-                                    chatDoc,
-                                    workspace.getContextTreeSelector(contextSpec),
-                                    [],
-                                    false,
-                                );
+                                const docId = await workspace.db.put(chatDoc, {
+                                    context: workspace.getContextTreeSelector(contextSpec),
+                                    emitEvent: false,
+                                });
                                 chatDoc.id = docId;
 
                                 await this.#hookService.dispatchEvent('chat.message', { document: chatDoc }, workspaceId);

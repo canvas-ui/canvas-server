@@ -180,11 +180,13 @@ export default async function pubContextRoutes(fastify, options) {
       const { featureArray = [], filterArray = [], includeServerContext, includeClientContext, limit, offset, page } = request.query;
       const options = { includeServerContext, includeClientContext, limit, offset, page };
 
-      const dbResult = await access.context.listDocuments(
+      const dbResult = await access.context.find(
         access.accessType === 'user' ? access.userId : access.context.userId,
-        featureArray,
-        filterArray,
-        options
+        {
+          featureArray,
+          filterArray,
+          options,
+        }
       );
 
       if (dbResult.error) {
@@ -257,7 +259,7 @@ export default async function pubContextRoutes(fastify, options) {
         data: doc
       }));
 
-      const result = await access.context.insertDocumentArray(
+      const result = await access.context.putMany(
         access.accessType === 'user' ? access.userId : access.context.userId,
         documentArray,
         featureArray
@@ -333,7 +335,7 @@ export default async function pubContextRoutes(fastify, options) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
-      const result = await access.context.updateDocumentArray(
+      const result = await access.context.putMany(
         access.accessType === 'user' ? access.userId : access.context.userId,
         documents,
         featureArray

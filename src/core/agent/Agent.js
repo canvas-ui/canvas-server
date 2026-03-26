@@ -509,7 +509,7 @@ class Agent extends EventEmitter {
         const contextSelector = typeof contextSpec === 'object' && contextSpec !== null
             ? contextSpec
             : this.getContextTreeSelector(contextSpec);
-        return await this.db.insertDocument(document, contextSelector, [], true);
+        return await this.db.put(document, { context: contextSelector, emitEvent: true });
     }
 
     /**
@@ -529,7 +529,12 @@ class Agent extends EventEmitter {
                 ? contextSpec
                 : this.getContextTreeSelector(contextSpec);
             // Use full-text search if available
-            const results = await this.db.ftsQuery(query, contextSelector, [], [], { parse: true, ...options });
+            const results = await this.db.search({
+                query,
+                context: contextSelector,
+                parse: true,
+                ...options,
+            });
             // Extract data from wrapped documents, handle null/undefined results
             if (!results || !Array.isArray(results)) {
                 return [];
@@ -541,7 +546,11 @@ class Agent extends EventEmitter {
             const contextSelector = typeof contextSpec === 'object' && contextSpec !== null
                 ? contextSpec
                 : this.getContextTreeSelector(contextSpec);
-            const docs = await this.db.findDocuments(contextSelector, [], [], { parse: true, ...options });
+            const docs = await this.db.find({
+                context: contextSelector,
+                parse: true,
+                ...options,
+            });
             // Extract data from wrapped documents, handle null/undefined results
             if (!docs || !Array.isArray(docs)) {
                 return [];

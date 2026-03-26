@@ -258,12 +258,12 @@ export default async function pubWorkspaceRoutes(fastify, options) {
       const options = { limit, offset, page };
 
       // Use workspace's document listing capability
-      const dbResult = await access.workspace.db.findDocuments(
-        access.workspace.getContextTreeSelector('/', treeNameOrTreeId),
-        [], // featureArray
-        [], // filterArray
-        options
-      );
+      const dbResult = await access.workspace.find({
+        context: access.workspace.getContextTreeSelector('/', treeNameOrTreeId),
+        attributes: { allOf: [] },
+        filters: [],
+        ...options,
+      });
 
       if (dbResult.error) {
         fastify.log.error(`Workspace error in listDocuments: ${dbResult.error}`);
@@ -341,11 +341,10 @@ export default async function pubWorkspaceRoutes(fastify, options) {
         data: doc
       }));
 
-      const result = await access.workspace.db.insertDocumentArray(
-        documentArray,
-        access.workspace.getContextTreeSelector('/', treeNameOrTreeId),
-        featureArray
-      );
+      const result = await access.workspace.putMany(documentArray, {
+        context: access.workspace.getContextTreeSelector('/', treeNameOrTreeId),
+        features: featureArray,
+      });
 
       const response = new ResponseObject().created(
         result,

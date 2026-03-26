@@ -189,8 +189,8 @@ class LinkerService extends EventEmitter {
             // If we want them to show up in the context view, the context view probably queries by context path.
             // So we MUST add the context path to the document.
 
-            await workspace.db.updateDocument(document.id, {
-                // We don't change data, just indexes
+            await workspace.db.put({
+                id: document.id,
             }, {
                 context: workspace.getContextTreeSelector(contextMeta.path || '/', contextMeta.treeId || null),
                 features: [contextTag],

@@ -198,7 +198,7 @@ export default async function homeRoutes(fastify) {
         const dataPath = `file://{WORKSPACE_ROOT}/home/${filePath}`;
 
         if (stat.isDirectory()) {
-          await workspace.insert({
+          await workspace.put({
             schema: 'data/abstraction/folder',
             data: { name, path: filePath, backend: 'home' },
             metadata: { dataPaths: [dataPath] },
@@ -209,7 +209,7 @@ export default async function homeRoutes(fastify) {
           const checksum = await sha256File(abs);
           const checksumString = `sha256/${checksum}`;
 
-          await workspace.insert({
+          await workspace.put({
             schema: 'data/abstraction/file',
             checksumArray: [checksumString],
             data: { filename: name, size: stat.size, mime: mime(abs) },

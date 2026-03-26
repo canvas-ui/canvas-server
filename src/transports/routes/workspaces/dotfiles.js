@@ -81,6 +81,8 @@ export default async function workspaceDotfilesRoutes(fastify, options) {
   const getContextTreeSelector = (workspace, source = {}, fallbackPath = '/') =>
     workspace.getContextTreeSelector(source?.contextSpec ?? fallbackPath, source?.treeNameOrTreeId ?? null);
 
+  const buildAttributes = (featureArray = []) => ({ allOf: featureArray || [] });
+
   /**
    * CRUD: List dotfile documents
    * GET /workspaces/:id/dotfiles
@@ -118,12 +120,14 @@ export default async function workspaceDotfilesRoutes(fastify, options) {
       const featureArrayInput = request.query.featureArray || [];
       const derivedFeatureArray = ['data/abstraction/dotfile', ...featureArrayInput];
 
-      const documents = await workspace.db.findDocuments(
-        contextSpec,
-        derivedFeatureArray,
-        [], // empty filterArray
-        { limit: request.query.limit, offset: request.query.offset, page: request.query.page }
-      );
+      const documents = await workspace.find({
+        context: contextSpec,
+        attributes: buildAttributes(derivedFeatureArray),
+        filters: [],
+        limit: request.query.limit,
+        offset: request.query.offset,
+        page: request.query.page,
+      });
 
       const responseObject = new ResponseObject().found(documents, 'Dotfiles retrieved successfully', 200, documents.count, documents.totalCount);
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
@@ -181,11 +185,10 @@ export default async function workspaceDotfilesRoutes(fastify, options) {
         data: df
       }));
 
-      const inserted = await workspace.db.insertDocumentArray(
-        documentArray,
-        contextSpec,
-        ['data/abstraction/dotfile', ...featureArrayInput]
-      );
+      const inserted = await workspace.putMany(documentArray, {
+        context: contextSpec,
+        features: ['data/abstraction/dotfile', ...featureArrayInput],
+      });
 
       const responseObject = new ResponseObject().created(inserted, 'Dotfiles created successfully');
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
@@ -232,10 +235,9 @@ export default async function workspaceDotfilesRoutes(fastify, options) {
   }, async (request, reply) => {
     try {
       const { workspace } = extractRequestInfo(request);
-      const result = await workspace.db.updateDocumentArray(
-        request.body.documents,
-        getContextTreeSelector(workspace, request.body, '/'),
-      );
+      const result = await workspace.putMany(request.body.documents, {
+        context: getContextTreeSelector(workspace, request.body, '/'),
+      });
       const responseObject = new ResponseObject().updated(result, 'Dotfiles updated successfully');
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
     } catch (error) {
@@ -269,7 +271,7 @@ export default async function workspaceDotfilesRoutes(fastify, options) {
     try {
       const { workspace } = extractRequestInfo(request);
       const docIds = Array.isArray(request.body) ? request.body : [request.body];
-      const success = await workspace.db.deleteDocumentArray(docIds);
+      const success = await workspace.deleteMany(docIds);
       const responseObject = success ?
         new ResponseObject().deleted(null, 'Dotfiles deleted successfully') :
         new ResponseObject().badRequest('Failed to delete dotfiles');

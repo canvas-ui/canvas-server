@@ -9,14 +9,20 @@ A **Workspace** is a bucket for indexing data from any backend (local FS, IMAP, 
 
 - **SynapsD** (index/DB) — stores document metadata, checksums, schemas, and bitmap indexes
 - **Stored** (storage) — manages backends where actual data lives. A backend is a driver+config pair (e.g. `fs:home`, `s3:archive`). Currently supports local FS; S3, IMAP, etc. planned.
-- **Tree** — virtual directory structures built on bitmap indexes. Two types: bitmap-based and FS-semantics.
+- **Trees** — named virtual views built on bitmap indexes. Two tree types are supported:
+  - `context` — layered/intersection semantics
+  - `directory` — folder semantics with unique node IDs
 
 A **Document** is a checksum-addressed indexed object. A single `greatestSongEver.mp3`:
 - Is indexed **once** by checksum (e.g. `sha256/abc123...`)
 - Can be **stored** on multiple backends (tracked via `metadata.dataPaths[]`)
 - Can be **linked** to multiple virtual paths in the tree via bitmap indexes
 
-A **Context** is a user's current position/scope within a workspace — like a cursor pointing at a URL (e.g. `universe://music/concerts`). Operations on a context are scoped to that path in the tree.
+A **Context** is a user's current position/scope within a workspace — like a cursor pointing at a URL (e.g. `universe://music/concerts`). A context is always bound to exactly one `context` tree. When the context moves from one path to another, bound applications and devices should show only the data relevant to that path inside that bound tree.
+
+A **ContextTree** is not the same thing as a **Context**:
+- **Context** = runtime focus/navigation state for a user and bound devices
+- **ContextTree** = indexed tree view used to resolve/query context paths
 
 ### Three Levels of Document Operations
 
@@ -131,7 +137,8 @@ The API should accept optional `paths[]` and `backends[]` parameters; when omitt
 
 **Query parameters for GET `/documents`:**
 - `q` / `search` — Full-text search query
-- `contextSpec` — Context specification filter
+- `treeNameOrTreeId` — Context tree to query against
+- `contextSpec` — Path inside the selected context tree
 - `featureArray` — Feature array filter
 - `filterArray` — Additional filters
 - `limit`, `offset`, `page` — Pagination
@@ -139,36 +146,30 @@ The API should accept optional `paths[]` and `backends[]` parameters; when omitt
 **POST `/documents` body:**
 ```json
 {
+  "treeNameOrTreeId": "projects",
+  "contextSpec": "/music/concerts/foo",
   "documents": [{}],
   "featureArray": ["data/abstraction/file"],
-  "paths": ["/music/concerts/foo"],
   "backends": ["fs:home"]
 }
 ```
-`paths` and `backends` are optional — defaults to current context path and workspace-configured backends.
+`treeNameOrTreeId`, `contextSpec`, and `backends` are optional. If omitted, the default context tree and `/` are used.
 
-### Tree Operations
-
-| Method | Path | Auth | Description |
-|--------|------|------|-------------|
-| GET | `/workspaces/:id/tree` | `authenticate` | Get tree structure |
-| POST | `/workspaces/:id/tree/paths` | `authenticate` | Insert path |
-| DELETE | `/workspaces/:id/tree/paths` | `authenticate` | Remove path |
-| POST | `/workspaces/:id/tree/paths/move` | `authenticate` | Move path |
-| POST | `/workspaces/:id/tree/paths/copy` | `authenticate` | Copy path |
-| POST | `/workspaces/:id/tree/layers/merge` | `authenticate` | Merge layer bitmaps |
-| POST | `/workspaces/:id/tree/layers/subtract` | `authenticate` | Subtract layer bitmaps |
-
-### Layers
+### Trees
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| GET | `/workspaces/:id/layers` | `authenticate` | List layers |
-| GET | `/workspaces/:id/layers/:layerId` | `authenticate` | Get layer |
-| PATCH | `/workspaces/:id/layers/:layerId` | `authenticate` | Rename layer |
-| POST | `/workspaces/:id/layers/:layerId/lock` | `authenticate` | Lock layer |
-| POST | `/workspaces/:id/layers/:layerId/unlock` | `authenticate` | Unlock layer |
-| DELETE | `/workspaces/:id/layers/:layerId` | `authenticate` | Delete layer |
+| GET | `/workspaces/:id/trees` | `authenticate` | List trees |
+| POST | `/workspaces/:id/trees` | `authenticate` | Create tree |
+| PATCH | `/workspaces/:id/trees/:treeNameOrTreeId` | `authenticate` | Rename tree |
+| DELETE | `/workspaces/:id/trees/:treeNameOrTreeId` | `authenticate` | Destroy tree |
+| GET | `/workspaces/:id/trees/:treeNameOrTreeId` | `authenticate` | Get tree structure |
+| POST | `/workspaces/:id/trees/:treeNameOrTreeId/paths` | `authenticate` | Insert path |
+| DELETE | `/workspaces/:id/trees/:treeNameOrTreeId/paths` | `authenticate` | Remove path |
+| POST | `/workspaces/:id/trees/:treeNameOrTreeId/paths/move` | `authenticate` | Move path |
+| POST | `/workspaces/:id/trees/:treeNameOrTreeId/paths/copy` | `authenticate` | Copy path |
+| POST | `/workspaces/:id/trees/:treeNameOrTreeId/layers/merge` | `authenticate` | Merge layer bitmaps (`context` trees only) |
+| POST | `/workspaces/:id/trees/:treeNameOrTreeId/layers/subtract` | `authenticate` | Subtract layer bitmaps (`context` trees only) |
 
 ### Bitmaps
 
@@ -252,7 +253,7 @@ The API should accept optional `paths[]` and `backends[]` parameters; when omitt
 
 ### Documents
 
-Context document operations are scoped to the context's current URL path in the tree.
+Context document operations are scoped to the context's current URL path in the context's bound `context` tree.
 
 **Query:**
 
@@ -283,13 +284,13 @@ Context document operations are scoped to the context's current URL path in the 
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| GET | `/contexts/:id/tree` | `authenticate` | Get tree structure |
-| POST | `/contexts/:id/tree/paths` | `authenticate` | Insert path |
-| DELETE | `/contexts/:id/tree/paths` | `authenticate` | Remove path |
-| POST | `/contexts/:id/tree/paths/move` | `authenticate` | Move path |
-| POST | `/contexts/:id/tree/paths/copy` | `authenticate` | Copy path |
-| POST | `/contexts/:id/tree/layers/merge` | `authenticate` | Merge layer bitmaps |
-| POST | `/contexts/:id/tree/layers/subtract` | `authenticate` | Subtract layer bitmaps |
+| GET | `/contexts/:id/tree` | `authenticate` | Get the bound context tree structure |
+| POST | `/contexts/:id/tree/paths` | `authenticate` | Insert path in the bound context tree |
+| DELETE | `/contexts/:id/tree/paths` | `authenticate` | Remove path from the bound context tree |
+| POST | `/contexts/:id/tree/paths/move` | `authenticate` | Move path inside the bound context tree |
+| POST | `/contexts/:id/tree/paths/copy` | `authenticate` | Copy path inside the bound context tree |
+| POST | `/contexts/:id/tree/layers/merge` | `authenticate` | Merge layer bitmaps in the bound context tree |
+| POST | `/contexts/:id/tree/layers/subtract` | `authenticate` | Subtract layer bitmaps in the bound context tree |
 
 ### Tokens (context sharing)
 
@@ -337,7 +338,7 @@ Context document operations are scoped to the context's current URL path in the 
 | GET | `/pub/workspaces/:id` | Bearer token | Get shared workspace |
 | GET | `/pub/workspaces/:id/documents` | Bearer token | List documents |
 | POST | `/pub/workspaces/:id/documents` | Bearer token | Insert documents |
-| GET | `/pub/workspaces/:id/tree` | Bearer token | Get tree |
+| GET | `/pub/workspaces/:id/tree` | Bearer token | Get the default context tree |
 | POST | `/pub/workspaces/:id/start` | `authenticate` | Start shared workspace |
 | POST | `/pub/workspaces/:id/stop` | `authenticate` | Stop shared workspace |
 
@@ -451,7 +452,7 @@ All admin routes require `authenticate` + admin role.
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| All WebDAV methods | `/workspaces/:workspace/dav/*` | Basic/Bearer | WebDAV filesystem for workspaces |
+| All WebDAV methods | `/workspaces/:workspace/dav/*` | Basic/Bearer | WebDAV filesystem for workspaces with roots `Home/`, `Contexts/`, `Trees/` |
 | PROPFIND/GET/HEAD | `/contexts/:context/dav/*` | Basic/Bearer | Read-only WebDAV for contexts |
 
 ---
@@ -499,10 +500,10 @@ socket.emit('unsubscribe', { channel: 'workspace:<id>' });
 | `workspace.documents.updated` | `{ workspaceId, documents }` | Documents updated |
 | `workspace.documents.removed` | `{ workspaceId, documentIds }` | Documents removed (soft) |
 | `workspace.documents.deleted` | `{ workspaceId, documentIds }` | Documents deleted (hard) |
-| `workspace.tree.path.inserted` | `{ workspaceId, path }` | Tree path inserted |
-| `workspace.tree.path.removed` | `{ workspaceId, path }` | Tree path removed |
-| `workspace.tree.path.moved` | `{ workspaceId, from, to }` | Tree path moved |
-| `workspace.tree.path.copied` | `{ workspaceId, from, to }` | Tree path copied |
+| `workspace.tree.path.inserted` | `{ workspaceId, treeId, treeName, treeType, path }` | Tree path inserted |
+| `workspace.tree.path.removed` | `{ workspaceId, treeId, treeName, treeType, path }` | Tree path removed |
+| `workspace.tree.path.moved` | `{ workspaceId, treeId, treeName, treeType, from, to }` | Tree path moved |
+| `workspace.tree.path.copied` | `{ workspaceId, treeId, treeName, treeType, from, to }` | Tree path copied |
 
 ### Context Events
 
@@ -520,10 +521,10 @@ socket.emit('unsubscribe', { channel: 'workspace:<id>' });
 | `document.removed.batch` | `{ contextId, documentIds }` | Documents removed (batch) |
 | `document.deleted` | `{ contextId, documentId }` | Document deleted |
 | `document.deleted.batch` | `{ contextId, documentIds }` | Documents deleted (batch) |
-| `context.tree.path.inserted` | `{ contextId, path }` | Tree path inserted |
-| `context.tree.path.removed` | `{ contextId, path }` | Tree path removed |
-| `context.tree.path.moved` | `{ contextId, from, to }` | Tree path moved |
-| `context.tree.path.copied` | `{ contextId, from, to }` | Tree path copied |
+| `context.tree.path.inserted` | `{ contextId, treeId, treeName, treeType, path }` | Tree path inserted |
+| `context.tree.path.removed` | `{ contextId, treeId, treeName, treeType, path }` | Tree path removed |
+| `context.tree.path.moved` | `{ contextId, treeId, treeName, treeType, from, to }` | Tree path moved |
+| `context.tree.path.copied` | `{ contextId, treeId, treeName, treeType, from, to }` | Tree path copied |
 
 ### Agent Events
 

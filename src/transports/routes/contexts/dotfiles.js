@@ -62,12 +62,17 @@ export default async function contextDotfileRoutes(fastify, options) {
       const featureArrayInput = request.query.featureArray || [];
       const derivedFeatureArray = ['data/abstraction/dotfile', ...featureArrayInput];
 
-      const dbResult = await context.listDocuments(request.user.id, derivedFeatureArray, request.query.filterArray || [], {
-        includeServerContext: request.query.includeServerContext,
-        includeClientContext: request.query.includeClientContext,
-        limit: request.query.limit,
-        offset: request.query.offset,
-        page: request.query.page
+      const dbResult = await context.find(request.user.id, {
+        featureArray: derivedFeatureArray,
+        filterArray: request.query.filterArray || [],
+        options: {
+          includeServerContext: request.query.includeServerContext,
+          includeClientContext: request.query.includeClientContext,
+          limit: request.query.limit,
+          offset: request.query.offset,
+          page: request.query.page,
+          parse: true,
+        },
       });
 
       if (dbResult.error) {
@@ -126,7 +131,7 @@ export default async function contextDotfileRoutes(fastify, options) {
         data: df
       }));
 
-      const result = await context.insertDocumentArray(request.user.id, documentArray, ['data/abstraction/dotfile', ...(request.body.featureArray || [])]);
+      const result = await context.putMany(request.user.id, documentArray, ['data/abstraction/dotfile', ...(request.body.featureArray || [])]);
 
       const response = new ResponseObject().created(result, 'Dotfiles inserted successfully');
       return reply.code(response.statusCode).send(response.getResponse());
@@ -175,7 +180,7 @@ export default async function contextDotfileRoutes(fastify, options) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
-      const result = await context.updateDocumentArray(request.user.id, request.body.documents, ['data/abstraction/dotfile', ...(request.body.featureArray || [])]);
+      const result = await context.putMany(request.user.id, request.body.documents, ['data/abstraction/dotfile', ...(request.body.featureArray || [])]);
       const response = new ResponseObject().updated(result, 'Dotfiles updated successfully');
       return reply.code(response.statusCode).send(response.getResponse());
     } catch (error) {
@@ -208,7 +213,7 @@ export default async function contextDotfileRoutes(fastify, options) {
       }
 
       const docIds = Array.isArray(request.body) ? request.body : [request.body];
-      const success = await context.deleteDocumentArrayFromDb(request.user.id, docIds);
+      const success = await context.deleteMany(request.user.id, docIds);
 
       const response = success ?
         new ResponseObject().deleted(null, 'Dotfiles deleted successfully') :

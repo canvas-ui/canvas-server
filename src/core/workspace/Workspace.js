@@ -273,43 +273,85 @@ class Workspace extends EventEmitter {
     // CRUD Methods
     // ─────────────────────────────────────────────────────────────────────────
 
-    async insert(data, { context = '/', directory = null, features = [], emitEvent = true } = {}) {
+    async put(record, { context = '/', directory = null, attributes = null, features = [], emitEvent = true } = {}) {
         if (!this.isActive) throw new Error('Workspace not active');
-        return await this.db.insertDocument(data, {
+        return await this.db.put(record, {
             context: this.#normalizeTreeSelector('context', context, '/'),
             directory: directory == null ? null : this.#normalizeTreeSelector('directory', directory, '/'),
-            features,
+            attributes: attributes ?? { allOf: features },
             emitEvent,
         });
     }
 
-    async update(id, data, { context = null, directory = null, features = [] } = {}) {
+    async unlink(id, { context = '/', attributes = null, features = [] } = {}, options = {}) {
         if (!this.isActive) throw new Error('Workspace not active');
-        return await this.db.updateDocument(id, data, {
-            context: context == null ? null : this.#normalizeTreeSelector('context', context, '/'),
-            directory: directory == null ? null : this.#normalizeTreeSelector('directory', directory, '/'),
-            features,
-        });
-    }
-
-    async remove(id, { context = '/', features = [] } = {}) {
-        if (!this.isActive) throw new Error('Workspace not active');
-        return await this.db.removeDocument(id, this.#normalizeTreeSelector('context', context, '/'), features);
+        return await this.db.unlink(id, {
+            context: this.#normalizeTreeSelector('context', context, '/'),
+            attributes: attributes ?? { allOf: features },
+        }, options);
     }
 
     async delete(id) {
         if (!this.isActive) throw new Error('Workspace not active');
-        return await this.db.deleteDocument(parseDocumentId(id, 'Document ID'));
+        return await this.db.delete(parseDocumentId(id, 'Document ID'));
     }
 
     async get(id, options = { parse: true }) {
         if (!this.isActive) throw new Error('Workspace not active');
-        return await this.db.getDocumentById(id, options);
+        return await this.db.get(id, options);
+    }
+
+    async has(id, { context = '/', attributes = null, features = [] } = {}) {
+        if (!this.isActive) throw new Error('Workspace not active');
+        return await this.db.has(id, {
+            context: this.#normalizeTreeSelector('context', context, '/'),
+            attributes: attributes ?? { allOf: features },
+        });
+    }
+
+    async putMany(records, { context = '/', directory = null, attributes = null, features = [] } = {}) {
+        if (!this.isActive) throw new Error('Workspace not active');
+        return await this.db.putMany(records, {
+            context: this.#normalizeTreeSelector('context', context, '/'),
+            directory: directory == null ? null : this.#normalizeTreeSelector('directory', directory, '/'),
+            attributes: attributes ?? { allOf: features },
+        });
+    }
+
+    async unlinkMany(ids, { context = '/', attributes = null, features = [] } = {}, options = {}) {
+        if (!this.isActive) throw new Error('Workspace not active');
+        return await this.db.unlinkMany(ids, {
+            context: this.#normalizeTreeSelector('context', context, '/'),
+            attributes: attributes ?? { allOf: features },
+        }, options);
+    }
+
+    async deleteMany(ids, options = {}) {
+        if (!this.isActive) throw new Error('Workspace not active');
+        return await this.db.deleteMany(ids, options);
+    }
+
+    async getByChecksumString(checksumString, options = { parse: true }) {
+        if (!this.isActive) throw new Error('Workspace not active');
+        return await this.db.getByChecksumString(checksumString, options);
+    }
+
+    async hasByChecksumString(checksumString, { context = '/', attributes = null, features = [] } = {}) {
+        if (!this.isActive) throw new Error('Workspace not active');
+        return await this.db.hasByChecksumString(checksumString, {
+            context: this.#normalizeTreeSelector('context', context, '/'),
+            attributes: attributes ?? { allOf: features },
+        });
     }
 
     async find(spec = {}) {
         if (!this.isActive) throw new Error('Workspace not active');
         return await this.db.find(spec);
+    }
+
+    async search(spec = {}) {
+        if (!this.isActive) throw new Error('Workspace not active');
+        return await this.db.search(spec);
     }
 
     async list(options = {}) {
@@ -622,19 +664,19 @@ class Workspace extends EventEmitter {
         if (incomingContexts.length === 0) { return null; }
 
         const primaryChecksum = checksumArray[0];
-        const existingDocument = await this.db.getDocumentByChecksumString(primaryChecksum).catch(() => null);
+        const existingDocument = await this.db.getByChecksumString(primaryChecksum).catch(() => null);
         const currentIncomingContexts = this.#getDocumentIncomingFileContexts(existingDocument);
         const documentData = this.#buildStoredFileDocument(storedFile, checksumArray, locations, existingDocument);
         const features = this.#buildStoredFileFeatures(locations);
 
         let documentId;
         if (existingDocument?.id) {
-            documentId = await this.update(existingDocument.id, documentData, {
+            documentId = await this.put({ ...documentData, id: existingDocument.id }, {
                 context: this.getContextTreeSelector(incomingContexts),
                 features,
             });
         } else {
-            documentId = await this.insert(documentData, {
+            documentId = await this.put(documentData, {
                 context: this.getContextTreeSelector(incomingContexts),
                 features,
             });
@@ -648,7 +690,7 @@ class Workspace extends EventEmitter {
         const checksumArray = this.#buildStoredChecksumArray(storedFile.checksums);
         if (checksumArray.length === 0) { return null; }
 
-        const existingDocument = await this.db.getDocumentByChecksumString(checksumArray[0]).catch(() => null);
+        const existingDocument = await this.db.getByChecksumString(checksumArray[0]).catch(() => null);
         if (!existingDocument?.id) { return null; }
 
         const meta = this.#getStoredMetadata(storedFile);
@@ -658,7 +700,7 @@ class Workspace extends EventEmitter {
         const documentData = this.#buildStoredFileDocument(storedFile, checksumArray, locations, existingDocument);
         const features = this.#buildStoredFileFeatures(locations);
 
-        await this.update(existingDocument.id, documentData, { features });
+        await this.put({ ...documentData, id: existingDocument.id }, { features });
         await this.#removeStoredIncomingContexts(existingDocument.id, currentIncomingContexts, incomingContexts);
         return existingDocument.id;
     }
@@ -801,7 +843,7 @@ class Workspace extends EventEmitter {
     async #removeStoredIncomingContexts(docId, currentContexts = [], nextContexts = []) {
         const staleContexts = currentContexts.filter((context) => !nextContexts.includes(context));
         for (const context of staleContexts) {
-            await this.remove(docId, { context });
+            await this.unlink(docId, { context });
         }
     }
 

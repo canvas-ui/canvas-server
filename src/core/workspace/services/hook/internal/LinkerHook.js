@@ -90,12 +90,11 @@ class LinkerHook {
             // Find contact document by email
             // We need to query synapsd for a contact with this email
             // Assuming contacts have schema 'data/abstraction/contact' and data.email field
-            const contactDocs = await workspace.db.findDocuments(
-                workspace.getContextTreeSelector('/'),
-                ['data/abstraction/contact'], // feature filter
-                [], // no additional filters
-                { parse: true }
-            );
+            const contactDocs = await workspace.find({
+                context: workspace.getContextTreeSelector('/'),
+                attributes: { allOf: ['data/abstraction/contact'] },
+                parse: true,
+            });
 
             let contactDoc = null;
             for (const doc of contactDocs) {
@@ -177,11 +176,11 @@ class LinkerHook {
             // Safer to fetch or just send update if we know what to add.
             // But updateDocument replaces arrays.
 
-            const existingDoc = await workspace.db.getDocument(document.id);
+            const existingDoc = await workspace.db.get(document.id);
             if (!existingDoc) return;
 
-            await workspace.db.updateDocument(document.id, {
-                // No data change
+            await workspace.db.put({
+                id: document.id,
             }, {
                 context: workspace.getContextTreeSelector(contextMeta.path || '/', contextMeta.treeId || null),
                 features: [contextTag],

@@ -77,11 +77,18 @@ export default async function documentRoutes(fastify, options) {
       let dbResult;
 
       if (searchQuery) {
-        // Use full-text search
-        dbResult = await context.ftsQuery(request.user.id, searchQuery, featureArray, filterArray, options);
+        dbResult = await context.search(request.user.id, {
+          query: searchQuery,
+          featureArray,
+          filterArray,
+          options,
+        });
       } else {
-        // Use regular document listing
-        dbResult = await context.listDocuments(request.user.id, featureArray, filterArray, options);
+        dbResult = await context.find(request.user.id, {
+          featureArray,
+          filterArray,
+          options,
+        });
       }
 
       if (dbResult.error) {
@@ -195,7 +202,7 @@ export default async function documentRoutes(fastify, options) {
       }
 
       // Directly pass IDs or documents to SynapsD; IDs are now supported natively
-      const result = await context.insertDocumentArray(request.user.id, itemsToInsert, enforcedFeatureArray);
+      const result = await context.putMany(request.user.id, itemsToInsert, enforcedFeatureArray);
 
       const response = new ResponseObject().created(result, 'Documents inserted successfully');
       return reply.code(response.statusCode).send(response.getResponse());
@@ -279,7 +286,7 @@ export default async function documentRoutes(fastify, options) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
-      const result = await context.updateDocumentArray(request.user.id, itemsToUpdate, enforcedFeatureArray);
+      const result = await context.putMany(request.user.id, itemsToUpdate, enforcedFeatureArray);
 
       const response = new ResponseObject().updated(result, 'Documents updated successfully');
         return reply.code(response.statusCode).send(response.getResponse());
@@ -333,7 +340,7 @@ export default async function documentRoutes(fastify, options) {
       const documentIdArray = Array.isArray(request.body) ? request.body : [request.body];
 
       // Let the Context.deleteDocumentArrayFromDb method handle the ID validation and conversion
-      const result = await context.deleteDocumentArrayFromDb(request.user.id, documentIdArray);
+      const result = await context.deleteMany(request.user.id, documentIdArray);
 
       const response = new ResponseObject().deleted(result, 'Documents deleted from database successfully');
         return reply.code(response.statusCode).send(response.getResponse());
@@ -397,7 +404,7 @@ export default async function documentRoutes(fastify, options) {
       const documentIdArray = Array.isArray(request.body) ? request.body : [request.body];
 
       // Let the Context.removeDocumentArray method handle the ID validation and conversion
-      const result = await context.removeDocumentArray(
+      const result = await context.unlinkMany(
         request.user.id,
         documentIdArray,
         request.query.featureArray || []
@@ -478,7 +485,11 @@ export default async function documentRoutes(fastify, options) {
         page
       };
 
-      const dbResult = await context.listDocuments(request.user.id, derivedFeatureArray, filterArray, options);
+      const dbResult = await context.find(request.user.id, {
+        featureArray: derivedFeatureArray,
+        filterArray,
+        options,
+      });
 
       if (dbResult.error) {
         fastify.log.error(`SynapsD error in listDocuments (by-abstraction): ${dbResult.error}`);
@@ -583,7 +594,7 @@ export default async function documentRoutes(fastify, options) {
       }
 
       // Delete the document from database (direct deletion)
-      const result = await context.deleteDocumentFromDb(request.user.id, documentId);
+      const result = await context.deleteMany(request.user.id, [documentId]);
 
       const response = new ResponseObject().deleted(result, 'Document deleted from database successfully');
       return reply.code(response.statusCode).send(response.getResponse());

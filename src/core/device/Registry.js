@@ -87,7 +87,11 @@ class DeviceRegistry {
             deviceType: device.type,
         })];
         const context = workspace.getContextTreeSelector('/');
-        const docs = await workspace.db.findDocuments(context, [DEVICE_SCHEMA], [], { limit: 500 });
+        const docs = await workspace.find({
+            context,
+            attributes: { allOf: [DEVICE_SCHEMA] },
+            limit: 500,
+        });
         const existing = Array.isArray(docs)
             ? docs.find((document) => document?.data?.deviceId === deviceId) || null
             : null;
@@ -104,14 +108,14 @@ class DeviceRegistry {
         });
 
         if (existing?.id) {
-            await workspace.db.updateDocument(existing.id, { data }, context, featureArray);
+            await workspace.db.put({ id: existing.id, data }, { context, attributes: { allOf: featureArray } });
             return { id: existing.id, created: false, data };
         }
 
-        const id = await workspace.db.insertDocument({
+        const id = await workspace.db.put({
             schema: DEVICE_SCHEMA,
             data,
-        }, context, featureArray);
+        }, { context, attributes: { allOf: featureArray } });
 
         return { id, created: true, data };
     }

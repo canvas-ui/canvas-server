@@ -57,26 +57,6 @@ export default async function workspaceTreesRoutes(fastify) {
     }
   });
 
-  fastify.get('/:treeNameOrTreeId', {
-    onRequest: [fastify.authenticate],
-  }, async (request, reply) => {
-    const workspace = await getWorkspaceInstance(request, reply);
-    if (!workspace) return;
-    try {
-      const tree = workspace.getTree(request.params.treeNameOrTreeId);
-      const responseObject = new ResponseObject().found({
-        id: tree.id,
-        name: tree.name,
-        type: tree.type,
-        tree: tree.buildJsonTree(),
-      }, 'Tree retrieved successfully');
-      return reply.code(responseObject.statusCode).send(responseObject.getResponse());
-    } catch (error) {
-      const responseObject = new ResponseObject().notFound(error.message || 'Tree not found');
-      return reply.code(responseObject.statusCode).send(responseObject.getResponse());
-    }
-  });
-
   fastify.patch('/:treeNameOrTreeId', {
     onRequest: [fastify.authenticate],
     schema: {

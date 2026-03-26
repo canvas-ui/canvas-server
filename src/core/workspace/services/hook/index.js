@@ -168,9 +168,9 @@ class HookService extends EventEmitter {
                     source: 'hook',
                 });
             };
-            const insert = async (document, options = {}) => workspace.insert(document, options);
-            const update = async (id, document, options = {}) => workspace.update(id, document, options);
-            const remove = async (id, options = {}) => workspace.remove(id, options);
+            const put = async (document, options = {}) => workspace.put(document, options);
+            const update = async (id, document, options = {}) => workspace.put({ ...document, id }, options);
+            const unlink = async (id, options = {}) => workspace.unlink(id, options);
             const deleteDocument = async (id) => workspace.delete(id);
             const get = async (id, options = { parse: true }) => workspace.get(id, options);
             const find = async (spec = {}) => workspace.find(spec);
@@ -193,7 +193,7 @@ class HookService extends EventEmitter {
                 link: async (documentId, contexts = []) => {
                     const targets = Array.isArray(contexts) ? contexts : [contexts];
                     for (const context of targets.filter(Boolean)) {
-                        await insert(documentId, { context, emitEvent: true });
+                        await put(documentId, { context, emitEvent: true });
                     }
                 },
             });

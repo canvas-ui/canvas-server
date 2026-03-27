@@ -36,6 +36,7 @@ class Workspace extends EventEmitter {
     static HOME_STORED_BACKEND = 'fs:home';
     static HOME_BACKEND_FEATURE = 'data/backend/home';
     static INCOMING_TREE_NAME = INCOMING_TREE_NAME;
+    static CONTEXT_TREE_NAME = 'ContextTree';
 
     #rootPath = null;
     #configStore = null;
@@ -237,6 +238,7 @@ class Workspace extends EventEmitter {
             const dbPath = path.join(this.#rootPath, WORKSPACE_DIRECTORIES.db || 'Db');
             this.#db = new Db({ path: dbPath });
             await this.#db.start();
+            await this.#ensureContextTree();
             await this.#ensureIncomingTree();
             this.#bindRuntimeEvents();
             await this.#startStoredHomeIndex();
@@ -412,7 +414,9 @@ class Workspace extends EventEmitter {
     }
 
     getTree(nameOrId) {
-        const tree = this.#getActiveDb().getTree(nameOrId);
+        const tree = nameOrId
+            ? this.#getActiveDb().getTree(nameOrId)
+            : this.#getPreferredContextTree();
         if (!tree) throw new Error(`Tree not found: ${nameOrId}`);
         return tree;
     }
@@ -434,7 +438,7 @@ class Workspace extends EventEmitter {
     }
 
     getDefaultContextTree() {
-        const tree = this.#getActiveDb().getDefaultContextTree();
+        const tree = this.#getPreferredContextTree();
         if (!tree) throw new Error('Default context tree not available');
         return tree;
     }
@@ -890,6 +894,26 @@ class Workspace extends EventEmitter {
         }
         await this.#db.createTree(Workspace.INCOMING_TREE_NAME, 'directory');
         return this.#db.getTree(Workspace.INCOMING_TREE_NAME);
+    }
+
+    #getPreferredContextTree() {
+        const db = this.#getActiveDb();
+        return db.getTree(Workspace.CONTEXT_TREE_NAME) || db.getDefaultContextTree();
+    }
+
+    async #ensureContextTree() {
+        if (this.#db.getTree(Workspace.CONTEXT_TREE_NAME)) {
+            return this.#db.getTree(Workspace.CONTEXT_TREE_NAME);
+        }
+
+        const defaultContextTree = this.#db.getDefaultContextTree();
+        if (defaultContextTree?.type === 'context' && defaultContextTree.name === 'context') {
+            await this.#db.renameTree(defaultContextTree.id, Workspace.CONTEXT_TREE_NAME);
+            return this.#db.getTree(Workspace.CONTEXT_TREE_NAME);
+        }
+
+        await this.#db.createTree(Workspace.CONTEXT_TREE_NAME, 'context');
+        return this.#db.getTree(Workspace.CONTEXT_TREE_NAME);
     }
 
     #setStatus(status) {

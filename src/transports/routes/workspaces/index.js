@@ -93,6 +93,10 @@ export default async function workspaceRoutes(fastify, options) {
     prefix: '/:id/trees/:treeNameOrTreeId',
     onRequest: [resolveWorkspaceAddress]
   });
+  fastify.register(import('./tree.js'), {
+    prefix: '/:id/tree',
+    onRequest: [resolveWorkspaceAddress]
+  });
   fastify.register(import('./lifecycle.js'), {
     prefix: '/:id',
     onRequest: [resolveWorkspaceAddress]

@@ -76,7 +76,7 @@ export default class VirtualDirectoryFS {
         const bitmap = await dirTree.find(n);
         if (bitmap && bitmap.size > 0) {
             const oids = bitmap.toArray().slice(0, 1000);
-            const docs = await this.#ws.db.documents.getMany(oids);
+            const docs = await this.#ws.getDocumentsByIdArray(oids);
 
             for (const doc of docs) {
                 if (!doc) continue;
@@ -124,7 +124,7 @@ export default class VirtualDirectoryFS {
         if (!bitmap || bitmap.size === 0) return null;
 
         const oids = bitmap.toArray().slice(0, 1000);
-        const docs = await this.#ws.db.documents.getMany(oids);
+        const docs = await this.#ws.getDocumentsByIdArray(oids);
         return docs.find(d => d && docName(d) === filename) || null;
     }
 

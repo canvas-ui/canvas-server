@@ -13,7 +13,7 @@ import { createLogger } from '../../utils/log.js';
 // Includes
 import Db from '../../services/synapsd/src/index.js';
 import Stored from '../../services/stored/src/index.js';
-import { parseDocumentId } from '../../utils/documentId.js';
+import { parseDocumentId, parseDocumentIdArray } from '../../utils/documentId.js';
 import {
     INCOMING_TREE_NAME,
     getIncomingFileContextFromStoredLocation,
@@ -276,131 +276,129 @@ class Workspace extends EventEmitter {
     // CRUD Methods
     // ─────────────────────────────────────────────────────────────────────────
 
+    #getActiveDb() {
+        if (!this.isActive || !this.#db) {
+            throw new Error('Workspace not active');
+        }
+        return this.#db;
+    }
+
+    #normalizeFeatureInput(features = [], attributes) {
+        return features.length > 0 ? features : (attributes?.allOf ?? attributes ?? []);
+    }
+
+    #normalizeQuerySpec(spec = {}) {
+        const { attributes, features = null, ...rest } = spec;
+        return {
+            ...rest,
+            ...(features != null ? { features } : {}),
+            ...(features == null && attributes != null ? { features: attributes } : {}),
+        };
+    }
+
     async put(record, { context = '/', directory = null, features = [], attributes, emitEvent = true } = {}) {
-        if (!this.isActive) throw new Error('Workspace not active');
-        const featureList = features.length > 0 ? features : (attributes?.allOf ?? attributes ?? []);
-        return await this.db.put(record, {
+        const db = this.#getActiveDb();
+        return await db.put(record, {
             context: this.#normalizeTreeSelector('context', context, '/'),
             directory: directory == null ? null : this.#normalizeTreeSelector('directory', directory, '/'),
-            features: featureList,
+            features: this.#normalizeFeatureInput(features, attributes),
             emitEvent,
         });
     }
 
     async link(id, { context = '/', directory = null, features = [], attributes, emitEvent = true } = {}) {
-        if (!this.isActive) throw new Error('Workspace not active');
-        const featureList = features.length > 0 ? features : (attributes?.allOf ?? attributes ?? []);
-        return await this.db.link(id, {
+        const db = this.#getActiveDb();
+        return await db.link(id, {
             context: this.#normalizeTreeSelector('context', context, '/'),
             directory: directory == null ? null : this.#normalizeTreeSelector('directory', directory, '/'),
-            features: featureList,
+            features: this.#normalizeFeatureInput(features, attributes),
             emitEvent,
         });
     }
 
     async unlink(id, { context = null, directory = null, features = [], attributes } = {}, options = {}) {
-        if (!this.isActive) throw new Error('Workspace not active');
-        const featureList = features.length > 0 ? features : (attributes?.allOf ?? attributes ?? []);
-        return await this.db.unlink(id, {
+        const db = this.#getActiveDb();
+        return await db.unlink(id, {
             context: context == null ? null : this.#normalizeTreeSelector('context', context, '/'),
             directory: directory == null ? null : this.#normalizeTreeSelector('directory', directory, '/'),
-            features: featureList,
+            features: this.#normalizeFeatureInput(features, attributes),
         }, options);
     }
 
     async delete(id) {
-        if (!this.isActive) throw new Error('Workspace not active');
-        return await this.db.delete(parseDocumentId(id, 'Document ID'));
+        return await this.#getActiveDb().delete(parseDocumentId(id, 'Document ID'));
     }
 
     async get(id, options = { parse: true }) {
-        if (!this.isActive) throw new Error('Workspace not active');
-        return await this.db.get(id, options);
+        return await this.#getActiveDb().get(parseDocumentId(id, 'Document ID'), options);
     }
 
     async has(id, { context = null, directory = null, features = [], attributes } = {}) {
-        if (!this.isActive) throw new Error('Workspace not active');
-        const featureList = features.length > 0 ? features : (attributes ?? []);
-        return await this.db.has(id, {
+        const db = this.#getActiveDb();
+        return await db.has(parseDocumentId(id, 'Document ID'), {
             context: context == null ? null : this.#normalizeTreeSelector('context', context, '/'),
             directory: directory == null ? null : this.#normalizeTreeSelector('directory', directory, '/'),
-            features: featureList,
+            features: this.#normalizeFeatureInput(features, attributes),
         });
     }
 
     async putMany(records, { context = '/', directory = null, features = [], attributes } = {}) {
-        if (!this.isActive) throw new Error('Workspace not active');
-        const featureList = features.length > 0 ? features : (attributes?.allOf ?? attributes ?? []);
-        return await this.db.putMany(records, {
+        const db = this.#getActiveDb();
+        return await db.putMany(records, {
             context: this.#normalizeTreeSelector('context', context, '/'),
             directory: directory == null ? null : this.#normalizeTreeSelector('directory', directory, '/'),
-            features: featureList,
+            features: this.#normalizeFeatureInput(features, attributes),
         });
     }
 
     async linkMany(ids, { context = '/', directory = null, features = [], attributes, emitEvent = true } = {}) {
-        if (!this.isActive) throw new Error('Workspace not active');
-        const featureList = features.length > 0 ? features : (attributes?.allOf ?? attributes ?? []);
-        return await this.db.linkMany(ids, {
+        const db = this.#getActiveDb();
+        return await db.linkMany(parseDocumentIdArray(ids, 'Document ID array'), {
             context: this.#normalizeTreeSelector('context', context, '/'),
             directory: directory == null ? null : this.#normalizeTreeSelector('directory', directory, '/'),
-            features: featureList,
+            features: this.#normalizeFeatureInput(features, attributes),
             emitEvent,
         });
     }
 
     async unlinkMany(ids, { context = null, directory = null, features = [], attributes } = {}, options = {}) {
-        if (!this.isActive) throw new Error('Workspace not active');
-        const featureList = features.length > 0 ? features : (attributes?.allOf ?? attributes ?? []);
-        return await this.db.unlinkMany(ids, {
+        const db = this.#getActiveDb();
+        return await db.unlinkMany(parseDocumentIdArray(ids, 'Document ID array'), {
             context: context == null ? null : this.#normalizeTreeSelector('context', context, '/'),
             directory: directory == null ? null : this.#normalizeTreeSelector('directory', directory, '/'),
-            features: featureList,
+            features: this.#normalizeFeatureInput(features, attributes),
         }, options);
     }
 
     async deleteMany(ids, options = {}) {
-        if (!this.isActive) throw new Error('Workspace not active');
-        return await this.db.deleteMany(ids, options);
+        return await this.#getActiveDb().deleteMany(parseDocumentIdArray(ids, 'Document ID array'), options);
     }
 
     async getByChecksumString(checksumString, options = { parse: true }) {
-        if (!this.isActive) throw new Error('Workspace not active');
-        return await this.db.getByChecksumString(checksumString, options);
+        return await this.#getActiveDb().getByChecksumString(checksumString, options);
+    }
+
+    async listDocumentTreeMemberships(id, treeNameOrId) {
+        return await this.#getActiveDb().listDocumentTreeMemberships(parseDocumentId(id, 'Document ID'), treeNameOrId);
     }
 
     async hasByChecksumString(checksumString, { context = '/', features = [], attributes } = {}) {
-        if (!this.isActive) throw new Error('Workspace not active');
-        const featureList = features.length > 0 ? features : (attributes ?? []);
-        return await this.db.hasByChecksumString(checksumString, {
+        const db = this.#getActiveDb();
+        return await db.hasByChecksumString(checksumString, {
             context: this.#normalizeTreeSelector('context', context, '/'),
-            features: featureList,
+            features: this.#normalizeFeatureInput(features, attributes),
         });
     }
 
     async find(spec = {}) {
-        if (!this.isActive) throw new Error('Workspace not active');
-        const { attributes, features = null, ...rest } = spec;
-        return await this.db.find({
-            ...rest,
-            ...(features != null ? { features } : {}),
-            ...(features == null && attributes != null ? { features: attributes } : {}),
-        });
+        return await this.#getActiveDb().find(this.#normalizeQuerySpec(spec));
     }
 
     async search(spec = {}) {
-        if (!this.isActive) throw new Error('Workspace not active');
-        const { attributes, features = null, ...rest } = spec;
-        return await this.db.search({
-            ...rest,
-            ...(features != null ? { features } : {}),
-            ...(features == null && attributes != null ? { features: attributes } : {}),
-        });
+        return await this.#getActiveDb().search(this.#normalizeQuerySpec(spec));
     }
 
     async list(options = {}) {
-        if (!this.isActive) throw new Error('Workspace not active');
-
         const { context, features = [], attributes, filters, includeIncoming = false, ...rest } = options;
         const normalizedContext = this.#normalizeTreeSelector('context', context ?? '/', '/');
 
@@ -414,29 +412,45 @@ class Workspace extends EventEmitter {
     }
 
     getTree(nameOrId) {
-        if (!this.isActive) throw new Error('Workspace not active');
-        const tree = this.#db.getTree(nameOrId);
+        const tree = this.#getActiveDb().getTree(nameOrId);
         if (!tree) throw new Error(`Tree not found: ${nameOrId}`);
         return tree;
     }
 
     async listTrees(type = null) {
-        if (!this.isActive) throw new Error('Workspace not active');
-        return await this.#db.listTrees(type);
+        return await this.#getActiveDb().listTrees(type);
+    }
+
+    async createTree(name, type = 'context', options = {}) {
+        return await this.#getActiveDb().createTree(name, type, options);
+    }
+
+    async renameTree(nameOrId, newName) {
+        return await this.#getActiveDb().renameTree(nameOrId, newName);
+    }
+
+    async destroyTree(nameOrId) {
+        return await this.#getActiveDb().destroyTree(nameOrId);
     }
 
     getDefaultContextTree() {
-        if (!this.isActive) throw new Error('Workspace not active');
-        const tree = this.#db.getDefaultContextTree();
+        const tree = this.#getActiveDb().getDefaultContextTree();
         if (!tree) throw new Error('Default context tree not available');
         return tree;
     }
 
     getDefaultDirectoryTree() {
-        if (!this.isActive) throw new Error('Workspace not active');
-        const tree = this.#db.getDefaultDirectoryTree();
+        const tree = this.#getActiveDb().getDefaultDirectoryTree();
         if (!tree) throw new Error('Default directory tree not available');
         return tree;
+    }
+
+    async getDocumentById(id, options = { parse: true }) {
+        return await this.get(id, options);
+    }
+
+    async getDocumentsByIdArray(ids, options = { parse: true }) {
+        return await this.#getActiveDb().getDocumentsByIdArray(parseDocumentIdArray(ids, 'Document ID array'), options);
     }
 
     getIncomingTree() {
@@ -471,17 +485,15 @@ class Workspace extends EventEmitter {
     }
 
     async listBitmaps(prefix = '', { includeData = false } = {}) {
-        if (!this.isActive) throw new Error('Workspace not active');
-        const keys = await this.db.bitmapIndex.listBitmaps(prefix);
+        const keys = await this.#getActiveDb().bitmapIndex.listBitmaps(prefix);
         const bitmaps = await Promise.all(keys.map(async (key) => this.getBitmap(key, { includeData })));
         return bitmaps.filter(Boolean);
     }
 
     async getBitmap(key, { includeData = false } = {}) {
-        if (!this.isActive) throw new Error('Workspace not active');
         if (!key || typeof key !== 'string') throw new Error('Bitmap key is required');
 
-        const bitmap = await this.db.bitmapIndex.getBitmap(key, false);
+        const bitmap = await this.#getActiveDb().bitmapIndex.getBitmap(key, false);
         if (!bitmap) return null;
 
         const out = {
@@ -497,10 +509,9 @@ class Workspace extends EventEmitter {
     }
 
     async getBitmapRawBuffer(key) {
-        if (!this.isActive) throw new Error('Workspace not active');
         if (!key || typeof key !== 'string') throw new Error('Bitmap key is required');
 
-        const bitmap = await this.db.bitmapIndex.getBitmap(key, false);
+        const bitmap = await this.#getActiveDb().bitmapIndex.getBitmap(key, false);
         if (!bitmap) return null;
 
         const serialized = bitmap.serialize(true); // Roaring portable format
@@ -534,8 +545,7 @@ class Workspace extends EventEmitter {
     }
 
     clearDatabaseSync() {
-        if (!this.isActive) { throw new Error('Workspace not active'); }
-        return this.db.clearSync();
+        return this.#getActiveDb().clearSync();
     }
 
     // ─────────────────────────────────────────────────────────────────────────

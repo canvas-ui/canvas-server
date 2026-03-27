@@ -73,8 +73,10 @@
     "node": ">=20.0.0"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/socket.io-client": "^3.0.0",
     "eventsource": "^4.1.0",
+    "globals": "^17.4.0",
     "node-fetch": "^3.3.2"
   }
 }

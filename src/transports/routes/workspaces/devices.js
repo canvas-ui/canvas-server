@@ -197,12 +197,10 @@ export default async function workspaceDeviceRoutes(fastify, options) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
-      for (const document of matches) {
-        await request.workspace.db.delete(document.id);
-      }
+      const result = await request.workspace.deleteMany(matches.map((document) => document.id));
 
       const response = new ResponseObject().success(
-        { deviceId, deleted: matches.length },
+        { deviceId, deleted: result?.successful?.length ?? matches.length, result },
         'Workspace device unlinked successfully'
       );
       return reply.code(response.statusCode).send(response.getResponse());

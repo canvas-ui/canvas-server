@@ -108,11 +108,11 @@ class DeviceRegistry {
         });
 
         if (existing?.id) {
-            await workspace.db.put({ id: existing.id, data }, { context, attributes: { allOf: featureArray } });
+            await workspace.put({ id: existing.id, data }, { context, attributes: { allOf: featureArray } });
             return { id: existing.id, created: false, data };
         }
 
-        const id = await workspace.db.put({
+        const id = await workspace.put({
             schema: DEVICE_SCHEMA,
             data,
         }, { context, attributes: { allOf: featureArray } });

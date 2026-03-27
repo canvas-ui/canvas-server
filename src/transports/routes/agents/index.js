@@ -466,9 +466,7 @@ export default async function agentRoutes(fastify, options) {
       if (query) {
         memory = await agent.queryMemory(query, contextSelector, { limit });
       } else {
-        // List recent memories
-        memory = await agent.db.find({ context: contextSelector, parse: true });
-        memory = memory.slice(0, limit);
+        memory = await agent.db.find({ context: contextSelector, parse: true, limit });
       }
 
       const response = new ResponseObject().found(memory, 'Agent memory retrieved successfully', 200, memory.length);

@@ -184,16 +184,16 @@ class HookService extends EventEmitter {
                 tree,
                 logger,
                 emit,
-                insert,
+                insert: put,
                 update,
-                remove,
+                remove: unlink,
                 deleteDocument,
                 get,
                 find,
                 link: async (documentId, contexts = []) => {
                     const targets = Array.isArray(contexts) ? contexts : [contexts];
                     for (const context of targets.filter(Boolean)) {
-                        await put(documentId, { context, emitEvent: true });
+                        await workspace.link(documentId, { context, emitEvent: true });
                     }
                 },
             });

@@ -54,7 +54,6 @@ class Context extends EventEmitter {
 
     // Workspace references
     #workspace; // Current workspace instance
-    #db; // workspace.db
     #tree; // bound context tree
     #treeId;
     #workspaceManager; // Workspace manager instance
@@ -97,7 +96,6 @@ class Context extends EventEmitter {
         if (!options.workspaceManager) { throw new Error('Workspace manager instance is required'); }
         this.#workspace = options.workspace;
         this.#workspaceManager = options.workspaceManager;
-        this.#db = this.#workspace.db;
         this.#treeId = options.treeId || this.#workspace.getDefaultContextTree()?.id || null;
         this.#tree = this.#workspace.getContextTree(this.#treeId);
         this.#color = this.#workspace.color;
@@ -278,6 +276,13 @@ class Context extends EventEmitter {
             parts.push(...this.#clientContextArray);
         }
         return [...new Set(parts)];
+    }
+
+    #requireWorkspace() {
+        if (!this.#workspace?.isActive) {
+            throw new Error('Workspace or database not available');
+        }
+        return this.#workspace;
     }
 
     /**
@@ -736,7 +741,6 @@ class Context extends EventEmitter {
         this.#cleanupWorkspaceEventForwarding();
 
         // Clear references
-        this.#db = null;
         this.#tree = null;
         this.#workspace = null;
         this.#workspaceManager = null;
@@ -769,7 +773,6 @@ class Context extends EventEmitter {
 
             const newWorkspaceInstance = await this.#workspaceManager.getWorkspace(this.#userId, workspaceName, this.#userId);
             this.#workspace = newWorkspaceInstance;
-            this.#db = this.#workspace.db;
             try {
                 this.#tree = this.#workspace.getContextTree(this.#treeId);
             } catch {
@@ -862,9 +865,7 @@ class Context extends EventEmitter {
         if (!this.checkPermission(accessingUserId, 'documentWrite')) {
             throw new Error('Access denied: User requires documentWrite permission.');
         }
-        if (!this.#workspace || !this.#workspace.db) {
-            throw new Error('Workspace or database not available');
-        }
+        const workspace = this.#requireWorkspace();
         if (!document) {
             throw new Error('Document is required');
         }
@@ -875,7 +876,7 @@ class Context extends EventEmitter {
             ...this.#clientContextArray,
         ]);
 
-        const result = await this.#db.put(document, {
+        const result = await workspace.put(document, {
             context: contextSelector,
             features: [...this.#attributes, ...features],
             emitEvent: options.emitEvent,
@@ -899,9 +900,7 @@ class Context extends EventEmitter {
         if (!this.checkPermission(accessingUserId, 'documentWrite')) {
             throw new Error('Access denied: User requires documentWrite permission.');
         }
-        if (!this.#workspace || !this.#workspace.db) {
-            throw new Error('Workspace or database not available');
-        }
+        const workspace = this.#requireWorkspace();
         if (!Array.isArray(documentArray)) {
             throw new Error('Document array must be an array');
         }
@@ -912,7 +911,7 @@ class Context extends EventEmitter {
             ...this.#clientContextArray,
         ]);
 
-        const result = await this.#db.putMany(documentArray, {
+        const result = await workspace.putMany(documentArray, {
             context: contextSelector,
             features: [...this.#attributes, ...features],
             emitEvent: options.emitEvent,
@@ -938,25 +937,21 @@ class Context extends EventEmitter {
         if (!this.checkPermission(accessingUserId, 'documentRead')) {
             throw new Error('Access denied: User requires documentRead permission.');
         }
-        if (!this.#workspace || !this.#workspace.db) {
-            throw new Error('Workspace or database not available');
-        }
+        const workspace = this.#requireWorkspace();
         if (!checksumString || typeof checksumString !== 'string') {
             throw new Error('Checksum string is required.');
         }
-        return await this.#workspace.getByChecksumString(checksumString);
+        return await workspace.getByChecksumString(checksumString);
     }
 
     async hasByChecksumString(accessingUserId, checksum, features = []) {
         if (!this.checkPermission(accessingUserId, 'documentRead')) {
             throw new Error('Access denied: User requires documentRead permission.');
         }
-        if (!this.#workspace || !this.#workspace.db) {
-            throw new Error('Workspace or database not available');
-        }
+        const workspace = this.#requireWorkspace();
 
         const contextSelector = this.#buildContextSelector(this.#contextBitmapArray);
-        return await this.#workspace.hasByChecksumString(checksum, {
+        return await workspace.hasByChecksumString(checksum, {
             context: contextSelector,
             features,
         });
@@ -966,12 +961,10 @@ class Context extends EventEmitter {
         if (!this.checkPermission(accessingUserId, 'documentReadWrite')) {
             throw new Error('Access denied: User requires documentReadWrite permission.');
         }
-        if (!this.#workspace || !this.#workspace.db) {
-            throw new Error('Workspace or database not available');
-        }
+        const workspace = this.#requireWorkspace();
 
         const contextSelector = this.#buildContextSelector(this.#contextBitmapArray);
-        const result = await this.#db.unlink(documentId, {
+        const result = await workspace.unlink(documentId, {
             context: contextSelector,
             features,
         }, options);
@@ -992,16 +985,14 @@ class Context extends EventEmitter {
         if (!this.checkPermission(accessingUserId, 'documentReadWrite')) {
             throw new Error('Access denied: User requires documentReadWrite permission.');
         }
-        if (!this.#workspace || !this.#workspace.db) {
-            throw new Error('Workspace or database not available');
-        }
+        const workspace = this.#requireWorkspace();
         if (!Array.isArray(documentIdArray)) {
             throw new Error('Document ID array must be an array');
         }
 
         const numericDocumentIdArray = parseDocumentIdArray(documentIdArray, 'Document ID array');
         const contextSelector = this.#buildContextSelector(this.#contextBitmapArray);
-        const result = await this.#db.unlinkMany(numericDocumentIdArray, {
+        const result = await workspace.unlinkMany(numericDocumentIdArray, {
             context: contextSelector,
             features,
         }, options);
@@ -1025,15 +1016,13 @@ class Context extends EventEmitter {
         if (!this.checkPermission(accessingUserId, 'documentReadWrite')) {
             throw new Error('Access denied: User requires documentReadWrite permission for direct DB deletion.');
         }
-        if (!this.#workspace || !this.#workspace.db) {
-            throw new Error('Workspace or database not available');
-        }
+        const workspace = this.#requireWorkspace();
         if (!Array.isArray(documentIdArray)) {
             throw new Error('Document ID array must be an array');
         }
 
         const numericDocumentIdArray = parseDocumentIdArray(documentIdArray, 'Document ID array');
-        const result = await this.#db.deleteMany(numericDocumentIdArray, options);
+        const result = await workspace.deleteMany(numericDocumentIdArray, options);
 
         this.emit('document.deleted.batch', {
             contextId: this.#id,
@@ -1051,36 +1040,24 @@ class Context extends EventEmitter {
         if (accessingUserId !== this.#userId) {
             throw new Error('Access denied: This operation is only available to the context owner.');
         }
-        if (!this.#workspace || !this.#workspace.db) {
-            throw new Error('Workspace or database not available');
-        }
-
-        const result = await this.#workspace.db.get(id, options);
-        return result;
+        return await this.#requireWorkspace().getDocumentById(id, options);
     }
 
     async getDocumentsByIdArray(accessingUserId, idArray, options = { parse: true, limit: null }) {
         if (accessingUserId !== this.#userId) {
             throw new Error('Access denied: This operation is only available to the context owner.');
         }
-        if (!this.#workspace || !this.#workspace.db) {
-            throw new Error('Workspace or database not available');
-        }
-
-        const result = await this.#workspace.db.getDocumentsByIdArray(idArray, options);
-        return result;
+        return await this.#requireWorkspace().getDocumentsByIdArray(idArray, options);
     }
 
     async hasDocument(accessingUserId, id, featureArray = []) {
         if (!this.checkPermission(accessingUserId, 'documentRead')) {
             throw new Error('Access denied: User requires documentRead permission.');
         }
-        if (!this.#workspace || !this.#workspace.db) {
-            throw new Error('Workspace or database not available');
-        }
+        const workspace = this.#requireWorkspace();
 
         const contextSelector = this.#buildContextSelector(this.#contextBitmapArray);
-        return await this.#workspace.db.has(id, {
+        return await workspace.has(id, {
             context: contextSelector,
             features: featureArray,
         });
@@ -1090,13 +1067,11 @@ class Context extends EventEmitter {
         if (!this.checkPermission(accessingUserId, 'documentRead')) {
             throw new Error('Access denied: User requires documentRead permission.');
         }
-        if (!this.#workspace || !this.#workspace.db) {
-            throw new Error('Workspace or database not available');
-        }
+        const workspace = this.#requireWorkspace();
 
         const { attributes, features = null, filters, options = {}, ...rest } = spec;
         const contextSelector = this.#buildContextSelector(this.#buildMergedContextArray(options));
-        return await this.#db.find({
+        return await workspace.find({
             context: contextSelector,
             features: features ?? attributes,
             filters,
@@ -1109,13 +1084,11 @@ class Context extends EventEmitter {
         if (!this.checkPermission(accessingUserId, 'documentRead')) {
             throw new Error('Access denied: User requires documentRead permission.');
         }
-        if (!this.#workspace || !this.#workspace.db) {
-            throw new Error('Workspace or database not available');
-        }
+        const workspace = this.#requireWorkspace();
 
         const { query, attributes, features = null, filters, options = {}, ...rest } = spec;
         const contextSelector = this.#buildContextSelector(this.#buildMergedContextArray(options));
-        return await this.#db.search({
+        return await workspace.search({
             query,
             context: contextSelector,
             features: features ?? attributes,
@@ -1162,14 +1135,12 @@ class Context extends EventEmitter {
         if (!this.checkPermission(accessingUserId, 'documentRead')) {
             throw new Error('Access denied: User requires documentRead permission.');
         }
-        if (!this.#workspace || !this.#workspace.db) {
-            throw new Error('Workspace or database not available');
-        }
+        const workspace = this.#requireWorkspace();
         if (!checksumString || typeof checksumString !== 'string') {
             throw new Error('Checksum string is required.');
         }
 
-        const documentInContext = await this.#workspace.getByChecksumString(checksumString);
+        const documentInContext = await workspace.getByChecksumString(checksumString);
         if (!documentInContext) {
             logger.debug(`Document with checksum '${checksumString}' not found within context path '${this.#path}'.`);
             return null;
@@ -1177,7 +1148,7 @@ class Context extends EventEmitter {
 
         if (featureArray && featureArray.length > 0) {
             const contextSelector = this.#buildContextSelector(this.#contextBitmapArray);
-            const matchesAttributes = await this.#workspace.db.has(documentInContext.id, {
+            const matchesAttributes = await workspace.has(documentInContext.id, {
                 context: contextSelector,
                 features: featureArray,
             });

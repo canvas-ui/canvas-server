@@ -48,7 +48,7 @@ export default async function workspaceTreesRoutes(fastify) {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return;
-      const tree = await workspace.db.createTree(request.body.name, request.body.type);
+      const tree = await workspace.createTree(request.body.name, request.body.type);
       const responseObject = new ResponseObject().created(tree, 'Tree created successfully');
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
     } catch (error) {
@@ -72,7 +72,7 @@ export default async function workspaceTreesRoutes(fastify) {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return;
-      const tree = await workspace.db.renameTree(request.params.treeNameOrTreeId, request.body.name);
+      const tree = await workspace.renameTree(request.params.treeNameOrTreeId, request.body.name);
       const responseObject = new ResponseObject().success(tree, 'Tree renamed successfully');
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
     } catch (error) {
@@ -87,7 +87,7 @@ export default async function workspaceTreesRoutes(fastify) {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return;
-      await workspace.db.destroyTree(request.params.treeNameOrTreeId);
+      await workspace.destroyTree(request.params.treeNameOrTreeId);
       const responseObject = new ResponseObject().deleted(true, 'Tree deleted successfully');
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
     } catch (error) {

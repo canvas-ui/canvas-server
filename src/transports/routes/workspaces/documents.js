@@ -4,7 +4,7 @@ import ResponseObject from '../../ResponseObject.js';
 import { parseDocumentId, parseDocumentIdArray } from '../../../utils/documentId.js';
 import { mergeDeviceFeatureTags } from '../../../utils/device-features.js';
 import {
-  INCOMING_ROOT_CONTEXT,
+  INCOMING_TREE_NAME,
   shouldExcludeIncoming,
 } from '../../../utils/incoming-documents.js';
 
@@ -32,7 +32,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     if (!shouldExcludeIncoming(contextSelector?.path, includeIncoming)) {
       return options;
     }
-    return { ...options, excludeContextSpec: INCOMING_ROOT_CONTEXT };
+    return { ...options, excludeTree: INCOMING_TREE_NAME };
   }
 
   function getInsertContextSelector(workspace, body, isTopLevelArray) {

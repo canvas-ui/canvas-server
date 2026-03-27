@@ -15,7 +15,6 @@ import Db from '../../services/synapsd/src/index.js';
 import Stored from '../../services/stored/src/index.js';
 import { parseDocumentId } from '../../utils/documentId.js';
 import {
-    INCOMING_ROOT_CONTEXT,
     INCOMING_TREE_NAME,
     getIncomingFileContextFromStoredLocation,
     normalizeIncomingTreePath,
@@ -409,7 +408,7 @@ class Workspace extends EventEmitter {
             context: normalizedContext,
             features: features.length > 0 ? features : (attributes ?? []),
             filters,
-            ...(shouldExcludeIncoming(normalizedContext?.path, includeIncoming) ? { excludeContextSpec: INCOMING_ROOT_CONTEXT } : {}),
+            ...(shouldExcludeIncoming(normalizedContext?.path, includeIncoming) ? { excludeTree: INCOMING_TREE_NAME } : {}),
             ...rest,
         });
     }

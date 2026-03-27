@@ -15,18 +15,17 @@ import {
  */
 export default async function workspaceDocumentRoutes(fastify, options) {
   function broadcastWorkspaceDocEvent(workspace, event, payload) {
-    // Clients may subscribe as workspace:<uuid> or workspace:<name> (we currently accept both).
-    // Broadcast to both to avoid "it works on my channel" bugs.
     try { fastify.broadcastToWorkspace(workspace.id, event, payload); } catch {}
     try { fastify.broadcastToWorkspace(workspace.name, event, payload); } catch {}
   }
 
-  function enforceClientTags(request, featureArray = []) {
-    return mergeDeviceFeatureTags(featureArray, request.client);
+  function enforceClientTags(request, features = []) {
+    return mergeDeviceFeatureTags(features, request.client);
   }
 
   function resolveContextSelector(workspace, source = {}, fallbackPath = '/') {
-    return workspace.getContextTreeSelector(source?.contextSpec ?? fallbackPath, source?.treeNameOrTreeId ?? null);
+    const path = source?.context ?? fallbackPath;
+    return workspace.getContextTreeSelector(path, source?.treeNameOrTreeId ?? null);
   }
 
   function buildReadOptions(contextSelector, includeIncoming, options = {}) {
@@ -36,13 +35,9 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     return { ...options, excludeContextSpec: INCOMING_ROOT_CONTEXT };
   }
 
-  function buildAttributesSpec(featureArray = []) {
-    return { allOf: featureArray || [] };
-  }
-
   function getInsertContextSelector(workspace, body, isTopLevelArray) {
     if (isTopLevelArray) { return workspace.getContextTreeSelector('/'); }
-    if (body?.contextSpec || body?.treeNameOrTreeId) {
+    if (body?.context || body?.treeNameOrTreeId) {
       return resolveContextSelector(workspace, body, '/');
     }
     if (body?.documents || body?.documentIds) { return workspace.getContextTreeSelector('/'); }
@@ -66,7 +61,6 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       return null;
     }
 
-    // Workspace must be active to access documents
     if (!workspace.isActive) {
       const responseObject = new ResponseObject().badRequest('Workspace is not active. Start the workspace first.');
       reply.code(responseObject.statusCode).send(responseObject.getResponse());
@@ -76,78 +70,85 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     return workspace;
   }
 
-  // List documents in workspace
+  function buildAttributes(query) {
+    const { allOf, noneOf, anyOf } = query;
+    if (!allOf?.length && !noneOf?.length && !anyOf?.length) return undefined;
+    const attrs = {};
+    if (allOf?.length) attrs.allOf = allOf;
+    if (noneOf?.length) attrs.noneOf = noneOf;
+    if (anyOf?.length) attrs.anyOf = anyOf;
+    return attrs;
+  }
+
+  // ── Shared querystring schema fragments ──────────────────────────────────
+
+  const contextQueryProps = {
+    treeNameOrTreeId: { type: 'string' },
+    context: { type: 'string', default: '/' },
+  };
+
+  const arrayOfStrings = { type: 'array', items: { type: 'string' }, default: [] };
+
+  const attributesQueryProps = {
+    allOf: arrayOfStrings,
+    noneOf: arrayOfStrings,
+    anyOf: arrayOfStrings,
+  };
+
+  const filtersQueryProps = {
+    filters: { type: 'array', items: { type: 'string' }, default: [] },
+  };
+
+  const paginationQueryProps = {
+    limit: { type: 'integer' },
+    offset: { type: 'integer' },
+    page: { type: 'integer' },
+  };
+
+  // ── List documents ──────────────────────────────────────────────────────
+
   fastify.get('/', {
     onRequest: [fastify.authenticate],
     schema: {
-      params: {
-        type: 'object',
-        required: ['id'],
-        properties: {
-          id: { type: 'string' }
-        }
-      },
+      params: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } },
       querystring: {
         type: 'object',
         properties: {
-          treeNameOrTreeId: { type: 'string' },
-          contextSpec: { type: 'string', default: '/' },
-          featureArray: {
-            type: 'array',
-            items: { type: 'string' },
-            default: []
-          },
-          filterArray: {
-            type: 'array',
-            items: { type: 'string' },
-            default: []
-          },
-          limit: { type: 'integer' },
-          offset: { type: 'integer' },
-          page: { type: 'integer' },
+          ...contextQueryProps,
+          ...attributesQueryProps,
+          ...filtersQueryProps,
+          ...paginationQueryProps,
           q: { type: 'string' },
           search: { type: 'string' },
-          includeIncoming: { type: 'boolean', default: false }
-        }
-      }
-    }
+          includeIncoming: { type: 'boolean', default: false },
+        },
+      },
+    },
   }, async (request, reply) => {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return;
+
       const contextSelector = resolveContextSelector(workspace, request.query, '/');
-
-      // Check if this is a search query
       const searchQuery = request.query.q || request.query.search;
-      let documents;
 
-      if (searchQuery) {
-        documents = await workspace.search({
-          query: searchQuery,
-          context: contextSelector,
-          attributes: buildAttributesSpec(request.query.featureArray),
-          filters: request.query.filterArray || [],
-          ...buildReadOptions(contextSelector, request.query.includeIncoming, {
-            limit: request.query.limit,
-            offset: request.query.offset,
-            page: request.query.page,
-          }),
-        });
-      } else {
-        documents = await workspace.find({
-          context: contextSelector,
-          attributes: buildAttributesSpec(request.query.featureArray),
-          filters: request.query.filterArray || [],
-          ...buildReadOptions(contextSelector, request.query.includeIncoming, {
-            limit: request.query.limit,
-            offset: request.query.offset,
-            page: request.query.page,
-          }),
-        });
-      }
+      const spec = {
+        context: contextSelector,
+        attributes: buildAttributes(request.query),
+        filters: request.query.filters,
+        ...buildReadOptions(contextSelector, request.query.includeIncoming, {
+          limit: request.query.limit,
+          offset: request.query.offset,
+          page: request.query.page,
+        }),
+      };
+
+      const documents = searchQuery
+        ? await workspace.search({ query: searchQuery, ...spec })
+        : await workspace.find(spec);
 
       if (documents.error) {
-        fastify.log.error(`SynapsD error in ${searchQuery ? 'ftsQuery' : 'findDocuments'}: ${documents.error}`);
+        fastify.log.error(`SynapsD error: ${documents.error}`);
         const responseObject = new ResponseObject().error(`Failed to ${searchQuery ? 'search' : 'list'} documents due to a database error.`, documents.error);
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());
       }
@@ -161,84 +162,52 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     }
   });
 
-  // Insert documents into workspace
+  // ── Insert documents ────────────────────────────────────────────────────
+
   fastify.post('/', {
     onRequest: [fastify.authenticateClient],
     schema: {
-      params: {
-        type: 'object',
-        required: ['id'],
-        properties: {
-          id: { type: 'string' }
-        }
-      },
+      params: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } },
       body: {
         oneOf: [
           {
             type: 'object',
             properties: {
               treeNameOrTreeId: { type: 'string' },
-              contextSpec: { type: 'string' },
-              featureArray: {
-                type: 'array',
-                items: { type: 'string' }
-              },
-              documents: {
-                oneOf: [
-                  { type: 'object' },
-                  { type: 'array' }
-                ]
-              },
+              context: { type: 'string' },
+              features: { type: 'array', items: { type: 'string' } },
+              documents: { oneOf: [{ type: 'object' }, { type: 'array' }] },
               documentIds: {
                 anyOf: [
-                  {
-                    type: 'array',
-                    items: {
-                      anyOf: [
-                        { type: 'string' },
-                        { type: 'number' }
-                      ]
-                    },
-                    minItems: 1
-                  },
+                  { type: 'array', items: { anyOf: [{ type: 'string' }, { type: 'number' }] }, minItems: 1 },
                   { type: 'string' },
-                  { type: 'number' }
-                ]
-              }
+                  { type: 'number' },
+                ],
+              },
             },
-            anyOf: [
-              { required: ['documents'] },
-              { required: ['documentIds'] }
-            ]
+            anyOf: [{ required: ['documents'] }, { required: ['documentIds'] }],
           },
           {
             type: 'array',
-            items: {
-              anyOf: [
-                { type: 'string' },
-                { type: 'number' }
-              ]
-            },
+            items: { anyOf: [{ type: 'string' }, { type: 'number' }] },
             minItems: 1,
-            description: 'Top-level array of document IDs to insert into the workspace (paste operation).'
-          }
-        ]
-      }
-    }
+          },
+        ],
+      },
+    },
   }, async (request, reply) => {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return;
 
-      // Normalize input: allow top-level array of IDs, or object with documentIds/documents
       const isTopLevelArray = Array.isArray(request.body);
-      const contextSpec = getInsertContextSelector(workspace, request.body, isTopLevelArray);
-      const featureArray = isTopLevelArray ? [] : (request.body.featureArray || []);
-      const enforcedFeatureArray = enforceClientTags(request, featureArray);
+      const contextSelector = getInsertContextSelector(workspace, request.body, isTopLevelArray);
+      const features = isTopLevelArray ? [] : (request.body.features || []);
+      const enforcedFeatures = enforceClientTags(request, features);
 
       let itemsToInsert;
       if (isTopLevelArray) {
-        itemsToInsert = request.body; // IDs
+        itemsToInsert = request.body;
       } else if (request.body.documentIds) {
         itemsToInsert = Array.isArray(request.body.documentIds) ? request.body.documentIds : [request.body.documentIds];
       } else if (request.body.documents) {
@@ -249,15 +218,15 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       }
 
       const documents = await workspace.putMany(itemsToInsert, {
-        context: contextSpec,
-        features: enforcedFeatureArray,
+        context: contextSelector,
+        features: enforcedFeatures,
       });
 
       broadcastWorkspaceDocEvent(workspace, 'workspace.documents.inserted', {
         workspaceId: workspace.id,
         workspaceName: workspace.name,
-        contextSpec,
-        featureArray: enforcedFeatureArray,
+        context: contextSelector,
+        features: enforcedFeatures,
         items: itemsToInsert,
         result: documents,
         timestamp: new Date().toISOString(),
@@ -272,39 +241,35 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     }
   });
 
-  // Get document by ID
+  // ── Get document by ID (by-id route) ────────────────────────────────────
+
   fastify.get('/by-id/:docId', {
     onRequest: [fastify.authenticate],
     schema: {
-      params: {
-        type: 'object',
-        required: ['id', 'docId'],
-        properties: {
-          id: { type: 'string' },
-          docId: { type: 'number' }
-        }
-      },
+      params: { type: 'object', required: ['id', 'docId'], properties: { id: { type: 'string' }, docId: { type: 'number' } } },
       querystring: {
         type: 'object',
-        properties: {
-          treeNameOrTreeId: { type: 'string' },
-          contextSpec: { type: 'string', default: '/' },
-          featureArray: {
-            type: 'array',
-            items: { type: 'string' },
-            default: []
-          }
-        }
-      }
-    }
+        properties: { ...contextQueryProps, ...attributesQueryProps },
+      },
+    },
   }, async (request, reply) => {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return;
+      const contextSelector = resolveContextSelector(workspace, request.query, '/');
 
       const document = await workspace.db.get(request.params.docId);
       if (!document) {
         const responseObject = new ResponseObject().notFound(`Document with ID ${request.params.docId} not found`);
+        return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+      }
+
+      const matchesScope = await workspace.has(document.id, {
+        context: contextSelector,
+        attributes: buildAttributes(request.query),
+      });
+      if (!matchesScope) {
+        const responseObject = new ResponseObject().notFound(`Document with ID ${request.params.docId} not found in the selected tree/path scope`);
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());
       }
 
@@ -317,53 +282,35 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     }
   });
 
-  // Get documents by abstraction
+  // ── Get documents by abstraction ────────────────────────────────────────
+
   fastify.get('/by-abstraction/:abstraction', {
     onRequest: [fastify.authenticate],
     schema: {
-      params: {
-        type: 'object',
-        required: ['id', 'abstraction'],
-        properties: {
-          id: { type: 'string' },
-          abstraction: { type: 'string' }
-        }
-      },
+      params: { type: 'object', required: ['id', 'abstraction'], properties: { id: { type: 'string' }, abstraction: { type: 'string' } } },
       querystring: {
         type: 'object',
         properties: {
-          treeNameOrTreeId: { type: 'string' },
-          contextSpec: { type: 'string', default: '/' },
-          featureArray: {
-            type: 'array',
-            items: { type: 'string' },
-            default: []
-          },
-          filterArray: {
-            type: 'array',
-            items: { type: 'string' },
-            default: []
-          },
+          ...contextQueryProps,
+          ...attributesQueryProps,
+          ...filtersQueryProps,
+          ...paginationQueryProps,
           includeIncoming: { type: 'boolean', default: false },
-          limit: { type: 'integer' },
-          offset: { type: 'integer' },
-          page: { type: 'integer' }
-        }
-      }
-    }
+        },
+      },
+    },
   }, async (request, reply) => {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return;
       const contextSelector = resolveContextSelector(workspace, request.query, '/');
-
-      // Create derived feature array with abstraction path
-      const derivedFeatureArray = [`data/abstraction/${request.params.abstraction}`, ...request.query.featureArray];
+      const attrs = buildAttributes(request.query) || {};
+      const allOf = [`data/abstraction/${request.params.abstraction}`, ...(attrs.allOf || [])];
 
       const documents = await workspace.find({
         context: contextSelector,
-        attributes: buildAttributesSpec(derivedFeatureArray),
-        filters: request.query.filterArray || [],
+        attributes: { ...attrs, allOf },
+        filters: request.query.filters,
         ...buildReadOptions(contextSelector, request.query.includeIncoming, {
           limit: request.query.limit,
           offset: request.query.offset,
@@ -386,57 +333,35 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     }
   });
 
-  // Update documents
+  // ── Update documents ────────────────────────────────────────────────────
+
   fastify.put('/', {
     onRequest: [fastify.authenticateClient],
     schema: {
-      params: {
-        type: 'object',
-        required: ['id'],
-        properties: {
-          id: { type: 'string' }
-        }
-      },
+      params: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } },
       body: {
         type: 'object',
         properties: {
           treeNameOrTreeId: { type: 'string' },
-          contextSpec: { type: 'string', default: '/' },
-          featureArray: {
-            type: 'array',
-            items: { type: 'string' },
-            default: []
-          },
+          context: { type: 'string', default: '/' },
+          features: { type: 'array', items: { type: 'string' }, default: [] },
           documents: { type: 'array' },
           documentIds: {
             anyOf: [
-              {
-                type: 'array',
-                items: {
-                  anyOf: [
-                    { type: 'string' },
-                    { type: 'number' }
-                  ]
-                },
-                minItems: 1
-              },
+              { type: 'array', items: { anyOf: [{ type: 'string' }, { type: 'number' }] }, minItems: 1 },
               { type: 'string' },
-              { type: 'number' }
-            ]
-          }
+              { type: 'number' },
+            ],
+          },
         },
-        anyOf: [
-          { required: ['documents'] },
-          { required: ['documentIds'] }
-        ]
-      }
-    }
+        anyOf: [{ required: ['documents'] }, { required: ['documentIds'] }],
+      },
+    },
   }, async (request, reply) => {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return;
 
-      // Determine what to update: either documents or documentIds
       let itemsToUpdate;
       if (request.body.documents) {
         itemsToUpdate = Array.isArray(request.body.documents) ? request.body.documents : [request.body.documents];
@@ -450,7 +375,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       const contextSelector = resolveContextSelector(workspace, request.body, '/');
       const result = await workspace.putMany(itemsToUpdate, {
         context: contextSelector,
-        features: request.body.featureArray || [],
+        features: request.body.features || [],
       });
       if (!result) {
         const responseObject = new ResponseObject().badRequest('Failed to update documents');
@@ -460,7 +385,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       broadcastWorkspaceDocEvent(workspace, 'workspace.documents.updated', {
         workspaceId: workspace.id,
         workspaceName: workspace.name,
-        contextSpec: contextSelector,
+        context: contextSelector,
         items: itemsToUpdate,
         timestamp: new Date().toISOString(),
       });
@@ -474,48 +399,25 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     }
   });
 
-  // Delete documents
+  // ── Delete documents ────────────────────────────────────────────────────
+
   fastify.delete('/', {
     onRequest: [fastify.authenticate],
     schema: {
-      params: {
-        type: 'object',
-        required: ['id'],
-        properties: {
-          id: { type: 'string' }
-        }
-      },
-      querystring: {
-        type: 'object',
-        properties: {
-          treeNameOrTreeId: { type: 'string' },
-          contextSpec: { type: 'string', default: '/' },
-          featureArray: {
-            type: 'array',
-            items: { type: 'string' },
-            default: []
-          }
-        }
-      },
+      params: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } },
+      querystring: { type: 'object', properties: { ...contextQueryProps, ...attributesQueryProps } },
       body: {
         type: 'array',
-        items: {
-          anyOf: [
-            { type: 'string' },
-            { type: 'number' }
-          ]
-        },
+        items: { anyOf: [{ type: 'string' }, { type: 'number' }] },
         minItems: 1,
-        description: "An array of document IDs to delete from the workspace."
-      }
-    }
+      },
+    },
   }, async (request, reply) => {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return;
       const contextSelector = resolveContextSelector(workspace, request.query, '/');
 
-      // Normalize + validate IDs (SynapsD requires numbers; invalid IDs should 400 with a useful message)
       const rawIds = Array.isArray(request.body) ? request.body : [request.body];
       let documentIds;
       try {
@@ -530,14 +432,12 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       broadcastWorkspaceDocEvent(workspace, 'workspace.documents.deleted', {
         workspaceId: workspace.id,
         workspaceName: workspace.name,
-        contextSpec: contextSelector,
-        featureArray: request.query.featureArray,
+        context: contextSelector,
         documentIds,
         result,
         timestamp: new Date().toISOString(),
       });
 
-      // Always return 200 with details (DELETE should be idempotent; not-found is not a client error)
       if (result?.failed?.length) {
         fastify.log.warn({
           workspace: request.params.id,
@@ -546,14 +446,13 @@ export default async function workspaceDocumentRoutes(fastify, options) {
           requested: documentIds.length,
           successful: result.successful?.length || 0,
           failed: result.failed?.length || 0,
-          failedSamples: (result.failed || []).slice(0, 5)
+          failedSamples: (result.failed || []).slice(0, 5),
         }, 'Workspace document delete had failures');
       }
 
-      const message =
-        (result?.successful?.length || 0) > 0
-          ? 'Documents deleted successfully'
-          : 'No documents deleted (not found or already deleted)';
+      const message = (result?.successful?.length || 0) > 0
+        ? 'Documents deleted successfully'
+        : 'No documents deleted (not found or already deleted)';
 
       const responseObject = new ResponseObject().deleted(result, message, 200, result?.count ?? documentIds.length);
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
@@ -564,68 +463,46 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     }
   });
 
-  // Purge all documents matching the current listing filter
+  // ── Purge documents ─────────────────────────────────────────────────────
+
   fastify.delete('/purge', {
     onRequest: [fastify.authenticate],
     schema: {
-      params: {
-        type: 'object',
-        required: ['id'],
-        properties: {
-          id: { type: 'string' }
-        }
-      },
+      params: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } },
       querystring: {
         type: 'object',
         properties: {
-          treeNameOrTreeId: { type: 'string' },
-          contextSpec: { type: 'string', default: '/' },
-          featureArray: {
-            type: 'array',
-            items: { type: 'string' },
-            default: []
-          },
-          filterArray: {
-            type: 'array',
-            items: { type: 'string' },
-            default: []
-          },
-          includeIncoming: { type: 'boolean', default: false }
-        }
-      }
-    }
+          ...contextQueryProps,
+          ...attributesQueryProps,
+          ...filtersQueryProps,
+          includeIncoming: { type: 'boolean', default: false },
+        },
+      },
+    },
   }, async (request, reply) => {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return;
       const contextSelector = resolveContextSelector(workspace, request.query, '/');
 
+      const attributes = buildAttributes(request.query);
       const matches = await workspace.find({
         context: contextSelector,
-        attributes: buildAttributesSpec(request.query.featureArray),
-        filters: request.query.filterArray || [],
-        ...buildReadOptions(contextSelector, request.query.includeIncoming, {
-          parse: false,
-          limit: 0,
-        }),
+        attributes,
+        filters: request.query.filters,
+        ...buildReadOptions(contextSelector, request.query.includeIncoming, { parse: false, limit: 0 }),
       });
 
       if (matches.error) {
-        fastify.log.error(`SynapsD error in purge findDocuments: ${matches.error}`);
+        fastify.log.error(`SynapsD error in purge: ${matches.error}`);
         const responseObject = new ResponseObject().error('Failed to purge documents due to a database error.', matches.error);
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());
       }
 
-      const documentIds = matches
-        .map((document) => Number(document?.id))
-        .filter((id) => Number.isInteger(id) && id > 0);
+      const documentIds = matches.map(d => Number(d?.id)).filter(id => Number.isInteger(id) && id > 0);
 
       if (documentIds.length === 0) {
-        const responseObject = new ResponseObject().success({
-          requested: 0,
-          deleted: 0,
-          result: { successful: [], failed: [], count: 0 }
-        }, 'No matching documents to purge');
+        const responseObject = new ResponseObject().success({ requested: 0, deleted: 0, result: { successful: [], failed: [], count: 0 } }, 'No matching documents to purge');
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());
       }
 
@@ -634,19 +511,15 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       broadcastWorkspaceDocEvent(workspace, 'workspace.documents.purged', {
         workspaceId: workspace.id,
         workspaceName: workspace.name,
-        contextSpec: contextSelector,
-        featureArray: request.query.featureArray,
-        filterArray: request.query.filterArray || [],
+        context: contextSelector,
+        attributes,
+        filters: request.query.filters,
         requested: documentIds.length,
         result,
         timestamp: new Date().toISOString(),
       });
 
-      const responseObject = new ResponseObject().deleted({
-        requested: documentIds.length,
-        deleted: result?.successful?.length || 0,
-        result,
-      }, 'Documents purged successfully', 200, result?.successful?.length || 0);
+      const responseObject = new ResponseObject().deleted({ requested: documentIds.length, deleted: result?.successful?.length || 0, result }, 'Documents purged successfully', 200, result?.successful?.length || 0);
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
     } catch (error) {
       fastify.log.error(error);
@@ -655,48 +528,25 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     }
   });
 
-  // Remove documents
+  // ── Remove documents (unlink from tree) ─────────────────────────────────
+
   fastify.delete('/remove', {
     onRequest: [fastify.authenticate],
     schema: {
-      params: {
-        type: 'object',
-        required: ['id'],
-        properties: {
-          id: { type: 'string' }
-        }
-      },
-      querystring: {
-        type: 'object',
-        properties: {
-          treeNameOrTreeId: { type: 'string' },
-          contextSpec: { type: 'string', default: '/' },
-          featureArray: {
-            type: 'array',
-            items: { type: 'string' },
-            default: []
-          }
-        }
-      },
+      params: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } },
+      querystring: { type: 'object', properties: { ...contextQueryProps, ...attributesQueryProps } },
       body: {
         type: 'array',
-        items: {
-          anyOf: [
-            { type: 'string' },
-            { type: 'number' }
-          ]
-        },
+        items: { anyOf: [{ type: 'string' }, { type: 'number' }] },
         minItems: 1,
-        description: "An array of document IDs to remove from the workspace."
-      }
-    }
+      },
+    },
   }, async (request, reply) => {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return;
       const contextSelector = resolveContextSelector(workspace, request.query, '/');
 
-      // Normalize + validate IDs (SynapsD requires numbers; invalid IDs should 400 with a useful message)
       const rawIds = Array.isArray(request.body) ? request.body : [request.body];
       let documentIds;
       try {
@@ -706,39 +556,38 @@ export default async function workspaceDocumentRoutes(fastify, options) {
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());
       }
 
+      const attributes = buildAttributes(request.query);
       const result = await workspace.unlinkMany(documentIds, {
         context: contextSelector,
-        features: request.query.featureArray,
+        attributes,
       });
 
       broadcastWorkspaceDocEvent(workspace, 'workspace.documents.removed', {
         workspaceId: workspace.id,
         workspaceName: workspace.name,
-        contextSpec: contextSelector,
-        featureArray: request.query.featureArray,
+        context: contextSelector,
+        attributes,
         documentIds,
         result,
         timestamp: new Date().toISOString(),
       });
 
-      // Always return 200 with details (remove should be idempotent; not-found/not-in-context is not a client error)
       if (result?.failed?.length) {
         fastify.log.warn({
           workspace: request.params.id,
           userId: request.user?.id,
           op: 'workspace.documents.remove',
-          contextSpec: contextSelector,
+          context: contextSelector,
           requested: documentIds.length,
           successful: result.successful?.length || 0,
           failed: result.failed?.length || 0,
-          failedSamples: (result.failed || []).slice(0, 5)
+          failedSamples: (result.failed || []).slice(0, 5),
         }, 'Workspace document remove had failures');
       }
 
-      const message =
-        (result?.successful?.length || 0) > 0
-          ? 'Documents removed successfully'
-          : 'No documents removed (not found or already removed)';
+      const message = (result?.successful?.length || 0) > 0
+        ? 'Documents removed successfully'
+        : 'No documents removed (not found or already removed)';
 
       const responseObject = new ResponseObject().deleted(result, message, 200, result?.count ?? documentIds.length);
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
@@ -749,37 +598,19 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     }
   });
 
-  // Get document by ID (direct route)
+  // ── Get document by ID (direct route) ───────────────────────────────────
+
   fastify.get('/:docId', {
     onRequest: [fastify.authenticate],
     schema: {
-      params: {
-        type: 'object',
-        required: ['id', 'docId'],
-        properties: {
-          id: { type: 'string' },
-          docId: { type: 'string' }
-        }
-      },
-      querystring: {
-        type: 'object',
-        properties: {
-          treeNameOrTreeId: { type: 'string' },
-          contextSpec: { type: 'string', default: '/' },
-          featureArray: {
-            type: 'array',
-            items: { type: 'string' },
-            default: []
-          }
-        }
-      }
-    }
+      params: { type: 'object', required: ['id', 'docId'], properties: { id: { type: 'string' }, docId: { type: 'string' } } },
+      querystring: { type: 'object', properties: { ...contextQueryProps, ...attributesQueryProps } },
+    },
   }, async (request, reply) => {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return;
 
-      // Parse and validate document ID
       let documentId;
       try {
         documentId = parseDocumentId(request.params.docId, 'Document ID parameter');
@@ -789,7 +620,6 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       }
 
       const document = await workspace.db.get(documentId);
-
       if (!document) {
         const responseObject = new ResponseObject().notFound(`Document with ID ${request.params.docId} not found`);
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());
@@ -804,40 +634,33 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     }
   });
 
-  // Get document by hash
+  // ── Get document by hash ────────────────────────────────────────────────
+
   fastify.get('/by-hash/:algo/:hash', {
     onRequest: [fastify.authenticate],
     schema: {
-      params: {
-        type: 'object',
-        required: ['id', 'algo', 'hash'],
-        properties: {
-          id: { type: 'string' },
-          algo: { type: 'string' },
-          hash: { type: 'string' }
-        }
-      },
-      querystring: {
-        type: 'object',
-        properties: {
-          contextSpec: { type: 'string', default: '/' },
-          featureArray: {
-            type: 'array',
-            items: { type: 'string' },
-            default: []
-          }
-        }
-      }
-    }
+      params: { type: 'object', required: ['id', 'algo', 'hash'], properties: { id: { type: 'string' }, algo: { type: 'string' }, hash: { type: 'string' } } },
+      querystring: { type: 'object', properties: { ...contextQueryProps, ...attributesQueryProps } },
+    },
   }, async (request, reply) => {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return;
+      const contextSelector = resolveContextSelector(workspace, request.query, '/');
 
       const checksumString = `${request.params.algo}/${request.params.hash}`;
       const document = await workspace.getByChecksumString(checksumString);
       if (!document) {
         const responseObject = new ResponseObject().notFound(`Document with checksum ${checksumString} not found`);
+        return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+      }
+
+      const matchesScope = await workspace.hasByChecksumString(checksumString, {
+        context: contextSelector,
+        attributes: buildAttributes(request.query),
+      });
+      if (!matchesScope) {
+        const responseObject = new ResponseObject().notFound(`Document with checksum ${checksumString} not found in the selected tree/path scope`);
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());
       }
 
@@ -850,20 +673,14 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     }
   });
 
-    // Clear workspace database (DEVELOPMENT ONLY)
+  // ── Clear workspace database (DEVELOPMENT ONLY) ─────────────────────────
+
   fastify.delete('/clear-database', {
     onRequest: [fastify.authenticate],
     schema: {
-      params: {
-        type: 'object',
-        required: ['id'],
-        properties: {
-          id: { type: 'string' }
-        }
-      }
-    }
+      params: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } },
+    },
   }, async (request, reply) => {
-    // Only allow in development mode
     if (process.env.NODE_ENV !== 'development') {
       const responseObject = new ResponseObject().forbidden('Database clear operation only available in development mode');
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
@@ -873,7 +690,6 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return;
 
-      // Ensure workspace is active - start it if it's not
       if (!workspace.isActive) {
         fastify.log.info(`Workspace ${request.params.id} is not active, attempting to start...`);
         try {
@@ -886,9 +702,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
         }
       }
 
-      // Clear the database synchronously
       const result = workspace.clearDatabaseSync();
-
       const responseObject = new ResponseObject().success(result, 'Workspace database cleared successfully');
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
     } catch (error) {

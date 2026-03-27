@@ -302,7 +302,7 @@ export default async function pubWorkspaceRoutes(fastify, options) {
         required: ['documents'],
         properties: {
           documents: { type: 'array', minItems: 1 },
-          featureArray: { type: 'array' },
+          features: { type: 'array' },
           treeNameOrTreeId: { type: 'string' }
         }
       }
@@ -333,17 +333,16 @@ export default async function pubWorkspaceRoutes(fastify, options) {
         );
       }
 
-      const { documents, featureArray = [], treeNameOrTreeId = null } = request.body;
+      const { documents, features = [], treeNameOrTreeId = null } = request.body;
 
-      // Convert raw documents to proper format with schema
       const documentArray = documents.map(doc => ({
         schema: 'data/abstraction/note',
-        data: doc
+        data: doc,
       }));
 
       const result = await access.workspace.putMany(documentArray, {
         context: access.workspace.getContextTreeSelector('/', treeNameOrTreeId),
-        features: featureArray,
+        features,
       });
 
       const response = new ResponseObject().created(

@@ -13,6 +13,16 @@ import {
  * @param {Object} options - Plugin options
  */
 export default async function pubContextRoutes(fastify, options) {
+  function buildAttributes(query) {
+    const { allOf, noneOf, anyOf } = query;
+    if (!allOf?.length && !noneOf?.length && !anyOf?.length) return undefined;
+    const attrs = {};
+    if (allOf?.length) attrs.allOf = allOf;
+    if (noneOf?.length) attrs.noneOf = noneOf;
+    if (anyOf?.length) attrs.anyOf = anyOf;
+    return attrs;
+  }
+
 
   /**
    * Helper function to validate user is authenticated and has an id
@@ -146,8 +156,10 @@ export default async function pubContextRoutes(fastify, options) {
       querystring: {
         type: 'object',
         properties: {
-          featureArray: { type: 'array', items: { type: 'string' } },
-          filterArray: { type: 'array', items: { type: 'string' } },
+          allOf: { type: 'array', items: { type: 'string' }, default: [] },
+          noneOf: { type: 'array', items: { type: 'string' }, default: [] },
+          anyOf: { type: 'array', items: { type: 'string' }, default: [] },
+          filters: { type: 'array', items: { type: 'string' } },
           includeServerContext: { type: 'boolean' },
           includeClientContext: { type: 'boolean' },
           limit: { type: 'integer' },
@@ -177,14 +189,15 @@ export default async function pubContextRoutes(fastify, options) {
         );
       }
 
-      const { featureArray = [], filterArray = [], includeServerContext, includeClientContext, limit, offset, page } = request.query;
+      const { filters = [], includeServerContext, includeClientContext, limit, offset, page } = request.query;
+      const attributes = buildAttributes(request.query);
       const options = { includeServerContext, includeClientContext, limit, offset, page };
 
       const dbResult = await access.context.find(
         access.accessType === 'user' ? access.userId : access.context.userId,
         {
-          featureArray,
-          filterArray,
+          attributes,
+          filters,
           options,
         }
       );
@@ -226,7 +239,7 @@ export default async function pubContextRoutes(fastify, options) {
         required: ['documents'],
         properties: {
           documents: { type: 'array', minItems: 1 },
-          featureArray: { type: 'array' }
+          features: { type: 'array' }
         }
       }
     }
@@ -240,7 +253,6 @@ export default async function pubContextRoutes(fastify, options) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
-      // Increment token usage if applicable
       if (access.accessType === 'token' && access.token) {
         await incrementTokenUsage(
           access.token,
@@ -251,7 +263,7 @@ export default async function pubContextRoutes(fastify, options) {
         );
       }
 
-      const { documents, featureArray = [] } = request.body;
+      const { documents, features = [] } = request.body;
 
       // Convert raw documents to proper format with schema
       const documentArray = documents.map(doc => ({
@@ -262,7 +274,7 @@ export default async function pubContextRoutes(fastify, options) {
       const result = await access.context.putMany(
         access.accessType === 'user' ? access.userId : access.context.userId,
         documentArray,
-        featureArray
+        features
       );
 
       const response = new ResponseObject().created(
@@ -303,7 +315,7 @@ export default async function pubContextRoutes(fastify, options) {
         type: 'object',
         properties: {
           documents: { type: 'array', minItems: 1 },
-          featureArray: { type: 'array' }
+          features: { type: 'array' }
         },
         required: ['documents']
       }
@@ -329,7 +341,7 @@ export default async function pubContextRoutes(fastify, options) {
         );
       }
 
-      const { documents, featureArray = [] } = request.body;
+      const { documents, features = [] } = request.body;
       if (!Array.isArray(documents) || documents.length === 0) {
         const response = new ResponseObject().badRequest('Request body must contain a non-empty array of documents to update.');
         return reply.code(response.statusCode).send(response.getResponse());
@@ -338,7 +350,7 @@ export default async function pubContextRoutes(fastify, options) {
       const result = await access.context.putMany(
         access.accessType === 'user' ? access.userId : access.context.userId,
         documents,
-        featureArray
+        features
       );
 
       const response = new ResponseObject().success(result, 'Documents updated successfully in context');

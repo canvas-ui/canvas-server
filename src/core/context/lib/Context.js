@@ -44,11 +44,10 @@ class Context extends EventEmitter {
     #serverContextArray; // server/os/linux, server/version/1.0.0, server/datetime/, server/ip/192.168.1.1
     #clientContextArray; // client/os/linux, client/app/firefox, client/datetime/, client/user/john.doe
 
-    // Bitmap arrays
+    // Query state
     #contextBitmapArray = [];
-    #featureBitmapArray = [];
-
-    #filterArray = [];
+    #attributes = [];
+    #filters = [];
 
     // Rules for auto-linking
     #rules = [];
@@ -224,16 +223,16 @@ class Context extends EventEmitter {
             server: this.#serverContextArray,
             client: this.#clientContextArray,
             context: this.#contextBitmapArray,
-            feature: this.#featureBitmapArray,
-            filter: this.#filterArray,
+            attributes: this.#attributes,
+            filters: this.#filters,
         };
     }
     get acl() { return this.#acl; }
     get serverContextArray() { return this.#serverContextArray; }
     get clientContextArray() { return this.#clientContextArray; }
     get contextBitmapArray() { return this.#contextBitmapArray; }
-    get featureBitmapArray() { return this.#featureBitmapArray; }
-    get filterArray() { return this.#filterArray; }
+    get attributes() { return this.#attributes; }
+    get filters() { return this.#filters; }
     get rules() { return [...this.#rules]; }
 
     /**
@@ -268,6 +267,17 @@ class Context extends EventEmitter {
             tree: this.#treeId,
             path: this.#convertContextArrayToPath(contextArray),
         };
+    }
+
+    #buildMergedContextArray(options = {}) {
+        const parts = [...this.#contextBitmapArray];
+        if (options.includeServerContext && this.#serverContextArray?.length > 0) {
+            parts.push(...this.#serverContextArray);
+        }
+        if (options.includeClientContext && this.#clientContextArray?.length > 0) {
+            parts.push(...this.#clientContextArray);
+        }
+        return [...new Set(parts)];
     }
 
     /**
@@ -781,34 +791,30 @@ class Context extends EventEmitter {
      * Bitmaps
      */
 
-    setFeatureBitmaps(featureArray) {
-        if (!Array.isArray(featureArray)) {
-            featureArray = [featureArray];
-        }
-        this.#featureBitmapArray = featureArray;
-        this.emit('context.updated', { id: this.#id, featureBitmapArray: this.#featureBitmapArray });
+    setAttributes(attributeArray) {
+        if (!Array.isArray(attributeArray)) { attributeArray = [attributeArray]; }
+        this.#attributes = attributeArray;
+        this.emit('context.updated', { id: this.#id, attributes: this.#attributes });
     }
 
-    appendFeatureBitmaps(featureArray) {
-        if (!Array.isArray(featureArray)) {
-            featureArray = [featureArray];
-        }
-        this.#featureBitmapArray.push(...featureArray);
-        this.emit('context.updated', { id: this.#id, featureBitmapArray: this.#featureBitmapArray });
+    appendAttributes(attributeArray) {
+        if (!Array.isArray(attributeArray)) { attributeArray = [attributeArray]; }
+        this.#attributes.push(...attributeArray);
+        this.emit('context.updated', { id: this.#id, attributes: this.#attributes });
     }
 
-    removeFeatureBitmaps(featureArray) {
-        if (!Array.isArray(featureArray)) {
-            featureArray = [featureArray];
-        }
-        this.#featureBitmapArray = this.#featureBitmapArray.filter((feature) => !featureArray.includes(feature));
-        this.emit('context.updated', { id: this.#id, featureBitmapArray: this.#featureBitmapArray });
+    removeAttributes(attributeArray) {
+        if (!Array.isArray(attributeArray)) { attributeArray = [attributeArray]; }
+        this.#attributes = this.#attributes.filter((a) => !attributeArray.includes(a));
+        this.emit('context.updated', { id: this.#id, attributes: this.#attributes });
     }
 
-    clearFeatureBitmaps() {
-        this.#featureBitmapArray = [];
-        this.emit('context.updated', { id: this.#id, featureBitmapArray: this.#featureBitmapArray });
+    clearAttributes() {
+        this.#attributes = [];
+        this.emit('context.updated', { id: this.#id, attributes: this.#attributes });
     }
+
+
 
     /**
      * Rules API
@@ -852,7 +858,7 @@ class Context extends EventEmitter {
      * Document API
      */
 
-    async put(accessingUserId, document, featureArray = [], options = {}) {
+    async put(accessingUserId, document, features = [], options = {}) {
         if (!this.checkPermission(accessingUserId, 'documentWrite')) {
             throw new Error('Access denied: User requires documentWrite permission.');
         }
@@ -863,44 +869,33 @@ class Context extends EventEmitter {
             throw new Error('Document is required');
         }
 
-        const contextSpec = this.#buildContextSelector([
+        const contextSelector = this.#buildContextSelector([
             ...this.#pathArray,
             ...this.#serverContextArray,
             ...this.#clientContextArray,
         ]);
 
         const result = await this.#db.put(document, {
-            context: contextSpec,
-            attributes: { allOf: [...this.#featureBitmapArray, ...featureArray] },
+            context: contextSelector,
+            features: [...this.#attributes, ...features],
             emitEvent: options.emitEvent,
         });
 
         const documentId = document.id || result.id || result;
-        const documentEventPayload = {
+        this.emit('document.inserted', {
             contextId: this.#id,
-            operation: 'put',
-            documentId,
+            id: documentId,
             document,
-            contextArray: this.#contextBitmapArray,
-            featureArray: featureArray,
-            url: this.#url,
+            context: contextSelector,
+            features,
             workspaceId: this.#workspace.id,
             timestamp: new Date().toISOString(),
-        };
-
-        this.emit('document.inserted', documentEventPayload);
-        this.emit('context.updated', {
-            id: this.#id,
-            operation: 'document.put',
-            document: documentId,
-            contextArray: this.#contextBitmapArray,
-            featureArray,
         });
 
         return result;
     }
 
-    async putMany(accessingUserId, documentArray, featureArray = [], options = {}) {
+    async putMany(accessingUserId, documentArray, features = [], options = {}) {
         if (!this.checkPermission(accessingUserId, 'documentWrite')) {
             throw new Error('Access denied: User requires documentWrite permission.');
         }
@@ -911,15 +906,15 @@ class Context extends EventEmitter {
             throw new Error('Document array must be an array');
         }
 
-        const contextSpec = this.#buildContextSelector([
+        const contextSelector = this.#buildContextSelector([
             ...this.#pathArray,
             ...this.#serverContextArray,
             ...this.#clientContextArray,
         ]);
 
         const result = await this.#db.putMany(documentArray, {
-            context: contextSpec,
-            attributes: { allOf: [...this.#featureBitmapArray, ...featureArray] },
+            context: contextSelector,
+            features: [...this.#attributes, ...features],
             emitEvent: options.emitEvent,
         });
 
@@ -929,12 +924,9 @@ class Context extends EventEmitter {
 
         this.emit('document.inserted', {
             contextId: this.#id,
-            operation: 'put',
             documentIds,
-            documents: documentArray,
-            contextArray: this.#contextBitmapArray,
-            featureArray,
-            url: this.#url,
+            context: contextSelector,
+            features,
             workspaceId: this.#workspace.id,
             timestamp: new Date().toISOString(),
         });
@@ -955,7 +947,7 @@ class Context extends EventEmitter {
         return await this.#workspace.getByChecksumString(checksumString);
     }
 
-    async hasByChecksumString(accessingUserId, checksum, featureBitmapArray) {
+    async hasByChecksumString(accessingUserId, checksum, features = []) {
         if (!this.checkPermission(accessingUserId, 'documentRead')) {
             throw new Error('Access denied: User requires documentRead permission.');
         }
@@ -963,14 +955,14 @@ class Context extends EventEmitter {
             throw new Error('Workspace or database not available');
         }
 
-        const contextSpec = this.#buildContextSelector(this.#contextBitmapArray);
+        const contextSelector = this.#buildContextSelector(this.#contextBitmapArray);
         return await this.#workspace.hasByChecksumString(checksum, {
-            context: contextSpec,
-            features: featureBitmapArray,
+            context: contextSelector,
+            features,
         });
     }
 
-    async unlink(accessingUserId, documentId, featureArray = [], options = {}) {
+    async unlink(accessingUserId, documentId, features, options = {}) {
         if (!this.checkPermission(accessingUserId, 'documentReadWrite')) {
             throw new Error('Access denied: User requires documentReadWrite permission.');
         }
@@ -978,19 +970,17 @@ class Context extends EventEmitter {
             throw new Error('Workspace or database not available');
         }
 
-        const contextSpec = this.#buildContextSelector(this.#contextBitmapArray);
+        const contextSelector = this.#buildContextSelector(this.#contextBitmapArray);
         const result = await this.#db.unlink(documentId, {
-            context: contextSpec,
-            attributes: { allOf: featureArray },
+            context: contextSelector,
+            features,
         }, options);
 
         this.emit('document.removed', {
             contextId: this.#id,
-            operation: 'unlink',
-            documentId,
-            contextArray: this.#contextBitmapArray,
-            featureArray,
-            url: this.#url,
+            id: documentId,
+            context: contextSelector,
+            features,
             workspaceId: this.#workspace.id,
             timestamp: new Date().toISOString(),
         });
@@ -998,7 +988,7 @@ class Context extends EventEmitter {
         return result;
     }
 
-    async unlinkMany(accessingUserId, documentIdArray, featureArray = [], options = {}) {
+    async unlinkMany(accessingUserId, documentIdArray, features, options = {}) {
         if (!this.checkPermission(accessingUserId, 'documentReadWrite')) {
             throw new Error('Access denied: User requires documentReadWrite permission.');
         }
@@ -1010,19 +1000,17 @@ class Context extends EventEmitter {
         }
 
         const numericDocumentIdArray = parseDocumentIdArray(documentIdArray, 'Document ID array');
-        const contextSpec = this.#buildContextSelector(this.#contextBitmapArray);
+        const contextSelector = this.#buildContextSelector(this.#contextBitmapArray);
         const result = await this.#db.unlinkMany(numericDocumentIdArray, {
-            context: contextSpec,
-            attributes: { allOf: featureArray },
+            context: contextSelector,
+            features,
         }, options);
 
         this.emit('document.removed.batch', {
             contextId: this.#id,
-            operation: 'unlink',
             documentIds: numericDocumentIdArray,
-            contextArray: this.#contextBitmapArray,
-            featureArray,
-            url: this.#url,
+            context: contextSelector,
+            features,
             workspaceId: this.#workspace.id,
             timestamp: new Date().toISOString(),
         });
@@ -1049,10 +1037,8 @@ class Context extends EventEmitter {
 
         this.emit('document.deleted.batch', {
             contextId: this.#id,
-            operation: 'delete',
             documentIds: numericDocumentIdArray,
             count: numericDocumentIdArray.length,
-            url: this.#url,
             workspaceId: this.#workspace.id,
             timestamp: new Date().toISOString(),
         });
@@ -1085,7 +1071,7 @@ class Context extends EventEmitter {
         return result;
     }
 
-    async hasDocument(accessingUserId, id, featureBitmapArray = []) {
+    async hasDocument(accessingUserId, id, featureArray = []) {
         if (!this.checkPermission(accessingUserId, 'documentRead')) {
             throw new Error('Access denied: User requires documentRead permission.');
         }
@@ -1093,54 +1079,27 @@ class Context extends EventEmitter {
             throw new Error('Workspace or database not available');
         }
 
-        const contextSpec = this.#buildContextSelector(this.#contextBitmapArray);
-        const result = await this.#workspace.db.has(id, {
-            context: contextSpec,
-            attributes: { allOf: featureBitmapArray },
+        const contextSelector = this.#buildContextSelector(this.#contextBitmapArray);
+        return await this.#workspace.db.has(id, {
+            context: contextSelector,
+            features: featureArray,
         });
-        return result;
     }
 
     async find(accessingUserId, spec = {}) {
         if (!this.checkPermission(accessingUserId, 'documentRead')) {
             throw new Error('Access denied: User requires documentRead permission.');
         }
-
-        const {
-            attributes = null,
-            featureArray = [],
-            filterArray = [],
-            filters = null,
-            options = {},
-            ...rest
-        } = spec;
-
         if (!this.#workspace || !this.#workspace.db) {
             throw new Error('Workspace or database not available');
         }
 
-        let baseContexts = [...this.#contextBitmapArray]; // Start with a copy
-
-        let serverContexts = [];
-        if (options.includeServerContext && this.#serverContextArray && this.#serverContextArray.length > 0) {
-            serverContexts = this.#serverContextArray;
-        }
-
-        let clientContexts = [];
-        if (options.includeClientContext && this.#clientContextArray && this.#clientContextArray.length > 0) {
-            clientContexts = this.#clientContextArray;
-        }
-
-        // Combine them into a flat array
-        const contextArray = [...new Set([...baseContexts, ...serverContexts, ...clientContexts])];
-
-        // Convert context array to path string for query operations
-        // SynapsD query operations expect a single path string, not an array
-        const contextSpec = this.#buildContextSelector(contextArray);
+        const { attributes, features = null, filters, options = {}, ...rest } = spec;
+        const contextSelector = this.#buildContextSelector(this.#buildMergedContextArray(options));
         return await this.#db.find({
-            context: contextSpec,
-            attributes: attributes ?? { allOf: featureArray },
-            filters: filters ?? filterArray,
+            context: contextSelector,
+            features: features ?? attributes,
+            filters,
             ...options,
             ...rest,
         });
@@ -1150,43 +1109,17 @@ class Context extends EventEmitter {
         if (!this.checkPermission(accessingUserId, 'documentRead')) {
             throw new Error('Access denied: User requires documentRead permission.');
         }
-
-        const {
-            query,
-            attributes = null,
-            featureArray = [],
-            filterArray = [],
-            filters = null,
-            options = {},
-            ...rest
-        } = spec;
-
         if (!this.#workspace || !this.#workspace.db) {
             throw new Error('Workspace or database not available');
         }
 
-        let baseContexts = [...this.#contextBitmapArray]; // Start with a copy
-
-        let serverContexts = [];
-        if (options.includeServerContext && this.#serverContextArray && this.#serverContextArray.length > 0) {
-            serverContexts = this.#serverContextArray;
-        }
-
-        let clientContexts = [];
-        if (options.includeClientContext && this.#clientContextArray && this.#clientContextArray.length > 0) {
-            clientContexts = this.#clientContextArray;
-        }
-
-        // Combine them into a flat array
-        const contextArray = [...new Set([...baseContexts, ...serverContexts, ...clientContexts])];
-
-        // Convert context array to path string for query operations
-        const contextSpec = this.#buildContextSelector(contextArray);
+        const { query, attributes, features = null, filters, options = {}, ...rest } = spec;
+        const contextSelector = this.#buildContextSelector(this.#buildMergedContextArray(options));
         return await this.#db.search({
             query,
-            context: contextSpec,
-            attributes: attributes ?? { allOf: featureArray },
-            filters: filters ?? filterArray,
+            context: contextSelector,
+            features: features ?? attributes,
+            filters,
             ...options,
             ...rest,
         });
@@ -1218,8 +1151,8 @@ class Context extends EventEmitter {
             serverContextArray: this.#serverContextArray,
             clientContextArray: this.#clientContextArray,
             contextBitmapArray: this.#contextBitmapArray,
-            featureBitmapArray: this.#featureBitmapArray,
-            filterArray: this.#filterArray,
+            attributes: this.#attributes,
+            filters: this.#filters,
             pendingUrl: this.#pendingUrl || null,
             rules: this.#rules,
         };
@@ -1237,27 +1170,23 @@ class Context extends EventEmitter {
         }
 
         const documentInContext = await this.#workspace.getByChecksumString(checksumString);
-
         if (!documentInContext) {
             logger.debug(`Document with checksum '${checksumString}' not found within context path '${this.#path}'.`);
             return null;
         }
 
-        // If featureArray is provided, verify the document matches those features in this context
         if (featureArray && featureArray.length > 0) {
-            const contextSpec = this.#buildContextSelector(this.#contextBitmapArray);
-            const matchesFeatures = await this.#workspace.db.has(documentInContext.id, {
-                context: contextSpec,
-                attributes: { allOf: featureArray },
+            const contextSelector = this.#buildContextSelector(this.#contextBitmapArray);
+            const matchesAttributes = await this.#workspace.db.has(documentInContext.id, {
+                context: contextSelector,
+                features: featureArray,
             });
-            if (!matchesFeatures) {
-                logger.debug(`Document ID '${documentInContext.id}' (checksum '${checksumString}') found in context path '${this.#path}' but does not match featureArray: [${featureArray.join(', ')}].`);
+            if (!matchesAttributes) {
+                logger.debug(`Document ID '${documentInContext.id}' (checksum '${checksumString}') found but does not match features: [${featureArray.join(', ')}].`);
                 return null;
             }
         }
 
-        // If all checks pass (in context, and matches features if specified)
-        logger.debug(`Document ID '${documentInContext.id}' (checksum '${checksumString}') is accessible in context and matches features (if specified).`);
         return documentInContext;
     }
 
@@ -1270,34 +1199,24 @@ class Context extends EventEmitter {
 
         logger.debug(`Setting up workspace event forwarding for context "${this.#id}" (wild-card mode)`);
 
-        // Wild-card listener – forwards every workspace event
         const handler = (eventName, payload) => {
             const enriched = {
                 contextId: this.#id,
                 contextUrl: this.#url,
                 contextPath: this.#path,
-                contextPathArray: this.#pathArray,
                 userId: this.#userId,
                 ...payload
             };
 
             this.emit(`context.workspace.${eventName}`, enriched);
 
-            // If the workspace event is a document CRUD operation, re-emit it as a direct context event
             if (eventName.startsWith('document.')) {
-                // Forward the same document.* event at context level
-                this.emit(eventName, {
-                    contextId: this.#id,
-                    ...enriched
-                });
-
-                // Emit an umbrella context.updated so consumers can do cheap cache invalidation
+                this.emit(eventName, { contextId: this.#id, ...enriched });
                 this.emit('context.updated', {
                     id: this.#id,
-                    operation: eventName,
-                    documentId: enriched.documentId || enriched.documentIds,
-                    contextArray: this.#contextBitmapArray,
-                    featureArray: enriched.featureArray || []
+                    event: eventName,
+                    documentId: enriched.id || enriched.documentId,
+                    documentIds: enriched.documentIds,
                 });
             }
         };

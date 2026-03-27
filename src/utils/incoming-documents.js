@@ -1,6 +1,7 @@
 'use strict';
 
 export const INCOMING_ROOT_CONTEXT = '/.incoming';
+export const INCOMING_TREE_NAME = 'incoming';
 
 function normalizeSegment(value, fallback = 'unknown') {
   const segment = String(value || '')
@@ -31,6 +32,16 @@ export function shouldExcludeIncoming(contextSpec, includeIncoming = false) {
   if (includeIncoming) { return false; }
   const normalized = normalizeContextSpec(contextSpec);
   return normalized === null || normalized === '/' || normalized === '';
+}
+
+export function normalizeIncomingTreePath(pathOrContext) {
+  const normalized = normalizeContextSpec(pathOrContext);
+  if (normalized === null) { return '/'; }
+  if (normalized === INCOMING_ROOT_CONTEXT) { return '/'; }
+  if (normalized.startsWith(`${INCOMING_ROOT_CONTEXT}/`)) {
+    return normalized.slice(INCOMING_ROOT_CONTEXT.length) || '/';
+  }
+  return normalized;
 }
 
 function buildIncomingContext(kind, ...segments) {

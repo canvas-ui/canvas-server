@@ -1,5 +1,19 @@
 # Workspace / Agent Runtime TODO
 
+
+## API
+
+```
+/workspaces
+    /:workspaceNameOrId
+        /contexts/:contextId/documents
+        /trees/:treeNameOrTreeId/
+        /documents
+        /agents
+        /roles
+        /services
+```
+
 ## Goal
 
 Move Workspaces, Agents and Role-like workers toward a common runtime model:

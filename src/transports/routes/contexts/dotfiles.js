@@ -11,6 +11,16 @@ import { validateUser } from '../../auth/strategies.js';
  * @param {Object} options - Plugin options
  */
 export default async function contextDotfileRoutes(fastify, options) {
+  function buildAttributes(query) {
+    const { allOf, noneOf, anyOf } = query;
+    if (!allOf?.length && !noneOf?.length && !anyOf?.length) return undefined;
+    const attrs = {};
+    if (allOf?.length) attrs.allOf = allOf;
+    if (noneOf?.length) attrs.noneOf = noneOf;
+    if (anyOf?.length) attrs.anyOf = anyOf;
+    return attrs;
+  }
+
 
   // Ensure user is authenticated & basic validation for every request in this plugin
   fastify.addHook('preHandler', async (request, reply) => {
@@ -32,16 +42,10 @@ export default async function contextDotfileRoutes(fastify, options) {
       querystring: {
         type: 'object',
         properties: {
-          featureArray: {
-            type: 'array',
-            items: { type: 'string' },
-            default: []
-          },
-          filterArray: {
-            type: 'array',
-            items: { type: 'string' },
-            default: []
-          },
+          allOf: { type: 'array', items: { type: 'string' }, default: [] },
+          noneOf: { type: 'array', items: { type: 'string' }, default: [] },
+          anyOf: { type: 'array', items: { type: 'string' }, default: [] },
+          filters: { type: 'array', items: { type: 'string' }, default: [] },
           includeServerContext: { type: 'boolean' },
           includeClientContext: { type: 'boolean' },
           limit: { type: 'integer' },
@@ -59,12 +63,12 @@ export default async function contextDotfileRoutes(fastify, options) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
-      const featureArrayInput = request.query.featureArray || [];
-      const derivedFeatureArray = ['data/abstraction/dotfile', ...featureArrayInput];
+      const attrs = buildAttributes(request.query) || {};
+      const allOf = ['data/abstraction/dotfile', ...(attrs.allOf || [])];
 
       const dbResult = await context.find(request.user.id, {
-        featureArray: derivedFeatureArray,
-        filterArray: request.query.filterArray || [],
+        attributes: { ...attrs, allOf },
+        filters: request.query.filters || [],
         options: {
           includeServerContext: request.query.includeServerContext,
           includeClientContext: request.query.includeClientContext,
@@ -101,11 +105,7 @@ export default async function contextDotfileRoutes(fastify, options) {
         type: 'object',
         required: ['dotfiles'],
         properties: {
-          featureArray: {
-            type: 'array',
-            items: { type: 'string' },
-            default: []
-          },
+              features: { type: 'array', items: { type: 'string' }, default: [] },
           dotfiles: {
             oneOf: [
               { type: 'object' },
@@ -131,7 +131,7 @@ export default async function contextDotfileRoutes(fastify, options) {
         data: df
       }));
 
-      const result = await context.putMany(request.user.id, documentArray, ['data/abstraction/dotfile', ...(request.body.featureArray || [])]);
+      const result = await context.putMany(request.user.id, documentArray, ['data/abstraction/dotfile', ...(request.body.features || [])]);
 
       const response = new ResponseObject().created(result, 'Dotfiles inserted successfully');
       return reply.code(response.statusCode).send(response.getResponse());
@@ -163,11 +163,7 @@ export default async function contextDotfileRoutes(fastify, options) {
               }
             }
           },
-          featureArray: {
-            type: 'array',
-            items: { type: 'string' },
-            default: []
-          }
+          features: { type: 'array', items: { type: 'string' }, default: [] }
         }
       }
     }
@@ -180,7 +176,7 @@ export default async function contextDotfileRoutes(fastify, options) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
-      const result = await context.putMany(request.user.id, request.body.documents, ['data/abstraction/dotfile', ...(request.body.featureArray || [])]);
+      const result = await context.putMany(request.user.id, request.body.documents, ['data/abstraction/dotfile', ...(request.body.features || [])]);
       const response = new ResponseObject().updated(result, 'Dotfiles updated successfully');
       return reply.code(response.statusCode).send(response.getResponse());
     } catch (error) {

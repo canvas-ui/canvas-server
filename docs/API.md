@@ -135,25 +135,52 @@ The API should accept optional `paths[]` and `backends[]` parameters; when omitt
 |--------|------|------|-------------|
 | DELETE | `/workspaces/:id/documents/clear-database` | `authenticate` | Clear all documents (dev only) |
 
-**Query parameters for GET `/documents`:**
-- `q` / `search` — Full-text search query
-- `treeNameOrTreeId` — Context tree to query against
-- `contextSpec` — Path inside the selected context tree
-- `featureArray` — Feature array filter
-- `filterArray` — Additional filters
-- `limit`, `offset`, `page` — Pagination
+**Query parameters (GET `/documents`, GET `/documents/by-abstraction/:abstraction`, DELETE `/documents/purge`):**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `q` / `search` | string | — | Full-text search query |
+| `treeNameOrTreeId` | string | — | Context tree to query against |
+| `context` | string | `/` | Path inside the selected context tree |
+| `allOf` | string[] | `[]` | Documents must have **all** of these features |
+| `noneOf` | string[] | `[]` | Documents must have **none** of these features |
+| `anyOf` | string[] | `[]` | Documents must have **at least one** of these features |
+| `filters` | string[] | `[]` | Additional filters (e.g. `datetime:updated:today`) |
+| `includeIncoming` | boolean | `false` | Include incoming documents |
+| `limit`, `offset`, `page` | integer | — | Pagination |
+
+Example: `GET /documents?allOf[]=data/abstraction/file&noneOf[]=tag/deleted&filters[]=datetime:updated:today`
 
 **POST `/documents` body:**
 ```json
 {
   "treeNameOrTreeId": "projects",
-  "contextSpec": "/music/concerts/foo",
+  "context": "/music/concerts/foo",
   "documents": [{}],
-  "featureArray": ["data/abstraction/file"],
-  "backends": ["fs:home"]
+  "features": ["data/abstraction/file"]
 }
 ```
-`treeNameOrTreeId`, `contextSpec`, and `backends` are optional. If omitted, the default context tree and `/` are used.
+`treeNameOrTreeId` and `context` are optional. If omitted, the default context tree and `/` are used.
+
+**PUT `/documents` body:**
+```json
+{
+  "context": "/",
+  "features": ["data/abstraction/file"],
+  "documents": [{ "id": "123", ... }]
+}
+```
+
+**DELETE `/documents/remove` query parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `context` | string | `/` | Path inside the selected context tree |
+| `allOf` | string[] | `[]` | Attribute filter for unlink scope |
+| `noneOf` | string[] | `[]` | Attribute filter for unlink scope |
+| `anyOf` | string[] | `[]` | Attribute filter for unlink scope |
+
+> **Note on `features` vs `allOf`/`noneOf`/`anyOf`:** Write operations (POST/PUT) use `features` — a flat array of tags to **apply** to documents on insert/update. Read operations (GET/DELETE) use `allOf`, `noneOf`, `anyOf` — structured attribute filters to **query** documents. These map directly to the SynapsD `attributes` query spec.
 
 ### Trees
 
@@ -279,6 +306,35 @@ Context document operations are scoped to the context's current URL path in the 
 | DELETE | `/contexts/:id/documents` | `authenticate` | Index | Remove from SynapsD index |
 | DELETE | `/contexts/:id/documents/:docId` | `authenticate` | Index | Remove single document from index |
 | DELETE | `/contexts/:id/documents/storage` | `authenticate` | Storage | Remove from backend(s) — **planned** |
+
+**Query parameters (GET `/contexts/:id/documents`, GET `/contexts/:id/documents/by-abstraction/:abstraction`):**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `q` / `search` | string | — | Full-text search query |
+| `allOf` | string[] | `[]` | Documents must have **all** of these features |
+| `noneOf` | string[] | `[]` | Documents must have **none** of these features |
+| `anyOf` | string[] | `[]` | Documents must have **at least one** of these features |
+| `filters` | string[] | `[]` | Additional filters |
+| `includeServerContext` | boolean | — | Include server context in scope |
+| `includeClientContext` | boolean | — | Include client context in scope |
+| `limit`, `offset`, `page` | integer | — | Pagination |
+
+**POST/PUT `/contexts/:id/documents` body:**
+```json
+{
+  "features": ["data/abstraction/file"],
+  "documents": [{}]
+}
+```
+
+**DELETE `/contexts/:id/documents/remove` query parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `allOf` | string[] | `[]` | Attribute filter for unlink scope |
+| `noneOf` | string[] | `[]` | Attribute filter for unlink scope |
+| `anyOf` | string[] | `[]` | Attribute filter for unlink scope |
 
 ### Tree Operations
 
@@ -496,10 +552,11 @@ socket.emit('unsubscribe', { channel: 'workspace:<id>' });
 | `workspace.created` | workspace data | Workspace created |
 | `workspace.updated` | workspace data | Workspace updated |
 | `workspace.deleted` | `{ workspaceId }` | Workspace deleted |
-| `workspace.documents.inserted` | `{ workspaceId, documents }` | Documents inserted |
-| `workspace.documents.updated` | `{ workspaceId, documents }` | Documents updated |
-| `workspace.documents.removed` | `{ workspaceId, documentIds }` | Documents removed (soft) |
-| `workspace.documents.deleted` | `{ workspaceId, documentIds }` | Documents deleted (hard) |
+| `workspace.documents.inserted` | `{ workspaceId, workspaceName, context, features, items, result }` | Documents inserted |
+| `workspace.documents.updated` | `{ workspaceId, workspaceName, context, items }` | Documents updated |
+| `workspace.documents.removed` | `{ workspaceId, workspaceName, context, attributes, documentIds, result }` | Documents removed (soft) |
+| `workspace.documents.deleted` | `{ workspaceId, workspaceName, context, documentIds, result }` | Documents deleted (hard) |
+| `workspace.documents.purged` | `{ workspaceId, workspaceName, context, attributes, filters, requested, result }` | Documents purged |
 | `workspace.tree.path.inserted` | `{ workspaceId, treeId, treeName, treeType, path }` | Tree path inserted |
 | `workspace.tree.path.removed` | `{ workspaceId, treeId, treeName, treeType, path }` | Tree path removed |
 | `workspace.tree.path.moved` | `{ workspaceId, treeId, treeName, treeType, from, to }` | Tree path moved |
@@ -515,12 +572,10 @@ socket.emit('unsubscribe', { channel: 'workspace:<id>' });
 | `context.unlocked` | `{ contextId }` | Context unlocked |
 | `context.acl.updated` | `{ contextId, acl }` | ACL updated |
 | `context.acl.revoked` | `{ contextId }` | ACL revoked |
-| `document.inserted` | `{ contextId, documents }` | Documents inserted |
-| `document.updated` | `{ contextId, documents }` | Documents updated |
-| `document.removed` | `{ contextId, documentId }` | Document removed |
-| `document.removed.batch` | `{ contextId, documentIds }` | Documents removed (batch) |
-| `document.deleted` | `{ contextId, documentId }` | Document deleted |
-| `document.deleted.batch` | `{ contextId, documentIds }` | Documents deleted (batch) |
+| `document.inserted` | `{ contextId, id/documentIds, context, features, workspaceId }` | Documents inserted |
+| `document.removed` | `{ contextId, id, context, attributes, workspaceId }` | Document removed |
+| `document.removed.batch` | `{ contextId, documentIds, context, attributes, workspaceId }` | Documents removed (batch) |
+| `document.deleted.batch` | `{ contextId, documentIds, count, workspaceId }` | Documents deleted (batch) |
 | `context.tree.path.inserted` | `{ contextId, treeId, treeName, treeType, path }` | Tree path inserted |
 | `context.tree.path.removed` | `{ contextId, treeId, treeName, treeType, path }` | Tree path removed |
 | `context.tree.path.moved` | `{ contextId, treeId, treeName, treeType, from, to }` | Tree path moved |

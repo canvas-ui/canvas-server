@@ -20,6 +20,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
 
   function resolveContextSelector(workspace, source = {}, fallbackPath = '/') {
     const path = source?.context ?? fallbackPath;
+    if (!path || path === '/') { return null; }
     return workspace.getContextTreeSelector(path, source?.treeNameOrTreeId ?? null);
   }
 
@@ -27,7 +28,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     if (!shouldExcludeIncoming(contextSelector?.path, includeIncoming)) {
       return options;
     }
-    return { ...options, excludeTree: INCOMING_TREE_NAME };
+    return { ...options, excludeTree: { tree: INCOMING_TREE_NAME } };
   }
 
   function getInsertContextSelector(workspace, body, isTopLevelArray) {

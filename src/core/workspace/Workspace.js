@@ -37,6 +37,7 @@ class Workspace extends EventEmitter {
     static HOME_BACKEND_FEATURE = 'data/backend/home';
     static INCOMING_TREE_NAME = INCOMING_TREE_NAME;
     static CONTEXT_TREE_NAME = 'ContextTree';
+    static DIRECTORY_TREE_NAME = 'DirectoryTree';
 
     #rootPath = null;
     #configStore = null;
@@ -239,6 +240,7 @@ class Workspace extends EventEmitter {
             this.#db = new Db({ path: dbPath });
             await this.#db.start();
             await this.#ensureContextTree();
+            await this.#ensureDirectoryTree();
             await this.#ensureIncomingTree();
             this.#bindRuntimeEvents();
             await this.#startStoredHomeIndex();
@@ -408,7 +410,7 @@ class Workspace extends EventEmitter {
             context: normalizedContext,
             features: features.length > 0 ? features : (attributes ?? []),
             filters,
-            ...(shouldExcludeIncoming(normalizedContext?.path, includeIncoming) ? { excludeTree: INCOMING_TREE_NAME } : {}),
+            ...(shouldExcludeIncoming(normalizedContext?.path, includeIncoming) ? { excludeTree: { tree: INCOMING_TREE_NAME } } : {}),
             ...rest,
         });
     }
@@ -434,7 +436,7 @@ class Workspace extends EventEmitter {
     }
 
     async destroyTree(nameOrId) {
-        return await this.#getActiveDb().destroyTree(nameOrId);
+        return await this.#getActiveDb().deleteTree(nameOrId);
     }
 
     getDefaultContextTree() {
@@ -444,7 +446,7 @@ class Workspace extends EventEmitter {
     }
 
     getDefaultDirectoryTree() {
-        const tree = this.#getActiveDb().getDefaultDirectoryTree();
+        const tree = this.#getPreferredDirectoryTree();
         if (!tree) throw new Error('Default directory tree not available');
         return tree;
     }
@@ -901,6 +903,11 @@ class Workspace extends EventEmitter {
         return db.getTree(Workspace.CONTEXT_TREE_NAME) || db.getDefaultContextTree();
     }
 
+    #getPreferredDirectoryTree() {
+        const db = this.#getActiveDb();
+        return db.getTree(Workspace.DIRECTORY_TREE_NAME) || db.getDefaultDirectoryTree();
+    }
+
     async #ensureContextTree() {
         if (this.#db.getTree(Workspace.CONTEXT_TREE_NAME)) {
             return this.#db.getTree(Workspace.CONTEXT_TREE_NAME);
@@ -914,6 +921,21 @@ class Workspace extends EventEmitter {
 
         await this.#db.createTree(Workspace.CONTEXT_TREE_NAME, 'context');
         return this.#db.getTree(Workspace.CONTEXT_TREE_NAME);
+    }
+
+    async #ensureDirectoryTree() {
+        if (this.#db.getTree(Workspace.DIRECTORY_TREE_NAME)) {
+            return this.#db.getTree(Workspace.DIRECTORY_TREE_NAME);
+        }
+
+        const defaultDirectoryTree = this.#db.getDefaultDirectoryTree();
+        if (defaultDirectoryTree?.type === 'directory' && defaultDirectoryTree.name === 'directory') {
+            await this.#db.renameTree(defaultDirectoryTree.id, Workspace.DIRECTORY_TREE_NAME);
+            return this.#db.getTree(Workspace.DIRECTORY_TREE_NAME);
+        }
+
+        await this.#db.createTree(Workspace.DIRECTORY_TREE_NAME, 'directory');
+        return this.#db.getTree(Workspace.DIRECTORY_TREE_NAME);
     }
 
     #setStatus(status) {

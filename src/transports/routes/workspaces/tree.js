@@ -167,6 +167,134 @@ export default async function workspaceTreeRoutes(fastify) {
     }
   });
 
+  fastify.get('/layers', {
+    onRequest: [fastify.authenticate],
+  }, async (request, reply) => {
+    try {
+      const resolved = await getTreeInstance(request, reply, 'context');
+      if (!resolved) return;
+      const layers = await resolved.tree.listLayers();
+      const responseObject = new ResponseObject().found(layers, 'Layers retrieved successfully');
+      return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+    } catch (error) {
+      fastify.log.error(`List layers error for workspace ${request.params.id}: ${error.message}`);
+      const responseObject = new ResponseObject().serverError(error.message || 'Failed to list layers');
+      return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+    }
+  });
+
+  fastify.get('/layers/:layerId', {
+    onRequest: [fastify.authenticate],
+  }, async (request, reply) => {
+    try {
+      const resolved = await getTreeInstance(request, reply, 'context');
+      if (!resolved) return;
+      const layer = resolved.tree.getLayerById(request.params.layerId) || resolved.tree.getLayer(request.params.layerId);
+      if (!layer) {
+        const responseObject = new ResponseObject().notFound(`Layer not found: ${request.params.layerId}`);
+        return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+      }
+      const responseObject = new ResponseObject().found(layer, 'Layer retrieved successfully');
+      return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+    } catch (error) {
+      fastify.log.error(`Get layer error for workspace ${request.params.id}: ${error.message}`);
+      const responseObject = new ResponseObject().serverError(error.message || 'Failed to get layer');
+      return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+    }
+  });
+
+  fastify.patch('/layers/:layerId', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      body: {
+        type: 'object',
+        properties: {
+          name: { type: 'string' },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    try {
+      const resolved = await getTreeInstance(request, reply, 'context');
+      if (!resolved) return;
+      const layer = request.body.name
+        ? await resolved.tree.renameLayer(request.params.layerId, request.body.name)
+        : await resolved.tree.updateLayer(request.params.layerId, request.body);
+      const responseObject = new ResponseObject().success(layer, 'Layer updated successfully');
+      return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+    } catch (error) {
+      fastify.log.error(`Update layer error for workspace ${request.params.id}: ${error.message}`);
+      const responseObject = new ResponseObject().serverError(error.message || 'Failed to update layer');
+      return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+    }
+  });
+
+  fastify.post('/layers/:layerId/lock', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      body: {
+        type: 'object',
+        required: ['lockBy'],
+        properties: {
+          lockBy: { type: 'string' },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    try {
+      const resolved = await getTreeInstance(request, reply, 'context');
+      if (!resolved) return;
+      const result = await resolved.tree.lockLayer(request.params.layerId, request.body.lockBy);
+      const responseObject = new ResponseObject().success(result, 'Layer locked successfully');
+      return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+    } catch (error) {
+      fastify.log.error(`Lock layer error for workspace ${request.params.id}: ${error.message}`);
+      const responseObject = new ResponseObject().serverError(error.message || 'Failed to lock layer');
+      return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+    }
+  });
+
+  fastify.post('/layers/:layerId/unlock', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      body: {
+        type: 'object',
+        required: ['lockBy'],
+        properties: {
+          lockBy: { type: 'string' },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    try {
+      const resolved = await getTreeInstance(request, reply, 'context');
+      if (!resolved) return;
+      const result = await resolved.tree.unlockLayer(request.params.layerId, request.body.lockBy);
+      const responseObject = new ResponseObject().success(result, 'Layer unlocked successfully');
+      return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+    } catch (error) {
+      fastify.log.error(`Unlock layer error for workspace ${request.params.id}: ${error.message}`);
+      const responseObject = new ResponseObject().serverError(error.message || 'Failed to unlock layer');
+      return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+    }
+  });
+
+  fastify.delete('/layers/:layerId', {
+    onRequest: [fastify.authenticate],
+  }, async (request, reply) => {
+    try {
+      const resolved = await getTreeInstance(request, reply, 'context');
+      if (!resolved) return;
+      await resolved.tree.deleteLayer(request.params.layerId);
+      const responseObject = new ResponseObject().deleted(true, 'Layer deleted successfully');
+      return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+    } catch (error) {
+      fastify.log.error(`Delete layer error for workspace ${request.params.id}: ${error.message}`);
+      const responseObject = new ResponseObject().serverError(error.message || 'Failed to delete layer');
+      return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+    }
+  });
+
   fastify.post('/layers/merge', {
     onRequest: [fastify.authenticate],
     schema: {

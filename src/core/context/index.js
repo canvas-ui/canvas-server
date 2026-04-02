@@ -269,7 +269,7 @@ class ContextManager extends EventEmitter {
                         throw new Error(`Failed to load workspace ${storedContextData.workspaceId} for context ${contextKey}`);
                     }
 
-                    // Workspace must be active to create context (Context constructor accesses workspace.db and workspace.tree)
+                    // Workspace must be active to create context (Context constructor accesses workspace.db and a bound context tree)
                     if (!workspace.isActive) {
                         throw new Error(`Workspace ${workspace.name} is not active. Start the workspace before accessing contexts.`);
                     }

@@ -1,63 +1,6 @@
-# UI
-- shared headless domain/components package
-- platform-specific shells for web/electron/mobile
-- no browser-assumption leakage in core components
-- app logic split from rendering early
+# Add support for git as a data source
 
-
-
-
-
-
-
-
-workspace
-  - config
-    - workspace.json
-    - acl.json
-    - storage.json
-  -- 
-  - acl
-  --
-  - db -> synapsd
-  - tree -> synapsd.tree
-    - layers -> synapsd.tree.layers
-  - storage -> stored
-  - hooks
-  --
-  - dotfiles 
-  - home 
-
-home extends workspace
-  - config
-    - universe.json
-    - acl.json
-    - agents.json
-    - storage.json
-    - 
-  --
-  - acl
-  --
-  - agents -> agentd
-  - contexts -> contextManager
-  - roles -> 
-  - tokens
-  - identities
-  - devices
-  - peers
-
-- transports
-  - rest
-  - websocket
-  - webdav
-
-
-# Roaming home profiles / local file backend
-
-- Each workspace should have a "home" folder
-- This home folder should be used as a standard remote drive, users will be able to mount their "home" for each workspace and manage files as they would in onedrive/googledrive & co.
-- This home folder should therefor be accessible using a separate apache2 based webdav "canvas role" (we wont implement it yet) and our REST API, endpoint /workspaces/workspace.name/home.
-At some point we will have to rewrite our API+synapsd backend to have a common pattern, but for now lets create a simple API in ./api/routes/workspaces/
+Lets add a git schema to support git repos and branches. The idea is - lets say I have a canvas created in /work/customer-a/devops/jira-1234, to this canvas I linked all email threads related to that case + all browser tabs + all files ad-hoc created when working on it aand all notes. I would like to also link a specific git branch to that canvas so that I can share the whole canvas with a colleague to work on OR assign a AI agent to complete the task giving him access to all related files.  Now the question becomes, I assume git repos - same as with files, S3 and imap - should be treated as a separate data source on the workspace level
 
 # Add support for hooks
 

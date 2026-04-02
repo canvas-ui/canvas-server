@@ -459,15 +459,14 @@ export default async function agentRoutes(fastify, options) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
-      const { query, context = '/', limit = 50 } = request.query;
+      const { query, context = '/', treeNameOrTreeId = null, limit = 50 } = request.query;
+      const contextSelector = agent.getContextTreeSelector(context, treeNameOrTreeId);
 
       let memory;
       if (query) {
-        memory = await agent.queryMemory(query, context, { limit });
+        memory = await agent.queryMemory(query, contextSelector, { limit });
       } else {
-        // List recent memories
-        memory = await agent.db.findDocuments(context, [], [], { parse: true });
-        memory = memory.slice(0, limit);
+        memory = await agent.db.find({ context: contextSelector, parse: true, limit });
       }
 
       const response = new ResponseObject().found(memory, 'Agent memory retrieved successfully', 200, memory.length);

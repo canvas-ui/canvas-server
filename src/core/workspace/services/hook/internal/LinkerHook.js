@@ -26,8 +26,6 @@ class LinkerHook {
 
         if (!document || !document.id) return;
 
-        // Only process specific schemas if needed, or let the rules decide
-        // For optimization, we might check schema here
         if (document.schema && (document.schema.includes('email') || document.schema.includes('chat'))) {
             await this.#processDocument(document, workspaceId);
         }
@@ -36,11 +34,9 @@ class LinkerHook {
     async #processDocument(document, workspaceId) {
         logger.debug(`Processing document ${document.id} for linking...`);
 
-        // Get workspace for DB access
         const workspace = await this.#workspaceManager.getWorkspace(workspaceId);
         if (!workspace) return;
 
-        // First, apply rule-based linking
         const contexts = this.#contextManager.getAllContexts();
 
         for (const contextMeta of contexts) {
@@ -64,7 +60,6 @@ class LinkerHook {
             }
         }
 
-        // Second, apply contact-based linking for emails
         if (document.schema && document.schema.includes('email') && document.data?.from) {
             await this.#linkByContact(document, workspace);
         }
@@ -74,8 +69,6 @@ class LinkerHook {
         logger.debug(`Attempting contact-based linking for document ${document.id}`);
 
         try {
-            // Extract email from "from" field
-            // Format might be "Name <email@domain.com>" or just "email@domain.com"
             const fromField = document.data.from;
             const emailMatch = fromField.match(/<([^>]+)>/) || [null, fromField];
             const senderEmail = emailMatch[1]?.trim().toLowerCase();
@@ -87,15 +80,11 @@ class LinkerHook {
 
             logger.debug(`Looking for contact with email: ${senderEmail}`);
 
-            // Find contact document by email
-            // We need to query synapsd for a contact with this email
-            // Assuming contacts have schema 'data/abstraction/contact' and data.email field
-            const contactDocs = await workspace.db.findDocuments(
-                null, // no specific context
-                ['data/abstraction/contact'], // feature filter
-                [], // no additional filters
-                { parse: true }
-            );
+            const contactDocs = await workspace.find({
+                context: workspace.getContextTreeSelector('/'),
+                attributes: { allOf: ['data/abstraction/contact'] },
+                parse: true,
+            });
 
             let contactDoc = null;
             for (const doc of contactDocs) {
@@ -112,23 +101,25 @@ class LinkerHook {
 
             logger.debug(`Found contact document ${contactDoc.id} for ${senderEmail}`);
 
-            // Get all context bitmaps that contain this contact
-            const contextBitmaps = await workspace.db.getBitmapsForDocument(contactDoc.id, 'context/');
+            const trees = await workspace.listTrees('context');
+            let linkedCount = 0;
+            for (const tree of trees) {
+                const memberships = await workspace.listDocumentTreeMemberships(contactDoc.id, tree.id);
+                for (const path of new Set(memberships || [])) {
+                    await workspace.link(document.id, {
+                        context: workspace.getContextTreeSelector(path, tree.id),
+                        emitEvent: false,
+                    });
+                    linkedCount += 1;
+                }
+            }
 
-            if (contextBitmaps.length === 0) {
+            if (linkedCount === 0) {
                 logger.debug(`Contact ${contactDoc.id} is not in any contexts`);
                 return;
             }
 
-            logger.debug(`Contact is in ${contextBitmaps.length} context(s): ${contextBitmaps.join(', ')}`);
-
-            // Add the email document to all those contexts
-            for (const bitmapKey of contextBitmaps) {
-                await workspace.db.bitmapIndex.tick(bitmapKey, document.id);
-                logger.debug(`Added email ${document.id} to context bitmap ${bitmapKey}`);
-            }
-
-            logger.debug(`Successfully linked email ${document.id} to ${contextBitmaps.length} context(s) via contact`);
+            logger.debug(`Successfully linked email ${document.id} to ${linkedCount} context path(s) via contact`);
 
         } catch (err) {
             logger.debug(`Failed to link by contact: ${err.message}`);
@@ -163,29 +154,16 @@ class LinkerHook {
         const workspace = await this.#workspaceManager.getWorkspace(workspaceId);
         if (!workspace) return;
 
-        const contextBitmapArray = contextMeta.contextBitmapArray || [];
-        if (contextBitmapArray.length === 0) return;
+        if (!(contextMeta.contextBitmapArray || []).length) return;
 
         const contextTag = `tag/context:${contextMeta.id}`;
 
         try {
-            // We need to re-fetch the document to get current bitmaps?
-            // Or assume the payload has them?
-            // Safer to fetch or just send update if we know what to add.
-            // But updateDocument replaces arrays.
-
-            const existingDoc = await workspace.db.getDocument(document.id);
-            if (!existingDoc) return;
-
-            const currentContexts = existingDoc.context || [];
-            const newContexts = [...new Set([...currentContexts, ...contextBitmapArray])];
-
-            const currentFeatures = existingDoc.features || [];
-            const newFeatures = [...new Set([...currentFeatures, contextTag])];
-
-            await workspace.db.updateDocument(document.id, {
-                // No data change
-            }, newContexts, newFeatures);
+            await workspace.link(document.id, {
+                context: workspace.getContextTreeSelector(contextMeta.path || '/', contextMeta.treeId || null),
+                features: [contextTag],
+                emitEvent: false,
+            });
 
             logger.debug(`Linked document ${document.id} to context ${contextMeta.id}`);
 

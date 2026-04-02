@@ -13,7 +13,11 @@ function serializeDeviceDocument(document) {
 }
 
 async function findWorkspaceDeviceDoc(workspace, deviceId) {
-  const docs = await workspace.db.findDocuments('/', [DEVICE_SCHEMA], [], { limit: 500 });
+  const docs = await workspace.find({
+    context: workspace.getContextTreeSelector('/'),
+    attributes: { allOf: [DEVICE_SCHEMA] },
+    limit: 500,
+  });
   return Array.isArray(docs)
     ? docs.find((document) => document?.data?.deviceId === deviceId) || null
     : null;
@@ -41,12 +45,13 @@ export default async function workspaceDeviceRoutes(fastify, options) {
     }
   }, async (request, reply) => {
     try {
-      const documents = await request.workspace.db.findDocuments(
-        '/',
-        [DEVICE_SCHEMA],
-        [],
-        { limit: request.query.limit, offset: request.query.offset, page: request.query.page }
-      );
+      const documents = await request.workspace.find({
+        context: request.workspace.getContextTreeSelector('/'),
+        attributes: { allOf: [DEVICE_SCHEMA] },
+        limit: request.query.limit,
+        offset: request.query.offset,
+        page: request.query.page,
+      });
 
       const devices = (documents || []).map(serializeDeviceDocument);
       const response = new ResponseObject().found(
@@ -179,7 +184,11 @@ export default async function workspaceDeviceRoutes(fastify, options) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
-      const docs = await request.workspace.db.findDocuments('/', [DEVICE_SCHEMA], [], { limit: 500 });
+      const docs = await request.workspace.find({
+        context: request.workspace.getContextTreeSelector('/'),
+        attributes: { allOf: [DEVICE_SCHEMA] },
+        limit: 500,
+      });
       const matches = Array.isArray(docs)
         ? docs.filter((document) => document?.data?.deviceId === deviceId)
         : [];
@@ -188,12 +197,10 @@ export default async function workspaceDeviceRoutes(fastify, options) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
-      for (const document of matches) {
-        await request.workspace.db.deleteDocument(document.id);
-      }
+      const result = await request.workspace.deleteMany(matches.map((document) => document.id));
 
       const response = new ResponseObject().success(
-        { deviceId, deleted: matches.length },
+        { deviceId, deleted: result?.successful?.length ?? matches.length, result },
         'Workspace device unlinked successfully'
       );
       return reply.code(response.statusCode).send(response.getResponse());

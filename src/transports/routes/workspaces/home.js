@@ -173,6 +173,7 @@ export default async function homeRoutes(fastify) {
     }
 
     const { files, context = '/' } = request.body || {};
+    const contextTreeSelector = workspace.getContextTreeSelector(context);
     if (!Array.isArray(files) || files.length === 0) {
       return reply.code(400).send(new ResponseObject().badRequest('files array required').getResponse());
     }
@@ -197,23 +198,23 @@ export default async function homeRoutes(fastify) {
         const dataPath = `file://{WORKSPACE_ROOT}/home/${filePath}`;
 
         if (stat.isDirectory()) {
-          await workspace.insert({
+          await workspace.put({
             schema: 'data/abstraction/folder',
             data: { name, path: filePath, backend: 'home' },
             metadata: { dataPaths: [dataPath] },
-          }, { context, features: [HOME_BACKEND_FEATURE] });
+          }, { context: contextTreeSelector, features: [HOME_BACKEND_FEATURE] });
 
           results.indexed.push({ path: filePath, type: 'folder' });
         } else {
           const checksum = await sha256File(abs);
           const checksumString = `sha256/${checksum}`;
 
-          await workspace.insert({
+          await workspace.put({
             schema: 'data/abstraction/file',
             checksumArray: [checksumString],
             data: { filename: name, size: stat.size, mime: mime(abs) },
             metadata: { dataPaths: [dataPath] },
-          }, { context, features: [HOME_BACKEND_FEATURE] });
+          }, { context: contextTreeSelector, features: [HOME_BACKEND_FEATURE] });
 
           results.indexed.push({ path: filePath, type: 'file', checksum: checksumString });
         }

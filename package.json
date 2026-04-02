@@ -27,7 +27,8 @@
   ],
   "overrides": {
     "@types/react": "19.2.14",
-    "@types/react-dom": "19.2.3"
+    "@types/react-dom": "19.2.3",
+    "csstype": "3.2.3"
   },
   "author": "me@idnc.sk",
   "license": "AGPL-3.0-or-later",
@@ -72,8 +73,10 @@
     "node": ">=20.0.0"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/socket.io-client": "^3.0.0",
     "eventsource": "^4.1.0",
+    "globals": "^17.4.0",
     "node-fetch": "^3.3.2"
   }
 }

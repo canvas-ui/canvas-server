@@ -14,14 +14,18 @@ import { stat as fsStat } from 'fs/promises';
  */
 export default class VirtualDirectoryFS {
     #ws;
+    #tree;
 
-    constructor(workspace) { this.#ws = workspace; }
+    constructor(workspace, tree = null) {
+        this.#ws = workspace;
+        this.#tree = tree || workspace.getDefaultDirectoryTree();
+    }
 
     // ── Public API ───────────────────────────────────────────────────────────
 
     async stat(vPath) {
         const n = norm(vPath);
-        const dirTree = this.#ws.directoryTree;
+        const dirTree = this.#tree;
 
         // Root always exists
         if (n === '/') return { isDir: true, name: 'Directories', size: 0 };
@@ -56,7 +60,7 @@ export default class VirtualDirectoryFS {
 
     async readdir(vPath) {
         const n = norm(vPath);
-        const dirTree = this.#ws.directoryTree;
+        const dirTree = this.#tree;
 
         const entries = [];
         const used = new Set();
@@ -72,7 +76,7 @@ export default class VirtualDirectoryFS {
         const bitmap = await dirTree.find(n);
         if (bitmap && bitmap.size > 0) {
             const oids = bitmap.toArray().slice(0, 1000);
-            const docs = await this.#ws.db.documents.getMany(oids);
+            const docs = await this.#ws.getDocumentsByIdArray(oids);
 
             for (const doc of docs) {
                 if (!doc) continue;
@@ -116,11 +120,11 @@ export default class VirtualDirectoryFS {
     // ── Private helpers ──────────────────────────────────────────────────────
 
     async #findDoc(dirPath, filename) {
-        const bitmap = await this.#ws.directoryTree.find(dirPath);
+        const bitmap = await this.#tree.find(dirPath);
         if (!bitmap || bitmap.size === 0) return null;
 
         const oids = bitmap.toArray().slice(0, 1000);
-        const docs = await this.#ws.db.documents.getMany(oids);
+        const docs = await this.#ws.getDocumentsByIdArray(oids);
         return docs.find(d => d && docName(d) === filename) || null;
     }
 

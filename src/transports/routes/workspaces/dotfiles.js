@@ -78,6 +78,19 @@ export default async function workspaceDotfilesRoutes(fastify, options) {
     return { workspace, userId, requestingUserId };
   };
 
+  const getContextTreeSelector = (workspace, source = {}, fallbackPath = '/') =>
+    workspace.getContextTreeSelector(source?.context ?? fallbackPath, source?.treeNameOrTreeId ?? null);
+
+  function buildAttributes(query) {
+    const { allOf, noneOf, anyOf } = query;
+    if (!allOf?.length && !noneOf?.length && !anyOf?.length) return undefined;
+    const attrs = {};
+    if (allOf?.length) attrs.allOf = allOf;
+    if (noneOf?.length) attrs.noneOf = noneOf;
+    if (anyOf?.length) attrs.anyOf = anyOf;
+    return attrs;
+  }
+
   /**
    * CRUD: List dotfile documents
    * GET /workspaces/:id/dotfiles
@@ -95,31 +108,32 @@ export default async function workspaceDotfilesRoutes(fastify, options) {
       querystring: {
         type: 'object',
         properties: {
-          contextSpec: { type: 'string', default: '/' },
-          featureArray: {
-            type: 'array',
-            items: { type: 'string' },
-            default: []
-          },
+          treeNameOrTreeId: { type: 'string' },
+          context: { type: 'string', default: '/' },
+          allOf: { type: 'array', items: { type: 'string' }, default: [] },
+          noneOf: { type: 'array', items: { type: 'string' }, default: [] },
+          anyOf: { type: 'array', items: { type: 'string' }, default: [] },
           limit: { type: 'integer' },
           offset: { type: 'integer' },
-          page: { type: 'integer' }
+          page: { type: 'integer' },
         }
       }
     }
   }, async (request, reply) => {
     try {
       const { workspace } = extractRequestInfo(request);
-      const contextSpec = request.query.contextSpec || '/';
-      const featureArrayInput = request.query.featureArray || [];
-      const derivedFeatureArray = ['data/abstraction/dotfile', ...featureArrayInput];
+      const contextSelector = getContextTreeSelector(workspace, request.query, '/');
+      const attrs = buildAttributes(request.query) || {};
+      const allOf = ['data/abstraction/dotfile', ...(attrs.allOf || [])];
 
-      const documents = await workspace.db.findDocuments(
-        contextSpec,
-        derivedFeatureArray,
-        [], // empty filterArray
-        { limit: request.query.limit, offset: request.query.offset, page: request.query.page }
-      );
+      const documents = await workspace.find({
+        context: contextSelector,
+        attributes: { ...attrs, allOf },
+        filters: [],
+        limit: request.query.limit,
+        offset: request.query.offset,
+        page: request.query.page,
+      });
 
       const responseObject = new ResponseObject().found(documents, 'Dotfiles retrieved successfully', 200, documents.count, documents.totalCount);
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
@@ -148,39 +162,25 @@ export default async function workspaceDotfilesRoutes(fastify, options) {
         type: 'object',
         required: ['dotfiles'],
         properties: {
-          contextSpec: { type: 'string', default: '/' },
-          featureArray: {
-            type: 'array',
-            items: { type: 'string' },
-            default: []
-          },
-          dotfiles: {
-            anyOf: [
-              { type: 'object' },
-              { type: 'array', items: { type: 'object' } }
-            ]
-          }
+          treeNameOrTreeId: { type: 'string' },
+          context: { type: 'string', default: '/' },
+          features: { type: 'array', items: { type: 'string' }, default: [] },
+          dotfiles: { anyOf: [{ type: 'object' }, { type: 'array', items: { type: 'object' } }] },
         }
       }
     }
   }, async (request, reply) => {
     try {
       const { workspace } = extractRequestInfo(request);
-      const contextSpec = request.body.contextSpec || '/';
-      const featureArrayInput = request.body.featureArray || [];
+      const contextSelector = getContextTreeSelector(workspace, request.body, '/');
       const dotfilesInput = request.body.dotfiles;
       const dotfileArray = Array.isArray(dotfilesInput) ? dotfilesInput : [dotfilesInput];
+      const documentArray = dotfileArray.map(df => ({ schema: 'data/abstraction/dotfile', data: df }));
 
-      const documentArray = dotfileArray.map(df => ({
-        schema: 'data/abstraction/dotfile',
-        data: df
-      }));
-
-      const inserted = await workspace.db.insertDocumentArray(
-        documentArray,
-        contextSpec,
-        ['data/abstraction/dotfile', ...featureArrayInput]
-      );
+      const inserted = await workspace.putMany(documentArray, {
+        context: contextSelector,
+        features: ['data/abstraction/dotfile', ...(request.body.features || [])],
+      });
 
       const responseObject = new ResponseObject().created(inserted, 'Dotfiles created successfully');
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
@@ -209,6 +209,8 @@ export default async function workspaceDotfilesRoutes(fastify, options) {
         type: 'object',
         required: ['documents'],
         properties: {
+          treeNameOrTreeId: { type: 'string' },
+          context: { type: 'string', default: '/' },
           documents: {
             type: 'array',
             items: {
@@ -225,7 +227,9 @@ export default async function workspaceDotfilesRoutes(fastify, options) {
   }, async (request, reply) => {
     try {
       const { workspace } = extractRequestInfo(request);
-      const result = await workspace.db.updateDocumentArray(request.body.documents);
+      const result = await workspace.putMany(request.body.documents, {
+        context: getContextTreeSelector(workspace, request.body, '/'),
+      });
       const responseObject = new ResponseObject().updated(result, 'Dotfiles updated successfully');
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
     } catch (error) {
@@ -259,7 +263,7 @@ export default async function workspaceDotfilesRoutes(fastify, options) {
     try {
       const { workspace } = extractRequestInfo(request);
       const docIds = Array.isArray(request.body) ? request.body : [request.body];
-      const success = await workspace.db.deleteDocumentArray(docIds);
+      const success = await workspace.deleteMany(docIds);
       const responseObject = success ?
         new ResponseObject().deleted(null, 'Dotfiles deleted successfully') :
         new ResponseObject().badRequest('Failed to delete dotfiles');

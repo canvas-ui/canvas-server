@@ -160,7 +160,7 @@ class HookService extends EventEmitter {
             };
 
             const db = workspace.isActive ? workspace.db : null;
-            const tree = workspace.isActive ? workspace.tree : null;
+            const tree = workspace.isActive ? workspace.getDefaultContextTree() : null;
             const emit = async (name, nextPayload = {}) => {
                 workspace.emit(name, {
                     ...(nextPayload && typeof nextPayload === 'object' ? nextPayload : { value: nextPayload }),
@@ -168,9 +168,9 @@ class HookService extends EventEmitter {
                     source: 'hook',
                 });
             };
-            const insert = async (document, options = {}) => workspace.insert(document, options);
-            const update = async (id, document, options = {}) => workspace.update(id, document, options);
-            const remove = async (id, options = {}) => workspace.remove(id, options);
+            const put = async (document, options = {}) => workspace.put(document, options);
+            const update = async (id, document, options = {}) => workspace.put({ ...document, id }, options);
+            const unlink = async (id, options = {}) => workspace.unlink(id, options);
             const deleteDocument = async (id) => workspace.delete(id);
             const get = async (id, options = { parse: true }) => workspace.get(id, options);
             const find = async (spec = {}) => workspace.find(spec);
@@ -184,16 +184,16 @@ class HookService extends EventEmitter {
                 tree,
                 logger,
                 emit,
-                insert,
+                insert: put,
                 update,
-                remove,
+                remove: unlink,
                 deleteDocument,
                 get,
                 find,
                 link: async (documentId, contexts = []) => {
                     const targets = Array.isArray(contexts) ? contexts : [contexts];
                     for (const context of targets.filter(Boolean)) {
-                        await insert(documentId, { context, emitEvent: true });
+                        await workspace.link(documentId, { context, emitEvent: true });
                     }
                 },
             });

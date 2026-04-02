@@ -195,7 +195,7 @@ export default async function contextDotfileRoutes(fastify, options) {
     schema: {
       body: {
         type: 'array',
-        items: { type: ['string', 'number'] },
+        items: { anyOf: [{ type: 'string' }, { type: 'number' }] },
         minItems: 1
       }
     }

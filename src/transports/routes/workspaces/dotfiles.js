@@ -255,7 +255,7 @@ export default async function workspaceDotfilesRoutes(fastify, options) {
       },
       body: {
         type: 'array',
-        items: { type: ['string', 'number'] },
+        items: { anyOf: [{ type: 'string' }, { type: 'number' }] },
         minItems: 1
       }
     }

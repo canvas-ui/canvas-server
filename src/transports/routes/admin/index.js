@@ -408,7 +408,7 @@ export default async function adminRoutes(fastify, options) {
           label: { type: 'string' },
           description: { type: 'string' },
           color: { type: 'string', pattern: '^#[0-9A-Fa-f]{3,6}$' },
-          icon: { type: ['string', 'null'] },
+          icon: { anyOf: [{ type: 'string' }, { type: 'null' }] },
           homeScreen: { type: 'object' },
           links: { type: 'object' },
           type: { type: 'string', enum: ['workspace', 'universe'] },

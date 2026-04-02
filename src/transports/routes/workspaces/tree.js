@@ -65,7 +65,7 @@ export default async function workspaceTreeRoutes(fastify) {
         properties: {
           path: { type: 'string' },
           autoCreateLayers: { type: 'boolean' },
-          data: { type: ['object', 'null'], default: null },
+          data: { anyOf: [{ type: 'object' }, { type: 'null' }], default: null },
         },
       },
     },

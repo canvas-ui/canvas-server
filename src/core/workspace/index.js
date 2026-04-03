@@ -436,6 +436,8 @@ class WorkspaceManager extends EventEmitter {
         let workspaceDir;
         if (options.rootPath) {
             workspaceDir = options.rootPath;
+        } else if (options.userEmail) {
+            workspaceDir = path.join(this.#defaultRootPath, options.userEmail, 'Workspaces', sanitizedName);
         } else {
             workspaceDir = path.join(this.#defaultRootPath, 'workspaces', sanitizedName);
         }

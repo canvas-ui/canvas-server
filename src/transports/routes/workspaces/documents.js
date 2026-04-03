@@ -21,7 +21,22 @@ export default async function workspaceDocumentRoutes(fastify, options) {
   function resolveContextSelector(workspace, source = {}, fallbackPath = '/') {
     const path = source?.context ?? fallbackPath;
     if (!path || path === '/') { return null; }
-    return workspace.getContextTreeSelector(path, source?.treeNameOrTreeId ?? null);
+    const treeNameOrId = source?.treeNameOrTreeId ?? null;
+    const treeType = source?.treeType ?? null;
+
+    if (treeType === 'directory') {
+      return workspace.getDirectoryTreeSelector(path, treeNameOrId);
+    }
+    if (!treeType && treeNameOrId) {
+      // Fallback: detect type from the tree itself to avoid hard errors
+      try {
+        const tree = workspace.getTree(treeNameOrId);
+        if (tree.type === 'directory') {
+          return workspace.getDirectoryTreeSelector(path, treeNameOrId);
+        }
+      } catch (_) { /* unknown tree — let getContextTreeSelector handle the error */ }
+    }
+    return workspace.getContextTreeSelector(path, treeNameOrId);
   }
 
   function buildReadOptions(contextSelector, includeIncoming, options = {}) {
@@ -80,6 +95,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
 
   const contextQueryProps = {
     treeNameOrTreeId: { type: 'string' },
+    treeType: { type: 'string', enum: ['context', 'directory'] },
     context: { type: 'string', default: '/' },
   };
 

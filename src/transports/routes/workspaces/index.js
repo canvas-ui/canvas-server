@@ -207,7 +207,8 @@ export default async function workspaceRoutes(fastify, options) {
           metadata: request.body.metadata,
           acl: request.body.acl,
           links: request.body.links,
-          restApi: request.body.restApi
+          restApi: request.body.restApi,
+          userEmail: request.user.email
         }
       );
 

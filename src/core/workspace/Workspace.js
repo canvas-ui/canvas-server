@@ -15,7 +15,6 @@ import Db from '../../services/synapsd/src/index.js';
 import Stored from '../../services/stored/src/index.js';
 import { parseDocumentId, parseDocumentIdArray } from '../../utils/documentId.js';
 import {
-    INCOMING_TREE_NAME,
     getIncomingFileContextFromStoredLocation,
     normalizeIncomingTreePath,
     shouldExcludeIncoming,
@@ -35,9 +34,8 @@ import {
 class Workspace extends EventEmitter {
     static HOME_STORED_BACKEND = 'fs:home';
     static HOME_BACKEND_FEATURE = 'data/backend/home';
-    static INCOMING_TREE_NAME = INCOMING_TREE_NAME;
-    static CONTEXT_TREE_NAME = 'ContextTree';
-    static DIRECTORY_TREE_NAME = 'DirectoryTree';
+    static INCOMING_TREE_NAME = 'incoming';
+    static DEFAULT_CONTEXT_TREE_NAME = 'default';
 
     #rootPath = null;
     #configStore = null;
@@ -410,7 +408,7 @@ class Workspace extends EventEmitter {
             context: normalizedContext,
             features: features.length > 0 ? features : (attributes ?? []),
             filters,
-            ...(shouldExcludeIncoming(normalizedContext?.path, includeIncoming) ? { excludeTree: { tree: INCOMING_TREE_NAME } } : {}),
+            ...(shouldExcludeIncoming(normalizedContext?.path, includeIncoming) ? { excludeTree: { tree: Workspace.INCOMING_TREE_NAME } } : {}),
             ...rest,
         });
     }
@@ -900,42 +898,44 @@ class Workspace extends EventEmitter {
 
     #getPreferredContextTree() {
         const db = this.#getActiveDb();
-        return db.getTree(Workspace.CONTEXT_TREE_NAME) || db.getDefaultContextTree();
+        return db.getTree(Workspace.DEFAULT_CONTEXT_TREE_NAME) || db.getDefaultContextTree();
     }
 
     #getPreferredDirectoryTree() {
         const db = this.#getActiveDb();
-        return db.getTree(Workspace.DIRECTORY_TREE_NAME) || db.getDefaultDirectoryTree();
+        return db.getTree(Workspace.INCOMING_TREE_NAME) || db.getDefaultDirectoryTree();
     }
 
     async #ensureContextTree() {
-        if (this.#db.getTree(Workspace.CONTEXT_TREE_NAME)) {
-            return this.#db.getTree(Workspace.CONTEXT_TREE_NAME);
+        if (this.#db.getTree(Workspace.DEFAULT_CONTEXT_TREE_NAME)) {
+            return this.#db.getTree(Workspace.DEFAULT_CONTEXT_TREE_NAME);
         }
 
+        // Migration: rename legacy names ('ContextTree', 'context') -> 'default'
         const defaultContextTree = this.#db.getDefaultContextTree();
-        if (defaultContextTree?.type === 'context' && defaultContextTree.name === 'context') {
-            await this.#db.renameTree(defaultContextTree.id, Workspace.CONTEXT_TREE_NAME);
-            return this.#db.getTree(Workspace.CONTEXT_TREE_NAME);
+        if (defaultContextTree?.type === 'context' && ['context', 'ContextTree'].includes(defaultContextTree.name)) {
+            await this.#db.renameTree(defaultContextTree.id, Workspace.DEFAULT_CONTEXT_TREE_NAME);
+            return this.#db.getTree(Workspace.DEFAULT_CONTEXT_TREE_NAME);
         }
 
-        await this.#db.createTree(Workspace.CONTEXT_TREE_NAME, 'context');
-        return this.#db.getTree(Workspace.CONTEXT_TREE_NAME);
+        await this.#db.createTree(Workspace.DEFAULT_CONTEXT_TREE_NAME, 'context');
+        return this.#db.getTree(Workspace.DEFAULT_CONTEXT_TREE_NAME);
     }
 
     async #ensureDirectoryTree() {
-        if (this.#db.getTree(Workspace.DIRECTORY_TREE_NAME)) {
-            return this.#db.getTree(Workspace.DIRECTORY_TREE_NAME);
+        if (this.#db.getTree(Workspace.INCOMING_TREE_NAME)) {
+            return this.#db.getTree(Workspace.INCOMING_TREE_NAME);
         }
 
+        // Migration: rename legacy names ('DirectoryTree', 'directory') -> 'incoming'
         const defaultDirectoryTree = this.#db.getDefaultDirectoryTree();
-        if (defaultDirectoryTree?.type === 'directory' && defaultDirectoryTree.name === 'directory') {
-            await this.#db.renameTree(defaultDirectoryTree.id, Workspace.DIRECTORY_TREE_NAME);
-            return this.#db.getTree(Workspace.DIRECTORY_TREE_NAME);
+        if (defaultDirectoryTree?.type === 'directory' && ['directory', 'DirectoryTree'].includes(defaultDirectoryTree.name)) {
+            await this.#db.renameTree(defaultDirectoryTree.id, Workspace.INCOMING_TREE_NAME);
+            return this.#db.getTree(Workspace.INCOMING_TREE_NAME);
         }
 
-        await this.#db.createTree(Workspace.DIRECTORY_TREE_NAME, 'directory');
-        return this.#db.getTree(Workspace.DIRECTORY_TREE_NAME);
+        await this.#db.createTree(Workspace.INCOMING_TREE_NAME, 'directory');
+        return this.#db.getTree(Workspace.INCOMING_TREE_NAME);
     }
 
     #setStatus(status) {

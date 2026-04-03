@@ -29,6 +29,11 @@ export default async function contextRoutes(fastify, options) {
     onRequest: [resolveContextAddress]
   });
 
+  fastify.register(treeRoutes, {
+    prefix: '/:id/trees/default',
+    onRequest: [resolveContextAddress]
+  });
+
   fastify.register(tokenRoutes, {
     prefix: '/',
     onRequest: [resolveContextAddress]

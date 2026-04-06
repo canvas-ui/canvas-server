@@ -1,5 +1,6 @@
 import { HttpClient } from './HttpClient.js';
 import { SocketClient } from './SocketClient.js';
+import { CanvasApiError } from './errors.js';
 import { AuthResource } from './resources/AuthResource.js';
 import { WorkspacesResource } from './resources/WorkspacesResource.js';
 import { ContextsResource } from './resources/ContextsResource.js';
@@ -11,33 +12,51 @@ import { AdminResource } from './resources/AdminResource.js';
  *
  * Works in Node 18+, browsers, Electron, and browser extensions.
  *
- * @example
- * const client = new CanvasClient({ baseUrl: 'http://localhost:8001' });
+ * ## Auth modes
  *
- * // Authenticate
- * const { data } = await client.auth.login({ email, password });
- * client.setToken(data.token);
+ * **Token (preferred for CLI / automation):**
+ * ```js
+ * const client = new CanvasClient({ baseUrl, token: 'canvas-abc123' });
+ * ```
  *
- * // REST
- * const { data: workspaces } = await client.workspaces.list();
+ * **Username + password (interactive login):**
+ * ```js
+ * const client = new CanvasClient({ baseUrl });
+ * await client.authenticate({ email, password });              // local / auto-detect
+ * await client.authenticate({ email, password, strategy: 'ldap' });  // explicit backend
+ * ```
  *
- * // WebSocket (connect lazily)
- * await client.socket.connect();
- * client.socket.subscribe('workspace:my-id');
- * client.socket.on('workspace.documents.inserted', handler);
+ * **Pre-configured strategy (LDAP-only deployment):**
+ * ```js
+ * const client = new CanvasClient({ baseUrl, defaultStrategy: 'ldap' });
+ * await client.authenticate({ email, password });   // always uses LDAP
+ * ```
+ *
+ * After `authenticate()` resolves the client holds the resulting token and
+ * uses it for all subsequent requests including WebSocket connections.
  */
 export class CanvasClient {
     /**
      * @param {object} options
-     * @param {string} options.baseUrl        - Server URL, e.g. "http://localhost:8001"
-     * @param {string} [options.restBasePath] - REST path prefix (default: "/rest/v2")
-     * @param {string} [options.token]        - Initial auth token
-     * @param {number} [options.timeout]      - Request timeout in ms (default: 30000)
+     * @param {string}  options.baseUrl           - Server URL, e.g. "http://localhost:8001"
+     * @param {string}  [options.restBasePath]    - REST path prefix (default: "/rest/v2")
+     * @param {string}  [options.token]           - Pre-set auth token (skips login)
+     * @param {'auto'|'local'|'imap'|'ldap'} [options.defaultStrategy='auto']
+     *   Default auth strategy used by `authenticate()` when none is specified.
+     *   Useful for deployments where only one backend is available.
+     * @param {number}  [options.timeout]         - Request timeout ms (default: 30000)
      */
-    constructor({ baseUrl, restBasePath = '/rest/v2', token, timeout } = {}) {
+    constructor({
+        baseUrl,
+        restBasePath = '/rest/v2',
+        token,
+        defaultStrategy = 'auto',
+        timeout,
+    } = {}) {
         if (!baseUrl) throw new Error('CanvasClient: baseUrl is required');
 
         this.#token = token ?? null;
+        this.#defaultStrategy = defaultStrategy;
 
         const restBaseUrl = `${baseUrl.replace(/\/$/, '')}${restBasePath}`;
 
@@ -61,11 +80,14 @@ export class CanvasClient {
     }
 
     #token;
+    #defaultStrategy;
 
     // ── Token management ───────────────────────────────────────────────────
 
     /**
      * Set or replace the auth token used for all subsequent requests.
+     * Call this after receiving a token from an external login flow.
+     *
      * @param {string|null} token
      */
     setToken(token) {
@@ -77,26 +99,68 @@ export class CanvasClient {
         return this.#token;
     }
 
-    // ── Convenience: login and auto-set token ──────────────────────────────
+    // ── Unified authentication entry point ─────────────────────────────────
 
     /**
-     * Login and automatically store the returned token.
+     * Authenticate the client. Accepts either a pre-existing token or credentials.
      *
-     * @param {{ email: string, password: string, strategy?: string }} credentials
-     * @returns {Promise<object>} The user object from the server
+     * Token mode — no network request, token is used immediately:
+     * ```js
+     * await client.authenticate({ token: 'canvas-abc123' });
+     * ```
+     *
+     * Credential mode — calls POST /auth/login, auto-stores the returned token:
+     * ```js
+     * await client.authenticate({ email: 'alice@example.com', password: 'secret' });
+     * await client.authenticate({ email, password, strategy: 'ldap' });
+     * ```
+     *
+     * If no `strategy` is provided the client's `defaultStrategy` is used
+     * (constructor option, default: `'auto'`).
+     *
+     * @param {object} options
+     * @param {string}  [options.token]     - Pre-existing API/JWT/device token
+     * @param {string}  [options.email]     - Required for credential auth
+     * @param {string}  [options.password]  - Required for credential auth
+     * @param {'auto'|'local'|'imap'|'ldap'} [options.strategy]
+     *   Overrides the client's defaultStrategy for this call only.
+     *
+     * @returns {Promise<void>}
      */
-    async login(credentials) {
-        const result = await this.auth.login(credentials);
-        if (result.data?.token) {
-            this.setToken(result.data.token);
+    async authenticate({ token, email, password, strategy } = {}) {
+        if (token) {
+            this.setToken(token);
+            return;
         }
-        return result;
+
+        if (email && password) {
+            await this.#loginWithCredentials({ email, password, strategy });
+            return;
+        }
+
+        throw new CanvasApiError(
+            'authenticate() requires either { token } or { email, password }',
+            0,
+            null,
+        );
     }
 
     /**
-     * Revoke the current token and clear it locally.
+     * Low-level login. Calls POST /auth/login and auto-stores the returned token.
+     * Prefer `authenticate()` for most use cases.
+     *
+     * @param {{ email: string, password: string, strategy?: 'auto'|'local'|'imap'|'ldap' }} credentials
+     * @returns {Promise<{ data: { token: string, user: object } }>}
      */
-    async logout() {
+    async login(credentials) {
+        return this.#loginWithCredentials(credentials);
+    }
+
+    /**
+     * Clear the stored token and disconnect the socket.
+     * Does NOT revoke the token server-side — call `auth.tokens.revoke(id)` for that.
+     */
+    logout() {
         this.#token = null;
         this.socket.disconnect();
     }
@@ -108,8 +172,23 @@ export class CanvasClient {
      */
     ping() {
         return this.http.get('/ping').catch(() =>
-            // Fall back to root if /rest/v2/ping doesn't exist
             this.http.get(''),
         );
+    }
+
+    // ── Private ────────────────────────────────────────────────────────────
+
+    async #loginWithCredentials({ email, password, strategy }) {
+        const result = await this.auth.login({
+            email,
+            password,
+            strategy: strategy ?? this.#defaultStrategy,
+        });
+
+        if (result.data?.token) {
+            this.setToken(result.data.token);
+        }
+
+        return result;
     }
 }

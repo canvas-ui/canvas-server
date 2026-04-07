@@ -112,7 +112,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
   };
 
   const paginationQueryProps = {
-    limit: { type: 'integer' },
+    limit: { type: 'integer', default: 200 },
     offset: { type: 'integer' },
     page: { type: 'integer' },
   };
@@ -260,7 +260,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       if (!workspace) return;
       const contextSelector = resolveContextSelector(workspace, request.query, '/');
 
-      const document = await workspace.getDocumentById(request.params.docId);
+      const document = await workspace.get(request.params.docId);
       if (!document) {
         const responseObject = new ResponseObject().notFound(`Document with ID ${request.params.docId} not found`);
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());
@@ -583,7 +583,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());
       }
 
-      const document = await workspace.getDocumentById(documentId);
+      const document = await workspace.get(documentId);
       if (!document) {
         const responseObject = new ResponseObject().notFound(`Document with ID ${request.params.docId} not found`);
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());

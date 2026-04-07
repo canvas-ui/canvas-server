@@ -271,8 +271,9 @@ class Workspace extends EventEmitter {
     }
 
     #normalizeQuerySpec(spec = {}) {
-        const { attributes, features = null, ...rest } = spec;
+        const { attributes, features = null, limit = 200, ...rest } = spec;
         return {
+            limit,
             ...rest,
             ...(features != null ? { features } : {}),
             ...(features == null && attributes != null ? { features: attributes } : {}),

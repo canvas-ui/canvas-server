@@ -579,7 +579,6 @@ class ImapService extends EventEmitter {
             ...(emailDoc.metadata || {}),
             source: 'imap',
             workspaceId: workspace.id,
-            dataPaths: [rawKey, ...attachments.map((attachment) => attachment.url)].filter(Boolean),
         };
 
         return emailDoc;

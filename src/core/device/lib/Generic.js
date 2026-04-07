@@ -42,6 +42,19 @@ class GenericDevice {
     get hostname() {
         return this.network.hostname;
     }
+
+    get username() {
+        return this.user.username;
+    }
+
+    /**
+     * Human-friendly device identifier in user@hostname form.
+     * Suitable as the authority component of file:// URLs:
+     *   file://jdoe@myhostname/some/path.pdf
+     */
+    get alias() {
+        return `${this.user.username}@${this.os.hostname}`;
+    }
 }
 
 export default GenericDevice;

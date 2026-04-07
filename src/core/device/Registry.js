@@ -41,6 +41,12 @@ class DeviceRegistry {
         return devices[deviceId] || null;
     }
 
+    async getDeviceByAlias(userId, alias) {
+        if (!alias) { return null; }
+        const devices = await this.#readDevices(userId);
+        return Object.values(devices).find((d) => d.alias === alias) || null;
+    }
+
     async upsertDevice(userId, device = {}) {
         const deviceId = this.#requireDeviceId(device.deviceId);
         const devices = await this.#readDevices(userId);
@@ -95,6 +101,8 @@ class DeviceRegistry {
         const existing = Array.isArray(docs)
             ? docs.find((document) => document?.data?.deviceId === deviceId) || null
             : null;
+        const username = device.username ?? existing?.data?.username;
+        const hostname = device.hostname ?? existing?.data?.hostname;
         const data = pickDefined({
             ...(existing?.data || {}),
             deviceId,
@@ -103,6 +111,10 @@ class DeviceRegistry {
             platform: device.platform ?? existing?.data?.platform,
             arch: device.arch ?? existing?.data?.arch,
             type: device.type ?? existing?.data?.type,
+            username,
+            hostname,
+            fqdn: device.fqdn ?? existing?.data?.fqdn,
+            alias: device.alias ?? (username && hostname ? `${username}@${hostname}` : existing?.data?.alias),
             createdAt: existing?.data?.createdAt || device.createdAt || now,
             lastSeen: device.lastSeen || now,
         });
@@ -166,6 +178,9 @@ class DeviceRegistry {
             ? (typeof input.description === 'string' ? input.description.trim() || undefined : undefined)
             : existing?.description;
 
+        const username = input.username ?? existing?.username;
+        const hostname = input.hostname ?? existing?.hostname;
+
         return pickDefined({
             deviceId: this.#requireDeviceId(input.deviceId),
             name: String(input.name || existing?.name || input.deviceId).trim(),
@@ -173,6 +188,10 @@ class DeviceRegistry {
             platform: input.platform ?? existing?.platform,
             arch: input.arch ?? existing?.arch,
             type: input.type ?? existing?.type,
+            username,
+            hostname,
+            fqdn: input.fqdn ?? existing?.fqdn,
+            alias: input.alias ?? (username && hostname ? `${username}@${hostname}` : existing?.alias),
             createdAt: existing?.createdAt || input.createdAt || now,
             updatedAt: now,
             lastSeen: input.lastSeen || now,

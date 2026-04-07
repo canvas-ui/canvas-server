@@ -143,9 +143,10 @@ export default class VirtualContextFS {
     }
 
     #localPath(doc) {
-        for (const dp of doc.metadata?.dataPaths || []) {
-            if (!dp.startsWith('file://')) continue;
-            const p = dp.slice(7).replace('{WORKSPACE_ROOT}', this.#ws.rootPath);
+        const urls = (doc.locations || []).map((l) => l.url);
+        for (const url of urls) {
+            if (!url.startsWith('file://')) continue;
+            const p = url.slice(7).replace('{WORKSPACE_ROOT}', this.#ws.rootPath);
             if (existsSync(p)) return p;
         }
         return null;

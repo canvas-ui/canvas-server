@@ -706,14 +706,14 @@ class Workspace extends EventEmitter {
         if (checksumArray.length === 0) { return null; }
 
         const meta = this.#getStoredMetadata(storedFile);
-        const locations = this.#resolveStoredLocations(storedFile, meta, true);
-        const incomingPaths = this.#buildStoredIncomingPaths(locations);
+        const backends = this.#resolveStoredLocations(storedFile, meta, true);
+        const incomingPaths = this.#buildStoredIncomingPaths(backends);
         if (incomingPaths.length === 0) { return null; }
 
         const primaryChecksum = checksumArray[0];
         const existingDocument = await this.db.getByChecksumString(primaryChecksum).catch(() => null);
-        const documentData = this.#buildStoredFileDocument(storedFile, checksumArray, locations, existingDocument);
-        const features = this.#buildStoredFileFeatures(locations);
+        const documentData = this.#buildStoredFileDocument(storedFile, checksumArray, backends, existingDocument);
+        const features = this.#buildStoredFileFeatures(backends);
         const currentIncomingPaths = existingDocument?.id
             ? await this.db.listDocumentTreePaths(existingDocument.id, Workspace.INCOMING_TREE_NAME).catch(() => [])
             : [];
@@ -743,11 +743,11 @@ class Workspace extends EventEmitter {
         if (!existingDocument?.id) { return null; }
 
         const meta = this.#getStoredMetadata(storedFile);
-        const locations = this.#resolveStoredLocations(storedFile, meta, false);
-        const incomingPaths = this.#buildStoredIncomingPaths(locations);
+        const backends = this.#resolveStoredLocations(storedFile, meta, false);
+        const incomingPaths = this.#buildStoredIncomingPaths(backends);
         const currentIncomingPaths = await this.db.listDocumentTreePaths(existingDocument.id, Workspace.INCOMING_TREE_NAME).catch(() => []);
-        const documentData = this.#buildStoredFileDocument(storedFile, checksumArray, locations, existingDocument);
-        const features = this.#buildStoredFileFeatures(locations);
+        const documentData = this.#buildStoredFileDocument(storedFile, checksumArray, backends, existingDocument);
+        const features = this.#buildStoredFileFeatures(backends);
 
         await this.put({ ...documentData, id: existingDocument.id }, { features });
         await this.#removeStoredIncomingPaths(existingDocument.id, currentIncomingPaths, incomingPaths);
@@ -808,35 +808,35 @@ class Workspace extends EventEmitter {
             .map(([algorithm, hash]) => `${algorithm}/${hash}`);
     }
 
-    #buildStoredIncomingPaths(locations = []) {
+    #buildStoredIncomingPaths(backends = []) {
         return Array.from(new Set(
-            locations
-                .map((location) => normalizeIncomingTreePath(getIncomingFileContextFromStoredLocation(location)))
+            backends
+                .map((backend) => normalizeIncomingTreePath(getIncomingFileContextFromStoredLocation(backend)))
                 .filter(Boolean)
         ));
     }
 
-    #buildStoredFileFeatures(locations = []) {
+    #buildStoredFileFeatures(backends = []) {
         const features = [];
 
-        for (const location of locations) {
-            if (location.backend === Workspace.HOME_STORED_BACKEND) {
+        for (const backend of backends) {
+            if (backend.backend === Workspace.HOME_STORED_BACKEND) {
                 features.push(Workspace.HOME_BACKEND_FEATURE);
             }
-            if (location?.source?.provider) {
-                features.push(`data/source/${location.source.provider}`);
+            if (backend?.source?.provider) {
+                features.push(`data/source/${backend.source.provider}`);
             }
         }
 
         return Array.from(new Set(features));
     }
 
-    #buildStoredFileDocument(storedFile = {}, checksumArray = [], locations = [], existingDocument = null) {
+    #buildStoredFileDocument(storedFile = {}, checksumArray = [], backends = [], existingDocument = null) {
         const key = storedFile.key || existingDocument?.data?.path || '';
         const filename = key ? path.basename(key) : (existingDocument?.data?.filename || 'file');
         const size = Number.isFinite(storedFile.size) ? storedFile.size : existingDocument?.data?.size;
         const mimeType = storedFile.mimeType || existingDocument?.data?.mime;
-        const dataPaths = this.#buildStoredDataPaths(locations);
+        const docLocations = this.#buildStoredLocations(backends);
         const data = {
             ...(existingDocument?.data || {}),
             filename,
@@ -860,25 +860,34 @@ class Workspace extends EventEmitter {
             schema: 'data/abstraction/file',
             checksumArray: checksumArray.length > 0 ? checksumArray : (existingDocument?.checksumArray || []),
             data,
+            locations: docLocations,
             metadata: {
                 ...(existingDocument?.metadata || {}),
-                dataPaths,
-                locations,
+                backends,  // workspace-internal storage backend descriptors
             },
         };
     }
 
-    #buildStoredDataPaths(locations = []) {
-        return Array.from(new Set(locations.flatMap((location) => {
-            if (!location?.key) { return []; }
-            if (location.backend === Workspace.HOME_STORED_BACKEND) {
-                return [
-                    `file://{WORKSPACE_ROOT}/home/${location.key}`,
-                    `stored://${location.backend}/${location.key}`,
-                ];
-            }
-            return [`stored://${location.backend}/${location.key}`];
-        })));
+    #buildStoredLocations(backends = []) {
+        return Array.from(
+            new Map(
+                backends.flatMap((backend) => {
+                    if (!backend?.key) { return []; }
+                    const entries = [];
+                    if (backend.backend === Workspace.HOME_STORED_BACKEND) {
+                        entries.push([
+                            `file://{WORKSPACE_ROOT}/home/${backend.key}`,
+                            { url: `file://{WORKSPACE_ROOT}/home/${backend.key}`, metadata: { backend: backend.backend } },
+                        ]);
+                    }
+                    entries.push([
+                        `stored://${backend.backend}/${backend.key}`,
+                        { url: `stored://${backend.backend}/${backend.key}`, metadata: { backend: backend.backend } },
+                    ]);
+                    return entries;
+                })
+            ).values()
+        );
     }
 
     async #removeStoredIncomingPaths(docId, currentPaths = [], nextPaths = []) {

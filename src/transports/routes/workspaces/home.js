@@ -201,7 +201,7 @@ export default async function homeRoutes(fastify) {
           await workspace.put({
             schema: 'data/abstraction/folder',
             data: { name, path: filePath, backend: 'home' },
-            metadata: { dataPaths: [dataPath] },
+            locations: [{ url: dataPath }],
           }, { context: contextTreeSelector, features: [HOME_BACKEND_FEATURE] });
 
           results.indexed.push({ path: filePath, type: 'folder' });
@@ -213,7 +213,7 @@ export default async function homeRoutes(fastify) {
             schema: 'data/abstraction/file',
             checksumArray: [checksumString],
             data: { filename: name, size: stat.size, mime: mime(abs) },
-            metadata: { dataPaths: [dataPath] },
+            locations: [{ url: dataPath }],
           }, { context: contextTreeSelector, features: [HOME_BACKEND_FEATURE] });
 
           results.indexed.push({ path: filePath, type: 'file', checksum: checksumString });

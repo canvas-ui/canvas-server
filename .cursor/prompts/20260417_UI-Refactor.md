@@ -54,8 +54,16 @@ Lets start with the main menu (on the left): Menu should contain the following:
                     - Governance model
                     - Memory management model
                     - Subagent / Tool use model
-                - Tools 
+                - Tools (MCP Servers)
+                  - Always discovered on-demand using the memory module
                 - Skills (management of skills inspired by https://skills.sh/)
+                  - Always discovered on-demand using the memory module
+                    - example-pdf-skill/
+                    ├── SKILL.md (main instructions)
+                    ├── FORMS.md (form-filling guide)
+                    ├── REFERENCE.md (detailed API reference)
+                    └── scripts/
+                        └── fill_form.py (utility script)
                 - Memory (we run a loop-based memory engine, settings omitted for now)
                 - Integrations
                     - Your IMAP, chat, SQL, REST API accounts go here(including ACL tokens for your canvas workspaces/contexts/canbases)

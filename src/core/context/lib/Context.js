@@ -1063,7 +1063,7 @@ class Context extends EventEmitter {
         });
     }
 
-    async find(accessingUserId, spec = {}) {
+    async list(accessingUserId, spec = {}) {
         if (!this.checkPermission(accessingUserId, 'documentRead')) {
             throw new Error('Access denied: User requires documentRead permission.');
         }
@@ -1071,7 +1071,7 @@ class Context extends EventEmitter {
 
         const { attributes, features = null, filters, options = {}, ...rest } = spec;
         const contextSelector = this.#buildContextSelector(this.#buildMergedContextArray(options));
-        return await workspace.find({
+        return await workspace.list({
             context: contextSelector,
             features: features ?? attributes,
             filters,

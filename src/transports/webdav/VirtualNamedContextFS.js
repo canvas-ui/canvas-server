@@ -146,7 +146,7 @@ export default class VirtualNamedContextFS {
 
     async #listDocs(feature, limit) {
         try {
-            return await this.#ctx.find(this.#ctx.userId, {
+            return await this.#ctx.list(this.#ctx.userId, {
                 attributes: { allOf: [feature] },
                 options: { limit, parse: true },
             });

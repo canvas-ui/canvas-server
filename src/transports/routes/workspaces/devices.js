@@ -13,7 +13,7 @@ function serializeDeviceDocument(document) {
 }
 
 async function findWorkspaceDeviceDoc(workspace, deviceId) {
-  const docs = await workspace.find({
+  const docs = await workspace.list({
     context: workspace.getContextTreeSelector('/'),
     attributes: { allOf: [DEVICE_SCHEMA] },
     limit: 500,
@@ -45,7 +45,7 @@ export default async function workspaceDeviceRoutes(fastify, options) {
     }
   }, async (request, reply) => {
     try {
-      const documents = await request.workspace.find({
+      const documents = await request.workspace.list({
         context: request.workspace.getContextTreeSelector('/'),
         attributes: { allOf: [DEVICE_SCHEMA] },
         limit: request.query.limit,
@@ -184,7 +184,7 @@ export default async function workspaceDeviceRoutes(fastify, options) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
-      const docs = await request.workspace.find({
+      const docs = await request.workspace.list({
         context: request.workspace.getContextTreeSelector('/'),
         attributes: { allOf: [DEVICE_SCHEMA] },
         limit: 500,

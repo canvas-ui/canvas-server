@@ -148,7 +148,7 @@ Current Security Issues:
           "windowMs": 3600000
         },
         "apiOperations": {
-          "maxAttempts": 10,
+          "maxAttempts": 10,  
           "windowMs": 300000
         },
         "tokenOperations": {

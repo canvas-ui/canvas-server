@@ -546,7 +546,7 @@ class Agent extends EventEmitter {
             const contextSelector = typeof contextSpec === 'object' && contextSpec !== null
                 ? contextSpec
                 : this.getContextTreeSelector(contextSpec);
-            const docs = await this.db.find({
+            const docs = await this.db.list({
                 context: contextSelector,
                 parse: true,
                 ...options,

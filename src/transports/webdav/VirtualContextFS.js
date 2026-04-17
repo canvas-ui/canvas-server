@@ -75,7 +75,7 @@ export default class VirtualContextFS {
 
         // 2. Documents → files
         try {
-            const docs = await tree.find({ path: n, parse: true, limit: 1000 });
+            const docs = await tree.list({ path: n, parse: true, limit: 1000 });
             if (Array.isArray(docs)) {
                 for (const doc of docs) {
                     let name = docName(doc);
@@ -137,7 +137,7 @@ export default class VirtualContextFS {
 
     async #findDoc(treePath, filename) {
         try {
-            const docs = await this.#tree.find({ path: treePath, parse: true, limit: 1000 });
+            const docs = await this.#tree.list({ path: treePath, parse: true, limit: 1000 });
             return Array.isArray(docs) ? docs.find(d => docName(d) === filename) || null : null;
         } catch { return null; }
     }

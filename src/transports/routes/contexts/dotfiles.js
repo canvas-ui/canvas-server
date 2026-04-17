@@ -66,7 +66,7 @@ export default async function contextDotfileRoutes(fastify, options) {
       const attrs = buildAttributes(request.query) || {};
       const allOf = ['data/abstraction/dotfile', ...(attrs.allOf || [])];
 
-      const dbResult = await context.find(request.user.id, {
+      const dbResult = await context.list(request.user.id, {
         attributes: { ...attrs, allOf },
         filters: request.query.filters || [],
         options: {

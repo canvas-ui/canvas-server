@@ -93,7 +93,7 @@ class DeviceRegistry {
             deviceType: device.type,
         })];
         const context = workspace.getContextTreeSelector('/');
-        const docs = await workspace.find({
+        const docs = await workspace.list({
             context,
             attributes: { allOf: [DEVICE_SCHEMA] },
             limit: 500,

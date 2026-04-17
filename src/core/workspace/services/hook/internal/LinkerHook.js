@@ -80,7 +80,7 @@ class LinkerHook {
 
             logger.debug(`Looking for contact with email: ${senderEmail}`);
 
-            const contactDocs = await workspace.find({
+            const contactDocs = await workspace.list({
                 context: workspace.getContextTreeSelector('/'),
                 attributes: { allOf: ['data/abstraction/contact'] },
                 parse: true,

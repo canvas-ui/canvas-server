@@ -193,7 +193,7 @@ export default async function pubContextRoutes(fastify, options) {
       const attributes = buildAttributes(request.query);
       const options = { includeServerContext, includeClientContext, limit, offset, page };
 
-      const dbResult = await access.context.find(
+      const dbResult = await access.context.list(
         access.accessType === 'user' ? access.userId : access.context.userId,
         {
           attributes,

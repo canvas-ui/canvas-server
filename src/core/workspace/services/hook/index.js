@@ -173,7 +173,7 @@ class HookService extends EventEmitter {
             const unlink = async (id, options = {}) => workspace.unlink(id, options);
             const deleteDocument = async (id) => workspace.delete(id);
             const get = async (id, options = { parse: true }) => workspace.get(id, options);
-            const find = async (spec = {}) => workspace.find(spec);
+            const list = async (spec = {}) => workspace.list(spec);
 
             await run({
                 event,
@@ -189,7 +189,7 @@ class HookService extends EventEmitter {
                 remove: unlink,
                 deleteDocument,
                 get,
-                find,
+                list,
                 link: async (documentId, contexts = []) => {
                     const targets = Array.isArray(contexts) ? contexts : [contexts];
                     for (const context of targets.filter(Boolean)) {

@@ -258,7 +258,7 @@ export default async function pubWorkspaceRoutes(fastify, options) {
       const options = { limit, offset, page };
 
       // Use workspace's document listing capability
-      const dbResult = await access.workspace.find({
+      const dbResult = await access.workspace.list({
         context: access.workspace.getContextTreeSelector('/', treeNameOrTreeId),
         attributes: { allOf: [] },
         filters: [],

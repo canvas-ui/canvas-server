@@ -126,7 +126,7 @@ export default async function workspaceDotfilesRoutes(fastify, options) {
       const attrs = buildAttributes(request.query) || {};
       const allOf = ['data/abstraction/dotfile', ...(attrs.allOf || [])];
 
-      const documents = await workspace.find({
+      const documents = await workspace.list({
         context: contextSelector,
         attributes: { ...attrs, allOf },
         filters: [],

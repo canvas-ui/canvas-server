@@ -1,7 +1,7 @@
 'use strict';
 
 export const INCOMING_ROOT_CONTEXT = '/.incoming';
-export const INCOMING_TREE_NAME = 'incoming';
+export const DIRECTORY_TREE_NAME = 'directory';
 
 function normalizeSegment(value, fallback = 'unknown') {
   const segment = String(value || '')
@@ -34,14 +34,19 @@ export function shouldExcludeIncoming(contextSpec, includeIncoming = false) {
   return normalized === null || normalized === '/' || normalized === '';
 }
 
+/**
+ * Normalize a path for use within the directory tree's /.incoming folder.
+ * Ensures the returned path is prefixed with /.incoming.
+ */
 export function normalizeIncomingTreePath(pathOrContext) {
   const normalized = normalizeContextSpec(pathOrContext);
-  if (normalized === null) { return '/'; }
-  if (normalized === INCOMING_ROOT_CONTEXT) { return '/'; }
-  if (normalized.startsWith(`${INCOMING_ROOT_CONTEXT}/`)) {
-    return normalized.slice(INCOMING_ROOT_CONTEXT.length) || '/';
+  if (normalized === null || normalized === '/') { return INCOMING_ROOT_CONTEXT; }
+  // Already prefixed — return as-is
+  if (normalized === INCOMING_ROOT_CONTEXT || normalized.startsWith(`${INCOMING_ROOT_CONTEXT}/`)) {
+    return normalized;
   }
-  return normalized;
+  // Prefix with /.incoming
+  return `${INCOMING_ROOT_CONTEXT}${normalized}`;
 }
 
 function buildIncomingContext(kind, ...segments) {

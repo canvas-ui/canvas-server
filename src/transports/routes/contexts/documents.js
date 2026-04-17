@@ -76,7 +76,7 @@ export default async function documentRoutes(fastify, options) {
 
       const dbResult = searchQuery
         ? await context.search(request.user.id, { query: searchQuery, ...spec })
-        : await context.find(request.user.id, spec);
+        : await context.list(request.user.id, spec);
 
       if (dbResult.error) {
         fastify.log.error(`SynapsD error: ${dbResult.error}`);
@@ -355,7 +355,7 @@ export default async function documentRoutes(fastify, options) {
       const allOf = [`data/abstraction/${request.params.abstraction}`, ...(attrs.allOf || [])];
       const { filters = [], includeServerContext, includeClientContext, limit, offset, page } = request.query;
 
-      const dbResult = await context.find(request.user.id, {
+      const dbResult = await context.list(request.user.id, {
         attributes: { ...attrs, allOf },
         filters,
         options: { includeServerContext, includeClientContext, limit, offset, page },

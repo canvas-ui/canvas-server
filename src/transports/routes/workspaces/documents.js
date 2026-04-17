@@ -4,7 +4,8 @@ import ResponseObject from '../../ResponseObject.js';
 import { parseDocumentId, parseDocumentIdArray } from '../../../utils/documentId.js';
 import { mergeDeviceFeatureTags } from '../../../utils/device-features.js';
 import {
-  INCOMING_TREE_NAME,
+  DIRECTORY_TREE_NAME,
+  INCOMING_ROOT_CONTEXT,
   shouldExcludeIncoming,
 } from '../../../utils/incoming-documents.js';
 
@@ -43,7 +44,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     if (!shouldExcludeIncoming(contextSelector?.path, includeIncoming)) {
       return options;
     }
-    return { ...options, excludeTree: { tree: INCOMING_TREE_NAME } };
+    return { ...options, excludeTree: { tree: DIRECTORY_TREE_NAME, path: INCOMING_ROOT_CONTEXT } };
   }
 
   function getInsertContextSelector(workspace, body, isTopLevelArray) {
@@ -157,7 +158,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
 
       const documents = searchQuery
         ? await workspace.search({ query: searchQuery, ...spec })
-        : await workspace.find(spec);
+        : await workspace.list(spec);
 
       if (documents.error) {
         fastify.log.error(`SynapsD error: ${documents.error}`);
@@ -309,7 +310,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       const attrs = buildAttributes(request.query) || {};
       const allOf = [`data/abstraction/${request.params.abstraction}`, ...(attrs.allOf || [])];
 
-      const documents = await workspace.find({
+      const documents = await workspace.list({
         context: contextSelector,
         attributes: { ...attrs, allOf },
         filters: request.query.filters,
@@ -471,7 +472,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       const contextSelector = resolveContextSelector(workspace, request.query, '/');
 
       const attributes = buildAttributes(request.query);
-      const matches = await workspace.find({
+      const matches = await workspace.list({
         context: contextSelector,
         attributes,
         filters: request.query.filters,

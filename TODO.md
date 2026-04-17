@@ -17,8 +17,8 @@
 
 ### Main modules
 
-- `/workspaces`
 - `/contexts`
+- `/workspaces`
 - `/canvases`
 - `/agents`
 - `/roles`
@@ -46,9 +46,9 @@
 
 ### Simplify workspace module
 
-- We should auto-create 2 trees
+- We should auto-create 2 trees when a workspace is started
   - Tree of type "contextTree" named "context", this should be the default
-  - Tree of type "directoryTree" named "directory" that also contains a /.incoming folder with the current ingestion code
+  - Tree of type "directoryTree" named "directory" that also contains a /.incoming folder with the current ingestion code (iow lets move our incoming logic to a standard "directory" tree)
 
 ### Update Workspaces REST API
 
@@ -102,8 +102,6 @@ The API shape should be as follows:
 - local runtime should not need `canvas-server` for basic operation
 - local runtime should optionally register behind `canvas-server` when connected
 
-#### 
-
 ### Move ingestion services (IMAP, Graph) to separate workers
 
 - define a generic runtime contract
@@ -135,13 +133,6 @@ The API shape should be as follows:
 - We **need** to support hooks for all canvas actions, for example I want to run a hook that automatically sorts all URLs I throw into the to-sort context. qwen3:latest is really good at this (give it context paths or the whole tree, url title and a few simple instructions how the tree is structures and done)
 - I want to run my youtube downloader whenever a youtube link is thrown into home://downloads and download videos to either my S3 or workspace home file backends
 - Same for website backups/analytics, file postprocessing etc
-
-workspace
-  .hooks
-  .storage
-    .backends
-  .index
-  .tree
 
 ### Import/export workspace(s)
 

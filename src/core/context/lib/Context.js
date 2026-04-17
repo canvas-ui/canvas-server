@@ -625,21 +625,49 @@ class Context extends EventEmitter {
             }
         }
 
+        // Capture old state before any changes so we can unlock the previous path
+        const previousUrl = this.#url;
+        const previousPath = this.#path;
+        const previousTree = this.#tree;
+
         // Determine target workspace name
         const targetWorkspaceName = parsed.workspaceId || this.#workspace.name;
 
-        // If the workspace name is different, switch to the new workspace
+        // If the workspace name is different, unlock the old path on the old tree first, then switch
         if (targetWorkspaceName !== this.#workspace.name) {
             if (!this.isUniverse) {
                 throw new Error(`Workspace-scoped context cannot navigate to a different workspace. Target: "${targetWorkspaceName}", current: "${this.#workspace.name}"`);
             }
+            if (previousPath && previousPath !== '/' && previousTree) {
+                try {
+                    await previousTree.unlockPath(previousPath, this.#id);
+                } catch (err) {
+                    logger.warn(`Context ${this.#id}: failed to unlock path "${previousPath}" on workspace switch: ${err.message}`);
+                }
+            }
             await this.#switchWorkspace(targetWorkspaceName);
+        } else if (previousPath && previousPath !== '/' && previousPath !== parsed.path) {
+            // Same workspace, moving to a different path — unlock the old one
+            try {
+                await previousTree.unlockPath(previousPath, this.#id);
+            } catch (err) {
+                logger.warn(`Context ${this.#id}: failed to unlock previous path "${previousPath}": ${err.message}`);
+            }
         }
 
         // Create the URL path in the current workspace
         const contextLayers = await this.#tree.insertPath(parsed.path);
         this.#contextBitmapArray = parsed.pathArray;
         logger.debug(`ContextPath: ${parsed.path}, contextLayer IDs: ${JSON.stringify(contextLayers)}`);
+
+        // Lock all layers along the new path by this context ID
+        if (parsed.path && parsed.path !== '/') {
+            try {
+                await this.#tree.lockPath(parsed.path, this.#id);
+            } catch (err) {
+                logger.warn(`Context ${this.#id}: failed to lock new path "${parsed.path}": ${err.message}`);
+            }
+        }
 
         // Update the internal URL state - always use the target workspace name
         this.#url = `${targetWorkspaceName}://${parsed.path.replace(/^\//, '')}`;
@@ -649,9 +677,16 @@ class Context extends EventEmitter {
         // Update the updated timestamp
         this.#updatedAt = new Date().toISOString();
 
-        // Emit the change event
+        // Notify affected workspaces so M2 tree views can refresh lock state
+        try {
+            this.#workspace.emit('context.path.changed', { contextId: this.#id, workspaceName: this.#workspace.name });
+        } catch (err) {
+            logger.warn(`Context ${this.#id}: failed to emit context.path.changed: ${err.message}`);
+        }
+
+        // Emit the change event (include previousUrl so consumers know what path was vacated)
         logger.debug(`📋 Context: Emitting context.url.set event for context ${this.#id}, new URL: ${this.#url}`);
-        this.emit('context.url.set', { id: this.#id, url: this.#url });
+        this.emit('context.url.set', { id: this.#id, url: this.#url, previousUrl });
 
         // Save changes to index
         await this.#contextManager.saveContext(this.#userId, this);

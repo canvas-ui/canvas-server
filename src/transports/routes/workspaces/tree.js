@@ -270,6 +270,14 @@ export default async function workspaceTreeRoutes(fastify) {
       const resolved = await getTreeInstance(request, reply, 'context');
       if (!resolved) return;
       const result = await resolved.tree.unlockLayer(request.params.layerId, request.body.lockBy);
+      if (result.isStillLocked) {
+        const ids = result.lockedBy.join(', ');
+        const responseObject = new ResponseObject().conflict(
+          `Your lock was removed, but layer is still locked by: ${ids}`,
+          { lockedBy: result.lockedBy },
+        );
+        return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+      }
       const responseObject = new ResponseObject().success(result, 'Layer unlocked successfully');
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
     } catch (error) {

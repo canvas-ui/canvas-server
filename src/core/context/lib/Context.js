@@ -265,9 +265,11 @@ class Context extends EventEmitter {
     }
 
     #buildContextSelector(contextArray = this.#contextBitmapArray) {
+        const path = this.#convertContextArrayToPath(contextArray);
+        if (path === '/') return null;
         return {
             tree: this.#treeId,
-            path: this.#convertContextArrayToPath(contextArray),
+            path,
         };
     }
 

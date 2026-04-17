@@ -47,13 +47,32 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     return { ...options, excludeTree: { tree: DIRECTORY_TREE_NAME, path: INCOMING_ROOT_CONTEXT } };
   }
 
-  function getInsertContextSelector(workspace, body, isTopLevelArray) {
-    if (isTopLevelArray) { return workspace.getContextTreeSelector('/'); }
-    if (body?.context || body?.treeNameOrTreeId) {
-      return resolveContextSelector(workspace, body, '/');
+  function resolveInsertTarget(workspace, body, isTopLevelArray) {
+    if (isTopLevelArray) {
+      return { treeType: 'context', selector: workspace.getContextTreeSelector('/') };
     }
-    if (body?.documents || body?.documentIds) { return workspace.getContextTreeSelector('/'); }
-    return null;
+    if (body?.context || body?.treeNameOrTreeId) {
+      const path = body?.context ?? '/';
+      const treeNameOrId = body?.treeNameOrTreeId ?? null;
+      const treeType = body?.treeType ?? null;
+
+      if (treeType === 'directory') {
+        return { treeType: 'directory', selector: workspace.getDirectoryTreeSelector(path, treeNameOrId) };
+      }
+      if (!treeType && treeNameOrId) {
+        try {
+          const tree = workspace.getTree(treeNameOrId);
+          if (tree.type === 'directory') {
+            return { treeType: 'directory', selector: workspace.getDirectoryTreeSelector(path, treeNameOrId) };
+          }
+        } catch (_) { /* unknown tree — fall through to context */ }
+      }
+      return { treeType: 'context', selector: workspace.getContextTreeSelector(path, treeNameOrId) };
+    }
+    if (body?.documents || body?.documentIds) {
+      return { treeType: 'context', selector: workspace.getContextTreeSelector('/') };
+    }
+    return { treeType: 'context', selector: null };
   }
 
   async function getWorkspaceInstance(request, reply) {
@@ -187,6 +206,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
             type: 'object',
             properties: {
               treeNameOrTreeId: { type: 'string' },
+              treeType: { type: 'string', enum: ['context', 'directory'] },
               context: { type: 'string' },
               features: { type: 'array', items: { type: 'string' } },
               documents: { oneOf: [{ type: 'object' }, { type: 'array' }] },
@@ -214,7 +234,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       if (!workspace) return;
 
       const isTopLevelArray = Array.isArray(request.body);
-      const contextSelector = getInsertContextSelector(workspace, request.body, isTopLevelArray);
+      const { treeType: insertTreeType, selector: insertSelector } = resolveInsertTarget(workspace, request.body, isTopLevelArray);
       const features = isTopLevelArray ? [] : (request.body.features || []);
       const enforcedFeatures = enforceClientTags(request, features);
 
@@ -231,7 +251,8 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       }
 
       const documents = await workspace.putMany(itemsToInsert, {
-        context: contextSelector,
+        context: insertTreeType === 'directory' ? null : insertSelector,
+        directory: insertTreeType === 'directory' ? insertSelector : null,
         features: enforcedFeatures,
       });
 
@@ -346,6 +367,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
         type: 'object',
         properties: {
           treeNameOrTreeId: { type: 'string' },
+          treeType: { type: 'string', enum: ['context', 'directory'] },
           context: { type: 'string', default: '/' },
           features: { type: 'array', items: { type: 'string' }, default: [] },
           documents: { type: 'array' },
@@ -375,9 +397,10 @@ export default async function workspaceDocumentRoutes(fastify, options) {
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());
       }
 
-      const contextSelector = resolveContextSelector(workspace, request.body, '/');
+      const { treeType: updateTreeType, selector: updateSelector } = resolveInsertTarget(workspace, request.body, false);
       const result = await workspace.putMany(itemsToUpdate, {
-        context: contextSelector,
+        context: updateTreeType === 'directory' ? null : updateSelector,
+        directory: updateTreeType === 'directory' ? updateSelector : null,
         features: request.body.features || [],
       });
       if (!result) {

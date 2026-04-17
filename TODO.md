@@ -1,8 +1,136 @@
-# Add support for git as a data source
+# TODO List
 
-Lets add a git schema to support git repos and branches. The idea is - lets say I have a canvas created in /work/customer-a/devops/jira-1234, to this canvas I linked all email threads related to that case + all browser tabs + all files ad-hoc created when working on it aand all notes. I would like to also link a specific git branch to that canvas so that I can share the whole canvas with a colleague to work on OR assign a AI agent to complete the task giving him access to all related files.  Now the question becomes, I assume git repos - same as with files, S3 and imap - should be treated as a separate data source on the workspace level
+## Auth methods
 
-# Add support for hooks
+- Token based
+- Local (user+pass)
+- Email (IMAP, autocreates users on auth, requires server-side configuration for each IMAP domain)
+- AD, LDAP (autocreates users on auth, requires server-side configuration for each AD and/or LDAP domain)
+
+## Main API endpoints
+
+### Auth + management
+
+- `/auth`
+- `/admin`
+- `/server` ? to merge with admin?
+
+### Main modules
+
+- `/workspaces`
+- `/contexts`
+- `/canvases`
+- `/agents`
+- `/roles`
+
+### Shared resources
+
+- `/pub`: A easy-to-use scheme is desired here, maybe with some /pub/9f94ccd3-05e6-473d-bd76-54d21a82bda6/qr endpoint to generate a qr
+- `/schemas`: To eval if this is the right mount point as schemas are read from synapsd(db backend)
+
+### Utils
+
+- `/ping`: Public endpoint, no auth required
+- `/status`: Detailed server status, auth required, user-accessible
+
+### Queries
+
+- To eval: We need to simplify our query patterns to make them more curl-friendly
+  - `Path based queries`
+    - /workspaces/:workspaceId/trees/:treeId/path/foo/bar/baz/baf
+  - `Basic filtering patterns`
+    - ?filter=foo&filter=bar&filter=baz
+    - ?feature=data/abstraction/tab&feature=data/abstraction/note&!tag/deleted
+
+## Workspaces
+
+### Simplify workspace module
+
+- We should auto-create 2 trees
+  - Tree of type "contextTree" named "context", this should be the default
+  - Tree of type "directoryTree" named "directory" that also contains a /.incoming folder with the current ingestion code
+
+### Update Workspaces REST API
+
+The API shape should be as follows:
+- /workspaces/:workspaceNameOrId
+  - /documents
+  - /trees
+    - /:treeNameOrId
+      - /layers
+        - /<layer-ops-endpoints>
+      - /paths (getter for tree paths)
+      - /path/<>
+    - /tree points to the defautl context tree for backward compatiblity
+  - /contexts
+    - /:contextId
+      - /documents
+    - /tree points to the currently-selected context tree (there is always only one)
+  - /canvases
+    - /:canvasNameOrId
+      - /documents
+
+### (descoped for now) Isolate workspaces as separate local processes
+
+#### Goals
+
+- Unify Roles / Agents / Workspaces under one management module
+- Common API / control plane / contract for Agents, Workspaces and Roles
+- Runtime may run as:
+  - local process (pm2 managed?)
+  - Docker container
+- Runtime owns:
+  - workspace/agent local state
+  - storage access
+  - background workers
+  - service-specific logic
+  - local API
+- Runtime API should be root-relative:
+  - `/health`
+  - `/info`
+  - `/documents`
+  - `/services/...`
+  - `/events` or `/stream`
+- external path prefixing belongs to proxy/control-plane
+
+#### UX
+
+- user should be able to:
+  - download workspace
+  - run local workspace runtime as a simple background service/app
+  - talk to it via CLI + REST API
+- local runtime should not need `canvas-server` for basic operation
+- local runtime should optionally register behind `canvas-server` when connected
+
+#### 
+
+### Move ingestion services (IMAP, Graph) to separate workers
+
+- define a generic runtime contract
+- define launcher abstraction
+- define proxy/routing model
+- define event envelope
+- extract one worker first
+- best candidate: IMAP service
+- fine-tune:
+  - lifecycle
+  - health
+  - socket transport
+  - logs
+  - proxying
+  - auth handoff
+
+### Add support for additional data sources
+
+- `git`
+  - Aim is to streamline our dotfiles management feature
+  - Needs to support branches  
+- `sql`
+  - We'd cache the result internally as a JSON document(with some TTL?); you may want to create a canvas aggregating data from various sql db sources along with your emails etc, working with them in any tool would be a curl https://your-canvas-instance/workspaces/:wid/canvases/:cid/documents | jq .. away
+- `generic REST endpoint`
+  - Lets say a corporate backend with a specific REST API endpoint + query returning a list of non-compliant servers, again could be paired with a TTL for the localy cached result as metadata (this is a pure app concern,  not sure whether we should - at this point - add some form of data invalidation based on TTL to the DB)
+
+### Add support for hooks
 
 - We **need** to support hooks for all canvas actions, for example I want to run a hook that automatically sorts all URLs I throw into the to-sort context. qwen3:latest is really good at this (give it context paths or the whole tree, url title and a few simple instructions how the tree is structures and done)
 - I want to run my youtube downloader whenever a youtube link is thrown into home://downloads and download videos to either my S3 or workspace home file backends
@@ -15,7 +143,7 @@ workspace
   .index
   .tree
 
-# Import/export workspace(s)
+### Import/export workspace(s)
 
 We need to reintroduce the importWorkspace(workspacePath, destroyExisting = bool) and exportWorkspace(nameOrID, destinationPath) methods in our workspace manager.
 
@@ -25,7 +153,7 @@ ID, update rootPath, configPath and the updatedAt timestamp. store the original 
 
 - exportWorkspace(nameOrId, dstPath, format = zip|tar|gzip) would first stop the workspace, then create a archive - again question is where to store it, "cache" folder which would be excluded from zip
 
-# Config file search paths for workspaces
+### Config file search paths for workspaces
 
 ```text
 Workspace config paths
@@ -37,93 +165,18 @@ Workspace config paths
     workspace directories relative to the workspace.json location
 ```
 
-# Extend workspaces API (partly blocked by synapsd)
+### Extend workspaces API (partly blocked by synapsd)
 
 - Add a workspaces/:workspace_id/db endpoint
   - /stats
   - /status
   - /dump
   - /snapshots
-    - /timestamp
+    - /:timestampOrSnapshotID?
       - /dump
       - /restore
 
-# Add Canvas support
+## Implement proper sharing functionality for Workspaces, Contexts and Canvases
 
-  GET /contexts/:cid/canvases/foo  will create a context-bound canvas within context cid(cid.url) with ID foo
-  GET /workspaces/:wid/canvases/foo will create a unbound canvas with contextPath / (or ?contextPath=/foo/bar/baz) with ID "foo"
-  
-  canvas IDs have to be unique 
-  Every canvas will setup a websocket connection to canvas-server
-  Canvas open on your tablet, another on your phone, another on your desktop and laptop can all be controllable centraly
-  $ hi lucy "can you play me that podcast we started listening to yesterday evening on the tv" # canvas ID "tv"
-  $ hi carmack "show me the last emails from that idiot yesterday on my laptop" # canvas ID "laptop"
-
-Add Task support
-  - Useful for episodic memory / agentic workloads and AI integration
-  - Simillar semantics as Canvas
-
-
-Context
-- /documents
-- /agents
-- /dotfiles
-    in-repo index .dot/index
-      - repoPath:type:encryption
-
-    local
-      - localPath:remotePath:type:encryption
-
-    db
-      - localPath:remotePath:type:encryption:priority
-    
-
-ctx dotfiles // ctx = /
-  ~/.bashrc -> common/shell/bashrc priority 0
-  ~/.bashrc -> mb/shell/bashrc priority 1
-
-ctx dotfiles // ctx = /work/mb
-  ~/.bashrc -> mb/shell/bashrc
-
-
-We need to change the interface for Tree operations in
-
-# Fix Sharing functionality
-
-Sharing functionality for Workspaces and Contexts is no longer working - we will need a 2 punch process, one for the backend implementation and one for the webui.
-
-The following sharing options should be updated/implemented, please do not implement any changes yet, lets fine-tune the design first:
-
-- Token based sharing: User creates a RO, read+append or a full rw token for a resource and shares it together with the resource URL with another user
-  - a pub route currently looks like follows:
-    https://canvas-server-url/rest/v2/pub/user@email.tld/workspaces/:workspace_id
-    https://canvas-server-url/rest/v2/pub/user@email.tld/contexts/:context_id
-    the above is meant to be user/cli friendly, but may require a design tweak due to leakeage of user emails - never leak user emails a wise someone once mentioned
-    
-  - For workspaces:
-    - User - regardless if he is server-local(registered on the current canvas-server remote) or remote - should be able to open a shared workspace / context or even add it via his webUI by specifying the URL and access token. He does not need to be a user on the remote hosting the workspace
-    - Workspace would then be added to his index and appear as a normal workspace with type: remote, this part is important, listWorkspaces should return all workspaces including remote / foreign ones
-    - Workspace sharing tokens should be stored within the workspace folder so that when a workspace is exported from canvas-server/remoteA and imported to remoteB, it will still allow access (assuming consumer/user updates its URL)
-    
-  - For contexts:
-    - Same applies for contexts, a user should be able to generate a sharing token for his context
-    
-  - Q1: Should we support ad-hoc secret links under our pub endpoint with expiration? 
-        
-- User email based sharing: User can allow access to his contexts or workspaces based on user email. User can freely migrate his workspace(s) between a local NAS instance, AWS or some canvas SaaS provider - with that being said, it may present a security risk so no idea whether we should implement it at all
-
-# Architectural changes
-
-## Utils/config
-
-- Use consistently across the canvas-server app
-- fix the config class to properly normalize paths(windoze + *nix)
-- Remove user + server priority logic, does not make sense in the current setup
-
-## Context handling
-
-- Support contexts on top of remote workspaces
-- We need to ensure
-  - Context layers will get locked when open in a context
-  - Layers will need to have a in-memory map of userid/contextid locks - brrr complexity
-
+- Token based (does not require a local user)
+- User email based (requires a local user to exist on the same canvas-server instance)

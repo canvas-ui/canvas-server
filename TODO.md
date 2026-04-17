@@ -44,7 +44,7 @@
 
 ## Workspaces
 
-### Simplify workspace module
+### (DONE) Simplify workspace module
 
 - We should auto-create 2 trees when a workspace is started
   - Tree of type "contextTree" named "context", this should be the default

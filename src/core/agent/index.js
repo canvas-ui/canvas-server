@@ -282,8 +282,8 @@ class Agents extends EventEmitter {
             throw new Error('Agent name must be 3-39 characters long');
         }
 
-        if (!/^[a-z0-9_-]+$/.test(data.name)) {
-            throw new Error('Agent name can only contain lowercase letters, numbers, underscores, and hyphens');
+        if (!/^[A-Za-z0-9_-]+$/.test(data.name)) {
+            throw new Error('Agent name can only contain letters, numbers, underscores, and hyphens');
         }
 
         // Color validation (if provided)
@@ -340,23 +340,24 @@ class Agents extends EventEmitter {
             throw new Error(`Could not resolve user identifier: "${userId}"`);
         }
 
-        // Sanitize the agent name
+        // Sanitize the agent name (display slug); on-disk dir is always lowercase
         agentName = this.#sanitizeAgentName(agentName);
+        const dirSlug = agentName.toLowerCase();
         const host = options.host || DEFAULT_HOST;
 
         // Generate unique agent ID
         const agentId = options.id || generateUUID();
 
         // Check if agent name already exists for this user on this host
-        const referenceKey = this.constructAgentReference(userId, agentName, host);
+        const referenceKey = this.constructAgentReference(userId, dirSlug, host);
         if (this.#referenceIndex.has(referenceKey)) {
             throw new Error(`Agent with name "${agentName}" already exists for user ${userId} on host ${host}.`);
         }
 
         // Determine agent directory path
         const agentDir = options.agentPath ||
-                        (options.rootPath ? path.join(options.rootPath, agentName) :
-                        path.join(this.#defaultRootPath, ownerId, agentName));
+                        (options.rootPath ? path.join(options.rootPath, dirSlug) :
+                        path.join(this.#defaultRootPath, ownerId, dirSlug));
         logger.debug(`Using agent path: ${agentDir} for agent ${agentId}`);
 
         // Validate and create agent
@@ -419,8 +420,8 @@ class Agents extends EventEmitter {
         // Add to reference index for lookups
         this.#referenceIndex.set(referenceKey, agentId);
 
-        // Add to name index
-        const nameKey = `${ownerId}@${host}:${agentName}`;
+        // Add to name index (slug normalized to match lookups and on-disk dir)
+        const nameKey = `${ownerId}@${host}:${dirSlug}`;
         this.#nameIndex.set(nameKey, agentId);
 
         // Add reference field to the index entry
@@ -452,7 +453,12 @@ class Agents extends EventEmitter {
         let agentId;
 
         if (parsedRef) {
-            agentId = this.#referenceIndex.get(parsedRef.full.split('/')[0]);
+            const refKey = constructAgentReference(
+                parsedRef.userIdentifier,
+                parsedRef.agentSlug.toLowerCase(),
+                parsedRef.host
+            );
+            agentId = this.#referenceIndex.get(refKey.split('/')[0]);
             if (!agentId) return null;
         } else {
             agentId = await this.#resolveAgentIdFromIdentifier(ownerId, agentIdentifier);
@@ -629,10 +635,11 @@ class Agents extends EventEmitter {
             this.#agents.delete(agentId);
             this.#indexStore.delete(indexKey);
 
-            const nameIndexKey = `${ownerId}@${entry.host || DEFAULT_HOST}:${entry.name}`;
+            const host = entry.host || DEFAULT_HOST;
+            const nameIndexKey = `${ownerId}@${host}:${entry.name.toLowerCase()}`;
             this.#nameIndex.delete(nameIndexKey);
 
-            const referenceKey = this.constructAgentReference(ownerId, entry.name, entry.host || DEFAULT_HOST);
+            const referenceKey = this.constructAgentReference(ownerId, entry.name.toLowerCase(), host);
             this.#referenceIndex.delete(referenceKey);
 
             if (removeFiles && entry.rootPath) {
@@ -718,8 +725,9 @@ class Agents extends EventEmitter {
      * @returns {string|null} The agent ID if found, null otherwise
      */
     async resolveAgentId(userIdentifier, agentName, host = DEFAULT_HOST) {
+        const slug = typeof agentName === 'string' ? agentName.toLowerCase() : agentName;
         // First try direct lookup with the provided userIdentifier
-        let nameKey = `${userIdentifier}@${host}:${agentName}`;
+        let nameKey = `${userIdentifier}@${host}:${slug}`;
         let agentId = this.#nameIndex.get(nameKey);
 
         if (agentId) {
@@ -730,7 +738,7 @@ class Agents extends EventEmitter {
         try {
             const resolvedUserId = await this.#users.resolveId(userIdentifier);
             if (resolvedUserId && resolvedUserId !== userIdentifier) {
-                nameKey = `${resolvedUserId}@${host}:${agentName}`;
+                nameKey = `${resolvedUserId}@${host}:${slug}`;
                 agentId = this.#nameIndex.get(nameKey);
                 if (agentId) {
                     return agentId;
@@ -952,19 +960,19 @@ class Agents extends EventEmitter {
             if (!agentEntry || !agentEntry.name || !parsed) continue;
 
             const host = agentEntry.host || DEFAULT_HOST;
-            const nameKey = `${parsed.userId}@${host}:${agentEntry.name}`;
+            const slug = agentEntry.name.toLowerCase();
+            const nameKey = `${parsed.userId}@${host}:${slug}`;
             this.#nameIndex.set(nameKey, parsed.agentId);
 
-            const reference = agentEntry.reference || constructAgentReference(parsed.userId, agentEntry.name, host);
+            const reference = constructAgentReference(parsed.userId, slug, host);
             this.#referenceIndex.set(reference, parsed.agentId);
         }
     }
 
     #sanitizeAgentName(agentName) {
         if (!agentName) return 'untitled';
-        let sanitized = agentName.toString().toLowerCase().trim();
-        sanitized = sanitized.replace(/[^a-z0-9-_]/g, '');
-        sanitized = sanitized.replace(/\s+/g, '-');
+        let sanitized = agentName.toString().trim();
+        sanitized = sanitized.replace(/[^A-Za-z0-9_-]/g, '');
         return sanitized;
     }
 

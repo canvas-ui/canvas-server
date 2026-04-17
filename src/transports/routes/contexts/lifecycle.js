@@ -48,6 +48,7 @@ export default async function lifecycleRoutes(fastify, options) {
         required: ['id'],
         properties: {
           id: { type: 'string', description: "User-defined ID for the new context. This will be sanitized." },
+          name: { type: 'string', description: "Human-readable display name for the context." },
           url: { type: 'string', description: "The URL for the new context (e.g., universe://my-context-name). Defaults to '/' if not provided." },
           baseUrl: { type: 'string' },
           description: { type: 'string' },
@@ -64,6 +65,7 @@ export default async function lifecycleRoutes(fastify, options) {
         request.body.url || '/',
         {
           id: request.body.id,
+          name: request.body.name || null,
           userId: request.user.id,
           workspaceId: request.body.workspaceId,
           description: request.body.description || '',
@@ -287,6 +289,7 @@ export default async function lifecycleRoutes(fastify, options) {
       body: {
         type: 'object',
         properties: {
+          name: { type: 'string' },
           description: { type: 'string' },
           metadata: { type: 'object' },
           acl: { type: 'object' },

@@ -404,15 +404,18 @@ class ContextManager extends EventEmitter {
                     const storedContextData = allContextsInStore[key];
                     if (!storedContextData) continue;
 
+                    const storedWorkspaceActive = await this.#resolveWorkspaceActive(storedContextData);
+
                     if (key.startsWith(ownedPrefix)) {
                         try {
                             const ownerUser = await this.#workspaceManager.users.get(storedContextData.userId);
                             userContextsArray.push({
                                 ...storedContextData,
+                                workspaceActive: storedWorkspaceActive,
                                 ownerEmail: ownerUser.email
                             });
                         } catch (error) {
-                            userContextsArray.push(storedContextData);
+                            userContextsArray.push({ ...storedContextData, workspaceActive: storedWorkspaceActive });
                         }
                         processedKeys.add(key);
                     } else {
@@ -423,6 +426,7 @@ class ContextManager extends EventEmitter {
                                 const ownerUser = await this.#workspaceManager.users.get(storedContextData.userId);
                                 userContextsArray.push({
                                     ...storedContextData,
+                                    workspaceActive: storedWorkspaceActive,
                                     ownerEmail: ownerUser.email,
                                     type: 'shared',
                                     isShared: true
@@ -430,6 +434,7 @@ class ContextManager extends EventEmitter {
                             } catch (error) {
                                 userContextsArray.push({
                                     ...storedContextData,
+                                    workspaceActive: storedWorkspaceActive,
                                     type: 'shared',
                                     isShared: true
                                 });
@@ -457,6 +462,7 @@ class ContextManager extends EventEmitter {
         const context = await this.getContext(userId, contextId);
         if (!context) return null;
 
+        if (updates.name !== undefined) context.name = updates.name || null;
         if (updates.acl !== undefined) await context.updateACL(updates.acl);
         if (updates.rules !== undefined) {
             for (const rule of (context.rules || [])) await context.removeRule(rule.id);
@@ -631,6 +637,16 @@ class ContextManager extends EventEmitter {
         }
         // If no '/', it's a simple contextId, owner is the defaultUserId (usually the accessing user)
         return { ownerUserId: defaultUserId, contextId: this.#sanitizeContextId(idStr) };
+    }
+
+    async #resolveWorkspaceActive(contextData) {
+        if (!contextData?.workspaceId) return false;
+        try {
+            const ws = await this.#workspaceManager.getWorkspace(contextData.workspaceId, contextData.userId);
+            return ws?.isActive ?? false;
+        } catch {
+            return false;
+        }
     }
 
     async #checkContextAccess(contextData, accessingUserId) {

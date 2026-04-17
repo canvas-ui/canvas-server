@@ -69,6 +69,9 @@ The API shape should be as follows:
   - /canvases
     - /:canvasNameOrId
       - /documents
+- We need to avoid `/rest/v2/workspaces/universe/documents?treeNameOrTreeId=context&treeType=context&context=%2F&limit=50&page=1`
+  - `treeNameOrTreeId` should just be `tree`
+  - `treeType` should not really be needed, its infered as tree names are always unique within a workspace
 
 ### (descoped for now) Isolate workspaces as separate local processes
 

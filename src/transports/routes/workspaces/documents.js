@@ -238,23 +238,25 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       const features = isTopLevelArray ? [] : (request.body.features || []);
       const enforcedFeatures = enforceClientTags(request, features);
 
-      let itemsToInsert;
+      const treeSpec = {
+        context: insertTreeType === 'directory' ? null : insertSelector,
+        directory: insertTreeType === 'directory' ? insertSelector : null,
+        features: enforcedFeatures,
+      };
+
+      let documents;
       if (isTopLevelArray) {
-        itemsToInsert = request.body;
+        documents = await workspace.linkMany(request.body, treeSpec);
       } else if (request.body.documentIds) {
-        itemsToInsert = Array.isArray(request.body.documentIds) ? request.body.documentIds : [request.body.documentIds];
+        const ids = Array.isArray(request.body.documentIds) ? request.body.documentIds : [request.body.documentIds];
+        documents = await workspace.linkMany(ids, treeSpec);
       } else if (request.body.documents) {
-        itemsToInsert = Array.isArray(request.body.documents) ? request.body.documents : [request.body.documents];
+        const docs = Array.isArray(request.body.documents) ? request.body.documents : [request.body.documents];
+        documents = await workspace.putMany(docs, treeSpec);
       } else {
         const responseObject = new ResponseObject().badRequest('Body must include either "documents" or "documentIds", or be an array of IDs');
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());
       }
-
-      const documents = await workspace.putMany(itemsToInsert, {
-        context: insertTreeType === 'directory' ? null : insertSelector,
-        directory: insertTreeType === 'directory' ? insertSelector : null,
-        features: enforcedFeatures,
-      });
 
       const responseObject = new ResponseObject().created(documents, 'Documents inserted successfully');
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());

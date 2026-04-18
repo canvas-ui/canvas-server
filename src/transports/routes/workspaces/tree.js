@@ -203,6 +203,48 @@ export default async function workspaceTreeRoutes(fastify) {
     }
   });
 
+  fastify.get('/layers/:layerId/documents', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      querystring: {
+        type: 'object',
+        properties: {
+          limit: { type: 'integer', default: 200 },
+          offset: { type: 'integer' },
+          page: { type: 'integer' },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    try {
+      const resolved = await getTreeInstance(request, reply, 'context');
+      if (!resolved) return;
+      const { workspace, tree } = resolved;
+      const layer = tree.getLayerById(request.params.layerId) || tree.getLayer(request.params.layerId);
+      if (!layer) {
+        const responseObject = new ResponseObject().notFound(`Layer not found: ${request.params.layerId}`);
+        return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+      }
+      const bitmapKey = `context/${tree.id}/${layer.id}`;
+      const documents = await workspace.list({
+        attributes: { allOf: [bitmapKey] },
+        limit: request.query.limit,
+        offset: request.query.offset,
+        page: request.query.page,
+      });
+      if (documents.error) {
+        const responseObject = new ResponseObject().serverError('Failed to list layer documents');
+        return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+      }
+      const responseObject = new ResponseObject().found(documents, 'Layer documents retrieved successfully', 200, documents.count, documents.totalCount);
+      return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+    } catch (error) {
+      fastify.log.error(`Get layer documents error for workspace ${request.params.id}: ${error.message}`);
+      const responseObject = new ResponseObject().serverError(error.message || 'Failed to get layer documents');
+      return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+    }
+  });
+
   fastify.patch('/layers/:layerId', {
     onRequest: [fastify.authenticate],
     schema: {

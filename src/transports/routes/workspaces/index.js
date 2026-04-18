@@ -141,6 +141,10 @@ export default async function workspaceRoutes(fastify, options) {
     prefix: '/:id/links',
     onRequest: [resolveWorkspaceAddress]
   });
+  fastify.register(import('./canvases.js'), {
+    prefix: '/:id/canvases',
+    onRequest: [resolveWorkspaceAddress]
+  });
 
   // List all workspaces
   fastify.get('/', {

@@ -284,6 +284,78 @@ class Context extends EventEmitter {
         return [...new Set(parts)];
     }
 
+    /**
+     * If the leaf layer at the current path is a canvas, return its querySpec.
+     * The canvas spec is composed (AND'd) with the caller's features/filters
+     * before each list/search call.
+     */
+    #getActiveCanvasSpec() {
+        if (!this.#tree || !this.#path || this.#path === '/') { return null; }
+        try {
+            const leaf = this.#tree.getLayerForPath(this.#path);
+            if (!leaf || leaf.type !== 'canvas' || !leaf.querySpec) { return null; }
+            return leaf.querySpec;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    /**
+     * Merge canvas features into caller-provided features.
+     * Both sides are coerced to the normalized object form
+     * `{ allOf?, anyOf?, noneOf? }`; string arrays are treated as `anyOf`.
+     * The result keeps only non-empty buckets; if nothing is set, returns the
+     * caller's value untouched (which may be null).
+     */
+    #mergeFeatures(callerFeatures, canvasFeatures) {
+        if (canvasFeatures === null || canvasFeatures === undefined) { return callerFeatures; }
+        if (callerFeatures === null || callerFeatures === undefined) { return canvasFeatures; }
+
+        const toBuckets = (f) => {
+            if (Array.isArray(f)) { return { anyOf: [...f] }; }
+            if (f && typeof f === 'object') {
+                const out = {};
+                if (Array.isArray(f.allOf))  { out.allOf  = [...f.allOf]; }
+                if (Array.isArray(f.anyOf))  { out.anyOf  = [...f.anyOf]; }
+                if (Array.isArray(f.noneOf)) { out.noneOf = [...f.noneOf]; }
+                return out;
+            }
+            return {};
+        };
+
+        const a = toBuckets(callerFeatures);
+        const b = toBuckets(canvasFeatures);
+        const merged = {};
+        for (const key of ['allOf', 'anyOf', 'noneOf']) {
+            const left = a[key] || [];
+            const right = b[key] || [];
+            if (left.length || right.length) {
+                merged[key] = [...new Set([...left, ...right])];
+            }
+        }
+        return Object.keys(merged).length === 0 ? null : merged;
+    }
+
+    #mergeFilters(callerFilters, canvasFilters) {
+        const a = Array.isArray(callerFilters) ? callerFilters : [];
+        const b = Array.isArray(canvasFilters) ? canvasFilters : [];
+        if (!a.length && !b.length) { return callerFilters; }
+        return [...new Set([...a, ...b])];
+    }
+
+    /**
+     * Compose canvas leaf querySpec with caller-supplied features/filters.
+     * Used by list/search before the workspace call.
+     */
+    #composeWithCanvasSpec({ features, filters }) {
+        const canvasSpec = this.#getActiveCanvasSpec();
+        if (!canvasSpec) { return { features, filters }; }
+        return {
+            features: this.#mergeFeatures(features, canvasSpec.features),
+            filters:  this.#mergeFilters(filters, canvasSpec.filters),
+        };
+    }
+
     #requireWorkspace() {
         if (!this.#workspace?.isActive) {
             throw new Error('Workspace or database not available');
@@ -1112,10 +1184,14 @@ class Context extends EventEmitter {
 
         const { attributes, features = null, filters, options = {}, ...rest } = spec;
         const contextSelector = this.#buildContextSelector(this.#buildMergedContextArray(options));
-        return await workspace.list({
-            context: contextSelector,
+        const composed = this.#composeWithCanvasSpec({
             features: features ?? attributes,
             filters,
+        });
+        return await workspace.list({
+            context: contextSelector,
+            features: composed.features,
+            filters: composed.filters,
             ...options,
             ...rest,
         });
@@ -1129,11 +1205,15 @@ class Context extends EventEmitter {
 
         const { query, attributes, features = null, filters, options = {}, ...rest } = spec;
         const contextSelector = this.#buildContextSelector(this.#buildMergedContextArray(options));
+        const composed = this.#composeWithCanvasSpec({
+            features: features ?? attributes,
+            filters,
+        });
         return await workspace.search({
             query,
             context: contextSelector,
-            features: features ?? attributes,
-            filters,
+            features: composed.features,
+            filters: composed.filters,
             ...options,
             ...rest,
         });

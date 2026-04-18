@@ -24,6 +24,7 @@ import {
 import authRoutes from './routes/auth.js';
 import workspaceRoutes from './routes/workspaces/index.js';
 import contextRoutes from './routes/contexts/index.js';
+import canvasRoutes from './routes/canvases/index.js';
 import agentRoutes from './routes/agents/index.js';
 import pubRoutes from './routes/pub/index.js';
 import pingRoute from './routes/ping.js';
@@ -298,6 +299,7 @@ export async function createServer(options = {}) {
   server.register(menuRoutes, { prefix: '/rest/v2', onRequest: [server.authenticate] });
   server.register(workspaceRoutes, { prefix: '/rest/v2/workspaces' });
   server.register(contextRoutes, { prefix: '/rest/v2/contexts' });
+  server.register(canvasRoutes, { prefix: '/rest/v2/canvases' });
   server.register(agentRoutes, { prefix: '/rest/v2/agents' });
   server.register(pubRoutes, { prefix: '/rest/v2/pub' });
   server.register(schemaRoutes, { prefix: '/rest/v2/schemas' });

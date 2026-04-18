@@ -42,36 +42,11 @@
     - ?filter=foo&filter=bar&filter=baz
     - ?feature=data/abstraction/tab&feature=data/abstraction/note&!tag/deleted
 
+## Agents
+
+Agents should be running as self-contained docker containers but for now, we'll implement them the same way as we workspaces
+
 ## Workspaces
-
-### (DONE) Simplify workspace module
-
-- We should auto-create 2 trees when a workspace is started
-  - Tree of type "contextTree" named "context", this should be the default
-  - Tree of type "directoryTree" named "directory" that also contains a /.incoming folder with the current ingestion code (iow lets move our incoming logic to a standard "directory" tree)
-
-### Update Workspaces REST API
-
-The API shape should be as follows:
-- /workspaces/:workspaceNameOrId
-  - /documents
-  - /trees
-    - /:treeNameOrId
-      - /layers
-        - /<layer-ops-endpoints>
-      - /paths (getter for tree paths)
-      - /path/<>
-    - /tree points to the defautl context tree for backward compatiblity
-  - /contexts
-    - /:contextId
-      - /documents
-    - /tree points to the currently-selected context tree (there is always only one)
-  - /canvases
-    - /:canvasNameOrId
-      - /documents
-- We need to avoid `/rest/v2/workspaces/universe/documents?treeNameOrTreeId=context&treeType=context&context=%2F&limit=50&page=1`
-  - `treeNameOrTreeId` should just be `tree`
-  - `treeType` should not really be needed, its infered as tree names are always unique within a workspace
 
 ### (descoped for now) Isolate workspaces as separate local processes
 

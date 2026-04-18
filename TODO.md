@@ -46,6 +46,11 @@
 
 Agents should be running as self-contained docker containers but for now, we'll implement them the same way as we workspaces
 
+### Folder structure
+
+-
+- connectors
+
 ## Workspaces
 
 ### (descoped for now) Isolate workspaces as separate local processes

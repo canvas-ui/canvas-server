@@ -158,3 +158,6 @@ Canvas - same as context - is bound to a specific tree hence we do not need to p
 - "Save current filters as canvas" action from any tree path.
 - Applet registry; UI layout stored in `canvas.metadata.ui`.
 - Shared-canvas public viewer at `/pub/canvas/:token`.
+
+
+## Phase 4 - WebUI Toolbox

@@ -1,5 +1,13 @@
 # TODO List
 
+## UUID + ULID channges
+
+- User ID should be uuid
+- Workspace ID should be uuid
+- Agent ID should be uuid
+- Role ID should be uuid
+We should support resolving all those resources by name (workspace "universe" is far easier to live with in CLI mode than some random uuid)
+
 ## Auth methods
 
 - Token based
@@ -41,15 +49,22 @@
   - `Basic filtering patterns`
     - ?filter=foo&filter=bar&filter=baz
     - ?feature=data/abstraction/tab&feature=data/abstraction/note&!tag/deleted
+  - `Agent queries`
+    - ?agent=foo&agent_query=bar
+    - /rest/v2/contexts/default?agent=lucy&agent_query="any new emails from nvidia"
 
 ## Agents
 
 Agents should be running as self-contained docker containers but for now, we'll implement them the same way as we workspaces
 
+### Memory
+
 ### Folder structure
 
 -
 - connectors
+
+
 
 ## Workspaces
 
@@ -110,6 +125,8 @@ Agents should be running as self-contained docker containers but for now, we'll 
   - We'd cache the result internally as a JSON document(with some TTL?); you may want to create a canvas aggregating data from various sql db sources along with your emails etc, working with them in any tool would be a curl https://your-canvas-instance/workspaces/:wid/canvases/:cid/documents | jq .. away
 - `generic REST endpoint`
   - Lets say a corporate backend with a specific REST API endpoint + query returning a list of non-compliant servers, again could be paired with a TTL for the localy cached result as metadata (this is a pure app concern,  not sure whether we should - at this point - add some form of data invalidation based on TTL to the DB)
+
+### Add support for a different (internal) data abstraction - map (2d topological radial surface)
 
 ### Add support for hooks
 

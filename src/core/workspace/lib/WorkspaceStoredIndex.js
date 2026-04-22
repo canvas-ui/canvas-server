@@ -140,6 +140,26 @@ export class WorkspaceStoredIndex {
         for (const file of files) {
             await this.#upsertDocument(file);
         }
+        await this.#purgeOrphanedPaths(files);
+    }
+
+    async #purgeOrphanedPaths(presentFiles = []) {
+        const db = this.#getDb();
+        const presentChecksums = new Set(
+            presentFiles.flatMap((f) => this.#buildChecksumArray(f.checksums))
+        );
+
+        const incomingRoot = `${INCOMING_ROOT_CONTEXT}/file/fs/workspace`;
+        const treeSelector = this.#getIncomingTreeSelector(incomingRoot);
+        const docsInTree = await db.list({ directory: treeSelector }).catch(() => []);
+
+        for (const doc of docsInTree) {
+            const primaryChecksum = doc.checksumArray?.[0];
+            if (!primaryChecksum || presentChecksums.has(primaryChecksum)) continue;
+
+            const currentPaths = await db.listDocumentTreePaths(doc.id, 'incoming').catch(() => []);
+            await this.#removeStalePaths(doc.id, currentPaths, []);
+        }
     }
 
     async #upsertDocument(storedFile = {}) {

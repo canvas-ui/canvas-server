@@ -52,6 +52,30 @@ export class WorkspaceStoredIndex {
         return this.#stored !== null;
     }
 
+    /**
+     * Evict a file from one or more storage backends.
+     * checksumString: DB-format primary checksum e.g. "sha256/abc123"
+     * targetBackends: optional array of backend names; if omitted, evicts from all
+     * Returns { deleted: string[], remainingBackends: string[] }
+     */
+    async evict(checksumString, targetBackends = null) {
+        if (!this.#stored) return { deleted: [], remainingBackends: [] };
+
+        // Stored uses colon-separated keys: "sha256:hash"
+        const storedKey = checksumString.replace('/', ':');
+
+        if (!this.#stored.has(storedKey)) return { deleted: [], remainingBackends: [] };
+
+        const options = targetBackends ? { backends: targetBackends } : {};
+        const result = await this.#stored.delete(storedKey, options);
+
+        const updatedMeta = this.#stored.stat(storedKey);
+        return {
+            deleted: result.deleted,
+            remainingBackends: updatedMeta?.locations?.map(l => l.backend) || [],
+        };
+    }
+
     async start() {
         if (this.#stored) return;
 

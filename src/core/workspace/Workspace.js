@@ -362,6 +362,94 @@ class Workspace extends EventEmitter {
         return await this.#getActiveDb().deleteMany(parseDocumentIdArray(ids, 'Document ID array'), options);
     }
 
+    /**
+     * Evict documents from one or more storage backends, deleting physically stored
+     * files and, when all backends are cleared, removing the document from the DB.
+     *
+     * Rules:
+     *  - No locations on document → delete from DB directly (pure index record).
+     *  - backends not specified + single backend → evict all, then delete from DB.
+     *  - backends not specified + multiple backends detected → reject; caller must
+     *    specify which backends to target to avoid orphaning files on remote storage.
+     *  - backends specified → evict only those; keep DB record if any backend remains.
+     *
+     * The file watcher handles incoming-tree path cleanup automatically when files
+     * are physically removed, so no explicit tree unlinking is needed here.
+     */
+    async evictDocumentsFromBackends(documentIds, { backends = null } = {}) {
+        const db = this.#getActiveDb();
+        const results = { successful: [], failed: [], skipped: [] };
+
+        for (const rawId of documentIds) {
+            const id = parseDocumentId(rawId, 'Document ID');
+            try {
+                const docs = await db.getDocumentsByIdArray([id], { parse: true });
+                const doc = docs?.[0];
+                if (!doc) {
+                    results.failed.push({ id, reason: 'not found' });
+                    continue;
+                }
+
+                const checksumArray = doc.checksumArray || [];
+                const docLocations = Array.isArray(doc.locations) ? doc.locations : [];
+
+                // Pure index record with no storage locations — just delete from DB
+                if (docLocations.length === 0) {
+                    await db.delete(id);
+                    results.successful.push({ id, action: 'db-deleted', reason: 'no storage locations' });
+                    continue;
+                }
+
+                const docBackends = [...new Set(
+                    docLocations.map(l => l.metadata?.backend).filter(Boolean)
+                )];
+
+                // Safety: if caller didn't specify backends and there are multiple distinct
+                // backends, we cannot safely decide which physical files to delete.
+                if (!backends && docBackends.length > 1) {
+                    results.failed.push({
+                        id,
+                        reason: 'multiple backends detected — specify backends explicitly to avoid orphaning data',
+                        backends: docBackends,
+                    });
+                    continue;
+                }
+
+                // Evict via Stored
+                let deletedBackends = [];
+                let remainingBackends = [...docBackends];
+
+                if (this.#storedIndex?.isRunning && checksumArray.length > 0) {
+                    const evictResult = await this.#storedIndex.evict(checksumArray[0], backends);
+                    deletedBackends = evictResult.deleted;
+                    remainingBackends = evictResult.remainingBackends;
+                } else if (!this.#storedIndex?.isRunning) {
+                    results.failed.push({ id, reason: 'home service not running — cannot evict from storage backends' });
+                    continue;
+                }
+
+                if (remainingBackends.length === 0) {
+                    // All backends cleared — safe to remove from DB entirely
+                    await db.delete(id);
+                    results.successful.push({ id, action: 'db-deleted', backendsCleared: deletedBackends });
+                } else if (deletedBackends.length > 0) {
+                    // Partial eviction — strip removed locations from the DB record
+                    const updatedLocations = docLocations.filter(
+                        l => !deletedBackends.includes(l.metadata?.backend)
+                    );
+                    await this.put({ ...doc, locations: updatedLocations }, null);
+                    results.successful.push({ id, action: 'updated', backendsCleared: deletedBackends, remainingBackends });
+                } else {
+                    results.skipped.push({ id, reason: 'no matching backends found to evict', requested: backends });
+                }
+            } catch (err) {
+                results.failed.push({ id, reason: err.message });
+            }
+        }
+
+        return results;
+    }
+
     async getByChecksumString(checksumString, options = { parse: true }) {
         return await this.#getActiveDb().getByChecksumString(checksumString, options);
     }

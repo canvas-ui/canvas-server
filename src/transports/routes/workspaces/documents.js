@@ -588,6 +588,81 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     }
   });
 
+  // ── Evict documents from storage backends ───────────────────────────────
+  //
+  // Removes files physically from one or more storage backends.
+  // When all backends are cleared the document is also deleted from the DB.
+  // When only some backends are cleared the DB record is updated to reflect
+  // the remaining locations.
+  //
+  // Body: { documentIds: number[], backends?: string[] }
+  //   backends omitted   → evict from all backends (rejected if >1 backend)
+  //   backends specified → evict only those backends
+
+  fastify.delete('/evict', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      params: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } },
+      body: {
+        type: 'object',
+        required: ['documentIds'],
+        properties: {
+          documentIds: {
+            type: 'array',
+            items: { anyOf: [{ type: 'string' }, { type: 'number' }] },
+            minItems: 1,
+          },
+          backends: {
+            type: 'array',
+            items: { type: 'string' },
+          },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    try {
+      const workspace = await getWorkspaceInstance(request, reply);
+      if (!workspace) return;
+
+      const { documentIds: rawIds, backends = null } = request.body;
+      let documentIds;
+      try {
+        documentIds = parseDocumentIdArray(rawIds, 'Document ID array');
+      } catch (e) {
+        const responseObject = new ResponseObject().badRequest(e.message);
+        return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+      }
+
+      const result = await workspace.evictDocumentsFromBackends(documentIds, { backends });
+
+      if (result.failed?.length) {
+        fastify.log.warn({
+          workspace: request.params.id,
+          userId: request.user?.id,
+          op: 'workspace.documents.evict',
+          requested: documentIds.length,
+          successful: result.successful?.length || 0,
+          failed: result.failed?.length || 0,
+          failedSamples: (result.failed || []).slice(0, 5),
+        }, 'Workspace document evict had failures');
+      }
+
+      const total = (result.successful?.length || 0) + (result.skipped?.length || 0);
+      const message = total > 0
+        ? `Evicted ${result.successful?.length || 0} document(s) from backends`
+        : result.failed?.length > 0
+          ? 'Eviction failed — see result for details'
+          : 'No documents evicted';
+
+      const responseObject = new ResponseObject().success(result, message);
+      return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+    } catch (error) {
+      fastify.log.error(error);
+      const responseObject = new ResponseObject().serverError('Failed to evict documents from backends');
+      return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+    }
+  });
+
   // ── Get document by ID (direct route) ───────────────────────────────────
 
   fastify.get('/:docId', {

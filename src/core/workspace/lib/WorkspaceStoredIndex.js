@@ -2,10 +2,7 @@
 
 import path from 'path';
 import Stored from '../../../services/stored/src/index.js';
-import {
-    getIncomingFileContextFromStoredLocation,
-    normalizeIncomingTreePath,
-} from '../../../utils/incoming-documents.js';
+import { INCOMING_ROOT_CONTEXT } from '../../../utils/incoming-documents.js';
 
 /*
  * WorkspaceStoredIndex — watches a workspace home directory and syncs file
@@ -70,8 +67,8 @@ export class WorkspaceStoredIndex {
                 root: this.#homePath,
                 watch: true,
                 provider: 'fs',
-                account: 'home',
-                container: 'workspace-home',
+                account: 'workspace',
+                container: 'workspace',
             });
 
             this.#bindEvents();
@@ -251,8 +248,13 @@ export class WorkspaceStoredIndex {
     #buildIncomingPaths(backends = []) {
         return Array.from(new Set(
             backends
-                .map((backend) => normalizeIncomingTreePath(getIncomingFileContextFromStoredLocation(backend)))
                 .filter(Boolean)
+                .map((backend) => {
+                    const filePath = backend?.source?.path || backend?.key || '';
+                    const dir = filePath ? path.dirname(filePath) : null;
+                    const suffix = (dir && dir !== '.') ? `/${dir}` : '';
+                    return `${INCOMING_ROOT_CONTEXT}/file/fs/workspace${suffix}`;
+                })
         ));
     }
 

@@ -29,19 +29,36 @@ test('builds file incoming paths from explicit provenance', () => {
   );
 });
 
-test('builds file incoming paths from stored locations', () => {
+test('builds file incoming paths from stored locations using parent directory', () => {
   assert.equal(
     getIncomingFileContextFromStoredLocation({
-      backend: 'fs:home',
+      backend: 'fs:workspace',
       key: 'docs/spec.md',
       driver: 'file',
       source: {
         provider: 'fs',
-        account: 'home',
-        container: 'workspace-home',
+        account: 'workspace',
+        container: 'workspace',
         path: 'docs/spec.md',
       },
     }),
-    '/.incoming/file/fs/home/workspace-home/docs/spec.md'
+    '/.incoming/file/fs/workspace/workspace/docs'
+  );
+});
+
+test('places root-level files at container context with no subpath', () => {
+  assert.equal(
+    getIncomingFileContextFromStoredLocation({
+      backend: 'fs:workspace',
+      key: 'readme.md',
+      driver: 'file',
+      source: {
+        provider: 'fs',
+        account: 'workspace',
+        container: 'workspace',
+        path: 'readme.md',
+      },
+    }),
+    '/.incoming/file/fs/workspace/workspace'
   );
 });

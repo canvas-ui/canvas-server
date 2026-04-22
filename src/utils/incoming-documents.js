@@ -65,18 +65,27 @@ export function getIncomingMessageContext(provider, accountId, channelName) {
   return buildIncomingContext('message', provider, accountId, channelName);
 }
 
-export function getIncomingFileContext(provider, accountId, containerName, objectPath = null) {
-  const segments = [provider, accountId, containerName];
-  if (objectPath) { segments.push(objectPath); }
+export function getIncomingFileContext(provider, accountId, containerName = null, objectPath = null) {
+  const segments = [provider, accountId];
+  if (containerName != null) { segments.push(containerName); }
+  if (objectPath != null) { segments.push(objectPath); }
   return buildIncomingContext('file', ...segments);
+}
+
+function filePathDirname(filePath) {
+  if (!filePath) return null;
+  const normalized = String(filePath).replace(/\\/g, '/').replace(/^\/+/, '');
+  const lastSlash = normalized.lastIndexOf('/');
+  return lastSlash > 0 ? normalized.slice(0, lastSlash) : null;
 }
 
 export function getIncomingFileContextFromStoredLocation(location = {}) {
   const source = location?.source || {};
+  const dirPath = filePathDirname(source.path || location.key || null);
   return getIncomingFileContext(
     source.provider || location.driver || location.backend || 'unknown',
     source.account || location.backend || 'default',
-    source.container || 'root',
-    source.path || location.key || null,
+    source.container || null,
+    dirPath,
   );
 }

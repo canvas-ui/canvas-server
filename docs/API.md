@@ -15,7 +15,7 @@ A **Workspace** is a bucket for indexing data from any backend (local FS, IMAP, 
 
 A **Document** is a checksum-addressed indexed object. A single `greatestSongEver.mp3`:
 - Is indexed **once** by checksum (e.g. `sha256/abc123...`)
-- Can be **stored** on multiple backends (tracked via `metadata.dataPaths[]`)
+- Can be **stored** on multiple backends simultaneously (tracked via `locations[]`, e.g. `stored://fs:workspace/…`, `s3://…`, `http://…`)
 - Can be **linked** to multiple virtual paths in the tree via bitmap indexes
 
 A **Context** is a user's current position/scope within a workspace — like a cursor pointing at a URL (e.g. `universe://music/concerts`). A context is always bound to exactly one `context` tree. When the context moves from one path to another, bound applications and devices should show only the data relevant to that path inside that bound tree.
@@ -30,7 +30,7 @@ A **ContextTree** is not the same thing as a **Context**:
 |-----------|-------------|---------------|------------------|
 | **Unlink** (`/remove`) | Remove bitmap link between document and virtual path | Stays | Stays |
 | **Delete from index** (`DELETE /documents`) | Remove document record from SynapsD | Removed | Stays |
-| **Delete from storage** (`DELETE /documents/storage`) | Remove actual data from backend(s) | Optionally removed | Removed from specified backends |
+| **Evict / Destroy** (`DELETE /documents/evict`) | Remove data from one or all storage backends; removes from index when all backends are cleared | Removed if all backends cleared | Removed from specified (or all) backends |
 
 ### Insert Flow
 
@@ -127,7 +127,25 @@ The API should accept optional `paths[]` and `backends[]` parameters; when omitt
 |--------|------|------|-------|-------------|
 | DELETE | `/workspaces/:id/documents/remove` | `authenticate` | Unlink | Remove from virtual path (bitmap unlink, data stays) |
 | DELETE | `/workspaces/:id/documents` | `authenticate` | Index | Remove from SynapsD index (data stays on backends) |
-| DELETE | `/workspaces/:id/documents/storage` | `authenticate` | Storage | Remove from backend(s) — **planned** |
+| DELETE | `/workspaces/:id/documents/evict` | `authenticate` | Storage | Remove from backend(s); deletes from index when all backends cleared |
+
+**DELETE `/documents/evict` body:**
+```json
+{
+  "documentIds": [1, 2, 3],
+  "backends": ["fs:workspace"]
+}
+```
+`backends` is optional. If omitted, evicts from **all** backends — rejected with a descriptive error when more than one distinct backend is detected (caller must be explicit to avoid orphaning data on remote storage). When all backends are cleared the document is automatically removed from the index. When only some backends are cleared the index record is updated to reflect remaining locations.
+
+**Evict response payload:**
+```json
+{
+  "successful": [{ "id": 1, "action": "db-deleted", "backendsCleared": ["fs:workspace"] }],
+  "failed":     [{ "id": 2, "reason": "multiple backends detected — specify backends explicitly", "backends": ["fs:workspace", "s3:archive"] }],
+  "skipped":    [{ "id": 3, "reason": "no matching backends found to evict" }]
+}
+```
 
 **Dev:**
 
@@ -305,7 +323,7 @@ Context document operations are scoped to the context's current URL path in the 
 | DELETE | `/contexts/:id/documents/remove` | `authenticate` | Unlink | Remove from context path (bitmap unlink) |
 | DELETE | `/contexts/:id/documents` | `authenticate` | Index | Remove from SynapsD index |
 | DELETE | `/contexts/:id/documents/:docId` | `authenticate` | Index | Remove single document from index |
-| DELETE | `/contexts/:id/documents/storage` | `authenticate` | Storage | Remove from backend(s) — **planned** |
+| DELETE | `/contexts/:id/documents/evict` | `authenticate` | Storage | Remove from backend(s) — see workspace evict for body/response shape |
 
 **Query parameters (GET `/contexts/:id/documents`, GET `/contexts/:id/documents/by-abstraction/:abstraction`):**
 

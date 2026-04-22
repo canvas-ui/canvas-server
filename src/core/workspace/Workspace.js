@@ -384,7 +384,7 @@ class Workspace extends EventEmitter {
             const id = parseDocumentId(rawId, 'Document ID');
             try {
                 const docs = await db.getDocumentsByIdArray([id], { parse: true });
-                const doc = docs?.[0];
+                const doc = docs?.data?.[0];
                 if (!doc) {
                     results.failed.push({ id, reason: 'not found' });
                     continue;

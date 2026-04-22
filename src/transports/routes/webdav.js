@@ -104,6 +104,10 @@ export default async function webdavRoutes(fastify) {
       return reply.code(404).send(new ResponseObject().notFound('Workspace not found').getResponse());
     }
 
+    if (!ws.isServiceEnabled('home')) {
+      return reply.code(403).send(new ResponseObject().forbidden('WebDAV is not enabled for this workspace').getResponse());
+    }
+
     const hasAccess = ws.owner === request.user.id ||
       !!(request.user.email && ws.acl?.users?.[request.user.email]);
 

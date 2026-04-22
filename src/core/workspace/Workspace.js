@@ -226,7 +226,9 @@ class Workspace extends EventEmitter {
             await this.#ensureContextTree();
             await this.#ensureDirectoryTree();
             this.#bindRuntimeEvents();
-            await this.#startStoredIndex();
+            if (this.isServiceEnabled('home')) {
+                await this.#startStoredIndex();
+            }
 
             this.#setStatus(WORKSPACE_STATUS_CODES.ACTIVE);
             this.emit('started', { id: this.id });
@@ -529,7 +531,17 @@ class Workspace extends EventEmitter {
     // Stored home index (delegated to WorkspaceStoredIndex)
     // ─────────────────────────────────────────────────────────────────────────
 
+    async startHomeService() {
+        if (!this.isActive) return;
+        await this.#startStoredIndex();
+    }
+
+    async stopHomeService() {
+        await this.#stopStoredIndex();
+    }
+
     async #startStoredIndex() {
+        if (this.#storedIndex?.isRunning) return;
         this.#storedIndex = new WorkspaceStoredIndex({
             dataPath: this.dataPath,
             homePath: this.homePath,

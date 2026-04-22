@@ -207,6 +207,7 @@ class WorkspaceManager extends EventEmitter {
                 result = await this.dotfileService.enable(workspace, userId);
                 break;
             case 'home':
+                await workspace.startHomeService();
                 result = true;
                 break;
             case 'hook':
@@ -246,6 +247,7 @@ class WorkspaceManager extends EventEmitter {
                 result = await this.dotfileService.disable(workspace);
                 break;
             case 'home':
+                await workspace.stopHomeService();
                 result = true;
                 break;
             case 'imap':

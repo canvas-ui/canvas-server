@@ -580,6 +580,8 @@ The same handlers are also mounted under **`/contexts/:id/trees/default/...`**. 
 | PUT | `/agents/:agentIdentifier/session` | `authenticate` | Select active session or switch mode |
 | GET | `/agents/:agentIdentifier/sessions` | `authenticate` | List available persistent sessions |
 | POST | `/agents/:agentIdentifier/sessions` | `authenticate` | Create a new session |
+| PATCH | `/agents/:agentIdentifier/sessions/:sessionId` | `authenticate` | Rename a session |
+| DELETE | `/agents/:agentIdentifier/sessions/:sessionId` | `authenticate` | Delete a session |
 | POST | `/agents/:agentIdentifier` | `authenticate` | Prompt agent (non-streaming shorthand) |
 | POST | `/agents/:agentIdentifier/prompt` | `authenticate` | Prompt agent (non-streaming) |
 | POST | `/agents/:agentIdentifier/prompt/stream` | `authenticate` | Prompt agent (SSE streaming) |
@@ -673,19 +675,22 @@ Top-level convenience fields are merged into `config` where applicable, so both 
 ```json
 {
   "mode": "persistent",
-  "path": "/absolute/path/to/session.jsonl"
+  "path": "/absolute/path/to/session.jsonl",
+  "experimentalPath": "/absolute/path/to/experimental-session.jsonl"
 }
 ```
 
 Fields:
 
-- `mode`: `persistent` or `incognito`
-- `path`: selected persistent session file; omitted/null for `incognito`
+- `mode`: `persistent`, `experimental`, or `incognito`
+- `path`: selected persistent/experimental session file; omitted/null for `incognito`
+- `experimentalPath`: reserved persistent session file used by experimental mode
 
 Notes:
 
 - `persistent` is the default.
 - If `mode` is `persistent` and `path` is omitted, the backend continues the most recent session for that agent.
+- `experimental` uses a dedicated persistent session slot and creates it on first use if needed.
 - `incognito` uses an in-memory session and is not listed in persistent session history.
 
 ### Agent Session APIs
@@ -725,7 +730,8 @@ Notes:
       "messageCount": 12,
       "firstMessage": "let's debug auth",
       "allMessagesText": "let's debug auth ...",
-      "isCurrent": true
+      "isCurrent": true,
+      "isExperimental": false
     }
   ]
 }
@@ -737,6 +743,14 @@ Notes:
 {
   "mode": "persistent",
   "name": "Debugging auth"
+}
+```
+
+or:
+
+```json
+{
+  "mode": "experimental"
 }
 ```
 
@@ -782,6 +796,14 @@ or:
 
 ```json
 {
+  "mode": "experimental"
+}
+```
+
+or:
+
+```json
+{
   "mode": "incognito"
 }
 ```
@@ -790,6 +812,26 @@ Notes:
 
 - Selecting a session updates the agent's persisted `config.session`.
 - If the agent is active, session changes trigger a restart so subsequent prompts use the selected session.
+- Experimental sessions are persistent and listed like normal sessions, but they are marked with `isExperimental`.
+
+**PATCH `/agents/:agentIdentifier/sessions/:sessionId`** body:
+
+```json
+{
+  "name": "Pairing on auth"
+}
+```
+
+Successful response payload is the same shape as the create/select session responses.
+
+**DELETE `/agents/:agentIdentifier/sessions/:sessionId`**
+
+Successful response payload is the same shape as the create/select session responses.
+
+Notes:
+
+- Experimental sessions cannot be deleted.
+- Deleting the currently selected persistent session switches the agent back to default persistent session selection.
 
 ### Agent Prompt Shape
 

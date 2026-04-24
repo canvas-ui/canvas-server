@@ -1,7 +1,7 @@
 'use strict';
 
 import path from 'path';
-import { writeFile, access } from 'fs/promises';
+import { writeFile, readFile, access, unlink } from 'fs/promises';
 import EventEmitter from 'eventemitter2';
 import {
     createAgentSession,
@@ -40,7 +40,10 @@ export const LOCAL_PROVIDER_DEFAULTS = {
     vllm:        { api: 'openai-completions', baseUrl: 'http://localhost:8000/v1',  apiKey: 'vllm' },
 };
 
+const LOCAL_MODEL_INPUT = ['text', 'image'];
+
 export const AGENT_SESSION_MODES = {
+    EXPERIMENTAL: 'experimental',
     PERSISTENT: 'persistent',
     INCOGNITO: 'incognito',
 };
@@ -66,6 +69,9 @@ function getAgentSessionDir(cwd, agentDir) {
 }
 
 function normalizeSessionMode(mode) {
+    if (mode === AGENT_SESSION_MODES.EXPERIMENTAL) {
+        return AGENT_SESSION_MODES.EXPERIMENTAL;
+    }
     return mode === AGENT_SESSION_MODES.INCOGNITO
         ? AGENT_SESSION_MODES.INCOGNITO
         : AGENT_SESSION_MODES.PERSISTENT;
@@ -73,14 +79,16 @@ function normalizeSessionMode(mode) {
 
 function normalizeSessionConfig(config = {}) {
     const mode = normalizeSessionMode(config.mode);
-    const pathValue = config.path || config.sessionPath;
+    const experimentalPath = config.experimentalPath || null;
+    const pathValue = config.path || config.sessionPath || (mode === AGENT_SESSION_MODES.EXPERIMENTAL ? experimentalPath : null);
     return {
         mode,
-        ...(mode === AGENT_SESSION_MODES.PERSISTENT && pathValue ? { path: pathValue } : {}),
+        ...(mode !== AGENT_SESSION_MODES.INCOGNITO && pathValue ? { path: pathValue } : {}),
+        ...(experimentalPath ? { experimentalPath } : {}),
     };
 }
 
-function serializeSessionInfo(info, currentPath, mode) {
+function serializeSessionInfo(info, currentPath, mode, experimentalPath) {
     return {
         id: info.id,
         path: info.path,
@@ -92,7 +100,8 @@ function serializeSessionInfo(info, currentPath, mode) {
         messageCount: info.messageCount,
         firstMessage: info.firstMessage,
         allMessagesText: info.allMessagesText,
-        isCurrent: mode === AGENT_SESSION_MODES.PERSISTENT && info.path === currentPath,
+        isCurrent: mode !== AGENT_SESSION_MODES.INCOGNITO && info.path === currentPath,
+        isExperimental: Boolean(experimentalPath && info.path === experimentalPath),
     };
 }
 
@@ -154,6 +163,17 @@ class Agent extends EventEmitter {
     #homePath()    { return path.join(this.#rootPath, 'home'); }
     #runtimePath() { return path.join(this.#rootPath, 'runtime'); }
     #sessionDir() { return getAgentSessionDir(this.#homePath(), this.#runtimePath()); }
+    async #resolveExperimentalPath(sessionConfig = this.sessionConfig) {
+        if (sessionConfig.experimentalPath) {
+            return sessionConfig.experimentalPath;
+        }
+
+        const sessionManager = SessionManager.create(this.#homePath(), this.#sessionDir());
+        sessionManager.appendSessionInfo('Experimental');
+        await persistSessionManager(sessionManager);
+        return sessionManager.getSessionFile();
+    }
+
     #sessionManager(config = this.sessionConfig) {
         if (config.mode === AGENT_SESSION_MODES.INCOGNITO) {
             return SessionManager.inMemory(this.#homePath());
@@ -193,10 +213,7 @@ class Agent extends EventEmitter {
             const modelsJsonPath = path.join(runtimePath, 'models.json');
             const localDefaults = LOCAL_PROVIDER_DEFAULTS[this.llmProvider];
             if (localDefaults) {
-                const exists = await access(modelsJsonPath).then(() => true).catch(() => false);
-                if (!exists) {
-                    await this.#writeModelsConfig(modelsJsonPath, localDefaults);
-                }
+                await this.#ensureLocalModelsConfig(modelsJsonPath, localDefaults);
             }
 
             // ModelRegistry reads models.json — handles local providers, compat, per-provider apiKeys.
@@ -252,12 +269,33 @@ class Agent extends EventEmitter {
                     api: defaults.api,
                     apiKey: this.agentConfig?.apiKey || defaults.apiKey,
                     compat: { supportsDeveloperRole: false, supportsReasoningEffort: false },
-                    models: [{ id: this.model }],
+                    models: [{ id: this.model, input: LOCAL_MODEL_INPUT }],
                 },
             },
         };
         await writeFile(filePath, JSON.stringify(config, null, 2));
         logger.debug(`Auto-generated models.json for agent ${this.id} (${this.llmProvider})`);
+    }
+
+    async #ensureLocalModelsConfig(filePath, defaults) {
+        const exists = await access(filePath).then(() => true).catch(() => false);
+        if (!exists) {
+            await this.#writeModelsConfig(filePath, defaults);
+            return;
+        }
+
+        let config;
+        try {
+            config = JSON.parse(await readFile(filePath, 'utf8'));
+        } catch {
+            return;
+        }
+        const model = config?.providers?.[this.llmProvider]?.models?.find((entry) => entry?.id === this.model);
+        if (!model || model.input?.includes('image')) return;
+
+        model.input = Array.isArray(model.input) ? [...new Set([...model.input, 'image'])] : LOCAL_MODEL_INPUT;
+        await writeFile(filePath, JSON.stringify(config, null, 2));
+        logger.debug(`Enabled image input for ${this.llmProvider}/${this.model} in models.json`);
     }
 
     async stop() {
@@ -288,7 +326,7 @@ class Agent extends EventEmitter {
      * @param {string} message
      * @returns {Promise<Array>}
      */
-    async prompt(message) {
+    async prompt(message, options = {}) {
         if (!this.isActive) throw new Error('Agent is not active');
         const messages = [];
         const unsub = this.#session.subscribe((event) => {
@@ -297,7 +335,11 @@ class Agent extends EventEmitter {
             }
         });
         try {
-            await this.#session.prompt(message);
+            await this.#session.prompt(message, {
+                ...(Array.isArray(options.images) && options.images.length > 0
+                    ? { images: options.images }
+                    : {}),
+            });
         } finally {
             unsub();
         }
@@ -310,11 +352,15 @@ class Agent extends EventEmitter {
      * @param {Function} onEvent
      * @returns {Promise<void>}
      */
-    async stream(message, onEvent) {
+    async stream(message, onEvent, options = {}) {
         if (!this.isActive) throw new Error('Agent is not active');
         const unsub = this.#session.subscribe(onEvent);
         try {
-            await this.#session.prompt(message);
+            await this.#session.prompt(message, {
+                ...(Array.isArray(options.images) && options.images.length > 0
+                    ? { images: options.images }
+                    : {}),
+            });
         } finally {
             unsub();
         }
@@ -348,6 +394,7 @@ class Agent extends EventEmitter {
             mode: sessionConfig.mode,
             sessionId: sessionManager.getSessionId(),
             ...(sessionConfig.mode === AGENT_SESSION_MODES.PERSISTENT
+                || sessionConfig.mode === AGENT_SESSION_MODES.EXPERIMENTAL
                 ? { path: sessionManager.getSessionFile() || sessionConfig.path }
                 : {}),
         };
@@ -378,13 +425,14 @@ class Agent extends EventEmitter {
     async listSessions() {
         const sessionConfig = this.sessionConfig;
         const currentPath = this.getCurrentSessionSelection().path;
+        const experimentalPath = sessionConfig.experimentalPath || null;
         const sessions = await SessionManager.list(this.#homePath(), this.#sessionDir());
 
         return {
             mode: sessionConfig.mode,
             currentSessionId: this.getCurrentSessionSelection().sessionId,
             currentSessionPath: currentPath,
-            sessions: sessions.map((info) => serializeSessionInfo(info, currentPath, sessionConfig.mode)),
+            sessions: sessions.map((info) => serializeSessionInfo(info, currentPath, sessionConfig.mode, experimentalPath)),
         };
     }
 
@@ -392,6 +440,14 @@ class Agent extends EventEmitter {
         const mode = normalizeSessionMode(options.mode);
         if (mode === AGENT_SESSION_MODES.INCOGNITO) {
             return { mode };
+        }
+        if (mode === AGENT_SESSION_MODES.EXPERIMENTAL) {
+            const experimentalPath = await this.#resolveExperimentalPath();
+            return {
+                mode,
+                path: experimentalPath,
+                experimentalPath,
+            };
         }
 
         const sessionManager = SessionManager.create(this.#homePath(), this.#sessionDir());
@@ -403,6 +459,7 @@ class Agent extends EventEmitter {
         return {
             mode,
             path: sessionManager.getSessionFile(),
+            experimentalPath: this.sessionConfig.experimentalPath || null,
         };
     }
 
@@ -411,8 +468,19 @@ class Agent extends EventEmitter {
         if (mode === AGENT_SESSION_MODES.INCOGNITO) {
             return { mode };
         }
+        if (mode === AGENT_SESSION_MODES.EXPERIMENTAL) {
+            const experimentalPath = await this.#resolveExperimentalPath();
+            return {
+                mode,
+                path: experimentalPath,
+                experimentalPath,
+            };
+        }
         if (!options.sessionId) {
-            return { mode };
+            return {
+                mode,
+                experimentalPath: this.sessionConfig.experimentalPath || null,
+            };
         }
 
         const sessions = await SessionManager.list(this.#homePath(), this.#sessionDir());
@@ -424,6 +492,54 @@ class Agent extends EventEmitter {
         return {
             mode,
             path: selected.path,
+            experimentalPath: this.sessionConfig.experimentalPath || null,
+        };
+    }
+
+    async renameSession(options = {}) {
+        if (!options.sessionId) throw new Error('Session ID is required');
+        if (typeof options.name !== 'string' || !options.name.trim()) {
+            throw new Error('Session name is required');
+        }
+
+        const sessions = await SessionManager.list(this.#homePath(), this.#sessionDir());
+        const selected = sessions.find((session) => session.id === options.sessionId);
+        if (!selected) throw new Error(`Session not found: ${options.sessionId}`);
+
+        const sessionManager = SessionManager.open(selected.path, this.#sessionDir(), this.#homePath());
+        sessionManager.appendSessionInfo(options.name.trim());
+        await persistSessionManager(sessionManager);
+    }
+
+    async deleteSession(options = {}) {
+        if (!options.sessionId) throw new Error('Session ID is required');
+
+        const sessionConfig = this.sessionConfig;
+        const sessions = await SessionManager.list(this.#homePath(), this.#sessionDir());
+        const selected = sessions.find((session) => session.id === options.sessionId);
+        if (!selected) throw new Error(`Session not found: ${options.sessionId}`);
+        if (sessionConfig.experimentalPath && selected.path === sessionConfig.experimentalPath) {
+            throw new Error('Experimental session cannot be deleted');
+        }
+
+        const currentSelection = this.getCurrentSessionSelection();
+        const currentDeleted = currentSelection.path === selected.path;
+        const wasActive = this.isActive;
+        if (currentDeleted && wasActive) {
+            await this.stop();
+        }
+
+        await unlink(selected.path);
+
+        return {
+            deletedSessionId: selected.id,
+            currentDeleted,
+            wasActive,
+            session: {
+                mode: currentDeleted ? AGENT_SESSION_MODES.PERSISTENT : sessionConfig.mode,
+                path: currentDeleted ? null : sessionConfig.path || null,
+                experimentalPath: sessionConfig.experimentalPath || null,
+            },
         };
     }
 

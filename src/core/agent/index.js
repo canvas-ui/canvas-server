@@ -395,7 +395,8 @@ class Agents extends EventEmitter {
             config: {
                 session: {
                     mode: sessionConfig.mode,
-                    path: sessionConfig.mode === AGENT_SESSION_MODES.PERSISTENT ? sessionConfig.path || null : null,
+                    path: sessionConfig.mode !== AGENT_SESSION_MODES.INCOGNITO ? sessionConfig.path || null : null,
+                    experimentalPath: sessionConfig.experimentalPath || null,
                 },
             },
         }, requestingUserId);
@@ -424,11 +425,66 @@ class Agents extends EventEmitter {
             config: {
                 session: {
                     mode: sessionConfig.mode,
-                    path: sessionConfig.mode === AGENT_SESSION_MODES.PERSISTENT ? sessionConfig.path || null : null,
+                    path: sessionConfig.mode !== AGENT_SESSION_MODES.INCOGNITO ? sessionConfig.path || null : null,
+                    experimentalPath: sessionConfig.experimentalPath || null,
                 },
             },
         }, requestingUserId);
         if (!agent) return null;
+
+        return {
+            current: agent.getSessionContext(),
+            sessions: await agent.listSessions(),
+        };
+    }
+
+    async renameSession(userId, agentIdentifier, options = {}, requestingUserId) {
+        if (!this.#initialized) throw new Error('Agents service not initialized');
+
+        const owner = await this.#users.resolveId(userId);
+        if (!owner) return null;
+        requestingUserId = requestingUserId === userId ? owner : (requestingUserId || owner);
+
+        const agent = this.#agents.get(await this.#resolveAgentId(owner, agentIdentifier))
+            || await this.open(userId, agentIdentifier, requestingUserId);
+        if (!agent) return null;
+        if (agent.owner !== requestingUserId) throw new Error(`Permission denied for agent ${agent.id}`);
+
+        await agent.renameSession(options);
+        return {
+            current: agent.getSessionContext(),
+            sessions: await agent.listSessions(),
+        };
+    }
+
+    async deleteSession(userId, agentIdentifier, options = {}, requestingUserId) {
+        if (!this.#initialized) throw new Error('Agents service not initialized');
+
+        const owner = await this.#users.resolveId(userId);
+        if (!owner) return null;
+        requestingUserId = requestingUserId === userId ? owner : (requestingUserId || owner);
+
+        let agent = this.#agents.get(await this.#resolveAgentId(owner, agentIdentifier))
+            || await this.open(userId, agentIdentifier, requestingUserId);
+        if (!agent) return null;
+        if (agent.owner !== requestingUserId) throw new Error(`Permission denied for agent ${agent.id}`);
+
+        const result = await agent.deleteSession(options);
+        if (result.currentDeleted) {
+            agent = await this.update(userId, agentIdentifier, {
+                config: {
+                    session: {
+                        mode: result.session.mode,
+                        path: result.session.path,
+                        experimentalPath: result.session.experimentalPath,
+                    },
+                },
+            }, requestingUserId);
+            if (!agent) return null;
+            if (result.wasActive) {
+                agent = await this.start(userId, agentIdentifier, requestingUserId);
+            }
+        }
 
         return {
             current: agent.getSessionContext(),
@@ -667,6 +723,13 @@ class Agents extends EventEmitter {
                     delete merged.session.path;
                 }
             }
+            if (nextConfig.session && Object.prototype.hasOwnProperty.call(nextConfig.session, 'experimentalPath')) {
+                if (nextConfig.session.experimentalPath) {
+                    merged.session.experimentalPath = nextConfig.session.experimentalPath;
+                } else {
+                    delete merged.session.experimentalPath;
+                }
+            }
         }
 
         return merged;
@@ -694,7 +757,7 @@ class Agents extends EventEmitter {
                     api: defaults.api,
                     apiKey: apiKey || defaults.apiKey,
                     compat: { supportsDeveloperRole: false, supportsReasoningEffort: false },
-                    models: [{ id: model }],
+                    models: [{ id: model, input: ['text', 'image'] }],
                 },
             },
         };

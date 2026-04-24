@@ -9,6 +9,17 @@ import { validateUser } from '../../auth/strategies.js';
  */
 export default async function agentRoutes(fastify, _options) {
 
+    const normalizePromptImages = (images) => {
+        if (!Array.isArray(images)) return [];
+        return images
+            .filter((image) => image && typeof image.data === 'string' && typeof image.mimeType === 'string')
+            .map((image) => ({
+                type: 'image',
+                data: image.data,
+                mimeType: image.mimeType,
+            }));
+    };
+
     const requireUser = (request, reply) => {
         if (!validateUser(request.user, ['id', 'email'])) {
             const r = new ResponseObject().unauthorized('Valid authentication required');
@@ -29,8 +40,14 @@ export default async function agentRoutes(fastify, _options) {
                 return reply.code(r.statusCode).send(r.getResponse());
             }
 
-            const { message } = request.body;
-            const messages = await agent.prompt(message);
+            const { message, images } = request.body;
+            const text = typeof message === 'string' ? message : '';
+            const normalizedImages = normalizePromptImages(images);
+            if (!text && normalizedImages.length === 0) {
+                const r = new ResponseObject().badRequest('message or images are required');
+                return reply.code(r.statusCode).send(r.getResponse());
+            }
+            const messages = await agent.prompt(text, { images: normalizedImages });
             const r = new ResponseObject().success({ messages }, 'Prompt completed');
             return reply.code(r.statusCode).send(r.getResponse());
         } catch (err) {
@@ -221,6 +238,50 @@ export default async function agentRoutes(fastify, _options) {
         }
     });
 
+    fastify.patch('/:agentIdentifier/sessions/:sessionId', { onRequest: [fastify.authenticate] }, async (request, reply) => {
+        if (!requireUser(request, reply)) return;
+        try {
+            const result = await fastify.agents.renameSession(
+                request.user.id,
+                request.params.agentIdentifier,
+                { sessionId: request.params.sessionId, name: request.body?.name },
+                request.user.id
+            );
+            if (!result) {
+                const r = new ResponseObject().notFound('Agent not found');
+                return reply.code(r.statusCode).send(r.getResponse());
+            }
+            const r = new ResponseObject().success(result, 'Session renamed');
+            return reply.code(r.statusCode).send(r.getResponse());
+        } catch (err) {
+            fastify.log.error(err);
+            const r = new ResponseObject().serverError(err.message || 'Failed to rename session');
+            return reply.code(r.statusCode).send(r.getResponse());
+        }
+    });
+
+    fastify.delete('/:agentIdentifier/sessions/:sessionId', { onRequest: [fastify.authenticate] }, async (request, reply) => {
+        if (!requireUser(request, reply)) return;
+        try {
+            const result = await fastify.agents.deleteSession(
+                request.user.id,
+                request.params.agentIdentifier,
+                { sessionId: request.params.sessionId },
+                request.user.id
+            );
+            if (!result) {
+                const r = new ResponseObject().notFound('Agent not found');
+                return reply.code(r.statusCode).send(r.getResponse());
+            }
+            const r = new ResponseObject().success(result, 'Session deleted');
+            return reply.code(r.statusCode).send(r.getResponse());
+        } catch (err) {
+            fastify.log.error(err);
+            const r = new ResponseObject().serverError(err.message || 'Failed to delete session');
+            return reply.code(r.statusCode).send(r.getResponse());
+        }
+    });
+
     /**
      * Update agent config
      */
@@ -387,7 +448,13 @@ export default async function agentRoutes(fastify, _options) {
                 return reply.code(r.statusCode).send(r.getResponse());
             }
 
-            const { message } = request.body;
+            const { message, images } = request.body;
+            const text = typeof message === 'string' ? message : '';
+            const normalizedImages = normalizePromptImages(images);
+            if (!text && normalizedImages.length === 0) {
+                const r = new ResponseObject().badRequest('message or images are required');
+                return reply.code(r.statusCode).send(r.getResponse());
+            }
 
             reply.raw.writeHead(200, {
                 'Content-Type': 'text/event-stream',
@@ -425,7 +492,7 @@ export default async function agentRoutes(fastify, _options) {
             };
 
             try {
-                await agent.stream(message, onEvent);
+                await agent.stream(text, onEvent, { images: normalizedImages });
             } catch (streamErr) {
                 send({ type: 'error', error: streamErr.message });
             }

@@ -107,8 +107,10 @@ class Url {
         // Start with basic cleanup
         let cleaned = url
             .trim() // Remove leading/trailing whitespace
-            .replace(/\\/g, '/') // Standardize on forward slashes
-            .replace(/ +/g, '_'); // Replace spaces with underscores
+            .replace(/\\/g, '/'); // Standardize on forward slashes
+            // Note: spaces are intentionally preserved here — path segments (layer names) may contain
+            // spaces. The workspace name is sanitized separately below; #normalizePath in ContextTree
+            // handles final segment sanitization via sanitizeLayerName.
 
         // Reject URLs with multiple :// sequences - these are malformed
         const protocolMatches = cleaned.match(/:\/\//g);
@@ -147,8 +149,9 @@ class Url {
     cleanPath(path) {
         if (!path) return '';
 
-        // Remove invalid characters, keeping only alphanumeric, slashes, underscores, hyphens, and dots
-        let cleaned = path.replace(/[^a-zA-Z0-9/_.-]/g, '');
+        // Remove invalid characters; spaces are allowed in path segments (layer names support them).
+        // Final per-segment sanitization is handled by ContextTree.#normalizePath → sanitizeLayerName.
+        let cleaned = path.replace(/[^a-zA-Z0-9/_ .-]/g, '');
 
         // Normalize multiple consecutive slashes to single slash
         cleaned = cleaned.replace(/\/+/g, '/');

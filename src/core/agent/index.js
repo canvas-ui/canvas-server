@@ -7,7 +7,7 @@ import { existsSync } from 'fs';
 import EventEmitter from 'eventemitter2';
 import { generateUUID } from '../../utils/id.js';
 import { createLogger } from '../../utils/log.js';
-import Agent, { AGENT_STATUS_CODES, LOCAL_PROVIDER_DEFAULTS } from './Agent.js';
+import Agent, { AGENT_STATUS_CODES, LOCAL_PROVIDER_DEFAULTS, sanitizeAgentData, AGENT_SESSION_MODES } from './Agent.js';
 import { loadAgentRuntimeConfig, materializeAgentRuntimeFiles } from './files.js';
 import { validateAgentProvider } from './validation.js';
 
@@ -235,7 +235,7 @@ class Agents extends EventEmitter {
 
         this.emit('agent.created', { userId: owner, agentId, agentName, agent: indexEntry });
         logger.debug(`Agent created: ${agentId} (${agentName}) owner=${owner}`);
-        return indexEntry;
+        return sanitizeAgentData(indexEntry);
     }
 
     /**
@@ -363,6 +363,79 @@ class Agents extends EventEmitter {
         return this.start(userId, agentIdentifier, requestingUserId);
     }
 
+    async listSessions(userId, agentIdentifier, requestingUserId) {
+        if (!this.#initialized) throw new Error('Agents service not initialized');
+
+        const owner = await this.#users.resolveId(userId);
+        if (!owner) return null;
+        requestingUserId = requestingUserId === userId ? owner : (requestingUserId || owner);
+
+        const agent = this.#agents.get(await this.#resolveAgentId(owner, agentIdentifier))
+            || await this.open(userId, agentIdentifier, requestingUserId);
+        if (!agent) return null;
+        if (agent.owner !== requestingUserId) throw new Error(`Permission denied for agent ${agent.id}`);
+
+        return agent.listSessions();
+    }
+
+    async createSession(userId, agentIdentifier, options = {}, requestingUserId) {
+        if (!this.#initialized) throw new Error('Agents service not initialized');
+
+        const owner = await this.#users.resolveId(userId);
+        if (!owner) return null;
+        requestingUserId = requestingUserId === userId ? owner : (requestingUserId || owner);
+
+        let agent = this.#agents.get(await this.#resolveAgentId(owner, agentIdentifier))
+            || await this.open(userId, agentIdentifier, requestingUserId);
+        if (!agent) return null;
+        if (agent.owner !== requestingUserId) throw new Error(`Permission denied for agent ${agent.id}`);
+
+        const sessionConfig = await agent.createSession(options);
+        agent = await this.update(userId, agentIdentifier, {
+            config: {
+                session: {
+                    mode: sessionConfig.mode,
+                    path: sessionConfig.mode === AGENT_SESSION_MODES.PERSISTENT ? sessionConfig.path || null : null,
+                },
+            },
+        }, requestingUserId);
+        if (!agent) return null;
+
+        return {
+            current: agent.getSessionContext(),
+            sessions: await agent.listSessions(),
+        };
+    }
+
+    async selectSession(userId, agentIdentifier, options = {}, requestingUserId) {
+        if (!this.#initialized) throw new Error('Agents service not initialized');
+
+        const owner = await this.#users.resolveId(userId);
+        if (!owner) return null;
+        requestingUserId = requestingUserId === userId ? owner : (requestingUserId || owner);
+
+        let agent = this.#agents.get(await this.#resolveAgentId(owner, agentIdentifier))
+            || await this.open(userId, agentIdentifier, requestingUserId);
+        if (!agent) return null;
+        if (agent.owner !== requestingUserId) throw new Error(`Permission denied for agent ${agent.id}`);
+
+        const sessionConfig = await agent.selectSession(options);
+        agent = await this.update(userId, agentIdentifier, {
+            config: {
+                session: {
+                    mode: sessionConfig.mode,
+                    path: sessionConfig.mode === AGENT_SESSION_MODES.PERSISTENT ? sessionConfig.path || null : null,
+                },
+            },
+        }, requestingUserId);
+        if (!agent) return null;
+
+        return {
+            current: agent.getSessionContext(),
+            sessions: await agent.listSessions(),
+        };
+    }
+
     /**
      * Permanently delete an agent.
      * @param {boolean} [removeFiles=true]
@@ -486,9 +559,9 @@ class Agents extends EventEmitter {
 
             try {
                 const ownerUser = await this.#users.get(entry.owner);
-                results.push({ ...entry, ownerEmail: ownerUser?.email });
+                results.push(sanitizeAgentData({ ...entry, ownerEmail: ownerUser?.email }));
             } catch {
-                results.push(entry);
+                results.push(sanitizeAgentData(entry));
             }
         }
 
@@ -584,6 +657,16 @@ class Agents extends EventEmitter {
         }
         if (currentConfig.identity || nextConfig.identity) {
             merged.identity = mergeNestedObjects(currentConfig.identity, nextConfig.identity);
+        }
+        if (currentConfig.session || nextConfig.session) {
+            merged.session = mergeNestedObjects(currentConfig.session, nextConfig.session);
+            if (nextConfig.session && Object.prototype.hasOwnProperty.call(nextConfig.session, 'path')) {
+                if (nextConfig.session.path) {
+                    merged.session.path = nextConfig.session.path;
+                } else {
+                    delete merged.session.path;
+                }
+            }
         }
 
         return merged;

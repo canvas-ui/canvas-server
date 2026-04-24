@@ -3,6 +3,8 @@
 All REST endpoints are prefixed with `/rest/v2` unless noted otherwise.
 All responses use the standard `ResponseObject` envelope (see [Response Format](#response-format)).
 
+Auth column shorthand: **`authenticate`** = JWT or API token; **`authenticateClient`** = JWT or **device** token (used for ingestion from the web UI or registered devices).
+
 ## Domain Model
 
 A **Workspace** is a bucket for indexing data from any backend (local FS, IMAP, S3, NAS, CIFS, HTTP, streaming sources). Each workspace has:
@@ -82,7 +84,7 @@ The API should accept optional `paths[]` and `backends[]` parameters; when omitt
 |--------|------|------|-------------|
 | POST | `/auth/devices/register` | `authenticate` | Register device, mint device token |
 | GET | `/auth/devices` | `authenticate` | List user's devices |
-| PATCH | `/auth/devices/:deviceId` | `authenticate` | Rename device |
+| PATCH | `/auth/devices/:deviceId` | `authenticate` | Update device `name` / `description` |
 
 ---
 
@@ -110,6 +112,7 @@ The API should accept optional `paths[]` and `backends[]` parameters; when omitt
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | GET | `/workspaces/:id/documents` | `authenticate` | List/search documents |
+| GET | `/workspaces/:id/documents/by-id/:docId` | `authenticate` | Get document by ID scoped to `treeNameOrTreeId` / `context` query (same filters as list) |
 | GET | `/workspaces/:id/documents/:docId` | `authenticate` | Get document by ID |
 | GET | `/workspaces/:id/documents/by-abstraction/:abstraction` | `authenticate` | List by abstraction type |
 | GET | `/workspaces/:id/documents/by-hash/:algo/:hash` | `authenticate` | Get document by checksum |
@@ -118,16 +121,17 @@ The API should accept optional `paths[]` and `backends[]` parameters; when omitt
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| POST | `/workspaces/:id/documents` | `authenticateClient` | Index + store + link documents |
-| PUT | `/workspaces/:id/documents` | `authenticateClient` | Update document metadata |
+| POST | `/workspaces/:id/documents` | `authenticateClient` | Index + store + link documents (body may use `documents` or `documentIds` + tree/context) |
+| PUT | `/workspaces/:id/documents` | `authenticateClient` | Update document metadata (`documents` or `documentIds`) |
 
 **Three-level removal:**
 
 | Method | Path | Auth | Level | Description |
 |--------|------|------|-------|-------------|
-| DELETE | `/workspaces/:id/documents/remove` | `authenticate` | Unlink | Remove from virtual path (bitmap unlink, data stays) |
-| DELETE | `/workspaces/:id/documents` | `authenticate` | Index | Remove from SynapsD index (data stays on backends) |
-| DELETE | `/workspaces/:id/documents/evict` | `authenticate` | Storage | Remove from backend(s); deletes from index when all backends cleared |
+| DELETE | `/workspaces/:id/documents/remove` | `authenticate` | Unlink | JSON body: array of document IDs; removes bitmap link for optional `treeNameOrTreeId` / `context` scope |
+| DELETE | `/workspaces/:id/documents` | `authenticate` | Index | JSON body: array of document IDs; removes from SynapsD |
+| DELETE | `/workspaces/:id/documents/purge` | `authenticate` | Index | Deletes **all** documents matching list query params (no body); same filters as GET list |
+| DELETE | `/workspaces/:id/documents/evict` | `authenticate` | Storage | JSON body `{ documentIds, backends? }`; remove from backend(s); deletes from index when all backends cleared |
 
 **DELETE `/documents/evict` body:**
 ```json
@@ -153,7 +157,7 @@ The API should accept optional `paths[]` and `backends[]` parameters; when omitt
 |--------|------|------|-------------|
 | DELETE | `/workspaces/:id/documents/clear-database` | `authenticate` | Clear all documents (dev only) |
 
-**Query parameters (GET `/documents`, GET `/documents/by-abstraction/:abstraction`, DELETE `/documents/purge`):**
+**Query parameters (GET `/documents`, GET `/documents/by-abstraction/:abstraction`, GET `/documents/by-id/:docId`, DELETE `/documents/purge`):**
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -189,10 +193,11 @@ Example: `GET /documents?allOf[]=data/abstraction/file&noneOf[]=tag/deleted&filt
 }
 ```
 
-**DELETE `/documents/remove` query parameters:**
+**DELETE `/documents/remove`:** JSON body is a **non-empty array** of document IDs. Query parameters:
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
+| `treeNameOrTreeId` | string | — | Tree for unlink scope |
 | `context` | string | `/` | Path inside the selected context tree |
 | `allOf` | string[] | `[]` | Attribute filter for unlink scope |
 | `noneOf` | string[] | `[]` | Attribute filter for unlink scope |
@@ -215,6 +220,22 @@ Example: `GET /documents?allOf[]=data/abstraction/file&noneOf[]=tag/deleted&filt
 | POST | `/workspaces/:id/trees/:treeNameOrTreeId/paths/copy` | `authenticate` | Copy path |
 | POST | `/workspaces/:id/trees/:treeNameOrTreeId/layers/merge` | `authenticate` | Merge layer bitmaps (`context` trees only) |
 | POST | `/workspaces/:id/trees/:treeNameOrTreeId/layers/subtract` | `authenticate` | Subtract layer bitmaps (`context` trees only) |
+
+`DELETE .../paths` takes the target path as a **query** parameter (`path`, optional `recursive`), not a JSON body. `POST .../paths` accepts `path`, optional `data`, `autoCreateLayers`.
+
+The same path handlers are mounted on **`/workspaces/:id/tree/...`** with no `:treeNameOrTreeId` segment — that alias uses the workspace **preferred default context tree**.
+
+**Context-tree layers** (under `.../trees/:treeId/...` or `.../tree/...`; `context` trees only for layer ops):
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `.../layers` | `authenticate` | List layers |
+| GET | `.../layers/:layerId` | `authenticate` | Get layer by id or name |
+| GET | `.../layers/:layerId/documents` | `authenticate` | List documents in layer bitmap |
+| PATCH | `.../layers/:layerId` | `authenticate` | Update / rename layer |
+| POST | `.../layers/:layerId/lock` | `authenticate` | Lock layer (`lockBy` in body) |
+| POST | `.../layers/:layerId/unlock` | `authenticate` | Unlock layer (`lockBy` in body) |
+| DELETE | `.../layers/:layerId` | `authenticate` | Delete layer |
 
 ### Bitmaps
 
@@ -273,6 +294,75 @@ Example: `GET /documents?allOf[]=data/abstraction/file&noneOf[]=tag/deleted&filt
 | GET | `/workspaces/:id/services/:name/config` | `authenticate` | Get service config |
 | PUT | `/workspaces/:id/services/:name/config` | `authenticate` | Update service config |
 
+### IMAP service (nested)
+
+Mounted under **`/workspaces/:id/services/imap`** (same `authenticate` as other workspace routes).
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/workspaces/:id/services/imap/mailboxes` | `authenticate` | List IMAP mailboxes |
+| POST | `/workspaces/:id/services/imap/mailboxes` | `authenticate` | Add mailbox |
+| GET | `/workspaces/:id/services/imap/mailboxes/:mailboxId` | `authenticate` | Get mailbox |
+| PATCH | `/workspaces/:id/services/imap/mailboxes/:mailboxId` | `authenticate` | Update mailbox |
+| DELETE | `/workspaces/:id/services/imap/mailboxes/:mailboxId` | `authenticate` | Remove mailbox |
+| POST | `/workspaces/:id/services/imap/mailboxes/:mailboxId/test` | `authenticate` | Test connection |
+| POST | `/workspaces/:id/services/imap/mailboxes/:mailboxId/sync` | `authenticate` | Trigger sync |
+| POST | `/workspaces/:id/services/imap/mailboxes/:mailboxId/start` | `authenticate` | Start mailbox worker |
+| POST | `/workspaces/:id/services/imap/mailboxes/:mailboxId/stop` | `authenticate` | Stop mailbox worker |
+
+### Home backend (workspace `home/` filesystem)
+
+| Method | Path | Auth | ACL | Description |
+|--------|------|------|-----|-------------|
+| GET | `/workspaces/:id/home` | `authenticate` | read | List root of home dir |
+| GET | `/workspaces/:id/home/*` | `authenticate` | read | Directory listing or file metadata (`?download` for raw file stream) |
+| PUT | `/workspaces/:id/home/*` | `authenticate` | write | Upload/replace file (raw body streamed to path) |
+| POST | `/workspaces/:id/home/mkdir` | `authenticate` | write | Create directory (`{ "path" }` body) |
+| DELETE | `/workspaces/:id/home/*` | `authenticate` | write | Delete file or directory |
+| POST | `/workspaces/:id/home/actions/index` | `authenticate` | write | Promote `home/` paths into SynapsD (`{ files[], context? }`) |
+
+### Hooks (workspace JS hooks)
+
+| Method | Path | Auth | ACL | Description |
+|--------|------|------|-----|-------------|
+| GET | `/workspaces/:id/hooks` | `authenticate` | read | List hook files under workspace hooks dir |
+| GET | `/workspaces/:id/hooks/*` | `authenticate` | read | Get hook source (`.js` at root or under `lib/`) |
+| PUT | `/workspaces/:id/hooks/*` | `authenticate` | write | Save hook (`{ "content" }`) |
+| DELETE | `/workspaces/:id/hooks/*` | `authenticate` | write | Delete hook file |
+
+### Devices (workspace ↔ device binding)
+
+Indexed device documents (`data/abstraction/device`) for linking registered devices to a workspace.
+
+| Method | Path | Auth | ACL | Description |
+|--------|------|------|-----|-------------|
+| GET | `/workspaces/:id/devices` | `authenticate` | read | List device bindings (`limit` / `offset` / `page`) |
+| GET | `/workspaces/:id/devices/:deviceId` | `authenticate` | read | Get one binding |
+| POST | `/workspaces/:id/devices` | `authenticate` | write | Link `deviceId` or `deviceIds[]` from server device registry |
+| DELETE | `/workspaces/:id/devices/:deviceId` | `authenticate` | write | Unlink device from workspace |
+
+### Canvases (workspace-scoped)
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/workspaces/:id/canvases` | `authenticate` | List canvas layers (`?tree=` optional; default context tree) |
+| POST | `/workspaces/:id/canvases` | `authenticate` | Create canvas at `path` (`tree`, `querySpec`, `metadata` in body) |
+| GET | `/workspaces/:id/canvases/:canvasIdOrName` | `authenticate` | Get canvas (`?tree=`) |
+| PATCH | `/workspaces/:id/canvases/:canvasIdOrName` | `authenticate` | Update canvas (`?tree=`) |
+| DELETE | `/workspaces/:id/canvases/:canvasIdOrName` | `authenticate` | Delete canvas layer (`?tree=`) |
+| GET | `/workspaces/:id/canvases/:canvasIdOrName/documents` | `authenticate` | List/search documents through canvas spec (`?tree=`, same query shape as top-level canvases) |
+
+---
+
+## Canvases (top-level lookup)
+
+Read-only shortcuts: resolve a canvas by **id** (layer id, ULID, UUID) or **name** across workspaces the user can open. Optional **`?workspace=`** (`id` or name) disambiguates name collisions.
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/canvases/:canvasIdOrName` | `authenticate` | Resolve canvas; payload includes `workspaceId`, `treeId`, `path`, etc. |
+| GET | `/canvases/:canvasIdOrName/documents` | `authenticate` | List/search documents (`allOf` / `noneOf` / `anyOf`, `filters`, `q` / `search`, pagination) |
+
 ---
 
 ## Contexts
@@ -313,17 +403,18 @@ Context document operations are scoped to the context's current URL path in the 
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| POST | `/contexts/:id/documents` | `authenticate` | Index + store + link documents |
-| PUT | `/contexts/:id/documents` | `authenticate` | Update document metadata |
+| POST | `/contexts/:id/documents` | `authenticateClient` | Index + store + link (`documents` or `documentIds`) |
+| PUT | `/contexts/:id/documents` | `authenticateClient` | Update (`documents` or `documentIds` + optional `features`) |
 
-**Three-level removal:**
+**Removal:**
 
 | Method | Path | Auth | Level | Description |
 |--------|------|------|-------|-------------|
-| DELETE | `/contexts/:id/documents/remove` | `authenticate` | Unlink | Remove from context path (bitmap unlink) |
-| DELETE | `/contexts/:id/documents` | `authenticate` | Index | Remove from SynapsD index |
-| DELETE | `/contexts/:id/documents/:docId` | `authenticate` | Index | Remove single document from index |
-| DELETE | `/contexts/:id/documents/evict` | `authenticate` | Storage | Remove from backend(s) — see workspace evict for body/response shape |
+| DELETE | `/contexts/:id/documents/remove` | `authenticate` | Unlink | JSON body: array of document IDs; optional attribute filters in query |
+| DELETE | `/contexts/:id/documents` | `authenticate` | Index | JSON body: array of document IDs |
+| DELETE | `/contexts/:id/documents/:docId` | `authenticate` | Index | Delete single document by id |
+
+There is **no** context-scoped `/documents/evict`; use workspace **`/workspaces/:wid/documents/evict`** when storage eviction is required.
 
 **Query parameters (GET `/contexts/:id/documents`, GET `/contexts/:id/documents/by-abstraction/:abstraction`):**
 
@@ -346,7 +437,7 @@ Context document operations are scoped to the context's current URL path in the 
 }
 ```
 
-**DELETE `/contexts/:id/documents/remove` query parameters:**
+**DELETE `/contexts/:id/documents/remove`:** JSON body is a **non-empty array** of document IDs. Query parameters:
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -365,6 +456,8 @@ Context document operations are scoped to the context's current URL path in the 
 | POST | `/contexts/:id/tree/paths/copy` | `authenticate` | Copy path inside the bound context tree |
 | POST | `/contexts/:id/tree/layers/merge` | `authenticate` | Merge layer bitmaps in the bound context tree |
 | POST | `/contexts/:id/tree/layers/subtract` | `authenticate` | Subtract layer bitmaps in the bound context tree |
+
+The same handlers are also mounted under **`/contexts/:id/trees/default/...`**. `DELETE .../tree/paths` uses query **`path`** (required) and **`recursive`** (optional).
 
 ### Tokens (context sharing)
 
@@ -429,9 +522,9 @@ Context document operations are scoped to the context's current URL path in the 
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| POST | `/pub/tokens/validate` | Bearer `canvas-*` | Validate token for resource |
+| POST | `/pub/tokens/validate` | Bearer `canvas-*` | Validate token; JSON body `resourceType` (`workspace` \| `context`), `resourceId`, optional `requiredPermission` |
 | GET | `/pub/tokens/info` | Bearer `canvas-*` | Get token metadata |
-| DELETE | `/pub/tokens/revoke` | `authenticate` | Revoke token (owner) |
+| DELETE | `/pub/tokens/revoke` | `authenticate` + Bearer `canvas-*` on the share token | Revoke that token (caller must be authenticated owner) |
 | GET | `/pub/health` | — | Health check |
 
 ---
@@ -474,20 +567,268 @@ Context document operations are scoped to the context's current URL path in the 
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| GET | `/agents` | `authenticate` | List agents |
+| GET | `/agents` | `authenticate` | List agents (optional query `host` — forwarded to agent manager) |
 | POST | `/agents` | `authenticate` | Create agent |
-| GET | `/agents/:id` | `authenticate` | Get agent |
-| PUT | `/agents/:id` | `authenticate` | Update agent |
-| DELETE | `/agents/:id` | `authenticate` | Delete agent |
-| POST | `/agents/:id/start` | `authenticate` | Start agent |
-| POST | `/agents/:id/stop` | `authenticate` | Stop agent |
-| GET | `/agents/:id/status` | `authenticate` | Get agent status |
-| POST | `/agents/:id/chat` | `authenticate` | Chat (non-streaming) |
-| POST | `/agents/:id/chat/stream` | `authenticate` | Chat (SSE streaming) |
-| GET | `/agents/:id/memory` | `authenticate` | Query agent memory |
-| DELETE | `/agents/:id/memory` | `authenticate` | Clear agent memory |
-| GET | `/agents/:id/mcp/tools` | `authenticate` | List MCP tools |
-| POST | `/agents/:id/mcp/tools/:toolName` | `authenticate` | Call MCP tool |
+| GET | `/agents/:agentIdentifier` | `authenticate` | Get agent by ID or name |
+| PUT | `/agents/:agentIdentifier` | `authenticate` | Update agent |
+| DELETE | `/agents/:agentIdentifier` | `authenticate` | Delete agent |
+| POST | `/agents/:agentIdentifier/start` | `authenticate` | Start agent |
+| POST | `/agents/:agentIdentifier/stop` | `authenticate` | Stop agent |
+| POST | `/agents/:agentIdentifier/restart` | `authenticate` | Restart agent |
+| GET | `/agents/:agentIdentifier/status` | `authenticate` | Get agent status |
+| GET | `/agents/:agentIdentifier/session` | `authenticate` | Get currently selected session context |
+| PUT | `/agents/:agentIdentifier/session` | `authenticate` | Select active session or switch mode |
+| GET | `/agents/:agentIdentifier/sessions` | `authenticate` | List available persistent sessions |
+| POST | `/agents/:agentIdentifier/sessions` | `authenticate` | Create a new session |
+| POST | `/agents/:agentIdentifier` | `authenticate` | Prompt agent (non-streaming shorthand) |
+| POST | `/agents/:agentIdentifier/prompt` | `authenticate` | Prompt agent (non-streaming) |
+| POST | `/agents/:agentIdentifier/prompt/stream` | `authenticate` | Prompt agent (SSE streaming) |
+
+### Agent Notes
+
+- `:agentIdentifier` accepts either the agent ID or the agent name/slug (for example `lucy`).
+- REST prompt endpoints auto-start the agent if needed before sending the prompt.
+- REST prompt endpoints use the agent's currently selected session.
+- Session selection persists in agent config and survives restart.
+- Agent payloads intentionally omit `apiKey` from responses.
+
+### Agent Create / Update Shape
+
+Top-level fields:
+
+- `name` (`POST` only)
+- `label`
+- `description`
+- `color`
+- `llmProvider`
+- `model`
+- `apiKey`
+- `baseUrl`
+- `metadata`
+- `config`
+
+Top-level convenience fields are merged into `config` where applicable, so both of these patterns work:
+
+```json
+{
+  "name": "lucy",
+  "llmProvider": "ollama",
+  "model": "qwen3:14b",
+  "apiKey": "ollama",
+  "baseUrl": "http://localhost:11434/v1"
+}
+```
+
+```json
+{
+  "name": "lucy",
+  "llmProvider": "anthropic",
+  "model": "claude-sonnet-4-20250514",
+  "config": {
+    "identity": {
+      "role": "Coding assistant",
+      "identity": "Lucy",
+      "instructions": "Be concise."
+    },
+    "prompts": {
+      "system": "You are Lucy.",
+      "append": "Prefer short answers.",
+      "context": "Project-local instructions."
+    },
+    "memory": "Project memory",
+    "skills": [
+      {
+        "name": "deploy-check",
+        "description": "Pre-deploy sanity checklist",
+        "content": "Run tests first."
+      }
+    ],
+    "connectors": {
+      "anthropic": {
+        "temperature": 0.2,
+        "maxTokens": 4096,
+        "topP": 1,
+        "reasoning": true
+      }
+    },
+    "parameters": {
+      "temperature": 0.2,
+      "maxTokens": 4096
+    },
+    "session": {
+      "mode": "persistent"
+    },
+    "tools": {},
+    "mcp": {
+      "servers": []
+    }
+  }
+}
+```
+
+### Agent Session Config
+
+`config.session` currently supports:
+
+```json
+{
+  "mode": "persistent",
+  "path": "/absolute/path/to/session.jsonl"
+}
+```
+
+Fields:
+
+- `mode`: `persistent` or `incognito`
+- `path`: selected persistent session file; omitted/null for `incognito`
+
+Notes:
+
+- `persistent` is the default.
+- If `mode` is `persistent` and `path` is omitted, the backend continues the most recent session for that agent.
+- `incognito` uses an in-memory session and is not listed in persistent session history.
+
+### Agent Session APIs
+
+**GET `/agents/:agentIdentifier/session`** response payload:
+
+```json
+{
+  "mode": "persistent",
+  "sessionId": "0196...",
+  "sessionFile": "/absolute/path/to/session.jsonl",
+  "messages": [],
+  "thinkingLevel": "high",
+  "model": {
+    "provider": "anthropic",
+    "modelId": "claude-sonnet-4-20250514"
+  }
+}
+```
+
+**GET `/agents/:agentIdentifier/sessions`** response payload:
+
+```json
+{
+  "mode": "persistent",
+  "currentSessionId": "0196...",
+  "currentSessionPath": "/absolute/path/to/session.jsonl",
+  "sessions": [
+    {
+      "id": "0196...",
+      "path": "/absolute/path/to/session.jsonl",
+      "cwd": "/agent/home",
+      "name": "Debugging auth",
+      "parentSessionPath": null,
+      "createdAt": "2026-04-24T17:00:00.000Z",
+      "updatedAt": "2026-04-24T17:10:00.000Z",
+      "messageCount": 12,
+      "firstMessage": "let's debug auth",
+      "allMessagesText": "let's debug auth ...",
+      "isCurrent": true
+    }
+  ]
+}
+```
+
+**POST `/agents/:agentIdentifier/sessions`** body:
+
+```json
+{
+  "mode": "persistent",
+  "name": "Debugging auth"
+}
+```
+
+or:
+
+```json
+{
+  "mode": "incognito"
+}
+```
+
+Successful response payload:
+
+```json
+{
+  "current": {
+    "mode": "persistent",
+    "sessionId": "0196...",
+    "sessionFile": "/absolute/path/to/session.jsonl",
+    "messages": [],
+    "thinkingLevel": "high",
+    "model": null
+  },
+  "sessions": {
+    "mode": "persistent",
+    "currentSessionId": "0196...",
+    "currentSessionPath": "/absolute/path/to/session.jsonl",
+    "sessions": []
+  }
+}
+```
+
+**PUT `/agents/:agentIdentifier/session`** body:
+
+```json
+{
+  "mode": "persistent",
+  "sessionId": "0196..."
+}
+```
+
+or:
+
+```json
+{
+  "mode": "incognito"
+}
+```
+
+Notes:
+
+- Selecting a session updates the agent's persisted `config.session`.
+- If the agent is active, session changes trigger a restart so subsequent prompts use the selected session.
+
+### Agent Prompt Shape
+
+**POST `/agents/:agentIdentifier`** and **POST `/agents/:agentIdentifier/prompt`** body:
+
+```json
+{
+  "message": "hello"
+}
+```
+
+Successful response payload:
+
+```json
+{
+  "messages": [
+    {
+      "role": "assistant",
+      "content": [
+        { "type": "text", "text": "Hello." }
+      ]
+    }
+  ]
+}
+```
+
+### Agent Prompt Stream
+
+**POST `/agents/:agentIdentifier/prompt/stream`** uses SSE and emits `data:` frames with these event payloads:
+
+```json
+{ "type": "start" }
+{ "type": "chunk", "delta": "Hel" }
+{ "type": "thinking", "delta": "Need to greet briefly." }
+{ "type": "tool_start", "toolName": "searchDocs" }
+{ "type": "tool_end", "toolName": "searchDocs", "isError": false }
+{ "type": "complete", "messages": [] }
+{ "type": "error", "error": "Prompt failed" }
+```
 
 ---
 
@@ -495,11 +836,18 @@ Context document operations are scoped to the context's current URL path in the 
 
 All admin routes require `authenticate` + admin role.
 
+### Logs
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/admin/logs` | admin | Recent server logs (`tail`, `level`, `module` query filters) |
+| GET | `/admin/logs/stream` | admin | SSE stream of log lines (`event: log`, heartbeat comments) |
+
 ### Users
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| GET | `/admin/users` | admin | List users |
+| GET | `/admin/users` | admin | List users (optional `status`, `userType` query) |
 | POST | `/admin/users` | admin | Create user |
 | GET | `/admin/users/:userId` | admin | Get user |
 | PUT | `/admin/users/:userId` | admin | Update user |
@@ -513,12 +861,10 @@ All admin routes require `authenticate` + admin role.
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| GET | `/admin/workspaces` | admin | List all workspaces |
-| POST | `/admin/workspaces` | admin | Create workspace for any user |
-| GET | `/admin/workspaces/:id` | admin | Get workspace |
-| PUT | `/admin/workspaces/:id` | admin | Update workspace |
-| DELETE | `/admin/workspaces/:id` | admin | Delete workspace |
-| POST | `/admin/workspaces/:id/reindex-features` | admin | Reindex feature bitmaps |
+| GET | `/admin/workspaces` | admin | List all workspaces (across users; includes owner fields) |
+| POST | `/admin/workspaces` | admin | Create workspace for a user (`userId`, `name`, …) |
+| DELETE | `/admin/workspaces/:workspaceId` | admin | Delete workspace by id |
+| POST | `/admin/workspaces/:workspaceId/reindex-features` | admin | Reindex feature bitmaps (workspace must be active) |
 
 ---
 
@@ -602,12 +948,38 @@ socket.emit('unsubscribe', { channel: 'workspace:<id>' });
 ### Agent Events
 
 ```javascript
-socket.emit('agent:subscribe', { agentId: '<id>' });
-socket.emit('agent:unsubscribe', { agentId: '<id>' });
-socket.emit('agent:chat:stream', { agentId: '<id>', message: '...' });
+socket.emit('agent:subscribe', { agentId: '<agentIdentifier>' });
+socket.emit('agent:unsubscribe', { agentId: '<agentIdentifier>' });
+socket.emit('agent:chat:stream', {
+  agentId: '<agentIdentifier>',
+  messageId: 'msg_123',
+  message: 'hello'
+});
 ```
 
-Agent responses arrive as `agent:chat:chunk` and `agent:chat:done` events.
+Socket.IO agent streaming uses these events:
+
+| Event | Payload | Description |
+|-------|---------|-------------|
+| `agent:subscribed` | `{ agentId }` | Subscription acknowledged |
+| `agent:unsubscribed` | `{ agentId }` | Unsubscription acknowledged |
+| `agent:chat:start` | `{ agentId, messageId }` | Stream started |
+| `agent:chat:chunk` | `{ agentId, messageId, type, delta?, toolName?, isError? }` | Stream delta or tool event |
+| `agent:chat:complete` | `{ agentId, messageId, messages }` | Stream completed |
+| `agent:chat:error` | `{ agentId, messageId?, error }` | Stream failed (also used for bad input before stream starts) |
+| `agent.status.changed` | `{ agentId, status }` | Agent lifecycle state changed |
+| `agent.created` | `{ agentId, agentName, agent }` | Agent created |
+| `agent.updated` | `{ agentId, updates }` | Agent updated |
+| `agent.deleted` | `{ agentId, agentName }` | Agent deleted |
+
+`agent:chat:chunk.type` is one of:
+
+- `chunk` for assistant text deltas
+- `thinking` for reasoning deltas
+- `tool_start`
+- `tool_end`
+
+Unlike REST **`POST .../prompt`**, Socket.IO **`agent:chat:stream`** does **not** auto-start the agent: the agent must already be **active** (`open` succeeds and `isActive`), otherwise the server emits **`agent:chat:error`**.
 
 ---
 
@@ -628,11 +1000,13 @@ All responses use the `ResponseObject` envelope:
 
 ## Authentication Methods
 
-| Method | Token Format | Use Case |
-|--------|-------------|----------|
-| JWT | Standard Bearer token | Web UI, short-lived (default: 1 day) |
+| Decorator / use | Token Format | Use Case |
+|-----------------|-------------|----------|
+| `authenticate` | JWT **or** API token (`canvas-*`) | Most REST routes |
+| `authenticateClient` | JWT **or** device token | Document insert/update from browser or registered device |
+| JWT alone | Standard Bearer | Web UI, short-lived (default: 1 day) |
 | API Token | `canvas-*` prefix | Programmatic access, long-lived |
-| Device Token | `canvas-*` prefix | Device integrations |
+| Device Token | `canvas-*` prefix | Device registry + `authenticateClient` routes |
 
 ## Access Control
 

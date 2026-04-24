@@ -18,6 +18,28 @@ export default async function agentRoutes(fastify, _options) {
         return true;
     };
 
+    const handlePromptRequest = async (request, reply) => {
+        if (!requireUser(request, reply)) return;
+        try {
+            const agent = await fastify.agents.start(
+                request.user.id, request.params.agentIdentifier, request.user.id
+            );
+            if (!agent) {
+                const r = new ResponseObject().notFound('Agent not found');
+                return reply.code(r.statusCode).send(r.getResponse());
+            }
+
+            const { message } = request.body;
+            const messages = await agent.prompt(message);
+            const r = new ResponseObject().success({ messages }, 'Prompt completed');
+            return reply.code(r.statusCode).send(r.getResponse());
+        } catch (err) {
+            fastify.log.error(err);
+            const r = new ResponseObject().serverError(err.message || 'Prompt failed');
+            return reply.code(r.statusCode).send(r.getResponse());
+        }
+    };
+
     /**
      * List agents
      */
@@ -42,7 +64,7 @@ export default async function agentRoutes(fastify, _options) {
         try {
             const {
                 name, label, description, color, llmProvider, model, apiKey, baseUrl,
-                prompts, tools, mcp, metadata, connectors, parameters, identity, memory, skills,
+                prompts, tools, mcp, metadata, connectors, parameters, identity, memory, skills, session,
                 config = {},
             } = request.body;
             const mergedConfig = {
@@ -56,6 +78,7 @@ export default async function agentRoutes(fastify, _options) {
                 ...(parameters !== undefined ? { parameters: { ...(config.parameters || {}), ...parameters } } : {}),
                 ...(memory !== undefined ? { memory } : {}),
                 ...(skills !== undefined ? { skills } : {}),
+                ...(session !== undefined ? { session: { ...(config.session || {}), ...session } } : {}),
                 ...(mcp !== undefined ? { mcp } : {}),
             };
             const agent = await fastify.agents.create(request.user.id, name, {
@@ -116,6 +139,89 @@ export default async function agentRoutes(fastify, _options) {
     });
 
     /**
+     * Get persisted/default session context
+     */
+    fastify.get('/:agentIdentifier/session', { onRequest: [fastify.authenticate] }, async (request, reply) => {
+        if (!requireUser(request, reply)) return;
+        try {
+            const agent = await fastify.agents.open(request.user.id, request.params.agentIdentifier, request.user.id);
+            if (!agent) {
+                const r = new ResponseObject().notFound('Agent not found');
+                return reply.code(r.statusCode).send(r.getResponse());
+            }
+            const r = new ResponseObject().found(agent.getSessionContext(), 'Session retrieved');
+            return reply.code(r.statusCode).send(r.getResponse());
+        } catch (err) {
+            fastify.log.error(err);
+            const r = new ResponseObject().serverError(err.message || 'Failed to get agent session');
+            return reply.code(r.statusCode).send(r.getResponse());
+        }
+    });
+
+    fastify.get('/:agentIdentifier/sessions', { onRequest: [fastify.authenticate] }, async (request, reply) => {
+        if (!requireUser(request, reply)) return;
+        try {
+            const sessions = await fastify.agents.listSessions(
+                request.user.id, request.params.agentIdentifier, request.user.id
+            );
+            if (!sessions) {
+                const r = new ResponseObject().notFound('Agent not found');
+                return reply.code(r.statusCode).send(r.getResponse());
+            }
+            const r = new ResponseObject().found(sessions, 'Sessions retrieved');
+            return reply.code(r.statusCode).send(r.getResponse());
+        } catch (err) {
+            fastify.log.error(err);
+            const r = new ResponseObject().serverError(err.message || 'Failed to list sessions');
+            return reply.code(r.statusCode).send(r.getResponse());
+        }
+    });
+
+    fastify.post('/:agentIdentifier/sessions', { onRequest: [fastify.authenticate] }, async (request, reply) => {
+        if (!requireUser(request, reply)) return;
+        try {
+            const result = await fastify.agents.createSession(
+                request.user.id,
+                request.params.agentIdentifier,
+                { mode: request.body?.mode, name: request.body?.name },
+                request.user.id
+            );
+            if (!result) {
+                const r = new ResponseObject().notFound('Agent not found');
+                return reply.code(r.statusCode).send(r.getResponse());
+            }
+            const r = new ResponseObject().created(result, 'Session created');
+            return reply.code(r.statusCode).send(r.getResponse());
+        } catch (err) {
+            fastify.log.error(err);
+            const r = new ResponseObject().serverError(err.message || 'Failed to create session');
+            return reply.code(r.statusCode).send(r.getResponse());
+        }
+    });
+
+    fastify.put('/:agentIdentifier/session', { onRequest: [fastify.authenticate] }, async (request, reply) => {
+        if (!requireUser(request, reply)) return;
+        try {
+            const result = await fastify.agents.selectSession(
+                request.user.id,
+                request.params.agentIdentifier,
+                { mode: request.body?.mode, sessionId: request.body?.sessionId },
+                request.user.id
+            );
+            if (!result) {
+                const r = new ResponseObject().notFound('Agent not found');
+                return reply.code(r.statusCode).send(r.getResponse());
+            }
+            const r = new ResponseObject().success(result, 'Session selected');
+            return reply.code(r.statusCode).send(r.getResponse());
+        } catch (err) {
+            fastify.log.error(err);
+            const r = new ResponseObject().serverError(err.message || 'Failed to select session');
+            return reply.code(r.statusCode).send(r.getResponse());
+        }
+    });
+
+    /**
      * Update agent config
      */
     fastify.put('/:agentIdentifier', { onRequest: [fastify.authenticate] }, async (request, reply) => {
@@ -123,7 +229,7 @@ export default async function agentRoutes(fastify, _options) {
         try {
             const {
                 label, description, color, llmProvider, model, apiKey, baseUrl,
-                prompts, tools, mcp, metadata, connectors, parameters, identity, memory, skills,
+                prompts, tools, mcp, metadata, connectors, parameters, identity, memory, skills, session,
                 config = {},
             } = request.body;
             const updateData = {};
@@ -143,6 +249,7 @@ export default async function agentRoutes(fastify, _options) {
                 ...(parameters !== undefined ? { parameters: { ...(config.parameters || {}), ...parameters } } : {}),
                 ...(memory !== undefined ? { memory } : {}),
                 ...(skills !== undefined ? { skills } : {}),
+                ...(session !== undefined ? { session: { ...(config.session || {}), ...session } } : {}),
                 ...(mcp !== undefined ? { mcp } : {}),
             };
             if (Object.keys(mergedConfig).length > 0) updateData.config = mergedConfig;
@@ -255,31 +362,8 @@ export default async function agentRoutes(fastify, _options) {
     /**
      * Prompt (non-streaming) — waits for completion, returns messages.
      */
-    fastify.post('/:agentIdentifier/prompt', { onRequest: [fastify.authenticate] }, async (request, reply) => {
-        if (!requireUser(request, reply)) return;
-        try {
-            const agent = await fastify.agents.open(
-                request.user.id, request.params.agentIdentifier, request.user.id
-            );
-            if (!agent) {
-                const r = new ResponseObject().notFound('Agent not found');
-                return reply.code(r.statusCode).send(r.getResponse());
-            }
-            if (!agent.isActive) {
-                const r = new ResponseObject().badRequest('Agent is not active. Start it first.');
-                return reply.code(r.statusCode).send(r.getResponse());
-            }
-
-            const { message } = request.body;
-            const messages = await agent.prompt(message);
-            const r = new ResponseObject().success({ messages }, 'Prompt completed');
-            return reply.code(r.statusCode).send(r.getResponse());
-        } catch (err) {
-            fastify.log.error(err);
-            const r = new ResponseObject().serverError(err.message || 'Prompt failed');
-            return reply.code(r.statusCode).send(r.getResponse());
-        }
-    });
+    fastify.post('/:agentIdentifier', { onRequest: [fastify.authenticate] }, handlePromptRequest);
+    fastify.post('/:agentIdentifier/prompt', { onRequest: [fastify.authenticate] }, handlePromptRequest);
 
     /**
      * Prompt streaming (SSE)
@@ -295,15 +379,11 @@ export default async function agentRoutes(fastify, _options) {
     fastify.post('/:agentIdentifier/prompt/stream', { onRequest: [fastify.authenticate] }, async (request, reply) => {
         if (!requireUser(request, reply)) return;
         try {
-            const agent = await fastify.agents.open(
+            const agent = await fastify.agents.start(
                 request.user.id, request.params.agentIdentifier, request.user.id
             );
             if (!agent) {
                 const r = new ResponseObject().notFound('Agent not found');
-                return reply.code(r.statusCode).send(r.getResponse());
-            }
-            if (!agent.isActive) {
-                const r = new ResponseObject().badRequest('Agent is not active. Start it first.');
                 return reply.code(r.statusCode).send(r.getResponse());
             }
 

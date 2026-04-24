@@ -40,6 +40,72 @@ export const LOCAL_PROVIDER_DEFAULTS = {
     vllm:        { api: 'openai-completions', baseUrl: 'http://localhost:8000/v1',  apiKey: 'vllm' },
 };
 
+export const AGENT_SESSION_MODES = {
+    PERSISTENT: 'persistent',
+    INCOGNITO: 'incognito',
+};
+
+export function sanitizeAgentData(value) {
+    if (Array.isArray(value)) {
+        return value.map((entry) => sanitizeAgentData(entry));
+    }
+    if (!value || typeof value !== 'object') {
+        return value;
+    }
+
+    return Object.fromEntries(
+        Object.entries(value)
+            .filter(([key]) => key !== 'apiKey')
+            .map(([key, entry]) => [key, sanitizeAgentData(entry)])
+    );
+}
+
+function getAgentSessionDir(cwd, agentDir) {
+    const safePath = `--${cwd.replace(/^[/\\]/, '').replace(/[/\\:]/g, '-')}--`;
+    return path.join(agentDir, 'sessions', safePath);
+}
+
+function normalizeSessionMode(mode) {
+    return mode === AGENT_SESSION_MODES.INCOGNITO
+        ? AGENT_SESSION_MODES.INCOGNITO
+        : AGENT_SESSION_MODES.PERSISTENT;
+}
+
+function normalizeSessionConfig(config = {}) {
+    const mode = normalizeSessionMode(config.mode);
+    const pathValue = config.path || config.sessionPath;
+    return {
+        mode,
+        ...(mode === AGENT_SESSION_MODES.PERSISTENT && pathValue ? { path: pathValue } : {}),
+    };
+}
+
+function serializeSessionInfo(info, currentPath, mode) {
+    return {
+        id: info.id,
+        path: info.path,
+        cwd: info.cwd,
+        name: info.name,
+        parentSessionPath: info.parentSessionPath,
+        createdAt: info.created.toISOString(),
+        updatedAt: info.modified.toISOString(),
+        messageCount: info.messageCount,
+        firstMessage: info.firstMessage,
+        allMessagesText: info.allMessagesText,
+        isCurrent: mode === AGENT_SESSION_MODES.PERSISTENT && info.path === currentPath,
+    };
+}
+
+async function persistSessionManager(sessionManager) {
+    const sessionFile = sessionManager.getSessionFile();
+    const header = sessionManager.getHeader();
+    if (!sessionFile || !header) return;
+
+    const entries = sessionManager.getEntries();
+    const content = [header, ...entries].map((entry) => JSON.stringify(entry)).join('\n');
+    await writeFile(sessionFile, `${content}\n`);
+}
+
 class Agent extends EventEmitter {
 
     #rootPath;
@@ -83,9 +149,20 @@ class Agent extends EventEmitter {
     get status()      { return this.#status; }
     get isActive()    { return this.#status === AGENT_STATUS_CODES.ACTIVE; }
     get session()     { return this.#session; }
+    get sessionConfig() { return normalizeSessionConfig(this.agentConfig?.session); }
 
     #homePath()    { return path.join(this.#rootPath, 'home'); }
     #runtimePath() { return path.join(this.#rootPath, 'runtime'); }
+    #sessionDir() { return getAgentSessionDir(this.#homePath(), this.#runtimePath()); }
+    #sessionManager(config = this.sessionConfig) {
+        if (config.mode === AGENT_SESSION_MODES.INCOGNITO) {
+            return SessionManager.inMemory(this.#homePath());
+        }
+        if (config.path) {
+            return SessionManager.open(config.path, this.#sessionDir(), this.#homePath());
+        }
+        return SessionManager.continueRecent(this.#homePath(), this.#sessionDir());
+    }
 
     /**
      * Lifecycle
@@ -144,7 +221,7 @@ class Agent extends EventEmitter {
                 model: modelObj,
                 authStorage,
                 modelRegistry,
-                sessionManager: SessionManager.create(this.#homePath()),
+                sessionManager: this.#sessionManager(),
                 tools: createCodingTools(this.#homePath()),
             };
 
@@ -261,8 +338,97 @@ class Agent extends EventEmitter {
         this.#config[key] = value;
     }
 
-    toJSON() {
+    getCurrentSessionSelection() {
+        const sessionConfig = this.sessionConfig;
+        if (sessionConfig.mode === AGENT_SESSION_MODES.INCOGNITO && !this.#session?.sessionManager) {
+            return { mode: sessionConfig.mode };
+        }
+        const sessionManager = this.#session?.sessionManager || this.#sessionManager(sessionConfig);
         return {
+            mode: sessionConfig.mode,
+            sessionId: sessionManager.getSessionId(),
+            ...(sessionConfig.mode === AGENT_SESSION_MODES.PERSISTENT
+                ? { path: sessionManager.getSessionFile() || sessionConfig.path }
+                : {}),
+        };
+    }
+
+    getSessionContext() {
+        const sessionSelection = this.getCurrentSessionSelection();
+        if (sessionSelection.mode === AGENT_SESSION_MODES.INCOGNITO && !this.#session?.sessionManager) {
+            return {
+                mode: sessionSelection.mode,
+                messages: [],
+                thinkingLevel: 'high',
+                model: null,
+            };
+        }
+        const sessionManager = this.#session?.sessionManager || this.#sessionManager(this.sessionConfig);
+        const context = sessionManager.buildSessionContext();
+        return {
+            mode: sessionSelection.mode,
+            sessionId: sessionSelection.sessionId,
+            sessionFile: sessionSelection.path,
+            messages: context.messages,
+            thinkingLevel: context.thinkingLevel,
+            model: context.model,
+        };
+    }
+
+    async listSessions() {
+        const sessionConfig = this.sessionConfig;
+        const currentPath = this.getCurrentSessionSelection().path;
+        const sessions = await SessionManager.list(this.#homePath(), this.#sessionDir());
+
+        return {
+            mode: sessionConfig.mode,
+            currentSessionId: this.getCurrentSessionSelection().sessionId,
+            currentSessionPath: currentPath,
+            sessions: sessions.map((info) => serializeSessionInfo(info, currentPath, sessionConfig.mode)),
+        };
+    }
+
+    async createSession(options = {}) {
+        const mode = normalizeSessionMode(options.mode);
+        if (mode === AGENT_SESSION_MODES.INCOGNITO) {
+            return { mode };
+        }
+
+        const sessionManager = SessionManager.create(this.#homePath(), this.#sessionDir());
+        if (typeof options.name === 'string' && options.name.trim()) {
+            sessionManager.appendSessionInfo(options.name);
+        }
+        await persistSessionManager(sessionManager);
+
+        return {
+            mode,
+            path: sessionManager.getSessionFile(),
+        };
+    }
+
+    async selectSession(options = {}) {
+        const mode = normalizeSessionMode(options.mode);
+        if (mode === AGENT_SESSION_MODES.INCOGNITO) {
+            return { mode };
+        }
+        if (!options.sessionId) {
+            return { mode };
+        }
+
+        const sessions = await SessionManager.list(this.#homePath(), this.#sessionDir());
+        const selected = sessions.find((session) => session.id === options.sessionId);
+        if (!selected) {
+            throw new Error(`Session not found: ${options.sessionId}`);
+        }
+
+        return {
+            mode,
+            path: selected.path,
+        };
+    }
+
+    toJSON() {
+        return sanitizeAgentData({
             id: this.id,
             name: this.name,
             label: this.label,
@@ -278,7 +444,7 @@ class Agent extends EventEmitter {
             rootPath: this.#rootPath,
             status: this.#status,
             isActive: this.isActive,
-        };
+        });
     }
 }
 

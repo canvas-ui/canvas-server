@@ -89,6 +89,14 @@ function parseAgentIndexKey(indexKey) {
     return parts.length === 2 ? { userId: parts[0], agentId: parts[1] } : null;
 }
 
+function normalizeAgentName(name) {
+    return String(name || '')
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '');
+}
+
 /**
  * Agents Service
  *
@@ -161,7 +169,8 @@ class Agents extends EventEmitter {
         if (!userId)    throw new Error('userId required');
         if (!agentName) throw new Error('agentName required');
 
-        this.#validateAgentData({ name: agentName, ...options });
+        const slug = normalizeAgentName(agentName);
+        this.#validateAgentData({ name: slug, ...options });
 
         const owner = await this.#users.resolveId(userId);
         if (!owner) throw new Error(`Cannot resolve user: ${userId}`);
@@ -170,7 +179,6 @@ class Agents extends EventEmitter {
         const ownerEmail = ownerUser?.email;
         if (!ownerEmail) throw new Error(`Cannot resolve email for user: ${owner}`);
 
-        const slug = this.#sanitizeAgentName(agentName).toLowerCase();
         const host = options.host || DEFAULT_HOST;
         const agentId = options.id || generateUUID();
 
@@ -187,7 +195,7 @@ class Agents extends EventEmitter {
         const configData = {
             ...DEFAULT_AGENT_CONFIG,
             id: agentId,
-            name: agentName,
+            name: slug,
             label: options.label || agentName,
             description: options.description || '',
             owner,
@@ -385,22 +393,17 @@ class Agents extends EventEmitter {
         if (!owner) return null;
         requestingUserId = requestingUserId === userId ? owner : (requestingUserId || owner);
 
-        let agent = this.#agents.get(await this.#resolveAgentId(owner, agentIdentifier))
+        const agent = this.#agents.get(await this.#resolveAgentId(owner, agentIdentifier))
             || await this.open(userId, agentIdentifier, requestingUserId);
         if (!agent) return null;
         if (agent.owner !== requestingUserId) throw new Error(`Permission denied for agent ${agent.id}`);
 
         const sessionConfig = await agent.createSession(options);
-        agent = await this.update(userId, agentIdentifier, {
-            config: {
-                session: {
-                    mode: sessionConfig.mode,
-                    path: sessionConfig.mode !== AGENT_SESSION_MODES.INCOGNITO ? sessionConfig.path || null : null,
-                    experimentalPath: sessionConfig.experimentalPath || null,
-                },
-            },
-        }, requestingUserId);
-        if (!agent) return null;
+        await this.#persistSessionConfig(owner, agent, {
+            mode: sessionConfig.mode,
+            path: sessionConfig.mode !== AGENT_SESSION_MODES.INCOGNITO ? sessionConfig.path || null : null,
+            experimentalPath: sessionConfig.experimentalPath || null,
+        });
 
         return {
             current: agent.getSessionContext(),
@@ -415,22 +418,17 @@ class Agents extends EventEmitter {
         if (!owner) return null;
         requestingUserId = requestingUserId === userId ? owner : (requestingUserId || owner);
 
-        let agent = this.#agents.get(await this.#resolveAgentId(owner, agentIdentifier))
+        const agent = this.#agents.get(await this.#resolveAgentId(owner, agentIdentifier))
             || await this.open(userId, agentIdentifier, requestingUserId);
         if (!agent) return null;
         if (agent.owner !== requestingUserId) throw new Error(`Permission denied for agent ${agent.id}`);
 
         const sessionConfig = await agent.selectSession(options);
-        agent = await this.update(userId, agentIdentifier, {
-            config: {
-                session: {
-                    mode: sessionConfig.mode,
-                    path: sessionConfig.mode !== AGENT_SESSION_MODES.INCOGNITO ? sessionConfig.path || null : null,
-                    experimentalPath: sessionConfig.experimentalPath || null,
-                },
-            },
-        }, requestingUserId);
-        if (!agent) return null;
+        await this.#persistSessionConfig(owner, agent, {
+            mode: sessionConfig.mode,
+            path: sessionConfig.mode !== AGENT_SESSION_MODES.INCOGNITO ? sessionConfig.path || null : null,
+            experimentalPath: sessionConfig.experimentalPath || null,
+        });
 
         return {
             current: agent.getSessionContext(),
@@ -471,16 +469,11 @@ class Agents extends EventEmitter {
 
         const result = await agent.deleteSession(options);
         if (result.currentDeleted) {
-            agent = await this.update(userId, agentIdentifier, {
-                config: {
-                    session: {
-                        mode: result.session.mode,
-                        path: result.session.path,
-                        experimentalPath: result.session.experimentalPath,
-                    },
-                },
-            }, requestingUserId);
-            if (!agent) return null;
+            await this.#persistSessionConfig(owner, agent, {
+                mode: result.session.mode,
+                path: result.session.path,
+                experimentalPath: result.session.experimentalPath,
+            });
             if (result.wasActive) {
                 agent = await this.start(userId, agentIdentifier, requestingUserId);
             }
@@ -554,11 +547,23 @@ class Agents extends EventEmitter {
         let agent = this.#agents.get(agentId) || await this.open(userId, agentIdentifier, requestingUserId);
         if (!agent) return null;
 
-        const allowed = ['label', 'description', 'color', 'llmProvider', 'model', 'metadata', 'config'];
+        const allowed = ['name', 'label', 'description', 'color', 'llmProvider', 'model', 'metadata', 'config'];
         const normalizedUpdateData = {
             ...updateData,
             ...(updateData.config ? { config: this.#mergeAgentConfig(agent.agentConfig, updateData.config) } : {}),
         };
+        if (normalizedUpdateData.name !== undefined) {
+            normalizedUpdateData.name = normalizeAgentName(normalizedUpdateData.name);
+            this.#validateAgentData({ name: normalizedUpdateData.name });
+            const host = entry.host || DEFAULT_HOST;
+            const currentSlug = normalizeAgentName(entry.name);
+            const nextSlug = normalizedUpdateData.name;
+            const nextNameKey = `${owner}@${host}:${nextSlug}`;
+            const existingAgentId = this.#nameIndex.get(nextNameKey);
+            if (nextSlug !== currentSlug && existingAgentId && existingAgentId !== agentId) {
+                throw new Error(`Agent "${nextSlug}" already exists for user ${userId} on host ${host}`);
+            }
+        }
         const updates = {};
         for (const [key, value] of Object.entries(normalizedUpdateData)) {
             if (allowed.includes(key) && value !== undefined) {
@@ -588,6 +593,16 @@ class Agents extends EventEmitter {
 
         if (agent.isActive && this.#requiresRestart(updates)) {
             await agent.restart();
+        }
+
+        if (updates.name) {
+            const host = entry.host || DEFAULT_HOST;
+            const oldSlug = normalizeAgentName(entry.name);
+            this.#nameIndex.delete(`${owner}@${host}:${oldSlug}`);
+            this.#referenceIndex.delete(constructAgentReference(owner, oldSlug, host));
+            this.#nameIndex.set(`${owner}@${host}:${updates.name}`, agentId);
+            this.#referenceIndex.set(constructAgentReference(owner, updates.name, host), agentId);
+            updates.reference = constructAgentReference(owner, updates.name, host);
         }
 
         this.#updateIndex(indexKey, { ...updates, updatedAt: new Date().toISOString() });
@@ -628,7 +643,7 @@ class Agents extends EventEmitter {
      * Resolve agent ID from name or ID string.
      */
     async resolveAgentId(userIdentifier, agentName, host = DEFAULT_HOST) {
-        const slug = typeof agentName === 'string' ? agentName.toLowerCase() : agentName;
+        const slug = normalizeAgentName(agentName);
         let nameKey = `${userIdentifier}@${host}:${slug}`;
         let agentId = this.#nameIndex.get(nameKey);
         if (agentId) return agentId;
@@ -741,6 +756,26 @@ class Agents extends EventEmitter {
             || updates.config !== undefined;
     }
 
+    async #persistSessionConfig(owner, agent, sessionConfig) {
+        const indexKey = constructAgentIndexKey(owner, agent.id);
+        const entry = this.#indexStore.get(indexKey);
+        if (!entry) throw new Error(`Agent not found: ${agent.id}`);
+
+        const config = await this.#loadConfig(entry.configPath);
+        const updated = {
+            ...config,
+            config: this.#mergeAgentConfig(config.config, { session: sessionConfig }),
+            updatedAt: new Date().toISOString(),
+        };
+
+        await fsPromises.writeFile(entry.configPath, JSON.stringify(updated, null, 2));
+        agent.setConfigKey('config', updated.config);
+        this.#updateIndex(indexKey, {
+            config: updated.config,
+            updatedAt: updated.updatedAt,
+        });
+    }
+
     /**
      * Write (or overwrite) models.json for a local OpenAI-compatible provider.
      * Called on agent create/update when provider-specific settings change.
@@ -785,7 +820,8 @@ class Agents extends EventEmitter {
             const parsed = parseAgentIndexKey(key);
             if (!entry?.name || !parsed) continue;
             const host = entry.host || DEFAULT_HOST;
-            const slug = entry.name.toLowerCase();
+            const slug = normalizeAgentName(entry.name);
+            if (!slug) continue;
             this.#nameIndex.set(`${parsed.userId}@${host}:${slug}`, parsed.agentId);
             this.#referenceIndex.set(constructAgentReference(parsed.userId, slug, host), parsed.agentId);
         }

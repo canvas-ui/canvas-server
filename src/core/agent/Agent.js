@@ -48,6 +48,14 @@ export const AGENT_SESSION_MODES = {
     INCOGNITO: 'incognito',
 };
 
+function normalizeSlug(value) {
+    return String(value || '')
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '');
+}
+
 export function sanitizeAgentData(value) {
     if (Array.isArray(value)) {
         return value.map((entry) => sanitizeAgentData(entry));
@@ -89,8 +97,10 @@ function normalizeSessionConfig(config = {}) {
 }
 
 function serializeSessionInfo(info, currentPath, mode, experimentalPath) {
+    const slug = normalizeSlug(info.name);
     return {
         id: info.id,
+        slug: slug || info.id,
         path: info.path,
         cwd: info.cwd,
         name: info.name,
@@ -113,6 +123,25 @@ async function persistSessionManager(sessionManager) {
     const entries = sessionManager.getEntries();
     const content = [header, ...entries].map((entry) => JSON.stringify(entry)).join('\n');
     await writeFile(sessionFile, `${content}\n`);
+}
+
+function resolveSessionInfo(sessions, sessionIdentifier) {
+    const identifier = String(sessionIdentifier || '');
+    const identifierSlug = normalizeSlug(identifier);
+    return sessions.find((session) => (
+        session.id === identifier
+        || (identifierSlug && normalizeSlug(session.name) === identifierSlug)
+    ));
+}
+
+function ensureUniqueSessionSlug(sessions, name, currentSessionId = null) {
+    const slug = normalizeSlug(name);
+    if (!slug) return;
+    const duplicate = sessions.find((session) => (
+        session.id !== currentSessionId
+        && normalizeSlug(session.name) === slug
+    ));
+    if (duplicate) throw new Error(`Session name already exists: ${name}`);
 }
 
 class Agent extends EventEmitter {
@@ -379,7 +408,7 @@ class Agent extends EventEmitter {
      * @param {*} value
      */
     setConfigKey(key, value) {
-        const allowed = ['label', 'description', 'color', 'llmProvider', 'model', 'metadata', 'config'];
+        const allowed = ['name', 'label', 'description', 'color', 'llmProvider', 'model', 'metadata', 'config'];
         if (!allowed.includes(key)) throw new Error(`Config key "${key}" is not allowed`);
         this.#config[key] = value;
     }
@@ -452,6 +481,8 @@ class Agent extends EventEmitter {
 
         const sessionManager = SessionManager.create(this.#homePath(), this.#sessionDir());
         if (typeof options.name === 'string' && options.name.trim()) {
+            const sessions = await SessionManager.list(this.#homePath(), this.#sessionDir());
+            ensureUniqueSessionSlug(sessions, options.name);
             sessionManager.appendSessionInfo(options.name);
         }
         await persistSessionManager(sessionManager);
@@ -484,7 +515,7 @@ class Agent extends EventEmitter {
         }
 
         const sessions = await SessionManager.list(this.#homePath(), this.#sessionDir());
-        const selected = sessions.find((session) => session.id === options.sessionId);
+        const selected = resolveSessionInfo(sessions, options.sessionId);
         if (!selected) {
             throw new Error(`Session not found: ${options.sessionId}`);
         }
@@ -503,8 +534,9 @@ class Agent extends EventEmitter {
         }
 
         const sessions = await SessionManager.list(this.#homePath(), this.#sessionDir());
-        const selected = sessions.find((session) => session.id === options.sessionId);
+        const selected = resolveSessionInfo(sessions, options.sessionId);
         if (!selected) throw new Error(`Session not found: ${options.sessionId}`);
+        ensureUniqueSessionSlug(sessions, options.name, selected.id);
 
         const sessionManager = SessionManager.open(selected.path, this.#sessionDir(), this.#homePath());
         sessionManager.appendSessionInfo(options.name.trim());
@@ -516,7 +548,7 @@ class Agent extends EventEmitter {
 
         const sessionConfig = this.sessionConfig;
         const sessions = await SessionManager.list(this.#homePath(), this.#sessionDir());
-        const selected = sessions.find((session) => session.id === options.sessionId);
+        const selected = resolveSessionInfo(sessions, options.sessionId);
         if (!selected) throw new Error(`Session not found: ${options.sessionId}`);
         if (sessionConfig.experimentalPath && selected.path === sessionConfig.experimentalPath) {
             throw new Error('Experimental session cannot be deleted');

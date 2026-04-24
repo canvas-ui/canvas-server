@@ -32,6 +32,19 @@ export default async function agentRoutes(fastify, _options) {
     const handlePromptRequest = async (request, reply) => {
         if (!requireUser(request, reply)) return;
         try {
+            if (request.params.sessionId) {
+                const selected = await fastify.agents.selectSession(
+                    request.user.id,
+                    request.params.agentIdentifier,
+                    { mode: 'persistent', sessionId: request.params.sessionId },
+                    request.user.id
+                );
+                if (!selected) {
+                    const r = new ResponseObject().notFound('Agent or session not found');
+                    return reply.code(r.statusCode).send(r.getResponse());
+                }
+            }
+
             const agent = await fastify.agents.start(
                 request.user.id, request.params.agentIdentifier, request.user.id
             );
@@ -52,7 +65,93 @@ export default async function agentRoutes(fastify, _options) {
             return reply.code(r.statusCode).send(r.getResponse());
         } catch (err) {
             fastify.log.error(err);
-            const r = new ResponseObject().serverError(err.message || 'Prompt failed');
+            const r = err.message?.startsWith('Session not found:')
+                ? new ResponseObject().notFound(err.message)
+                : new ResponseObject().serverError(err.message || 'Prompt failed');
+            return reply.code(r.statusCode).send(r.getResponse());
+        }
+    };
+
+    const handlePromptStreamRequest = async (request, reply) => {
+        if (!requireUser(request, reply)) return;
+        try {
+            if (request.params.sessionId) {
+                const selected = await fastify.agents.selectSession(
+                    request.user.id,
+                    request.params.agentIdentifier,
+                    { mode: 'persistent', sessionId: request.params.sessionId },
+                    request.user.id
+                );
+                if (!selected) {
+                    const r = new ResponseObject().notFound('Agent or session not found');
+                    return reply.code(r.statusCode).send(r.getResponse());
+                }
+            }
+
+            const agent = await fastify.agents.start(
+                request.user.id, request.params.agentIdentifier, request.user.id
+            );
+            if (!agent) {
+                const r = new ResponseObject().notFound('Agent not found');
+                return reply.code(r.statusCode).send(r.getResponse());
+            }
+
+            const { message, images } = request.body;
+            const text = typeof message === 'string' ? message : '';
+            const normalizedImages = normalizePromptImages(images);
+            if (!text && normalizedImages.length === 0) {
+                const r = new ResponseObject().badRequest('message or images are required');
+                return reply.code(r.statusCode).send(r.getResponse());
+            }
+
+            reply.raw.writeHead(200, {
+                'Content-Type': 'text/event-stream',
+                'Cache-Control': 'no-cache',
+                'Connection': 'keep-alive',
+                'X-Accel-Buffering': 'no',
+            });
+
+            const send = (payload) => reply.raw.write(`data: ${JSON.stringify(payload)}\n\n`);
+            send({ type: 'start' });
+
+            const collectedMessages = [];
+
+            const onEvent = (event) => {
+                switch (event.type) {
+                    case 'message_update': {
+                        const ae = event.assistantMessageEvent;
+                        if (ae?.type === 'text_delta')     send({ type: 'chunk', delta: ae.delta });
+                        if (ae?.type === 'thinking_delta') send({ type: 'thinking', delta: ae.delta });
+                        break;
+                    }
+                    case 'tool_execution_start':
+                        send({ type: 'tool_start', toolName: event.toolName });
+                        break;
+                    case 'tool_execution_end':
+                        send({ type: 'tool_end', toolName: event.toolName, isError: event.isError ?? false });
+                        break;
+                    case 'message_end':
+                        if (event.message?.role === 'assistant') collectedMessages.push(event.message);
+                        break;
+                    case 'agent_end':
+                        send({ type: 'complete', messages: collectedMessages });
+                        break;
+                }
+            };
+
+            try {
+                await agent.stream(text, onEvent, { images: normalizedImages });
+            } catch (streamErr) {
+                send({ type: 'error', error: streamErr.message });
+            }
+
+            reply.raw.write('data: [DONE]\n\n');
+            reply.raw.end();
+        } catch (err) {
+            fastify.log.error(err);
+            const r = err.message?.startsWith('Session not found:')
+                ? new ResponseObject().notFound(err.message)
+                : new ResponseObject().serverError(err.message || 'Failed to start stream');
             return reply.code(r.statusCode).send(r.getResponse());
         }
     };
@@ -216,6 +315,11 @@ export default async function agentRoutes(fastify, _options) {
         }
     });
 
+    /**
+     * Prompt a specific persistent session (non-streaming).
+     */
+    fastify.post('/:agentIdentifier/sessions/:sessionId/prompt', { onRequest: [fastify.authenticate] }, handlePromptRequest);
+
     fastify.put('/:agentIdentifier/session', { onRequest: [fastify.authenticate] }, async (request, reply) => {
         if (!requireUser(request, reply)) return;
         try {
@@ -289,11 +393,12 @@ export default async function agentRoutes(fastify, _options) {
         if (!requireUser(request, reply)) return;
         try {
             const {
-                label, description, color, llmProvider, model, apiKey, baseUrl,
+                name, label, description, color, llmProvider, model, apiKey, baseUrl,
                 prompts, tools, mcp, metadata, connectors, parameters, identity, memory, skills, session,
                 config = {},
             } = request.body;
             const updateData = {};
+            if (name        !== undefined) updateData.name        = name;
             if (label       !== undefined) updateData.label       = label;
             if (description !== undefined) updateData.description = description;
             if (color       !== undefined) updateData.color       = color;
@@ -437,72 +542,6 @@ export default async function agentRoutes(fastify, _options) {
      *   { type: 'complete',     messages: AgentMessage[] }
      *   { type: 'error',        error: string }
      */
-    fastify.post('/:agentIdentifier/prompt/stream', { onRequest: [fastify.authenticate] }, async (request, reply) => {
-        if (!requireUser(request, reply)) return;
-        try {
-            const agent = await fastify.agents.start(
-                request.user.id, request.params.agentIdentifier, request.user.id
-            );
-            if (!agent) {
-                const r = new ResponseObject().notFound('Agent not found');
-                return reply.code(r.statusCode).send(r.getResponse());
-            }
-
-            const { message, images } = request.body;
-            const text = typeof message === 'string' ? message : '';
-            const normalizedImages = normalizePromptImages(images);
-            if (!text && normalizedImages.length === 0) {
-                const r = new ResponseObject().badRequest('message or images are required');
-                return reply.code(r.statusCode).send(r.getResponse());
-            }
-
-            reply.raw.writeHead(200, {
-                'Content-Type': 'text/event-stream',
-                'Cache-Control': 'no-cache',
-                'Connection': 'keep-alive',
-                'X-Accel-Buffering': 'no',
-            });
-
-            const send = (payload) => reply.raw.write(`data: ${JSON.stringify(payload)}\n\n`);
-            send({ type: 'start' });
-
-            const collectedMessages = [];
-
-            const onEvent = (event) => {
-                switch (event.type) {
-                    case 'message_update': {
-                        const ae = event.assistantMessageEvent;
-                        if (ae?.type === 'text_delta')     send({ type: 'chunk', delta: ae.delta });
-                        if (ae?.type === 'thinking_delta') send({ type: 'thinking', delta: ae.delta });
-                        break;
-                    }
-                    case 'tool_execution_start':
-                        send({ type: 'tool_start', toolName: event.toolName });
-                        break;
-                    case 'tool_execution_end':
-                        send({ type: 'tool_end', toolName: event.toolName, isError: event.isError ?? false });
-                        break;
-                    case 'message_end':
-                        if (event.message?.role === 'assistant') collectedMessages.push(event.message);
-                        break;
-                    case 'agent_end':
-                        send({ type: 'complete', messages: collectedMessages });
-                        break;
-                }
-            };
-
-            try {
-                await agent.stream(text, onEvent, { images: normalizedImages });
-            } catch (streamErr) {
-                send({ type: 'error', error: streamErr.message });
-            }
-
-            reply.raw.write('data: [DONE]\n\n');
-            reply.raw.end();
-        } catch (err) {
-            fastify.log.error(err);
-            const r = new ResponseObject().serverError(err.message || 'Failed to start stream');
-            return reply.code(r.statusCode).send(r.getResponse());
-        }
-    });
+    fastify.post('/:agentIdentifier/prompt/stream', { onRequest: [fastify.authenticate] }, handlePromptStreamRequest);
+    fastify.post('/:agentIdentifier/sessions/:sessionId/prompt/stream', { onRequest: [fastify.authenticate] }, handlePromptStreamRequest);
 }

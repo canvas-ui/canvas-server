@@ -584,13 +584,18 @@ The same handlers are also mounted under **`/contexts/:id/trees/default/...`**. 
 | DELETE | `/agents/:agentIdentifier/sessions/:sessionId` | `authenticate` | Delete a session |
 | POST | `/agents/:agentIdentifier` | `authenticate` | Prompt agent (non-streaming shorthand) |
 | POST | `/agents/:agentIdentifier/prompt` | `authenticate` | Prompt agent (non-streaming) |
+| POST | `/agents/:agentIdentifier/sessions/:sessionId/prompt` | `authenticate` | Prompt a specific persistent session (non-streaming) |
 | POST | `/agents/:agentIdentifier/prompt/stream` | `authenticate` | Prompt agent (SSE streaming) |
+| POST | `/agents/:agentIdentifier/sessions/:sessionId/prompt/stream` | `authenticate` | Prompt a specific persistent session (SSE streaming) |
 
 ### Agent Notes
 
 - `:agentIdentifier` accepts either the agent ID or the agent name/slug (for example `lucy`).
+- Agent `id` is an immutable UUID. Agent `name` is the normalized, user-editable route/CLI slug. Agent `label` is display text.
+- Session `:sessionId` parameters accept either the session UUID or the normalized session name slug.
 - REST prompt endpoints auto-start the agent if needed before sending the prompt.
-- REST prompt endpoints use the agent's currently selected session.
+- REST prompt endpoints use the agent's currently selected session unless `:sessionId` is included in the path.
+- Session-addressed prompt endpoints select that persistent session before sending the prompt.
 - Session selection persists in agent config and survives restart.
 - Agent payloads intentionally omit `apiKey` from responses.
 
@@ -598,7 +603,7 @@ The same handlers are also mounted under **`/contexts/:id/trees/default/...`**. 
 
 Top-level fields:
 
-- `name` (`POST` only)
+- `name`
 - `label`
 - `description`
 - `color`
@@ -610,6 +615,8 @@ Top-level fields:
 - `config`
 
 Top-level convenience fields are merged into `config` where applicable, so both of these patterns work:
+
+`name` is normalized for route/CLI use (`"Lucy Dev"` becomes `lucy-dev`). Use `label` for pretty display names.
 
 ```json
 {
@@ -835,12 +842,22 @@ Notes:
 
 ### Agent Prompt Shape
 
-**POST `/agents/:agentIdentifier`** and **POST `/agents/:agentIdentifier/prompt`** body:
+**POST `/agents/:agentIdentifier`**, **POST `/agents/:agentIdentifier/prompt`**, and **POST `/agents/:agentIdentifier/sessions/:sessionId/prompt`** body:
 
 ```json
 {
   "message": "hello"
 }
+```
+
+The session-addressed endpoint selects the addressed persistent session before prompting:
+
+```bash
+curl -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  http://127.0.0.1:8001/rest/v2/agents/lucy/sessions/0196-session-id/prompt \
+  -d '{"message":"hello"}'
 ```
 
 Successful response payload:
@@ -860,7 +877,7 @@ Successful response payload:
 
 ### Agent Prompt Stream
 
-**POST `/agents/:agentIdentifier/prompt/stream`** uses SSE and emits `data:` frames with these event payloads:
+**POST `/agents/:agentIdentifier/prompt/stream`** and **POST `/agents/:agentIdentifier/sessions/:sessionId/prompt/stream`** use SSE and emit `data:` frames with these event payloads:
 
 ```json
 { "type": "start" }

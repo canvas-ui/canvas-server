@@ -1,6 +1,7 @@
 'use strict';
 
 import path from 'path';
+import { writeFile, access } from 'fs/promises';
 import EventEmitter from 'eventemitter2';
 import {
     createAgentSession,
@@ -26,10 +27,17 @@ export const AGENT_STATUS_CODES = {
 const logger = createLogger('agent');
 
 // Env vars → provider names as pi-ai expects them
-const PROVIDER_ENV_KEYS = {
+export const PROVIDER_ENV_KEYS = {
     anthropic: 'ANTHROPIC_API_KEY',
     openai: 'OPENAI_API_KEY',
     google: 'GEMINI_API_KEY',
+};
+
+// Local OpenAI-compatible providers: defaults for auto-generating models.json
+export const LOCAL_PROVIDER_DEFAULTS = {
+    ollama:      { api: 'openai-completions', baseUrl: 'http://localhost:11434/v1', apiKey: 'ollama' },
+    'lm-studio': { api: 'openai-completions', baseUrl: 'http://localhost:1234/v1',  apiKey: 'lm-studio' },
+    vllm:        { api: 'openai-completions', baseUrl: 'http://localhost:8000/v1',  apiKey: 'vllm' },
 };
 
 class Agent extends EventEmitter {
@@ -86,38 +94,59 @@ class Agent extends EventEmitter {
         if (this.isActive) return this;
 
         try {
-            const authStorage = AuthStorage.create(path.join(this.#runtimePath(), 'auth.json'));
+            const runtimePath = this.#runtimePath();
+            const authStorage = AuthStorage.create(path.join(runtimePath, 'auth.json'));
 
-            // Inject env API keys at runtime (not persisted)
+            // Inject env API keys at runtime (not persisted in auth.json)
             for (const [provider, envVar] of Object.entries(PROVIDER_ENV_KEYS)) {
                 if (process.env[envVar]) {
                     authStorage.setRuntimeApiKey(provider, process.env[envVar]);
                 }
             }
 
-            const modelObj = getModel(this.llmProvider, this.model);
-            if (!modelObj) throw new Error(`Unknown model: ${this.llmProvider}/${this.model}`);
+            // Per-agent API key from agent.json config overrides env (for built-in providers)
+            const storedApiKey = this.agentConfig?.apiKey;
+            if (storedApiKey) {
+                authStorage.setRuntimeApiKey(this.llmProvider, storedApiKey);
+            }
+
+            // For local providers, ensure models.json exists (first-time auto-generation).
+            // models.json is the SDK's native format for custom/local providers.
+            // If it already exists (user may have customized it), leave it alone.
+            const modelsJsonPath = path.join(runtimePath, 'models.json');
+            const localDefaults = LOCAL_PROVIDER_DEFAULTS[this.llmProvider];
+            if (localDefaults) {
+                const exists = await access(modelsJsonPath).then(() => true).catch(() => false);
+                if (!exists) {
+                    await this.#writeModelsConfig(modelsJsonPath, localDefaults);
+                }
+            }
+
+            // ModelRegistry reads models.json — handles local providers, compat, per-provider apiKeys.
+            const modelRegistry = ModelRegistry.create(authStorage, modelsJsonPath);
+            if (modelRegistry.getError()) {
+                logger.warn(`models.json parse error for agent ${this.id}: ${modelRegistry.getError()}`);
+            }
+
+            // Resolve model from registry (local/custom) or built-in pi-ai catalogue.
+            const modelObj = modelRegistry.find(this.llmProvider, this.model)
+                || getModel(this.llmProvider, this.model);
+            if (!modelObj) {
+                throw new Error(
+                    `Unknown model: ${this.llmProvider}/${this.model}. ` +
+                    `For local providers, add a models.json to ${runtimePath}.`
+                );
+            }
 
             const sessionOptions = {
                 cwd: this.#homePath(),
-                agentDir: this.#runtimePath(),
+                agentDir: runtimePath,
                 model: modelObj,
                 authStorage,
-                modelRegistry: ModelRegistry.create(authStorage),
+                modelRegistry,
                 sessionManager: SessionManager.create(this.#homePath()),
                 tools: createCodingTools(this.#homePath()),
             };
-
-            if (this.systemPrompt) {
-                const { DefaultResourceLoader } = await import('@mariozechner/pi-coding-agent');
-                const loader = new DefaultResourceLoader({
-                    cwd: this.#homePath(),
-                    agentDir: this.#runtimePath(),
-                    systemPromptOverride: () => this.systemPrompt,
-                });
-                await loader.reload();
-                sessionOptions.resourceLoader = loader;
-            }
 
             const { session } = await createAgentSession(sessionOptions);
             this.#session = session;
@@ -130,6 +159,28 @@ class Agent extends EventEmitter {
             this.emit('status.changed', { id: this.id, status: this.#status });
             throw err;
         }
+    }
+
+    /**
+     * Write a minimal models.json for a local OpenAI-compatible provider.
+     * Only called automatically if no models.json exists yet.
+     * @param {string} filePath
+     * @param {{ api: string, baseUrl: string, apiKey: string }} defaults
+     */
+    async #writeModelsConfig(filePath, defaults) {
+        const config = {
+            providers: {
+                [this.llmProvider]: {
+                    baseUrl: this.agentConfig?.baseUrl || defaults.baseUrl,
+                    api: defaults.api,
+                    apiKey: this.agentConfig?.apiKey || defaults.apiKey,
+                    compat: { supportsDeveloperRole: false, supportsReasoningEffort: false },
+                    models: [{ id: this.model }],
+                },
+            },
+        };
+        await writeFile(filePath, JSON.stringify(config, null, 2));
+        logger.debug(`Auto-generated models.json for agent ${this.id} (${this.llmProvider})`);
     }
 
     async stop() {

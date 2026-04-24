@@ -125,11 +125,48 @@ export default function registerAgentWebSocket(fastify, socket) {
     }
   });
 
-  // Clean up subscriptions on disconnect
-  socket.on('disconnect', () => {
-    logger.debug(`🔌 Agent WebSocket cleanup for socket ${socket.id}`);
-    // Subscriptions are automatically cleaned up by socket.io
-  });
+  // Forward Agents service events to this socket (status changes, create, update, delete)
+  if (fastify.agents) {
+    const userId = user.id;
+
+    const agentEventListener = function (payload) {
+      const eventName = this.event;
+      const eventUserId = payload?.userId || payload?.agent?.owner;
+      if (eventUserId !== userId) return;
+
+      switch (eventName) {
+        case 'agent.created':
+          socket.emit('agent.created', payload);
+          break;
+        case 'agent.updated':
+          socket.emit('agent.updated', payload);
+          break;
+        case 'agent.deleted':
+          socket.emit('agent.deleted', payload);
+          break;
+        case 'agent.started':
+          socket.emit('agent.status.changed', { agentId: payload.agentId, status: 'active' });
+          break;
+        case 'agent.stopped':
+          socket.emit('agent.status.changed', { agentId: payload.agentId, status: 'inactive' });
+          break;
+        case 'agent.startFailed':
+        case 'agent.stopFailed':
+          socket.emit('agent.status.changed', { agentId: payload.agentId, status: 'error' });
+          break;
+      }
+    };
+
+    fastify.agents.on('**', agentEventListener);
+    socket.on('disconnect', () => {
+      fastify.agents.off('**', agentEventListener);
+      logger.debug(`🔌 Agent WebSocket cleanup for socket ${socket.id}`);
+    });
+  } else {
+    socket.on('disconnect', () => {
+      logger.debug(`🔌 Agent WebSocket cleanup for socket ${socket.id}`);
+    });
+  }
 
   logger.debug(`✅ Agent WebSocket registered for socket ${socket.id}`);
 }

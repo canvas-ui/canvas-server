@@ -7,7 +7,7 @@ import { validateUser } from '../../auth/strategies.js';
  * Agent routes handler
  * @param {FastifyInstance} fastify
  */
-export default async function agentRoutes(fastify, options) {
+export default async function agentRoutes(fastify, _options) {
 
     const requireUser = (request, reply) => {
         if (!validateUser(request.user, ['id', 'email'])) {
@@ -40,9 +40,26 @@ export default async function agentRoutes(fastify, options) {
     fastify.post('/', { onRequest: [fastify.authenticate] }, async (request, reply) => {
         if (!requireUser(request, reply)) return;
         try {
-            const { name, label, description, color, llmProvider, model, prompts, tools, mcp, metadata } = request.body;
+            const {
+                name, label, description, color, llmProvider, model, apiKey, baseUrl,
+                prompts, tools, mcp, metadata, connectors, parameters, identity, memory, skills,
+                config = {},
+            } = request.body;
+            const mergedConfig = {
+                ...config,
+                ...(apiKey !== undefined ? { apiKey } : {}),
+                ...(baseUrl !== undefined ? { baseUrl } : {}),
+                ...(identity !== undefined ? { identity: { ...(config.identity || {}), ...identity } } : {}),
+                ...(prompts !== undefined ? { prompts: { ...(config.prompts || {}), ...prompts } } : {}),
+                ...(tools !== undefined ? { tools: { ...(config.tools || {}), ...tools } } : {}),
+                ...(connectors !== undefined ? { connectors: { ...(config.connectors || {}), ...connectors } } : {}),
+                ...(parameters !== undefined ? { parameters: { ...(config.parameters || {}), ...parameters } } : {}),
+                ...(memory !== undefined ? { memory } : {}),
+                ...(skills !== undefined ? { skills } : {}),
+                ...(mcp !== undefined ? { mcp } : {}),
+            };
             const agent = await fastify.agents.create(request.user.id, name, {
-                owner: request.user.id, label, description, color, llmProvider, model, prompts, tools, mcp, metadata,
+                owner: request.user.id, label, description, color, llmProvider, model, metadata, config: mergedConfig,
             });
             const r = new ResponseObject().created(agent, 'Agent created');
             return reply.code(r.statusCode).send(r.getResponse());
@@ -104,16 +121,31 @@ export default async function agentRoutes(fastify, options) {
     fastify.put('/:agentIdentifier', { onRequest: [fastify.authenticate] }, async (request, reply) => {
         if (!requireUser(request, reply)) return;
         try {
-            const { label, description, color, llmProvider, model, prompts, tools, mcp, metadata } = request.body;
+            const {
+                label, description, color, llmProvider, model, apiKey, baseUrl,
+                prompts, tools, mcp, metadata, connectors, parameters, identity, memory, skills,
+                config = {},
+            } = request.body;
             const updateData = {};
             if (label       !== undefined) updateData.label       = label;
             if (description !== undefined) updateData.description = description;
             if (color       !== undefined) updateData.color       = color;
             if (llmProvider !== undefined) updateData.llmProvider = llmProvider;
             if (model       !== undefined) updateData.model       = model;
-            if (prompts     !== undefined) updateData.config      = { ...updateData.config, prompts };
-            if (tools       !== undefined) updateData.config      = { ...updateData.config, tools };
-            if (mcp         !== undefined) updateData.config      = { ...updateData.config, mcp };
+            const mergedConfig = {
+                ...config,
+                ...(apiKey !== undefined ? { apiKey } : {}),
+                ...(baseUrl !== undefined ? { baseUrl } : {}),
+                ...(identity !== undefined ? { identity: { ...(config.identity || {}), ...identity } } : {}),
+                ...(prompts !== undefined ? { prompts: { ...(config.prompts || {}), ...prompts } } : {}),
+                ...(tools !== undefined ? { tools: { ...(config.tools || {}), ...tools } } : {}),
+                ...(connectors !== undefined ? { connectors: { ...(config.connectors || {}), ...connectors } } : {}),
+                ...(parameters !== undefined ? { parameters: { ...(config.parameters || {}), ...parameters } } : {}),
+                ...(memory !== undefined ? { memory } : {}),
+                ...(skills !== undefined ? { skills } : {}),
+                ...(mcp !== undefined ? { mcp } : {}),
+            };
+            if (Object.keys(mergedConfig).length > 0) updateData.config = mergedConfig;
             if (metadata    !== undefined) updateData.metadata    = metadata;
 
             const agent = await fastify.agents.update(

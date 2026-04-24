@@ -7,7 +7,9 @@ import { existsSync } from 'fs';
 import EventEmitter from 'eventemitter2';
 import { generateUUID } from '../../utils/id.js';
 import { createLogger } from '../../utils/log.js';
-import Agent, { AGENT_STATUS_CODES } from './Agent.js';
+import Agent, { AGENT_STATUS_CODES, LOCAL_PROVIDER_DEFAULTS } from './Agent.js';
+import { loadAgentRuntimeConfig, materializeAgentRuntimeFiles } from './files.js';
+import { validateAgentProvider } from './validation.js';
 
 const logger = createLogger('agents');
 
@@ -40,6 +42,10 @@ const DEFAULT_AGENT_CONFIG = {
         mcp: { servers: [] },
     },
 };
+
+function mergeNestedObjects(currentValue = {}, nextValue = {}) {
+    return { ...currentValue, ...nextValue };
+}
 
 /**
  * Agent Reference Utilities
@@ -176,15 +182,7 @@ class Agents extends EventEmitter {
         // Path: {defaultRootPath}/{user.email}/agents/{slug}
         const agentDir = options.agentPath || path.join(this.#defaultRootPath, ownerEmail, 'agents', slug);
 
-        if (existsSync(agentDir)) {
-            logger.warn(`Agent directory already exists: ${agentDir}`);
-        }
-
-        await fsPromises.mkdir(agentDir, { recursive: true });
-        for (const subdir of Object.values(AGENT_DIRECTORIES)) {
-            await fsPromises.mkdir(path.join(agentDir, subdir), { recursive: true });
-        }
-
+        const agentConfig = this.#mergeAgentConfig(DEFAULT_AGENT_CONFIG.config, options.config || {});
         const configPath = path.join(agentDir, AGENT_DIRECTORIES.config, AGENT_CONFIG_FILENAME);
         const configData = {
             ...DEFAULT_AGENT_CONFIG,
@@ -202,15 +200,31 @@ class Agents extends EventEmitter {
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
             metadata: options.metadata || {},
-            config: {
-                prompts: options.prompts || {},
-                tools: options.tools || {},
-                mcp: options.mcp || { servers: [] },
-            },
+            config: agentConfig,
         };
 
+        await validateAgentProvider(configData);
+
+        if (existsSync(agentDir)) {
+            logger.warn(`Agent directory already exists: ${agentDir}`);
+        }
+
+        await fsPromises.mkdir(agentDir, { recursive: true });
+        for (const subdir of Object.values(AGENT_DIRECTORIES)) {
+            await fsPromises.mkdir(path.join(agentDir, subdir), { recursive: true });
+        }
+
         await fsPromises.writeFile(configPath, JSON.stringify(configData, null, 2));
+        await materializeAgentRuntimeFiles(agentDir, configData);
         logger.debug(`Agent config written: ${configPath}`);
+
+        // Write models.json for local providers (ollama, lm-studio, vllm)
+        await this.#writeModelsConfig(path.join(agentDir, AGENT_DIRECTORIES.runtime), {
+            llmProvider: configData.llmProvider,
+            model: configData.model,
+            baseUrl: agentConfig.baseUrl,
+            apiKey: agentConfig.apiKey,
+        });
 
         const indexEntry = { ...configData, status: AGENT_STATUS_CODES.AVAILABLE, lastAccessed: null };
         const indexKey = constructAgentIndexKey(owner, agentId);
@@ -282,14 +296,20 @@ class Agents extends EventEmitter {
 
         const indexKey = constructAgentIndexKey(owner, agentId);
         try {
+            await validateAgentProvider({
+                llmProvider: agent.llmProvider,
+                model: agent.model,
+                config: agent.agentConfig,
+            });
             await agent.start();
             this.#updateIndex(indexKey, { status: AGENT_STATUS_CODES.ACTIVE, lastAccessed: new Date().toISOString() });
-            this.emit('agent.started', { agentId, agent: agent.toJSON() });
+            this.emit('agent.started', { agentId, userId: owner, agent: agent.toJSON() });
             return agent;
         } catch (err) {
+            logger.error({ err, agentId }, `Agent start failed: ${err.message}`);
             this.#updateIndex(indexKey, { status: AGENT_STATUS_CODES.ERROR });
-            this.emit('agent.startFailed', { agentId, error: err.message });
-            return null;
+            this.emit('agent.startFailed', { agentId, userId: owner, error: err.message });
+            throw err;  // re-throw so the route can surface the real error
         }
     }
 
@@ -323,11 +343,11 @@ class Agents extends EventEmitter {
         try {
             await agent.stop();
             this.#updateIndex(indexKey, { status: AGENT_STATUS_CODES.INACTIVE });
-            this.emit('agent.stopped', { agentId });
+            this.emit('agent.stopped', { agentId, userId: owner });
             return true;
         } catch (err) {
             this.#updateIndex(indexKey, { status: AGENT_STATUS_CODES.ERROR });
-            this.emit('agent.stopFailed', { agentId, error: err.message });
+            this.emit('agent.stopFailed', { agentId, userId: owner, error: err.message });
             return false;
         }
     }
@@ -406,21 +426,39 @@ class Agents extends EventEmitter {
         if (!agent) return null;
 
         const allowed = ['label', 'description', 'color', 'llmProvider', 'model', 'metadata', 'config'];
+        const normalizedUpdateData = {
+            ...updateData,
+            ...(updateData.config ? { config: this.#mergeAgentConfig(agent.agentConfig, updateData.config) } : {}),
+        };
         const updates = {};
-        for (const [key, value] of Object.entries(updateData)) {
+        for (const [key, value] of Object.entries(normalizedUpdateData)) {
             if (allowed.includes(key) && value !== undefined) {
                 updates[key] = value;
-                agent.setConfigKey(key, value);
             }
         }
 
-        // Persist to disk
-        try {
-            const config = await this.#loadConfig(entry.configPath);
-            const updated = { ...config, ...updates, updatedAt: new Date().toISOString() };
-            await fsPromises.writeFile(entry.configPath, JSON.stringify(updated, null, 2));
-        } catch (err) {
-            logger.warn(`Failed to persist config for agent ${agentId}: ${err.message}`);
+        // Persist to disk and regenerate models.json for local providers
+        const config = await this.#loadConfig(entry.configPath);
+        const updated = { ...config, ...updates, updatedAt: new Date().toISOString() };
+        updated.config = this.#mergeAgentConfig(config.config, updates.config);
+
+        await validateAgentProvider(updated);
+        await fsPromises.writeFile(entry.configPath, JSON.stringify(updated, null, 2));
+        await materializeAgentRuntimeFiles(entry.rootPath, updated);
+
+        await this.#writeModelsConfig(path.join(entry.rootPath, AGENT_DIRECTORIES.runtime), {
+            llmProvider: updated.llmProvider,
+            model: updated.model,
+            baseUrl: updated.config?.baseUrl,
+            apiKey: updated.config?.apiKey,
+        });
+
+        for (const [key, value] of Object.entries(updates)) {
+            agent.setConfigKey(key, value);
+        }
+
+        if (agent.isActive && this.#requiresRestart(updates)) {
+            await agent.restart();
         }
 
         this.#updateIndex(indexKey, { ...updates, updatedAt: new Date().toISOString() });
@@ -525,7 +563,62 @@ class Agents extends EventEmitter {
 
     async #loadConfig(configPath) {
         const raw = await fsPromises.readFile(configPath, 'utf8');
-        return JSON.parse(raw);
+        const config = JSON.parse(raw);
+        return loadAgentRuntimeConfig(config.rootPath, config);
+    }
+
+    #mergeAgentConfig(currentConfig = {}, nextConfig = {}) {
+        const merged = { ...currentConfig, ...nextConfig };
+
+        if (currentConfig.prompts || nextConfig.prompts) {
+            merged.prompts = mergeNestedObjects(currentConfig.prompts, nextConfig.prompts);
+        }
+        if (currentConfig.tools || nextConfig.tools) {
+            merged.tools = mergeNestedObjects(currentConfig.tools, nextConfig.tools);
+        }
+        if (currentConfig.connectors || nextConfig.connectors) {
+            merged.connectors = mergeNestedObjects(currentConfig.connectors, nextConfig.connectors);
+        }
+        if (currentConfig.parameters || nextConfig.parameters) {
+            merged.parameters = mergeNestedObjects(currentConfig.parameters, nextConfig.parameters);
+        }
+        if (currentConfig.identity || nextConfig.identity) {
+            merged.identity = mergeNestedObjects(currentConfig.identity, nextConfig.identity);
+        }
+
+        return merged;
+    }
+
+    #requiresRestart(updates = {}) {
+        return updates.llmProvider !== undefined
+            || updates.model !== undefined
+            || updates.config !== undefined;
+    }
+
+    /**
+     * Write (or overwrite) models.json for a local OpenAI-compatible provider.
+     * Called on agent create/update when provider-specific settings change.
+     * Users can subsequently edit models.json manually for advanced config (compat, multiple models, etc.).
+     */
+    async #writeModelsConfig(runtimePath, { llmProvider, model, baseUrl, apiKey }) {
+        const defaults = LOCAL_PROVIDER_DEFAULTS[llmProvider];
+        if (!defaults || !model) return;
+
+        const config = {
+            providers: {
+                [llmProvider]: {
+                    baseUrl: baseUrl || defaults.baseUrl,
+                    api: defaults.api,
+                    apiKey: apiKey || defaults.apiKey,
+                    compat: { supportsDeveloperRole: false, supportsReasoningEffort: false },
+                    models: [{ id: model }],
+                },
+            },
+        };
+
+        const filePath = path.join(runtimePath, 'models.json');
+        await fsPromises.writeFile(filePath, JSON.stringify(config, null, 2));
+        logger.debug(`models.json written: ${filePath}`);
     }
 
     #validateAgentData(data) {
@@ -578,7 +671,7 @@ class Agents extends EventEmitter {
         if (entry.owner !== requestingUserId) { logger.warn(`User ${requestingUserId} is not owner of ${agentId}`); return false; }
         if (!entry.rootPath || !existsSync(entry.rootPath)) { logger.warn(`rootPath missing for ${agentId}`); return false; }
         if (!entry.configPath || !existsSync(entry.configPath)) { logger.warn(`configPath missing for ${agentId}`); return false; }
-        const validStatuses = [AGENT_STATUS_CODES.AVAILABLE, AGENT_STATUS_CODES.INACTIVE, AGENT_STATUS_CODES.ACTIVE];
+        const validStatuses = [AGENT_STATUS_CODES.AVAILABLE, AGENT_STATUS_CODES.INACTIVE, AGENT_STATUS_CODES.ACTIVE, AGENT_STATUS_CODES.ERROR];
         if (!validStatuses.includes(entry.status)) { logger.warn(`Invalid status ${entry.status} for ${agentId}`); return false; }
         return true;
     }

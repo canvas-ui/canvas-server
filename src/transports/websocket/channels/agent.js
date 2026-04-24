@@ -66,74 +66,62 @@ export default function registerAgentWebSocket(fastify, socket) {
     }
   });
 
-  // Handle streaming chat requests
+  // Handle streaming prompt requests
   socket.on('agent:chat:stream', async (data) => {
     try {
-      const { agentId, message, context, mcpContext = true, maxTokens, temperature } = data;
+      const { agentId, message } = data;
 
       if (!agentId || !message) {
-        socket.emit('agent:chat:error', {
-          agentId,
-          error: 'Agent ID and message are required'
-        });
+        socket.emit('agent:chat:error', { agentId, error: 'agentId and message are required' });
         return;
       }
 
-      // Verify agent access and status
       const agent = await fastify.agents.open(user.id, agentId, user.id);
       if (!agent) {
-        socket.emit('agent:chat:error', {
-          agentId,
-          error: 'Agent not found or access denied'
-        });
+        socket.emit('agent:chat:error', { agentId, error: 'Agent not found or access denied' });
         return;
       }
 
       if (!agent.isActive) {
-        socket.emit('agent:chat:error', {
-          agentId,
-          error: 'Agent is not active. Please start the agent first.'
-        });
+        socket.emit('agent:chat:error', { agentId, error: 'Agent is not active' });
         return;
       }
 
-      // Start streaming response
       socket.emit('agent:chat:start', { agentId, messageId: data.messageId });
 
-      const onChunk = (chunk) => {
-        socket.emit('agent:chat:chunk', {
-          agentId,
-          messageId: data.messageId,
-          type: chunk.type,
-          content: chunk.content,
-          delta: chunk.delta
-        });
+      const collectedMessages = [];
+
+      const onEvent = (event) => {
+        switch (event.type) {
+          case 'message_update': {
+            const ae = event.assistantMessageEvent;
+            if (ae?.type === 'text_delta') {
+              socket.emit('agent:chat:chunk', { agentId, messageId: data.messageId, type: 'chunk', delta: ae.delta });
+            }
+            if (ae?.type === 'thinking_delta') {
+              socket.emit('agent:chat:chunk', { agentId, messageId: data.messageId, type: 'thinking', delta: ae.delta });
+            }
+            break;
+          }
+          case 'tool_execution_start':
+            socket.emit('agent:chat:chunk', { agentId, messageId: data.messageId, type: 'tool_start', toolName: event.toolName });
+            break;
+          case 'tool_execution_end':
+            socket.emit('agent:chat:chunk', { agentId, messageId: data.messageId, type: 'tool_end', toolName: event.toolName, isError: event.isError ?? false });
+            break;
+          case 'message_end':
+            if (event.message?.role === 'assistant') collectedMessages.push(event.message);
+            break;
+        }
       };
 
-      // Execute streaming chat
-      const result = await agent.chatStream(message, {
-        context,
-        mcpContext,
-        maxTokens,
-        temperature,
-        onChunk
-      });
+      await agent.stream(message, onEvent);
 
-      // Send completion
-      socket.emit('agent:chat:complete', {
-        agentId,
-        messageId: data.messageId,
-        result
-      });
-
-      logger.debug(`💬 Streaming chat completed for agent ${agentId} by user ${user.id}`);
+      socket.emit('agent:chat:complete', { agentId, messageId: data.messageId, messages: collectedMessages });
+      logger.debug(`Streaming prompt completed for agent ${agentId} by user ${user.id}`);
     } catch (error) {
-      logger.debug(`❌ Streaming chat error for ${socket.id}: ${error.message}`);
-      socket.emit('agent:chat:error', {
-        agentId: data?.agentId,
-        messageId: data?.messageId,
-        error: error.message || 'Failed to process chat stream'
-      });
+      logger.debug(`Streaming error for ${socket.id}: ${error.message}`);
+      socket.emit('agent:chat:error', { agentId: data?.agentId, messageId: data?.messageId, error: error.message });
     }
   });
 

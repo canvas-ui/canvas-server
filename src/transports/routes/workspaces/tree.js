@@ -105,6 +105,11 @@ export default async function workspaceTreeRoutes(fastify) {
       const resolved = await getTreeInstance(request, reply);
       if (!resolved) return;
       const result = await resolved.tree.movePath(request.body.from, request.body.to, request.body.recursive);
+      if (result?.error) {
+        fastify.log.error(`Move workspace path error for ID ${request.params.id}: ${result.error}`);
+        const responseObject = new ResponseObject().serverError(result.error);
+        return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+      }
       const responseObject = new ResponseObject().success(result, 'Path moved successfully');
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
     } catch (error) {

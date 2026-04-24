@@ -1,5 +1,58 @@
 # TODO List
 
+## WebUI
+
+### Toolbox and Canvas(es)
+
+- Toolbox is one of the main elements the user will interact with
+- Our main menu(left) is where you select what you want to focus on - the workspace, context or directory path or a specific canvas or context - representing the task you work on (lets say work://projects/customer-foo/devops/jira-1234), toolbox on the other hand is - as the name suggest - what you use to work with your data.
+- A toolbox should inherently be exportable, meaning, you should be able to open your toolbox in a separate browser window or on your phone or tablet and use touch gestures to dynamically amend what you see on your computer screen(electron or web-based canvas elements) or use those devices to talk to your agents
+
+Toolbox layout:
+- Toolbox should by default be placed on the rigth side as a extendible side-panel
+- Toolbox layout should be as follows:
+  - TL: Launcher mode, cca 40px "dot" element near the right-bottom side of the screen to trigger voice mode or toggle the toolbox, electron-specific(omit for now)
+  - T0: Panel mode, slim dark panel with buttons and a small widget area
+    - Buttons(icon-only, default setup):
+      - Home
+        - A toolbox should have a "home screen" or "notification area" - a place where you could put a clock and/or audio player widget, get notifications and display various data, maybe we can extend T0 - keeping the nice dark color - for the Home area and shrink it and display white-background content when switching between different sections
+      - Tools (Would open a tabbed T1 section with the following tabs
+        - Timeline
+          - Vertical zoomable timeline element on the left, first click selects start date, second click end data, Material design v2 styled toggle switches on the right for ad-hoc filters:
+            - Index actions:
+                - Created
+                - Updated
+                - Deleted
+            - Content related (single toggle whether to also search through indexed events based on document content)
+            - Quick filter
+                - Today
+                - Yesterday
+                - This week
+                - This month
+                - This year
+        - Features
+          - Material design v2 styled toggle switches for all feature bitmaps
+      - Agents: Opens a list of agents in T1 simillar that we do for Contexts or Workspaces, selecting an agent will start a chat with that agent in T2
+      - Toggle toolbox mode or voice mode - button at the bottom of the panel, placeholder for now
+  - T1: Extended mode, cca 500px wide panel with controlls - main toolbox area
+  - T2: Content mode - Can overlay on top of T1 for things like ad-hoc note taking, replies to messages or chat with agents
+
+ 
+- As with every other integration, there are 2 modi operandi that we need to take into account - context and workspace mode - or in the context of our toolbox, elements that change(or load) when you navigate to a Context or Canvas and elements that are global - iow always available.
+  - I would probably opt for a highligted button right under the Home icon in T0 that would appear when a user navigates to a Context or a Canvas (clicking on it would load T1 with context-relevant widgets)
+  
+### Widgets
+
+- A central component for the "Canvas" and "Toolbox" elements are "applets" or a better more common term "widgets"
+  - Widgets are self-contained elements that can show a clock, video or audio player, a list of recent emails or messages with a specific filter or recently added files etc; we should also support widgets that can write or update documents or trigger actions(lets say to add a note or quick-reply to a message - chat, email or agent)
+  - Widgets should be movable and resizeable metro-ui style with a default, minimum and (optional) maximum size configuration, they should also support auto-resize
+  - Widgets should support being placed on a Canvas(canvas-server Canvas), Toolbox or both
+  - Widgets need to store their configuration
+    - Each Canvas and Context object has a metadata section, we can store the canvas layout information in metadata.layout and specific canvas widget configuration in metadata.applets (or .widgets) .widget-name {}
+      - The difference here is, storing layout / widget data in a Canvas moves witht he canvas, storing it in a Context moves with the context - you can have one layout and traverse various parts of the tree to display data across various paths with the same UI    
+    - Toolbox widgets that are "context-specific" can also be loaded from canvas or context - as a ad-hoc example, if .metadata.toolbox exists, load related widget
+  - Lets first create a bare-bones toolbox and then revisit this point
+
 ## UUID + ULID channges
 
 - User ID should be uuid

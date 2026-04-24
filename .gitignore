@@ -6,6 +6,7 @@ monorepo
 
 # Portable runtimes
 /runtimes/**
+vendor/**
 
 # Data directories
 /server/*

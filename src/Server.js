@@ -213,10 +213,9 @@ class Server extends EventEmitter {
         this.#workspaceManager.setRoles(this.#roles); // Late injection if method exists
 
         this.#agents = new Agents({
-            defaultRootPath: path.join(env.server.home, 'agents'),
+            defaultRootPath: path.join(env.server.home, 'users'),
             indexStore: jim.createIndex('agents'),
             users: this.#users,
-            logger: createLogger('agents'),
         });
 
         this.#users.setWorkspaceManager(this.#workspaceManager);

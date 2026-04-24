@@ -9,3 +9,7 @@
 - Dynamic focus, allow deep introspection
   - 
   - silencing parts of global context
+
+What still needs doing (for the new session):
+
+Web UI wiring — src/ui/web/ still references chatStream, memory, getMCPTools. Needs updating to use prompt/stream endpoints.

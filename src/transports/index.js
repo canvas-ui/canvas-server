@@ -64,9 +64,9 @@ export async function createServer(options = {}) {
     logger: fastifyLogger,
     trustProxy: true,
     disableRequestLogging: true,
-    // Disable response validation for better performance during development
     disableResponseValidation: true,
-    ignoreTrailingSlash: true
+    ignoreTrailingSlash: true,
+    bodyLimit: 1073741824, // 1 GiB
   });
 
   // Register fastify-jwt FIRST - needed for request.jwtVerify

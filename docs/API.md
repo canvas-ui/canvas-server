@@ -587,6 +587,9 @@ The same handlers are also mounted under **`/contexts/:id/trees/default/...`**. 
 | POST | `/agents/:agentIdentifier/sessions/:sessionId/prompt` | `authenticate` | Prompt a specific persistent session (non-streaming) |
 | POST | `/agents/:agentIdentifier/prompt/stream` | `authenticate` | Prompt agent (SSE streaming) |
 | POST | `/agents/:agentIdentifier/sessions/:sessionId/prompt/stream` | `authenticate` | Prompt a specific persistent session (SSE streaming) |
+| GET | `/agents/:agentIdentifier/skills` | `authenticate` | List installed skills |
+| POST | `/agents/:agentIdentifier/skills` | `authenticate` | Install a skill |
+| DELETE | `/agents/:agentIdentifier/skills/:skillName` | `authenticate` | Remove a skill |
 
 ### Agent Notes
 
@@ -840,6 +843,20 @@ Notes:
 - Experimental sessions cannot be deleted.
 - Deleting the currently selected persistent session switches the agent back to default persistent session selection.
 
+### Agent Skills
+
+**POST `/agents/:agentIdentifier/skills`** body:
+
+```json
+{
+  "name": "deploy-check",
+  "description": "Pre-deploy sanity checklist",
+  "content": "Run tests first."
+}
+```
+
+**DELETE `/agents/:agentIdentifier/skills/:skillName`** — removes by skill name.
+
 ### Agent Prompt Shape
 
 **POST `/agents/:agentIdentifier`**, **POST `/agents/:agentIdentifier/prompt`**, and **POST `/agents/:agentIdentifier/sessions/:sessionId/prompt`** body:
@@ -888,6 +905,8 @@ Successful response payload:
 { "type": "complete", "messages": [] }
 { "type": "error", "error": "Prompt failed" }
 ```
+
+After the final event, the server emits a literal `data: [DONE]` terminator frame then closes the stream.
 
 ---
 

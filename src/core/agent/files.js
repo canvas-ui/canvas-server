@@ -31,7 +31,7 @@ function quoteFrontmatter(value) {
     return JSON.stringify(String(value ?? ''));
 }
 
-function sanitizeSkillName(value) {
+export function sanitizeSkillName(value) {
     return String(value || '')
         .trim()
         .toLowerCase()
@@ -58,7 +58,7 @@ async function syncOptionalFile(filePath, value) {
     await fsPromises.writeFile(filePath, content);
 }
 
-function parseSkillMarkdown(raw, fallbackName) {
+export function parseSkillMarkdown(raw, fallbackName) {
     const trimmed = raw.trim();
     const match = trimmed.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
     if (!match) {

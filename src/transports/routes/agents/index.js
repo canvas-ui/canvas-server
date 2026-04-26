@@ -386,6 +386,70 @@ export default async function agentRoutes(fastify, _options) {
         }
     });
 
+    fastify.get('/:agentIdentifier/skills', { onRequest: [fastify.authenticate] }, async (request, reply) => {
+        if (!requireUser(request, reply)) return;
+        try {
+            const skills = await fastify.agents.listSkills(
+                request.user.id, request.params.agentIdentifier, request.user.id
+            );
+            if (!skills) {
+                const r = new ResponseObject().notFound('Agent not found');
+                return reply.code(r.statusCode).send(r.getResponse());
+            }
+            const r = new ResponseObject().found(skills, 'Skills retrieved', 200, skills.length);
+            return reply.code(r.statusCode).send(r.getResponse());
+        } catch (err) {
+            fastify.log.error(err);
+            const r = new ResponseObject().serverError(err.message || 'Failed to list skills');
+            return reply.code(r.statusCode).send(r.getResponse());
+        }
+    });
+
+    fastify.post('/:agentIdentifier/skills', { onRequest: [fastify.authenticate] }, async (request, reply) => {
+        if (!requireUser(request, reply)) return;
+        try {
+            const skills = await fastify.agents.installSkill(
+                request.user.id, request.params.agentIdentifier, request.body || {}, request.user.id
+            );
+            if (!skills) {
+                const r = new ResponseObject().notFound('Agent not found');
+                return reply.code(r.statusCode).send(r.getResponse());
+            }
+            const r = new ResponseObject().created(skills, 'Skill installed');
+            return reply.code(r.statusCode).send(r.getResponse());
+        } catch (err) {
+            fastify.log.error(err);
+            const r = err.message?.includes('required')
+                ? new ResponseObject().badRequest(err.message)
+                : new ResponseObject().serverError(err.message || 'Failed to install skill');
+            return reply.code(r.statusCode).send(r.getResponse());
+        }
+    });
+
+    fastify.delete('/:agentIdentifier/skills/:skillName', { onRequest: [fastify.authenticate] }, async (request, reply) => {
+        if (!requireUser(request, reply)) return;
+        try {
+            const skills = await fastify.agents.removeSkill(
+                request.user.id, request.params.agentIdentifier, request.params.skillName, request.user.id
+            );
+            if (!skills) {
+                const r = new ResponseObject().notFound('Agent not found');
+                return reply.code(r.statusCode).send(r.getResponse());
+            }
+            const r = new ResponseObject().success(skills, 'Skill removed');
+            return reply.code(r.statusCode).send(r.getResponse());
+        } catch (err) {
+            fastify.log.error(err);
+            const r = err.message?.startsWith('Skill not found:')
+                || err.message?.startsWith('Skill package not found:')
+                ? new ResponseObject().notFound(err.message)
+                : err.message?.includes('required')
+                    ? new ResponseObject().badRequest(err.message)
+                    : new ResponseObject().serverError(err.message || 'Failed to remove skill');
+            return reply.code(r.statusCode).send(r.getResponse());
+        }
+    });
+
     /**
      * Update agent config
      */

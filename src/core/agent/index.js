@@ -5,10 +5,11 @@ import path from 'path';
 import * as fsPromises from 'fs/promises';
 import { existsSync } from 'fs';
 import EventEmitter from 'eventemitter2';
+import { DefaultPackageManager, SettingsManager } from '@mariozechner/pi-coding-agent';
 import { generateUUID } from '../../utils/id.js';
 import { createLogger } from '../../utils/log.js';
 import Agent, { AGENT_STATUS_CODES, LOCAL_PROVIDER_DEFAULTS, sanitizeAgentData, AGENT_SESSION_MODES } from './Agent.js';
-import { loadAgentRuntimeConfig, materializeAgentRuntimeFiles } from './files.js';
+import { loadAgentRuntimeConfig, materializeAgentRuntimeFiles, parseSkillMarkdown, sanitizeSkillName } from './files.js';
 import { validateAgentProvider } from './validation.js';
 
 const logger = createLogger('agents');
@@ -491,6 +492,77 @@ class Agents extends EventEmitter {
         };
     }
 
+    async listSkills(userId, agentIdentifier, requestingUserId) {
+        if (!this.#initialized) throw new Error('Agents service not initialized');
+
+        const owner = await this.#users.resolveId(userId);
+        if (!owner) return null;
+        requestingUserId = requestingUserId === userId ? owner : (requestingUserId || owner);
+
+        const agent = this.#agents.get(await this.#resolveAgentId(owner, agentIdentifier))
+            || await this.open(userId, agentIdentifier, requestingUserId);
+        if (!agent) return null;
+        if (agent.owner !== requestingUserId) throw new Error(`Permission denied for agent ${agent.id}`);
+
+        return this.#listAgentSkills(agent);
+    }
+
+    async installSkill(userId, agentIdentifier, skill = {}, requestingUserId) {
+        if (!this.#initialized) throw new Error('Agents service not initialized');
+
+        const owner = await this.#users.resolveId(userId);
+        if (!owner) return null;
+        requestingUserId = requestingUserId === userId ? owner : (requestingUserId || owner);
+
+        const agent = this.#agents.get(await this.#resolveAgentId(owner, agentIdentifier))
+            || await this.open(userId, agentIdentifier, requestingUserId);
+        if (!agent) return null;
+        if (agent.owner !== requestingUserId) throw new Error(`Permission denied for agent ${agent.id}`);
+
+        if (typeof skill.source === 'string' && skill.source.trim()) {
+            await this.#installSkillPackage(agent, skill.source.trim());
+            if (agent.isActive) await agent.restart();
+            return this.#listAgentSkills(agent);
+        }
+
+        const normalizedSkill = this.#normalizeSkill(skill);
+        const skills = (agent.agentConfig.skills || [])
+            .filter((entry) => sanitizeSkillName(entry?.name) !== normalizedSkill.name);
+        skills.push(normalizedSkill);
+
+        const updated = await this.update(userId, agentIdentifier, { config: { skills } }, requestingUserId);
+        return updated ? this.#listAgentSkills(updated) : skills;
+    }
+
+    async removeSkill(userId, agentIdentifier, skillName, requestingUserId) {
+        if (!this.#initialized) throw new Error('Agents service not initialized');
+
+        const owner = await this.#users.resolveId(userId);
+        if (!owner) return null;
+        requestingUserId = requestingUserId === userId ? owner : (requestingUserId || owner);
+
+        const agent = this.#agents.get(await this.#resolveAgentId(owner, agentIdentifier))
+            || await this.open(userId, agentIdentifier, requestingUserId);
+        if (!agent) return null;
+        if (agent.owner !== requestingUserId) throw new Error(`Permission denied for agent ${agent.id}`);
+
+        if (this.#isPackageSource(skillName)) {
+            await this.#removeSkillPackage(agent, skillName);
+            if (agent.isActive) await agent.restart();
+            return this.#listAgentSkills(agent);
+        }
+
+        const name = sanitizeSkillName(skillName);
+        if (!name) throw new Error('Skill name is required');
+
+        const currentSkills = agent.agentConfig.skills || [];
+        const skills = currentSkills.filter((entry) => sanitizeSkillName(entry?.name) !== name);
+        if (skills.length === currentSkills.length) throw new Error(`Skill not found: ${skillName}`);
+
+        const updated = await this.update(userId, agentIdentifier, { config: { skills } }, requestingUserId);
+        return updated ? this.#listAgentSkills(updated) : skills;
+    }
+
     /**
      * Permanently delete an agent.
      * @param {boolean} [removeFiles=true]
@@ -760,6 +832,118 @@ class Agents extends EventEmitter {
         return updates.llmProvider !== undefined
             || updates.model !== undefined
             || updates.config !== undefined;
+    }
+
+    #settingsManager(agent) {
+        return SettingsManager.create(
+            path.join(agent.rootPath, AGENT_DIRECTORIES.home),
+            path.join(agent.rootPath, AGENT_DIRECTORIES.runtime)
+        );
+    }
+
+    #packageManager(agent, settingsManager = this.#settingsManager(agent)) {
+        return new DefaultPackageManager({
+            cwd: path.join(agent.rootPath, AGENT_DIRECTORIES.home),
+            agentDir: path.join(agent.rootPath, AGENT_DIRECTORIES.runtime),
+            settingsManager,
+        });
+    }
+
+    #isPackageSource(value) {
+        return typeof value === 'string' && /^(npm|git):/.test(value.trim());
+    }
+
+    async #listAgentSkills(agent) {
+        const packageSkills = [];
+        const settingsManager = this.#settingsManager(agent);
+        const packageManager = this.#packageManager(agent, settingsManager);
+        const configuredPackages = packageManager.listConfiguredPackages();
+        const resolved = await packageManager.resolve();
+
+        for (const entry of resolved.skills) {
+            if (!entry.enabled || entry.metadata.origin !== 'package') continue;
+            const raw = await fsPromises.readFile(entry.path, 'utf8').catch(() => null);
+            if (!raw) continue;
+            const parsed = parseSkillMarkdown(raw, path.basename(path.dirname(entry.path)));
+            packageSkills.push({
+                ...parsed,
+                source: entry.metadata.source,
+                package: true,
+                path: entry.path,
+            });
+        }
+
+        return [
+            ...(agent.agentConfig.skills || []),
+            ...packageSkills,
+            ...configuredPackages
+                .filter((pkg) => !packageSkills.some((skill) => skill.source === pkg.source))
+                .map((pkg) => ({
+                    name: pkg.source,
+                    description: pkg.installedPath ? 'Installed package' : 'Configured package',
+                    content: '',
+                    source: pkg.source,
+                    package: true,
+                    installedPath: pkg.installedPath,
+                })),
+        ];
+    }
+
+    async #installSkillPackage(agent, source) {
+        const settingsManager = this.#settingsManager(agent);
+        const packageManager = this.#packageManager(agent, settingsManager);
+        await packageManager.installAndPersist(source);
+        await settingsManager.flush();
+    }
+
+    async #removeSkillPackage(agent, source) {
+        const settingsManager = this.#settingsManager(agent);
+        const packageManager = this.#packageManager(agent, settingsManager);
+        const removed = await packageManager.removeAndPersist(source);
+        await settingsManager.flush();
+        if (!removed) throw new Error(`Skill package not found: ${source}`);
+    }
+
+    #normalizeSkill(skill = {}) {
+        const rawContent = typeof skill.content === 'string' ? skill.content.trim() : '';
+        const frontmatter = this.#parseSkillFrontmatter(rawContent);
+        const name = sanitizeSkillName(skill.name || frontmatter.name);
+        if (!name) throw new Error('Skill name is required');
+
+        const content = frontmatter.content || rawContent;
+        if (!content) throw new Error('Skill content is required');
+
+        const description = typeof skill.description === 'string' && skill.description.trim()
+            ? skill.description.trim()
+            : frontmatter.description;
+        return {
+            name,
+            description: description || `${name} skill`,
+            content,
+            ...(skill.disableModelInvocation || skill['disable-model-invocation'] || frontmatter.disableModelInvocation
+                ? { disableModelInvocation: true }
+                : {}),
+        };
+    }
+
+    #parseSkillFrontmatter(content = '') {
+        const match = content.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
+        if (!match) return {};
+
+        const fields = {};
+        for (const line of match[1].split('\n')) {
+            const separatorIndex = line.indexOf(':');
+            if (separatorIndex === -1) continue;
+            const key = line.slice(0, separatorIndex).trim();
+            fields[key] = line.slice(separatorIndex + 1).trim().replace(/^['"]|['"]$/g, '');
+        }
+
+        return {
+            name: fields.name,
+            description: fields.description,
+            content: match[2].trim(),
+            disableModelInvocation: fields['disable-model-invocation'] === 'true',
+        };
     }
 
     async #persistSessionConfig(owner, agent, sessionConfig) {

@@ -32,7 +32,7 @@ Toolbox layout:
                 - This year
         - Features
           - Material design v2 styled toggle switches for all feature bitmaps
-      - Agents: Opens a list of agents in T1 simillar that we do for Contexts or Workspaces, selecting an agent will start a chat with that agent in T2
+      - Agents: Opens a list of agents in T1 simillar that we do for Contexts or Workspaces, selecting an agent will start a chat with that agent in T2 **we 
       - Toggle toolbox mode or voice mode - button at the bottom of the panel, placeholder for now
   - T1: Extended mode, cca 500px wide panel with controlls - main toolbox area
   - T2: Content mode - Can overlay on top of T1 for things like ad-hoc note taking, replies to messages or chat with agents

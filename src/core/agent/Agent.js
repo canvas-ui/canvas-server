@@ -185,6 +185,7 @@ class Agent extends EventEmitter {
     get rootPath()    { return this.#rootPath; }
     get status()      { return this.#status; }
     get isActive()    { return this.#status === AGENT_STATUS_CODES.ACTIVE; }
+    get isProcessing(){ return Boolean(this.#session?.isStreaming); }
     get session()     { return this.#session; }
     get sessionConfig() { return normalizeSessionConfig(this.agentConfig?.session); }
 
@@ -367,6 +368,7 @@ class Agent extends EventEmitter {
                 ...(Array.isArray(options.images) && options.images.length > 0
                     ? { images: options.images }
                     : {}),
+                ...(options.streamingBehavior ? { streamingBehavior: options.streamingBehavior } : {}),
             });
         } finally {
             unsub();
@@ -388,6 +390,7 @@ class Agent extends EventEmitter {
                 ...(Array.isArray(options.images) && options.images.length > 0
                     ? { images: options.images }
                     : {}),
+                ...(options.streamingBehavior ? { streamingBehavior: options.streamingBehavior } : {}),
             });
         } finally {
             unsub();

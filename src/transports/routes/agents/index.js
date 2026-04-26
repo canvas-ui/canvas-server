@@ -20,6 +20,10 @@ export default async function agentRoutes(fastify, _options) {
             }));
     };
 
+    const normalizeStreamingBehavior = (value) => (
+        value === 'steer' ? 'steer' : 'followUp'
+    );
+
     const requireUser = (request, reply) => {
         if (!validateUser(request.user, ['id', 'email'])) {
             const r = new ResponseObject().unauthorized('Valid authentication required');
@@ -53,15 +57,23 @@ export default async function agentRoutes(fastify, _options) {
                 return reply.code(r.statusCode).send(r.getResponse());
             }
 
-            const { message, images } = request.body;
+            const { message, images, streamingBehavior } = request.body;
             const text = typeof message === 'string' ? message : '';
             const normalizedImages = normalizePromptImages(images);
             if (!text && normalizedImages.length === 0) {
                 const r = new ResponseObject().badRequest('message or images are required');
                 return reply.code(r.statusCode).send(r.getResponse());
             }
-            const messages = await agent.prompt(text, { images: normalizedImages });
-            const r = new ResponseObject().success({ messages }, 'Prompt completed');
+            const streamingBehaviorValue = normalizeStreamingBehavior(streamingBehavior);
+            const wasProcessing = agent.isProcessing;
+            const messages = await agent.prompt(text, {
+                images: normalizedImages,
+                streamingBehavior: streamingBehaviorValue,
+            });
+            const r = new ResponseObject().success({
+                messages,
+                ...(wasProcessing ? { queued: true, streamingBehavior: streamingBehaviorValue } : {}),
+            }, wasProcessing ? 'Prompt queued' : 'Prompt completed');
             return reply.code(r.statusCode).send(r.getResponse());
         } catch (err) {
             fastify.log.error(err);
@@ -96,7 +108,7 @@ export default async function agentRoutes(fastify, _options) {
                 return reply.code(r.statusCode).send(r.getResponse());
             }
 
-            const { message, images } = request.body;
+            const { message, images, streamingBehavior } = request.body;
             const text = typeof message === 'string' ? message : '';
             const normalizedImages = normalizePromptImages(images);
             if (!text && normalizedImages.length === 0) {
@@ -140,7 +152,10 @@ export default async function agentRoutes(fastify, _options) {
             };
 
             try {
-                await agent.stream(text, onEvent, { images: normalizedImages });
+                await agent.stream(text, onEvent, {
+                    images: normalizedImages,
+                    ...(streamingBehavior ? { streamingBehavior: normalizeStreamingBehavior(streamingBehavior) } : {}),
+                });
             } catch (streamErr) {
                 send({ type: 'error', error: streamErr.message });
             }

@@ -404,6 +404,9 @@ class Agents extends EventEmitter {
             path: sessionConfig.mode !== AGENT_SESSION_MODES.INCOGNITO ? sessionConfig.path || null : null,
             experimentalPath: sessionConfig.experimentalPath || null,
         });
+        if (agent.isActive) {
+            await agent.restart();
+        }
 
         return {
             current: agent.getSessionContext(),
@@ -429,6 +432,9 @@ class Agents extends EventEmitter {
             path: sessionConfig.mode !== AGENT_SESSION_MODES.INCOGNITO ? sessionConfig.path || null : null,
             experimentalPath: sessionConfig.experimentalPath || null,
         });
+        if (agent.isActive) {
+            await agent.restart();
+        }
 
         return {
             current: agent.getSessionContext(),

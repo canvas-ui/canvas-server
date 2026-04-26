@@ -71,9 +71,8 @@ export function sanitizeAgentData(value) {
     );
 }
 
-function getAgentSessionDir(cwd, agentDir) {
-    const safePath = `--${cwd.replace(/^[/\\]/, '').replace(/[/\\:]/g, '-')}--`;
-    return path.join(agentDir, 'sessions', safePath);
+function getAgentSessionDir(agentDir) {
+    return path.join(agentDir, 'sessions');
 }
 
 function normalizeSessionMode(mode) {
@@ -191,7 +190,7 @@ class Agent extends EventEmitter {
 
     #homePath()    { return path.join(this.#rootPath, 'home'); }
     #runtimePath() { return path.join(this.#rootPath, 'runtime'); }
-    #sessionDir() { return getAgentSessionDir(this.#homePath(), this.#runtimePath()); }
+    #sessionDir() { return getAgentSessionDir(this.#runtimePath()); }
     async #resolveExperimentalPath(sessionConfig = this.sessionConfig) {
         if (sessionConfig.experimentalPath) {
             return sessionConfig.experimentalPath;

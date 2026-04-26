@@ -1,6 +1,7 @@
 'use strict';
 
 import path from 'path';
+import fs from 'fs/promises';
 import Stored from '../../../services/stored/src/index.js';
 import { INCOMING_ROOT_CONTEXT } from '../../../utils/incoming-documents.js';
 
@@ -14,11 +15,25 @@ import { INCOMING_ROOT_CONTEXT } from '../../../utils/incoming-documents.js';
 
 const HOME_STORED_BACKEND = 'fs:home';
 const HOME_BACKEND_FEATURE = 'data/backend/home';
+const DATA_STORED_BACKEND_PREFIX = 'fs:data';
 const CHECKSUM_PRIORITY = ['sha256', 'sha1', 'md5'];
 
 export class WorkspaceStoredIndex {
     static HOME_STORED_BACKEND = HOME_STORED_BACKEND;
     static HOME_BACKEND_FEATURE = HOME_BACKEND_FEATURE;
+    static DATA_STORED_BACKEND_PREFIX = DATA_STORED_BACKEND_PREFIX;
+
+    static dataBackendName(abstraction) {
+        return `${DATA_STORED_BACKEND_PREFIX}:${abstraction}`;
+    }
+
+    static dataBackendRoot(dataPath, abstraction) {
+        return path.join(dataPath, 'abstraction', abstraction);
+    }
+
+    static dataBackendFeature(abstraction) {
+        return `data/backend/data:${abstraction}`;
+    }
 
     #dataPath;
     #homePath;
@@ -33,6 +48,7 @@ export class WorkspaceStoredIndex {
 
     #stored = null;
     #listeners = [];
+    #dataBackends = new Set();
 
     constructor({ dataPath, homePath, workspaceId, logger, put, unlink, getIncomingTreeSelector, getDb }) {
         if (!dataPath || !homePath) throw new Error('dataPath and homePath are required');
@@ -113,7 +129,35 @@ export class WorkspaceStoredIndex {
             this.#logger.warn({ workspaceId: this.#workspaceId, error: error.message }, 'Failed to stop stored home indexing');
         } finally {
             this.#stored = null;
+            this.#dataBackends.clear();
         }
+    }
+
+    /**
+     * Ensure a per-abstraction data backend is registered and its root directory exists.
+     * Returns the backend name (e.g. 'fs:data:file').
+     * Upstream is responsible for writing files and calling the DB indexing APIs.
+     */
+    async ensureDataBackend(abstraction) {
+        if (!this.#stored) throw new Error('WorkspaceStoredIndex is not running');
+
+        const backendName = WorkspaceStoredIndex.dataBackendName(abstraction);
+        if (this.#dataBackends.has(backendName)) return backendName;
+
+        const root = WorkspaceStoredIndex.dataBackendRoot(this.#dataPath, abstraction);
+        await fs.mkdir(root, { recursive: true });
+
+        this.#stored.addBackend(backendName, {
+            driver: 'file',
+            root,
+            watch: false,
+            provider: 'fs',
+            account: 'workspace',
+            container: abstraction,
+        });
+
+        this.#dataBackends.add(backendName);
+        return backendName;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -305,7 +349,12 @@ export class WorkspaceStoredIndex {
     #buildFeatures(backends = []) {
         const features = [];
         for (const backend of backends) {
-            if (backend.backend === HOME_STORED_BACKEND) features.push(HOME_BACKEND_FEATURE);
+            if (backend.backend === HOME_STORED_BACKEND) {
+                features.push(HOME_BACKEND_FEATURE);
+            } else if (this.#isDataBackend(backend.backend)) {
+                const abstraction = backend.backend.slice(`${DATA_STORED_BACKEND_PREFIX}:`.length);
+                features.push(WorkspaceStoredIndex.dataBackendFeature(abstraction));
+            }
             if (backend?.source?.provider) features.push(`data/source/${backend.source.provider}`);
         }
         return Array.from(new Set(features));
@@ -359,5 +408,9 @@ export class WorkspaceStoredIndex {
                 })
             ).values()
         );
+    }
+
+    #isDataBackend(backendName) {
+        return typeof backendName === 'string' && backendName.startsWith(`${DATA_STORED_BACKEND_PREFIX}:`);
     }
 }

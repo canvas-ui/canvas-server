@@ -409,17 +409,30 @@ class Users extends EventEmitter {
             throw new Error(`User not found: ${userId}`);
         }
 
-        const universeId = this.#workspaceManager.resolveWorkspaceId(user.id, 'universe');
+        let universeId = this.#workspaceManager.resolveWorkspaceId(user.id, 'universe');
+
         if (!universeId) {
-             throw new Error(`Universe workspace not found (ID resolution failed) for user: ${user.email}`);
+            // Auto-repair: universe workspace missing from index — re-register from disk or create fresh
+            console.warn(`Universe workspace missing for user ${user.email} — attempting repair`);
+            const universeWorkspacePath = path.join(path.resolve(user.homePath), 'workspaces', 'universe');
+            try {
+                await this.#workspaceManager.repairUniverseWorkspace(user.id, user.email, universeWorkspacePath);
+                universeId = this.#workspaceManager.resolveWorkspaceId(user.id, 'universe');
+            } catch (e) {
+                console.error(`Failed to repair universe workspace for user ${user.email}: ${e.message}`);
+            }
+        }
+
+        if (!universeId) {
+            console.warn(`Universe workspace unavailable for user ${user.email} — continuing without it`);
+            return false;
         }
 
         const universeWorkspace = await this.#workspaceManager.getWorkspace(universeId, user.id);
 
         if (!universeWorkspace) {
-             // Try to open it if not loaded? getWorkspace loads it.
-             // If null, it means it really doesn't exist or error.
-             throw new Error(`Universe workspace not found/loaded for user: ${user.email}`);
+            console.warn(`Universe workspace could not be loaded for user: ${user.email}`);
+            return false;
         }
 
         if (!universeWorkspace.isActive) {

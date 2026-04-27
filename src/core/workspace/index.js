@@ -552,6 +552,35 @@ class WorkspaceManager extends EventEmitter {
         });
     }
 
+    /**
+     * Re-register a universe workspace from its on-disk config if it exists but is missing from the index.
+     * Creates a fresh one if no on-disk config is found.
+     * Returns the resolved workspace ID, or null on failure.
+     */
+    async repairUniverseWorkspace(userId, userEmail, universeWorkspacePath) {
+        const configPath = path.join(universeWorkspacePath, WORKSPACE_CONFIG_FILENAME);
+
+        if (existsSync(configPath)) {
+            try {
+                const raw = await fsPromises.readFile(configPath, 'utf8');
+                const configData = JSON.parse(raw);
+                if (configData?.id && configData?.owner === userId) {
+                    const indexKey = `${userId}/${configData.id}`;
+                    this.#indexStore.set(indexKey, { ...configData, rootPath: universeWorkspacePath, configPath });
+                    this.#addToIndexes(userId, configData.id, configData.name, configData.host || WORKSPACE_DEFAULT_HOST, configData.reference);
+                    this.#logger.info({ userId, workspaceId: configData.id }, 'Re-registered universe workspace from disk');
+                    return configData.id;
+                }
+            } catch (e) {
+                this.#logger.warn({ err: e, userId }, 'Failed to read existing universe workspace config');
+            }
+        }
+
+        // No valid on-disk config — create fresh
+        const newConfig = await this.createUniverseWorkspace(userId, userEmail, universeWorkspacePath);
+        return newConfig?.id || null;
+    }
+
     async removeWorkspace(workspaceId, userId, destroyData = false) {
         const ws = await this.getWorkspace(workspaceId, userId);
         if (!ws) return false;

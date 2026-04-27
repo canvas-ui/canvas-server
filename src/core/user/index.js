@@ -496,10 +496,14 @@ class Users extends EventEmitter {
         // Start the universe workspace
         const universeId = this.#workspaceManager.resolveWorkspaceId(user.id, 'universe');
         if (universeId) {
-             const workspace = await this.#workspaceManager.startWorkspace(universeId, user.id);
-             if (!workspace) {
-                 throw new Error(`Failed to start universe workspace for user ${user.name} (${user.email})`);
-             }
+            try {
+                const workspace = await this.#workspaceManager.startWorkspace(universeId, user.id);
+                if (!workspace) {
+                    throw new Error(`Failed to start universe workspace for user ${user.name} (${user.email})`);
+                }
+            } catch (e) {
+                console.warn(`Could not start universe workspace for user ${user.name} (${user.email}): ${e.message}`);
+            }
         } else {
              console.warn(`Universe workspace ID not found for user ${user.name} (${user.email}) during initialization.`);
         }

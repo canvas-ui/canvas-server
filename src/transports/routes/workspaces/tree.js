@@ -334,6 +334,33 @@ export default async function workspaceTreeRoutes(fastify) {
     }
   });
 
+  fastify.post('/layers/:layerId/convert', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      body: {
+        type: 'object',
+        required: ['targetType'],
+        properties: {
+          targetType: { type: 'string', enum: ['context', 'canvas'] },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    try {
+      const resolved = await getTreeInstance(request, reply, 'context');
+      if (!resolved) return;
+      const result = await resolved.tree.convertLayer(request.params.layerId, request.body.targetType);
+      const responseObject = result.error
+        ? new ResponseObject().badRequest(result.error)
+        : new ResponseObject().success(result.data, 'Layer converted successfully');
+      return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+    } catch (error) {
+      fastify.log.error(`Convert layer error for workspace ${request.params.id}: ${error.message}`);
+      const responseObject = new ResponseObject().serverError(error.message || 'Failed to convert layer');
+      return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+    }
+  });
+
   fastify.delete('/layers/:layerId', {
     onRequest: [fastify.authenticate],
   }, async (request, reply) => {

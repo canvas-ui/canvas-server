@@ -560,6 +560,19 @@ class Workspace extends EventEmitter {
         return out;
     }
 
+    async deleteBitmap(key) {
+        if (!key || typeof key !== 'string') throw new Error('Bitmap key is required');
+        const normalized = key.replace(/^\/+|\/+$/g, '');
+        if (normalized.startsWith('data/') || normalized === 'data') {
+            throw new Error(`Refusing to delete bitmap "${key}": data/* bitmaps are protected (managed by document lifecycle).`);
+        }
+        const db = this.#getActiveDb();
+        const existing = await db.bitmapIndex.getBitmap(normalized, false);
+        if (!existing) return false;
+        await db.bitmapIndex.deleteBitmap(normalized);
+        return true;
+    }
+
     async getBitmapRawBuffer(key) {
         if (!key || typeof key !== 'string') throw new Error('Bitmap key is required');
 

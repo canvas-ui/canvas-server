@@ -153,4 +153,51 @@ export default async function workspaceBitmapRoutes(fastify, options) {
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
     }
   });
+
+  // DELETE /workspaces/:id/bitmaps/*
+  // Removes a bitmap by exact key. Refuses data/* keys (managed by document lifecycle).
+  fastify.delete('/*', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      params: {
+        type: 'object',
+        required: ['id', '*'],
+        properties: {
+          id: { type: 'string' },
+          '*': { type: 'string' }
+        }
+      }
+    }
+  }, async (request, reply) => {
+    try {
+      const workspace = await getWorkspaceInstance(request, reply);
+      if (!workspace) return;
+
+      const bitmapKey = request.params['*'];
+      if (!bitmapKey) {
+        const responseObject = new ResponseObject().badRequest('Bitmap key is required');
+        return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+      }
+
+      try {
+        const removed = await workspace.deleteBitmap(bitmapKey);
+        if (!removed) {
+          const responseObject = new ResponseObject().notFound(`Bitmap "${bitmapKey}" not found`);
+          return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+        }
+        const responseObject = new ResponseObject().deleted({ key: bitmapKey }, 'Bitmap deleted successfully');
+        return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+      } catch (err) {
+        if (/protected/i.test(err.message)) {
+          const responseObject = new ResponseObject().forbidden(err.message);
+          return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+        }
+        throw err;
+      }
+    } catch (error) {
+      fastify.log.error(error);
+      const responseObject = new ResponseObject().serverError('Failed to delete bitmap');
+      return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+    }
+  });
 }

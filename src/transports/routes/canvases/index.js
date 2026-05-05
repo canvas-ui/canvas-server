@@ -80,40 +80,6 @@ export default async function topLevelCanvasRoutes(fastify) {
         return null;
     }
 
-    function composeFeatures(callerFeatures, canvasFeatures) {
-        if (canvasFeatures === null || canvasFeatures === undefined) { return callerFeatures; }
-        if (callerFeatures === null || callerFeatures === undefined) { return canvasFeatures; }
-        const toBuckets = (f) => {
-            if (Array.isArray(f)) { return { anyOf: [...f] }; }
-            if (f && typeof f === 'object') {
-                const out = {};
-                if (Array.isArray(f.allOf))  { out.allOf  = [...f.allOf]; }
-                if (Array.isArray(f.anyOf))  { out.anyOf  = [...f.anyOf]; }
-                if (Array.isArray(f.noneOf)) { out.noneOf = [...f.noneOf]; }
-                return out;
-            }
-            return {};
-        };
-        const a = toBuckets(callerFeatures);
-        const b = toBuckets(canvasFeatures);
-        const merged = {};
-        for (const key of ['allOf', 'anyOf', 'noneOf']) {
-            const left = a[key] || [];
-            const right = b[key] || [];
-            if (left.length || right.length) {
-                merged[key] = [...new Set([...left, ...right])];
-            }
-        }
-        return Object.keys(merged).length === 0 ? null : merged;
-    }
-
-    function composeFilters(callerFilters, canvasFilters) {
-        const a = Array.isArray(callerFilters) ? callerFilters : [];
-        const b = Array.isArray(canvasFilters) ? canvasFilters : [];
-        if (!a.length && !b.length) { return callerFilters; }
-        return [...new Set([...a, ...b])];
-    }
-
     fastify.get('/:canvasIdOrName', {
         onRequest: [fastify.authenticate],
     }, async (request, reply) => {
@@ -138,72 +104,7 @@ export default async function topLevelCanvasRoutes(fastify) {
         }
     });
 
-    fastify.get('/:canvasIdOrName/documents', {
-        onRequest: [fastify.authenticate],
-        schema: {
-            querystring: {
-                type: 'object',
-                properties: {
-                    workspace: { type: 'string' },
-                    allOf: { type: 'array', items: { type: 'string' }, default: [] },
-                    anyOf: { type: 'array', items: { type: 'string' }, default: [] },
-                    noneOf: { type: 'array', items: { type: 'string' }, default: [] },
-                    filters: { type: 'array', items: { type: 'string' } },
-                    limit: { type: 'integer', default: 200 },
-                    offset: { type: 'integer' },
-                    page: { type: 'integer' },
-                    q: { type: 'string' },
-                    search: { type: 'string' },
-                },
-            },
-        },
-    }, async (request, reply) => {
-        try {
-            const resolved = await resolveCanvas(request, reply);
-            if (!resolved) { return; }
-            const { workspace, tree, canvas } = resolved;
-
-            const path = tree.getPathByLayerId(canvas.id);
-            if (!path) {
-                const r = new ResponseObject().notFound('Canvas is not attached to any tree path');
-                return reply.code(r.statusCode).send(r.getResponse());
-            }
-
-            const { allOf = [], anyOf = [], noneOf = [], filters = [] } = request.query;
-            const callerFeatures = (allOf.length || anyOf.length || noneOf.length)
-                ? {
-                    ...(allOf.length  ? { allOf }  : {}),
-                    ...(anyOf.length  ? { anyOf }  : {}),
-                    ...(noneOf.length ? { noneOf } : {}),
-                }
-                : null;
-
-            const features = composeFeatures(callerFeatures, canvas.querySpec?.features ?? null);
-            const composedFilters = composeFilters(filters, canvas.querySpec?.filters ?? []);
-
-            const queryStr = request.query.q || request.query.search;
-            const spec = {
-                context: { tree: tree.id, path },
-                features,
-                filters: composedFilters,
-                limit: request.query.limit,
-                offset: request.query.offset,
-                page: request.query.page,
-            };
-            const result = queryStr
-                ? await workspace.search({ query: queryStr, ...spec })
-                : await workspace.list(spec);
-
-            if (result?.error) {
-                const r = new ResponseObject().error(`Failed to ${queryStr ? 'search' : 'list'} canvas documents`, result.error);
-                return reply.code(r.statusCode).send(r.getResponse());
-            }
-            const r = new ResponseObject().success(result, 'Canvas documents retrieved successfully', 200, result?.count, result?.totalCount);
-            return reply.code(r.statusCode).send(r.getResponse());
-        } catch (error) {
-            fastify.log.error(error);
-            const r = new ResponseObject().serverError(error.message || 'Failed to list canvas documents');
-            return reply.code(r.statusCode).send(r.getResponse());
-        }
-    });
+    // Canvas-aware document listing handled by `GET /workspaces/:id/documents?context=<canvas-path>`.
+    // Workspace.list/search composes the canvas's querySpec automatically, so a dedicated
+    // /canvases/:id/documents alias is redundant.
 }

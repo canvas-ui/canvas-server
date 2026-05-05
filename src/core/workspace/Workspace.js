@@ -467,11 +467,102 @@ class Workspace extends EventEmitter {
     }
 
     async list(spec = {}) {
-        return await this.#getActiveDb().list(this.#normalizeQuerySpec(spec));
+        return await this.#getActiveDb().list(this.#normalizeQuerySpec(this.#composeCanvasQuerySpec(spec)));
     }
 
     async search(spec = {}) {
-        return await this.#getActiveDb().search(this.#normalizeQuerySpec(spec));
+        return await this.#getActiveDb().search(this.#normalizeQuerySpec(this.#composeCanvasQuerySpec(spec)));
+    }
+
+    /**
+     * If the read targets a path whose leaf is a canvas layer, AND-compose the
+     * canvas's stored querySpec (features + filters) into the spec before
+     * delegating to the DB. Lets `GET /workspaces/:id/documents?context=/foo/bar/baz`
+     * apply baz's querySpec when baz is a canvas — no separate /canvases/:id/documents
+     * endpoint needed.
+     *
+     * Walks every path in spec.context (string, array, or {path}) and folds in
+     * canvas specs found at any leaf. Multi-path context calls compose all canvases.
+     */
+    #composeCanvasQuerySpec(spec) {
+        if (!spec || typeof spec !== 'object' || !spec.context) { return spec; }
+
+        let treeRef = null;
+        let paths = [];
+        const ctx = spec.context;
+        if (typeof ctx === 'string') {
+            paths = [ctx];
+        } else if (Array.isArray(ctx)) {
+            paths = ctx.filter((p) => typeof p === 'string');
+        } else if (typeof ctx === 'object') {
+            treeRef = ctx.tree ?? ctx.treeId ?? null;
+            const p = ctx.path ?? ctx.context;
+            paths = Array.isArray(p) ? p.filter((s) => typeof s === 'string') : (typeof p === 'string' ? [p] : []);
+        }
+        if (paths.length === 0) { return spec; }
+
+        let tree;
+        try {
+            tree = treeRef ? this.getTree(treeRef) : this.getDefaultContextTree();
+        } catch (_) {
+            return spec;
+        }
+        if (!tree || typeof tree.getLayerForPath !== 'function') { return spec; }
+
+        let features = spec.features ?? spec.attributes ?? null;
+        let filters = Array.isArray(spec.filters) ? [...spec.filters] : (spec.filters ? [spec.filters] : []);
+        let touched = false;
+
+        for (const path of paths) {
+            let leaf = null;
+            try { leaf = tree.getLayerForPath(path); } catch (_) { /* ignore */ }
+            if (leaf?.type !== 'canvas' || !leaf.querySpec) { continue; }
+            features = Workspace.#composeCanvasFeatures(features, leaf.querySpec.features);
+            filters = Workspace.#composeCanvasFilters(filters, leaf.querySpec.filters);
+            touched = true;
+        }
+
+        if (!touched) { return spec; }
+
+        return {
+            ...spec,
+            ...(features !== undefined ? { features } : {}),
+            filters,
+        };
+    }
+
+    static #composeCanvasFeatures(callerFeatures, canvasFeatures) {
+        if (canvasFeatures === null || canvasFeatures === undefined) { return callerFeatures; }
+        if (callerFeatures === null || callerFeatures === undefined) { return canvasFeatures; }
+        const toBuckets = (f) => {
+            if (Array.isArray(f)) { return { anyOf: [...f] }; }
+            if (f && typeof f === 'object') {
+                const out = {};
+                if (Array.isArray(f.allOf))  { out.allOf  = [...f.allOf]; }
+                if (Array.isArray(f.anyOf))  { out.anyOf  = [...f.anyOf]; }
+                if (Array.isArray(f.noneOf)) { out.noneOf = [...f.noneOf]; }
+                return out;
+            }
+            return {};
+        };
+        const a = toBuckets(callerFeatures);
+        const b = toBuckets(canvasFeatures);
+        const merged = {};
+        for (const key of ['allOf', 'anyOf', 'noneOf']) {
+            const left = a[key] || [];
+            const right = b[key] || [];
+            if (left.length || right.length) {
+                merged[key] = [...new Set([...left, ...right])];
+            }
+        }
+        return Object.keys(merged).length === 0 ? null : merged;
+    }
+
+    static #composeCanvasFilters(callerFilters, canvasFilters) {
+        const a = Array.isArray(callerFilters) ? callerFilters : [];
+        const b = Array.isArray(canvasFilters) ? canvasFilters : [];
+        if (!a.length && !b.length) { return callerFilters || []; }
+        return [...new Set([...a, ...b])];
     }
 
     getTree(nameOrId) {

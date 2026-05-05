@@ -2,6 +2,18 @@
 
 ## WebUI .2
 
+### Workspaces
+
+- Workspace dirs should contain /cache
+  - Cache should be the default cacache dir for remote resources for stored
+  - StoreD should always be configured with a default file backend in /data and a cache backend in /cache, local files would not be cached but it may make sense to cache uploads in /cache first and treat is as "incoming"
+- We need to re-intorduce both workspace services
+  - Webdav (already present in the webui)
+  - Git dotfile access (currently missing)
+  - We should provide the user commands for windows(if possible, webdav is tricky these days), mac-os and linux how to mount those folders
+  - We should also provide rclone commands directly for each workspace, logging on and creating a workspace should have a "Mount locally" button that would either navigate the user how to do that or do it for him (probably a is the MVP option here)
+ 
+
 ### Toolbox and Canvas(es)
 
 - Toolbox is one of the main elements the user will interact with

@@ -149,6 +149,21 @@ class ContextManager extends EventEmitter {
                 await workspace.start();
             }
 
+            // Resolve treeId from treeType when no explicit treeId was provided.
+            // 'context' → workspace's default context tree (named "context", type=context)
+            // 'directory' → workspace's default directory tree (named "directory", type=directory)
+            let resolvedTreeId = options.treeId || null;
+            if (!resolvedTreeId && options.treeType) {
+                try {
+                    const tree = options.treeType === 'directory'
+                        ? workspace.getDefaultDirectoryTree()
+                        : workspace.getDefaultContextTree();
+                    resolvedTreeId = tree?.id || null;
+                } catch (e) {
+                    logger.debug(`Failed to resolve ${options.treeType} tree: ${e.message}`);
+                }
+            }
+
             const contextOptions = {
                 ...options,
                 id: contextId.toString(),
@@ -157,6 +172,7 @@ class ContextManager extends EventEmitter {
                 workspaceId: workspace.id,
                 workspaceManager: this.#workspaceManager,
                 contextManager: this,
+                treeId: resolvedTreeId,
             };
 
             const context = new Context(parsed.url, contextOptions);

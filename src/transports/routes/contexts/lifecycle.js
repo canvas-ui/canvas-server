@@ -53,6 +53,8 @@ export default async function lifecycleRoutes(fastify, options) {
           baseUrl: { type: 'string' },
           description: { type: 'string' },
           workspaceId: { type: 'string' },
+          treeType: { type: 'string', enum: ['context', 'directory'] },
+          treeId: { type: 'string' },
           metadata: { type: 'object' }
         }
       }
@@ -70,7 +72,9 @@ export default async function lifecycleRoutes(fastify, options) {
           workspaceId: request.body.workspaceId,
           description: request.body.description || '',
           metadata: request.body.metadata,
-          baseUrl: request.body.baseUrl
+          baseUrl: request.body.baseUrl,
+          treeType: request.body.treeType,
+          treeId: request.body.treeId,
         }
       );
 

@@ -99,7 +99,15 @@ class Context extends EventEmitter {
         this.#workspace = options.workspace;
         this.#workspaceManager = options.workspaceManager;
         this.#treeId = options.treeId || this.#workspace.getDefaultContextTree()?.id || null;
-        this.#tree = this.#workspace.getContextTree(this.#treeId);
+        // Pick resolver by tree type — context trees use getContextTree (validates type),
+        // directory trees must use getDirectoryTree, otherwise type-check throws.
+        const rawTree = this.#workspace.getTree(this.#treeId);
+        if (!rawTree) {
+            throw new Error(`Tree not found: ${this.#treeId}`);
+        }
+        this.#tree = rawTree.type === 'directory'
+            ? this.#workspace.getDirectoryTree(this.#treeId)
+            : this.#workspace.getContextTree(this.#treeId);
         this.#color = this.#workspace.color;
 
         // Context manager references
@@ -887,7 +895,11 @@ class Context extends EventEmitter {
             const newWorkspaceInstance = await this.#workspaceManager.getWorkspace(this.#userId, workspaceName, this.#userId);
             this.#workspace = newWorkspaceInstance;
             try {
-                this.#tree = this.#workspace.getContextTree(this.#treeId);
+                const raw = this.#workspace.getTree(this.#treeId);
+                if (!raw) throw new Error('tree missing');
+                this.#tree = raw.type === 'directory'
+                    ? this.#workspace.getDirectoryTree(this.#treeId)
+                    : this.#workspace.getContextTree(this.#treeId);
             } catch {
                 this.#tree = this.#workspace.getDefaultContextTree();
                 this.#treeId = this.#tree?.id || null;

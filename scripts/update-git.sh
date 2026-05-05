@@ -133,9 +133,30 @@ run_as_canvas_user "/usr/bin/git reset --hard origin/$TARGET_BRANCH"
 log_message "Updating submodules..."
 run_as_canvas_user "/usr/bin/git submodule update --init --remote"
 
-# Install dependencies
+# Wipe stale web UI build artifacts so vite can re-emit cleanly
+WEB_DIST="$CANVAS_ROOT/src/ui/web/dist"
+log_message "Removing stale web dist at $WEB_DIST..."
+rm -rf "$WEB_DIST"
+
+# Install dependencies (postinstall triggers web build via vite)
 log_message "Installing dependencies..."
-run_as_canvas_user "/usr/bin/npm install"
+if ! run_as_canvas_user "/usr/bin/npm install"; then
+    log_message "Error: npm install failed."
+    exit 1
+fi
+
+# Force explicit web rebuild and fail loud if it breaks
+log_message "Rebuilding web UI..."
+if ! run_as_canvas_user "/usr/bin/npm run build"; then
+    log_message "Error: web UI build failed."
+    exit 1
+fi
+
+# Sanity check: dist must exist with index.html
+if [ ! -f "$WEB_DIST/index.html" ]; then
+    log_message "Error: web build produced no $WEB_DIST/index.html."
+    exit 1
+fi
 
 # Start the application
 log_message "Starting canvas-server..."

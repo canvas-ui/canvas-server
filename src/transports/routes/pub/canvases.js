@@ -22,6 +22,29 @@ function buildAttributes(query) {
   return Object.keys(attrs).length ? attrs : undefined;
 }
 
+function mergeAttributes(...sources) {
+  const merged = {};
+  for (const source of sources) {
+    if (!source) continue;
+    for (const key of ['allOf', 'anyOf', 'noneOf']) {
+      const values = Array.isArray(source[key]) ? source[key].filter(Boolean) : [];
+      if (values.length) merged[key] = [...new Set([...(merged[key] || []), ...values])];
+    }
+  }
+  return Object.keys(merged).length ? merged : undefined;
+}
+
+function normalizeQuerySpecFeatures(features) {
+  if (!features) return undefined;
+  if (Array.isArray(features)) return { anyOf: features.filter(Boolean) };
+  if (typeof features === 'object') return mergeAttributes(features);
+  return undefined;
+}
+
+function normalizeStringArray(value) {
+  return Array.isArray(value) ? value.filter(Boolean) : (value ? [value] : []);
+}
+
 function serializeLayer(layer, tree, share) {
   return {
     ...(typeof layer.toJSON === 'function' ? layer.toJSON() : layer),
@@ -68,8 +91,14 @@ async function buildPublicCanvasPayload(fastify, code, query = {}) {
     : workspace.getContextTreeSelector(share.path, tree.name);
   const listSpec = {
     context,
-    attributes: buildAttributes(query),
-    filters: Array.isArray(query.filters) ? query.filters : (query.filters ? [query.filters] : []),
+    attributes: mergeAttributes(
+      normalizeQuerySpecFeatures(layer.querySpec?.features),
+      buildAttributes(query)
+    ),
+    filters: [
+      ...normalizeStringArray(layer.querySpec?.filters),
+      ...normalizeStringArray(query.filters),
+    ],
     limit: clampLimit(query.limit),
     offset: query.offset,
     page: query.page,

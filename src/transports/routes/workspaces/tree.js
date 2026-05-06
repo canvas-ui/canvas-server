@@ -7,7 +7,7 @@ export default async function workspaceTreeRoutes(fastify) {
     const identifier = request.params.id;
     const userId = request.user.id;
     const isWorkspaceId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(identifier);
-    const workspaceId = isWorkspaceId ? identifier : fastify.workspaceManager.resolveWorkspaceId(userId, identifier);
+    const workspaceId = isWorkspaceId ? identifier : await fastify.workspaceManager.resolveWorkspaceId(userId, identifier);
     if (!workspaceId) {
       const responseObject = new ResponseObject().notFound(`Workspace with ID ${identifier} not found`);
       reply.code(responseObject.statusCode).send(responseObject.getResponse());
@@ -41,6 +41,49 @@ export default async function workspaceTreeRoutes(fastify) {
     }
   }
 
+  function pathFromSplat(request) {
+    const splat = request.params['*'] || '';
+    return `/${splat}`.replace(/\/+/g, '/');
+  }
+
+  function pathNodeView(tree, path) {
+    const layer = typeof tree.getLayerForPath === 'function'
+      ? tree.getLayerForPath(path)
+      : null;
+    if (layer) {
+      return {
+        ...(typeof layer.toJSON === 'function' ? layer.toJSON() : layer),
+        treeId: tree.id,
+        treeName: tree.name,
+        path,
+      };
+    }
+    if (typeof tree.getNodeIdsForPath === 'function') {
+      const nodeIds = tree.getNodeIdsForPath(path);
+      if (nodeIds.length > 0) {
+        return {
+          id: nodeIds[nodeIds.length - 1],
+          type: tree.type,
+          treeId: tree.id,
+          treeName: tree.name,
+          path,
+        };
+      }
+    }
+    return null;
+  }
+
+  async function insertTreePath(tree, path, body = {}) {
+    if (tree.type === 'context') {
+      return await tree.insertPath(path, {
+        leafType: body.type || 'context',
+        querySpec: body.querySpec,
+        metadata: body.metadata,
+      }, body.autoCreateLayers ?? true);
+    }
+    return await tree.insertPath(path);
+  }
+
   fastify.get('/', {
     onRequest: [fastify.authenticate],
   }, async (request, reply) => {
@@ -56,77 +99,119 @@ export default async function workspaceTreeRoutes(fastify) {
     }
   });
 
-  fastify.post('/paths', {
+  fastify.get('/path/*', {
     onRequest: [fastify.authenticate],
-    schema: {
-      body: {
-        type: 'object',
-        required: ['path'],
-        properties: {
-          path: { type: 'string' },
-          autoCreateLayers: { type: 'boolean' },
-          data: { anyOf: [{ type: 'object' }, { type: 'null' }], default: null },
-        },
-      },
-    },
   }, async (request, reply) => {
     try {
       const resolved = await getTreeInstance(request, reply);
       if (!resolved) return;
-      const result = await resolved.tree.insertPath(
-        request.body.path,
-        request.body.data,
-        request.body.autoCreateLayers === undefined ? true : request.body.autoCreateLayers,
-      );
-      const responseObject = new ResponseObject().created(result, 'Path inserted successfully');
-      return reply.code(responseObject.statusCode).send(responseObject.getResponse());
-    } catch (error) {
-      fastify.log.error(`Insert workspace path error for ID ${request.params.id}: ${error.message}`);
-      const responseObject = new ResponseObject().serverError(error.message || 'Failed to insert path');
-      return reply.code(responseObject.statusCode).send(responseObject.getResponse());
-    }
-  });
-
-  fastify.post('/paths/move', {
-    onRequest: [fastify.authenticate],
-    schema: {
-      body: {
-        type: 'object',
-        required: ['from', 'to'],
-        properties: {
-          from: { type: 'string' },
-          to: { type: 'string' },
-          recursive: { type: 'boolean', default: false },
-        },
-      },
-    },
-  }, async (request, reply) => {
-    try {
-      const resolved = await getTreeInstance(request, reply);
-      if (!resolved) return;
-      const result = await resolved.tree.movePath(request.body.from, request.body.to, request.body.recursive);
-      if (result?.error) {
-        fastify.log.error(`Move workspace path error for ID ${request.params.id}: ${result.error}`);
-        const responseObject = new ResponseObject().serverError(result.error);
+      const path = pathFromSplat(request);
+      const node = pathNodeView(resolved.tree, path);
+      if (!node) {
+        const responseObject = new ResponseObject().notFound(`Path not found: ${path}`);
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());
       }
-      const responseObject = new ResponseObject().success(result, 'Path moved successfully');
+      const responseObject = new ResponseObject().found(node, 'Tree path retrieved successfully');
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
     } catch (error) {
-      fastify.log.error(`Move workspace path error for ID ${request.params.id}: ${error.message}`);
-      const responseObject = new ResponseObject().serverError(error.message || 'Failed to move path');
+      fastify.log.error(`Get workspace path error for ID ${request.params.id}: ${error.message}`);
+      const responseObject = new ResponseObject().serverError(error.message || 'Failed to get path');
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
     }
   });
 
-  fastify.post('/paths/copy', {
+  fastify.put('/path/*', {
     onRequest: [fastify.authenticate],
     schema: {
       body: {
         type: 'object',
-        required: ['from', 'to'],
         properties: {
-          from: { type: 'string' },
+          type: { type: 'string' },
+          autoCreateLayers: { type: 'boolean' },
+          querySpec: { type: 'object' },
+          metadata: { type: 'object' },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    try {
+      const resolved = await getTreeInstance(request, reply);
+      if (!resolved) return;
+      const path = pathFromSplat(request);
+      const result = await insertTreePath(resolved.tree, path, request.body || {});
+      if (result?.error) {
+        const responseObject = new ResponseObject().badRequest(result.error);
+        return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+      }
+      const responseObject = new ResponseObject().created(pathNodeView(resolved.tree, path) || result, 'Tree path saved successfully');
+      return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+    } catch (error) {
+      fastify.log.error(`Save workspace path error for ID ${request.params.id}: ${error.message}`);
+      const responseObject = new ResponseObject().serverError(error.message || 'Failed to save path');
+      return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+    }
+  });
+
+  fastify.patch('/path/*', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      body: {
+        type: 'object',
+        properties: {
+          to: { type: 'string' },
+          name: { type: 'string' },
+          recursive: { type: 'boolean', default: false },
+          label: { type: 'string' },
+          description: { type: 'string' },
+          color: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+          querySpec: { type: 'object' },
+          metadata: { type: 'object' },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    try {
+      const resolved = await getTreeInstance(request, reply);
+      if (!resolved) return;
+      const path = pathFromSplat(request);
+      const body = request.body || {};
+
+      if (body.to || body.name) {
+        const targetPath = body.to || `${path.split('/').slice(0, -1).join('/') || '/'}/${body.name}`;
+        const result = await resolved.tree.movePath(path, targetPath, body.recursive);
+        const responseObject = result?.error
+          ? new ResponseObject().badRequest(result.error)
+          : new ResponseObject().success(result, 'Tree path moved successfully');
+        return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+      }
+
+      const node = pathNodeView(resolved.tree, path);
+      if (!node?.id || typeof resolved.tree.updateLayer !== 'function') {
+        const responseObject = new ResponseObject().badRequest(`Path cannot be updated: ${path}`);
+        return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+      }
+      const updated = await resolved.tree.updateLayer(node.id, body);
+      const responseObject = new ResponseObject().success({
+        ...(typeof updated.toJSON === 'function' ? updated.toJSON() : updated),
+        treeId: resolved.tree.id,
+        treeName: resolved.tree.name,
+        path,
+      }, 'Tree path updated successfully');
+      return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+    } catch (error) {
+      fastify.log.error(`Update workspace path error for ID ${request.params.id}: ${error.message}`);
+      const responseObject = new ResponseObject().serverError(error.message || 'Failed to update path');
+      return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+    }
+  });
+
+  fastify.post('/path/*', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      body: {
+        type: 'object',
+        required: ['to'],
+        properties: {
           to: { type: 'string' },
           recursive: { type: 'boolean', default: false },
         },
@@ -136,8 +221,8 @@ export default async function workspaceTreeRoutes(fastify) {
     try {
       const resolved = await getTreeInstance(request, reply);
       if (!resolved) return;
-      const result = await resolved.tree.copyPath(request.body.from, request.body.to, request.body.recursive);
-      const responseObject = new ResponseObject().success(result, 'Path copied successfully');
+      const result = await resolved.tree.copyPath(pathFromSplat(request), request.body.to, request.body.recursive);
+      const responseObject = new ResponseObject().success(result, 'Tree path copied successfully');
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
     } catch (error) {
       fastify.log.error(`Copy workspace path error for ID ${request.params.id}: ${error.message}`);
@@ -146,14 +231,12 @@ export default async function workspaceTreeRoutes(fastify) {
     }
   });
 
-  fastify.delete('/paths', {
+  fastify.delete('/path/*', {
     onRequest: [fastify.authenticate],
     schema: {
       querystring: {
         type: 'object',
-        required: ['path'],
         properties: {
-          path: { type: 'string' },
           recursive: { type: 'boolean', default: false },
         },
       },
@@ -162,8 +245,11 @@ export default async function workspaceTreeRoutes(fastify) {
     try {
       const resolved = await getTreeInstance(request, reply);
       if (!resolved) return;
-      const result = await resolved.tree.removePath(request.query.path, request.query.recursive);
-      const responseObject = new ResponseObject().success(result, 'Path removed successfully');
+      const path = pathFromSplat(request);
+      const result = await resolved.tree.removePath(path, request.query.recursive);
+      const responseObject = result?.error
+        ? new ResponseObject().badRequest(result.error)
+        : new ResponseObject().success(result, 'Tree path removed successfully');
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
     } catch (error) {
       fastify.log.error(`Remove workspace path error for ID ${request.params.id}: ${error.message}`);

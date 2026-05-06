@@ -3,11 +3,12 @@
 import ResponseObject from '../../ResponseObject.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const MAX_PUBLIC_PAGE_SIZE = 100;
+const DEFAULT_PUBLIC_CANVAS_LIMIT = 5000;
+const MAX_PUBLIC_PAGE_SIZE = 5000;
 
 function clampLimit(limit) {
   const parsed = Number.parseInt(limit, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) return 50;
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_PUBLIC_CANVAS_LIMIT;
   return Math.min(parsed, MAX_PUBLIC_PAGE_SIZE);
 }
 
@@ -215,7 +216,7 @@ export default async function pubCanvasRoutes(fastify) {
       querystring: {
         type: 'object',
         properties: {
-          limit: { type: 'integer', default: 50 },
+          limit: { type: 'integer', default: DEFAULT_PUBLIC_CANVAS_LIMIT },
           offset: { type: 'integer' },
           page: { type: 'integer' },
           allOf: { type: 'array', items: { type: 'string' }, default: [] },

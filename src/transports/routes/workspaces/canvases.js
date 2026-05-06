@@ -52,7 +52,7 @@ export default async function workspaceCanvasRoutes(fastify) {
             try { layer = tree.getLayerById(idOrName); } catch (_) { layer = null; }
         }
         if (!layer) {
-            try { layer = tree.getLayer(idOrName); } catch (_) { layer = null; }
+            try { layer = tree.getLayer(idOrName, { type: 'canvas' }); } catch (_) { layer = null; }
         }
         if (!layer || layer.type !== 'canvas') { return null; }
         return layer;

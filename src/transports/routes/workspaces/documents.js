@@ -6,6 +6,7 @@ import { mergeDeviceFeatureTags } from '../../../utils/device-features.js';
 import {
   DIRECTORY_TREE_NAME,
   INCOMING_ROOT_CONTEXT,
+  isIncomingContextSpec,
   shouldExcludeIncoming,
 } from '../../../utils/incoming-documents.js';
 
@@ -21,7 +22,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
 
   function resolveContextSelector(workspace, source = {}, fallbackPath = '/') {
     const path = source?.context ?? fallbackPath;
-    if (!path || path === '/') { return null; }
+    if (!path) { return null; }
     const treeNameOrId = source?.treeNameOrTreeId ?? null;
     const treeType = source?.treeType ?? null;
 
@@ -239,7 +240,9 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       const enforcedFeatures = enforceClientTags(request, features);
 
       const treeSpec = {
-        context: insertTreeType === 'directory' ? null : insertSelector,
+        context: insertTreeType === 'directory'
+          ? (isIncomingContextSpec(insertSelector?.path) ? null : workspace.getContextTreeSelector('/'))
+          : insertSelector,
         directory: insertTreeType === 'directory' ? insertSelector : null,
         features: enforcedFeatures,
       };

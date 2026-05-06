@@ -46,6 +46,20 @@ export default async function workspaceTreeRoutes(fastify) {
     return `/${splat}`.replace(/\/+/g, '/');
   }
 
+  function normalizeTreePath(path) {
+    return `/${String(path || '').replace(/^\/+/, '')}`.replace(/\/+/g, '/').replace(/\/$/, '') || '/';
+  }
+
+  function parentPathOf(path) {
+    const normalized = normalizeTreePath(path);
+    if (normalized === '/') { return null; }
+    return normalized.split('/').slice(0, -1).join('/') || '/';
+  }
+
+  function leafNameOf(path) {
+    return normalizeTreePath(path).split('/').filter(Boolean).pop() || null;
+  }
+
   function pathNodeView(tree, path) {
     const layer = typeof tree.getLayerForPath === 'function'
       ? tree.getLayerForPath(path)
@@ -82,6 +96,50 @@ export default async function workspaceTreeRoutes(fastify) {
       }, body.autoCreateLayers ?? true);
     }
     return await tree.insertPath(path);
+  }
+
+  async function moveTreePath(tree, fromPath, targetPath, recursive = false) {
+    if (tree.type !== 'context') {
+      return await tree.movePath(fromPath, targetPath, recursive);
+    }
+
+    const source = pathNodeView(tree, fromPath);
+    if (!source?.id) {
+      return { data: null, count: 0, error: `Path not found: ${fromPath}` };
+    }
+
+    const existingTarget = pathNodeView(tree, targetPath);
+    if (existingTarget && existingTarget.id !== source.id) {
+      // Existing target means "move under this parent" for drag/drop callers.
+      return await tree.movePath(fromPath, targetPath, recursive);
+    }
+
+    const targetName = leafNameOf(targetPath);
+    const targetParentPath = parentPathOf(targetPath);
+    if (!targetName || !targetParentPath) {
+      return { data: null, count: 0, error: `Invalid target path: ${targetPath}` };
+    }
+
+    const sourceParentPath = parentPathOf(fromPath);
+    if (targetParentPath !== sourceParentPath) {
+      const moved = await tree.movePath(fromPath, targetParentPath, recursive);
+      if (moved?.error) { return moved; }
+    }
+
+    if (targetName !== source.name) {
+      const renamed = await tree.renameLayer(source.id, targetName);
+      return {
+        data: { pathFrom: fromPath, pathTo: targetPath, layerId: renamed.id, layerName: renamed.name },
+        count: 1,
+        error: null,
+      };
+    }
+
+    return {
+      data: { pathFrom: fromPath, pathTo: targetPath, layerId: source.id, layerName: source.name },
+      count: 1,
+      error: null,
+    };
   }
 
   fastify.get('/', {
@@ -178,7 +236,7 @@ export default async function workspaceTreeRoutes(fastify) {
 
       if (body.to || body.name) {
         const targetPath = body.to || `${path.split('/').slice(0, -1).join('/') || '/'}/${body.name}`;
-        const result = await resolved.tree.movePath(path, targetPath, body.recursive);
+        const result = await moveTreePath(resolved.tree, path, targetPath, body.recursive);
         const responseObject = result?.error
           ? new ResponseObject().badRequest(result.error)
           : new ResponseObject().success(result, 'Tree path moved successfully');

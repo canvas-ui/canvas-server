@@ -352,6 +352,8 @@ Indexed device documents (`data/abstraction/device`) for linking registered devi
 | DELETE | `/workspaces/:id/canvases/:canvasIdOrName` | `authenticate` | Delete canvas layer (`?tree=`) |
 | GET | `/workspaces/:id/canvases/:canvasIdOrName/documents` | `authenticate` | List/search documents through canvas spec (`?tree=`, same query shape as top-level canvases) |
 
+Canvas layers store a `querySpec`, so they work well as portable filtered views over mixed data. For example: ingest emails, tag/sort them with features, create a canvas at `/mail/to-review`, then read the same filtered view through REST or a public short code.
+
 ---
 
 ## Canvases (top-level lookup)
@@ -517,6 +519,81 @@ The same handlers are also mounted under **`/contexts/:id/trees/default/...`**. 
 | GET | `/pub/contexts/:id/documents` | Bearer token / user ACL | List documents |
 | POST | `/pub/contexts/:id/documents` | Bearer token / user ACL | Insert documents |
 | PUT | `/pub/contexts/:id/documents` | Bearer token / user ACL | Update documents |
+
+### Public Canvas Short Codes
+
+Public canvas shares expose a canvas layer and its document query through a short code. Management endpoints require auth; the read endpoint is public.
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/pub/c` | `authenticate` | Find an existing public share for `workspaceId`, `path`, optional `treeName` |
+| POST | `/pub/c` | `authenticate` | Create or return a public share for `workspaceId`, `path`, optional `treeName` |
+| DELETE | `/pub/c/:code` | `authenticate` | Delete a public canvas share by short code; owner only |
+| DELETE | `/workspaces/:id/shares/public-canvas/:code` | `authenticate` + workspace admin | Revoke a public canvas share from workspace share management |
+| GET | `/pub/c/:code` | — | Read public canvas payload and documents |
+
+**Create/share a canvas:**
+
+```bash
+curl -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  http://127.0.0.1:8001/rest/v2/pub/c \
+  -d '{"workspaceId":"my-workspace","treeName":"context","path":"/mail/to-review"}'
+```
+
+Successful payload includes:
+
+```json
+{
+  "code": "aabbccdd",
+  "workspaceId": "...",
+  "treeName": "context",
+  "path": "/mail/to-review",
+  "layerId": "...",
+  "url": "/pub/c/aabbccdd"
+}
+```
+
+**Read the public canvas:**
+
+```bash
+curl 'http://127.0.0.1:8001/rest/v2/pub/c/aabbccdd?limit=100&allOf[]=data/abstraction/email&noneOf[]=tag/archived'
+```
+
+Query parameters:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `limit` | integer | `5000` | Max documents returned; capped at `5000` |
+| `offset`, `page` | integer | — | Pagination |
+| `allOf` | string[] | `[]` | Documents must have all of these features |
+| `anyOf` | string[] | `[]` | Documents must have at least one of these features |
+| `noneOf` | string[] | `[]` | Documents must have none of these features |
+| `filters` | string[] | `[]` | Additional list filters |
+
+The public read combines the saved canvas `querySpec` with request filters. Response payload shape:
+
+```json
+{
+  "share": { "code": "aabbccdd", "url": "/pub/c/aabbccdd" },
+  "workspace": { "id": "...", "name": "my-workspace", "label": "My Workspace" },
+  "canvas": { "id": "...", "type": "canvas", "path": "/mail/to-review" },
+  "stats": {
+    "documentCount": 123,
+    "returnedCount": 100,
+    "page": 1,
+    "pageSize": 100,
+    "refreshedAt": "2026-05-06T18:00:00.000Z"
+  },
+  "documents": {
+    "data": [],
+    "count": 100,
+    "totalCount": 123,
+    "error": null
+  }
+}
+```
 
 ### Pub Token Management
 

@@ -8,7 +8,35 @@ import { requireWorkspaceAdmin } from '../../middleware/workspace-acl.js';
  * @param {FastifyInstance} fastify - Fastify instance
  * @param {Object} options - Plugin options
  */
-export default async function workspaceShareRoutes(fastify, options) {
+export default async function workspaceShareRoutes(fastify, _options) {
+  function getPublicCanvasShareList(workspace) {
+    return Object.values(workspace.publicCanvasShares || {}).map((share) => {
+      let layer = null;
+      try {
+        const tree = workspace.getTree(share.treeName);
+        layer = tree.getLayerForPath(share.path);
+      } catch (_) {
+        // Share records can outlive a renamed/deleted canvas until revoked.
+      }
+
+      return {
+        ...share,
+        type: 'public-canvas',
+        url: `/pub/c/${share.code}`,
+        canvas: layer ? {
+          id: layer.id,
+          name: layer.name,
+          label: layer.label,
+          description: layer.description,
+          color: layer.color,
+          locked: layer.isLocked ?? false,
+          lockedBy: layer.lockedBy ?? [],
+        } : null,
+        locked: layer?.isLocked ?? false,
+        lockedBy: layer?.lockedBy ?? [],
+      };
+    });
+  }
 
   // Grant email-based access to a workspace
   fastify.post('/:id/shares', {
@@ -53,7 +81,7 @@ export default async function workspaceShareRoutes(fastify, options) {
           const responseObject = new ResponseObject().notFound(`User with email '${userEmail}' not found on this server`);
           return reply.code(responseObject.statusCode).send(responseObject.getResponse());
         }
-      } catch (error) {
+      } catch (_error) {
         const responseObject = new ResponseObject().notFound(`User with email '${userEmail}' not found on this server`);
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());
       }
@@ -114,12 +142,6 @@ export default async function workspaceShareRoutes(fastify, options) {
     }
   }, async (request, reply) => {
     try {
-      // Only owners can list email-based shares
-      if (!request.workspaceAccess.isOwner) {
-        const responseObject = new ResponseObject().forbidden('Only workspace owners can list email-based shares');
-        return reply.code(responseObject.statusCode).send(responseObject.getResponse());
-      }
-
       const workspace = request.workspace;
       const acl = workspace.acl || {};
       const users = acl.users || {};
@@ -130,7 +152,11 @@ export default async function workspaceShareRoutes(fastify, options) {
         ...shareData
       }));
 
-      const responseObject = new ResponseObject().found(shareList, 'Workspace shares retrieved successfully');
+      const responseObject = new ResponseObject().found({
+        publicCanvasShares: getPublicCanvasShareList(workspace),
+        emailShares: shareList,
+        future: ['workspace tokens', 'context shares', 'authenticated shares'],
+      }, 'Workspace shares retrieved successfully');
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
 
     } catch (error) {
@@ -195,6 +221,40 @@ export default async function workspaceShareRoutes(fastify, options) {
     } catch (error) {
       fastify.log.error(error);
       const responseObject = new ResponseObject().serverError('Failed to revoke workspace share');
+      return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+    }
+  });
+
+  fastify.delete('/:id/shares/public-canvas/:code', {
+    onRequest: [fastify.authenticate, requireWorkspaceAdmin()],
+    schema: {
+      params: {
+        type: 'object',
+        required: ['id', 'code'],
+        properties: {
+          id: { type: 'string' },
+          code: { type: 'string', maxLength: 8 },
+        }
+      }
+    }
+  }, async (request, reply) => {
+    try {
+      const deleted = await fastify.workspaceManager.deletePublicCanvasShare(request.user.id, request.params.code, {
+        allowWorkspaceAdmin: true,
+        workspaceId: request.workspace.id,
+      });
+      if (!deleted) {
+        const responseObject = new ResponseObject().notFound('Public canvas share not found');
+        return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+      }
+
+      const responseObject = new ResponseObject().deleted(true, 'Public canvas share revoked successfully');
+      return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+    } catch (error) {
+      fastify.log.error(error);
+      const responseObject = error.message?.includes('Only the workspace owner')
+        ? new ResponseObject().forbidden(error.message)
+        : new ResponseObject().serverError('Failed to revoke public canvas share');
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
     }
   });

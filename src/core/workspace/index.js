@@ -627,24 +627,30 @@ class WorkspaceManager extends EventEmitter {
         )) || null;
     }
 
-    async deletePublicCanvasShare(requestingUserId, code) {
+    async deletePublicCanvasShare(requestingUserId, code, options = {}) {
         if (!this.#initialized) throw new Error('Not initialized');
         const resolved = await this.resolvePublicCanvasShare(code);
         if (!resolved) return false;
         const { workspace, share } = resolved;
-        if (share.owner !== requestingUserId) {
+        const allowedByWorkspaceAdmin = options.allowWorkspaceAdmin === true && options.workspaceId === share.workspaceId;
+        if (share.owner !== requestingUserId && !allowedByWorkspaceAdmin) {
             throw new Error('Only the workspace owner can unshare this canvas');
         }
 
         const shares = { ...(workspace.publicCanvasShares || {}) };
         delete shares[share.code];
-        const tree = workspace.getTree(share.treeName);
+        let tree = null;
+        try {
+            tree = workspace.getTree(share.treeName);
+        } catch (_) {
+            // Legacy/remnant shares may point at trees that no longer exist.
+        }
         const hasSiblingShare = Object.values(shares).some((item) => (
             item?.workspaceId === share.workspaceId
             && item?.treeName === share.treeName
             && item?.layerId === share.layerId
         ));
-        if (!hasSiblingShare) {
+        if (tree && !hasSiblingShare) {
             await WorkspaceManager.#unlockPublicCanvasLayer(tree, share);
         }
         workspace.setPublicCanvasShares(shares);
@@ -856,7 +862,13 @@ class WorkspaceManager extends EventEmitter {
 
     static async #unlockPublicCanvasLayer(tree, share) {
         if (typeof tree.unlockLayer !== 'function') return;
-        await tree.unlockLayer(share.layerId, WorkspaceManager.#publicShareLockId(share.code));
+        try {
+            await tree.unlockLayer(share.layerId, WorkspaceManager.#publicShareLockId(share.code));
+        } catch (error) {
+            if (!String(error?.message || '').includes('Layer not found')) {
+                throw error;
+            }
+        }
     }
 
     static #publicShareLockId(code) {

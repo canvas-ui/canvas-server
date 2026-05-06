@@ -48,6 +48,24 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     return { ...options, excludeTree: { tree: DIRECTORY_TREE_NAME, path: INCOMING_ROOT_CONTEXT } };
   }
 
+  function sendLinkResult(reply, result) {
+    if (!result || !Array.isArray(result.failed)) {
+      return null;
+    }
+
+    const failedCount = result.failed.length;
+    const successCount = result.successful?.length || 0;
+    if (failedCount === 0) {
+      return null;
+    }
+
+    const message = successCount > 0
+      ? `Inserted ${successCount} document(s), ${failedCount} failed`
+      : 'Failed to insert documents';
+    const responseObject = new ResponseObject().badRequest(message, result);
+    return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+  }
+
   function resolveInsertTarget(workspace, body, isTopLevelArray) {
     if (isTopLevelArray) {
       return { treeType: 'context', selector: workspace.getContextTreeSelector('/') };
@@ -260,6 +278,9 @@ export default async function workspaceDocumentRoutes(fastify, options) {
         const responseObject = new ResponseObject().badRequest('Body must include either "documents" or "documentIds", or be an array of IDs');
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());
       }
+
+      const linkErrorResponse = sendLinkResult(reply, documents);
+      if (linkErrorResponse) return linkErrorResponse;
 
       const responseObject = new ResponseObject().created(documents, 'Documents inserted successfully');
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());

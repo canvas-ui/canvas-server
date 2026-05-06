@@ -7,6 +7,7 @@ import path from 'path';
 import * as fsPromises from 'fs/promises';
 import { existsSync } from 'fs';
 import Conf from 'conf';
+import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 
 // Logging
@@ -542,6 +543,115 @@ class WorkspaceManager extends EventEmitter {
         return true;
     }
 
+    async createPublicCanvasShare(ownerUserId, workspaceId, options = {}) {
+        if (!this.#initialized) throw new Error('Not initialized');
+        const workspace = await this.getWorkspace(workspaceId, ownerUserId);
+        if (!workspace) throw new Error('Workspace not found');
+        if (!workspace.isActive) await workspace.start();
+
+        const treeName = options.treeName || Workspace.CONTEXT_TREE_NAME;
+        const path = WorkspaceManager.#normalizeSharePath(options.path || '/');
+        const tree = workspace.getTree(treeName);
+        const layer = tree.getLayerForPath(path);
+        if (!layer || layer.type !== 'canvas') {
+            throw new Error(`Path is not a canvas: ${path}`);
+        }
+
+        const shares = workspace.publicCanvasShares || {};
+        const existing = Object.values(shares).find((share) => (
+            share?.workspaceId === workspace.id
+            && share?.treeName === tree.name
+            && share?.path === path
+            && share?.layerId === layer.id
+        ));
+        if (existing) {
+            await WorkspaceManager.#lockPublicCanvasLayer(tree, existing);
+            return existing;
+        }
+
+        const code = await this.#createPublicShareCode();
+        const share = {
+            code,
+            workspaceId: workspace.id,
+            owner: workspace.owner,
+            treeName: tree.name,
+            treeType: tree.type,
+            path,
+            layerId: layer.id,
+            createdAt: new Date().toISOString(),
+        };
+
+        const nextShares = { ...shares, [code]: share };
+        await WorkspaceManager.#lockPublicCanvasLayer(tree, share);
+        workspace.setPublicCanvasShares(nextShares);
+        await this.updateWorkspaceConfig(workspace.owner, workspace.id, ownerUserId, { publicCanvasShares: nextShares });
+        return share;
+    }
+
+    async resolvePublicCanvasShare(code) {
+        if (!this.#initialized) throw new Error('Not initialized');
+        const normalizedCode = WorkspaceManager.#normalizeShareCode(code);
+        if (!normalizedCode) return null;
+
+        const all = this.#indexStore.store || {};
+        for (const key in all) {
+            const entry = all[key];
+            const share = entry?.publicCanvasShares?.[normalizedCode];
+            if (!share) continue;
+
+            const workspace = await this.getWorkspace(entry.id, entry.owner);
+            if (!workspace) return null;
+            return { share, workspace, workspaceEntry: entry };
+        }
+        return null;
+    }
+
+    async findPublicCanvasShare(ownerUserId, workspaceId, options = {}) {
+        if (!this.#initialized) throw new Error('Not initialized');
+        const workspace = await this.getWorkspace(workspaceId, ownerUserId);
+        if (!workspace) throw new Error('Workspace not found');
+
+        const treeName = options.treeName || Workspace.CONTEXT_TREE_NAME;
+        const path = WorkspaceManager.#normalizeSharePath(options.path || '/');
+        const tree = workspace.getTree(treeName);
+        const layer = tree.getLayerForPath(path);
+        if (!layer || layer.type !== 'canvas') {
+            throw new Error(`Path is not a canvas: ${path}`);
+        }
+
+        return Object.values(workspace.publicCanvasShares || {}).find((share) => (
+            share?.workspaceId === workspace.id
+            && share?.treeName === tree.name
+            && share?.path === path
+            && share?.layerId === layer.id
+        )) || null;
+    }
+
+    async deletePublicCanvasShare(requestingUserId, code) {
+        if (!this.#initialized) throw new Error('Not initialized');
+        const resolved = await this.resolvePublicCanvasShare(code);
+        if (!resolved) return false;
+        const { workspace, share } = resolved;
+        if (share.owner !== requestingUserId) {
+            throw new Error('Only the workspace owner can unshare this canvas');
+        }
+
+        const shares = { ...(workspace.publicCanvasShares || {}) };
+        delete shares[share.code];
+        const tree = workspace.getTree(share.treeName);
+        const hasSiblingShare = Object.values(shares).some((item) => (
+            item?.workspaceId === share.workspaceId
+            && item?.treeName === share.treeName
+            && item?.layerId === share.layerId
+        ));
+        if (!hasSiblingShare) {
+            await WorkspaceManager.#unlockPublicCanvasLayer(tree, share);
+        }
+        workspace.setPublicCanvasShares(shares);
+        await this.updateWorkspaceConfig(workspace.owner, workspace.id, requestingUserId, { publicCanvasShares: shares });
+        return true;
+    }
+
     async createUniverseWorkspace(userId, userEmail, universeWorkspacePath) {
         return this.createWorkspace('universe', userId, {
             label: 'Universe',
@@ -709,6 +819,48 @@ class WorkspaceManager extends EventEmitter {
             if (entry && entry.id === workspaceId) return entry;
         }
         return null;
+    }
+
+    async #createPublicShareCode() {
+        for (let i = 0; i < 20; i++) {
+            const code = WorkspaceManager.#randomShareCode();
+            if (!await this.resolvePublicCanvasShare(code)) return code;
+        }
+        throw new Error('Failed to generate unique public canvas code');
+    }
+
+    static #randomShareCode() {
+        const alphabet = 'abcdefghijklmnopqrstuvwxyz0123456789';
+        const bytes = crypto.randomBytes(8);
+        let out = '';
+        for (const byte of bytes) {
+            out += alphabet[byte % alphabet.length];
+        }
+        return out;
+    }
+
+    static #normalizeShareCode(code) {
+        const normalized = String(code || '').trim().toLowerCase();
+        return /^[a-z0-9]{1,8}$/.test(normalized) ? normalized : null;
+    }
+
+    static #normalizeSharePath(value) {
+        const pathValue = `/${String(value || '').replace(/^\/+/, '')}`.replace(/\/+/g, '/');
+        return pathValue.length > 1 ? pathValue.replace(/\/$/, '') : '/';
+    }
+
+    static async #lockPublicCanvasLayer(tree, share) {
+        if (typeof tree.lockLayer !== 'function') return;
+        await tree.lockLayer(share.layerId, WorkspaceManager.#publicShareLockId(share.code));
+    }
+
+    static async #unlockPublicCanvasLayer(tree, share) {
+        if (typeof tree.unlockLayer !== 'function') return;
+        await tree.unlockLayer(share.layerId, WorkspaceManager.#publicShareLockId(share.code));
+    }
+
+    static #publicShareLockId(code) {
+        return `public-share:${code}`;
     }
 
     async #scanWorkspaces() {

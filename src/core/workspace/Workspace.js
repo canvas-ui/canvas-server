@@ -98,6 +98,7 @@ class Workspace extends EventEmitter {
     get isActive() { return this.#status === WORKSPACE_STATUS_CODES.ACTIVE; }
     get config() { return this.#configStore.store; }
     get acl() { return this.#configStore.get('acl'); }
+    get publicCanvasShares() { return this.#configStore.get('publicCanvasShares', {}); }
 
     get services() {
         return {
@@ -164,6 +165,13 @@ class Workspace extends EventEmitter {
         if (typeof homeScreen !== 'object' || Array.isArray(homeScreen)) return false;
         this.#configStore.set('homeScreen', homeScreen);
         this.emit('homeScreen.changed', { id: this.id, homeScreen });
+        return true;
+    }
+
+    setPublicCanvasShares(shares) {
+        if (!shares || typeof shares !== 'object' || Array.isArray(shares)) return false;
+        this.#configStore.set('publicCanvasShares', shares);
+        this.emit('publicCanvasShares.changed', { id: this.id, publicCanvasShares: shares });
         return true;
     }
 

@@ -9,6 +9,7 @@ const logger = createLogger('init');
 
 // Constants
 const SHUTDOWN_SIGNALS = ['SIGINT', 'SIGTERM'];
+let isShuttingDown = false;
 
 /**
  * Main server initialization function
@@ -36,6 +37,11 @@ async function main() {
 function setupProcessEventListeners() {
     // Handle process signals
     const shutdown = async (signal) => {
+        if (isShuttingDown) {
+            logger.info({ signal }, 'Shutdown already in progress');
+            return;
+        }
+        isShuttingDown = true;
         logger.info({ signal }, 'Received signal, gracefully shutting down');
         try {
             await server.stop();
@@ -48,7 +54,7 @@ function setupProcessEventListeners() {
 
     // Register shutdown handlers for signals
     SHUTDOWN_SIGNALS.forEach(signal => {
-        process.on(signal, () => shutdown(signal));
+        process.once(signal, () => shutdown(signal));
     });
 
     // Handle uncaught exceptions
@@ -58,7 +64,7 @@ function setupProcessEventListeners() {
     });
 
     // Handle unhandled rejections
-    process.on('unhandledRejection', (reason, promise) => {
+    process.on('unhandledRejection', (reason, _promise) => {
         logger.error({ reason }, 'Unhandled Rejection');
     });
 

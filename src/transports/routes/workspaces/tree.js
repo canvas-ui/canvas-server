@@ -98,9 +98,30 @@ export default async function workspaceTreeRoutes(fastify) {
     return await tree.insertPath(path);
   }
 
+  // DirectoryTree.movePath/copyPath expect targetPath = FULL destination path
+  // (parent + final name). UI drag-drop sends targetPath = drop-target node
+  // (the destination parent). If targetPath resolves to an existing directory
+  // distinct from source, compose finalPath = `${target}/${sourceName}`.
+  function resolveDirectoryTargetPath(tree, fromPath, targetPath) {
+    const source = pathNodeView(tree, fromPath);
+    if (!source?.id) { return { error: `Path not found: ${fromPath}` }; }
+    const existingTarget = pathNodeView(tree, targetPath);
+    if (existingTarget && existingTarget.id !== source.id) {
+      const sourceName = leafNameOf(fromPath);
+      const normalizedParent = normalizeTreePath(targetPath);
+      const finalPath = normalizedParent === '/'
+        ? `/${sourceName}`
+        : `${normalizedParent}/${sourceName}`;
+      return { finalPath };
+    }
+    return { finalPath: targetPath };
+  }
+
   async function moveTreePath(tree, fromPath, targetPath, recursive = false) {
     if (tree.type !== 'context') {
-      return await tree.movePath(fromPath, targetPath, recursive);
+      const resolved = resolveDirectoryTargetPath(tree, fromPath, targetPath);
+      if (resolved.error) { return { data: null, count: 0, error: resolved.error }; }
+      return await tree.movePath(fromPath, resolved.finalPath, recursive);
     }
 
     const source = pathNodeView(tree, fromPath);
@@ -279,7 +300,17 @@ export default async function workspaceTreeRoutes(fastify) {
     try {
       const resolved = await getTreeInstance(request, reply);
       if (!resolved) return;
-      const result = await resolved.tree.copyPath(pathFromSplat(request), request.body.to, request.body.recursive);
+      const fromPath = pathFromSplat(request);
+      let toPath = request.body.to;
+      if (resolved.tree.type !== 'context') {
+        const r = resolveDirectoryTargetPath(resolved.tree, fromPath, toPath);
+        if (r.error) {
+          const errResp = new ResponseObject().badRequest(r.error);
+          return reply.code(errResp.statusCode).send(errResp.getResponse());
+        }
+        toPath = r.finalPath;
+      }
+      const result = await resolved.tree.copyPath(fromPath, toPath, request.body.recursive);
       const responseObject = new ResponseObject().success(result, 'Tree path copied successfully');
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
     } catch (error) {

@@ -23,6 +23,7 @@ export default function setupWebSocketHandlers(fastify) {
   const connectionAttempts = new Map(); // ip → { count, timestamp }
 
   logger.debug('🚀 Setting up WebSocket handlers...');
+  setupPublicCanvasNamespace(fastify, io);
 
   /* ---------------- Authentication middleware ---------------- */
   io.use(async (socket, next) => {
@@ -304,6 +305,65 @@ export default function setupWebSocketHandlers(fastify) {
       if (now - val.timestamp > 5 * 60_000) connectionAttempts.delete(ip);
     });
   }, 5 * 60_000);
+}
+
+function setupPublicCanvasNamespace(fastify, io) {
+  const pub = io.of('/pub');
+  const attempts = new Map();
+
+  pub.use(async (socket, next) => {
+    try {
+      const clientIp = socket.handshake.address;
+      const attempt = attempts.get(clientIp) || { count: 0, timestamp: Date.now() };
+      attempt.count += 1;
+      attempts.set(clientIp, attempt);
+      if (attempt.count > 30 && (Date.now() - attempt.timestamp) < 60_000) {
+        next(new Error('Too many connection attempts'));
+        socket.disconnect(true);
+        return;
+      }
+      if ((Date.now() - attempt.timestamp) > 60_000) {
+        attempt.count = 1;
+        attempt.timestamp = Date.now();
+      }
+
+      const code = String(socket.handshake.auth?.code || socket.handshake.query?.code || '').trim().toLowerCase();
+      const resolved = await fastify.workspaceManager?.resolvePublicCanvasShare(code);
+      if (!resolved) {
+        next(new Error('Invalid public canvas code'));
+        socket.disconnect(true);
+        return;
+      }
+
+      socket.publicCanvas = resolved.share;
+      next();
+    } catch (error) {
+      next(new Error(`Public canvas auth error: ${error.message}`));
+      socket.disconnect(true);
+    }
+  });
+
+  pub.on('connection', (socket) => {
+    const share = socket.publicCanvas;
+    socket.join(`canvas:${share.code}`);
+    socket.emit('canvas:subscribed', { code: share.code });
+
+    const listener = function (payload = {}) {
+      const eventName = this.event;
+      if (!eventName || payload?.workspaceId !== share.workspaceId) return;
+      socket.emit('canvas:changed', {
+        code: share.code,
+        event: eventName,
+        payload,
+        changedAt: new Date().toISOString(),
+      });
+    };
+
+    fastify.workspaceManager?.on('**', listener);
+    socket.on('disconnect', () => {
+      fastify.workspaceManager?.off('**', listener);
+    });
+  });
 }
 
 function generateConnectionId() {

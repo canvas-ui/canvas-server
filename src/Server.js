@@ -338,9 +338,36 @@ class Server extends EventEmitter {
             throw new Error('Server not initialized');
         }
         if (this.#apiServer) {
+            await this.#closeRealtimeConnections();
             await this.#apiServer.close();
+            this.#apiServer = null;
         }
         return this;
+    }
+
+    async #closeRealtimeConnections() {
+        const io = this.#apiServer?.io;
+        if (!io) return;
+
+        logger.info('Closing realtime connections');
+        try {
+            io.disconnectSockets(true);
+        } catch (error) {
+            logger.warn({ err: error }, 'Failed to disconnect realtime sockets');
+        }
+
+        await Promise.race([
+            new Promise((resolve, reject) => {
+                try {
+                    io.close((error) => error ? reject(error) : resolve());
+                } catch (error) {
+                    reject(error);
+                }
+            }),
+            new Promise((resolve) => setTimeout(resolve, 3000)),
+        ]).catch((error) => {
+            logger.warn({ err: error }, 'Realtime server close failed');
+        });
     }
 
     async restart() {

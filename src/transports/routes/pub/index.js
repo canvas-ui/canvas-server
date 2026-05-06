@@ -3,6 +3,7 @@
 import workspaceRoutes from './workspaces.js';
 import contextRoutes from './contexts.js';
 import tokenRoutes from './tokens.js';
+import canvasRoutes from './canvases.js';
 
 /**
  * Public/shared resource routes registry
@@ -20,12 +21,15 @@ export default async function pubRoutes(fastify, options) {
   // Register token management routes
   fastify.register(tokenRoutes, { prefix: '/tokens' });
 
+  // Register public canvas short-code routes
+  fastify.register(canvasRoutes, { prefix: '/c' });
+
   // Health check endpoint for pub routes
   fastify.get('/health', async (request, reply) => {
     return {
       status: 'ok',
       timestamp: new Date().toISOString(),
-      routes: ['workspaces', 'contexts', 'tokens']
+      routes: ['workspaces', 'contexts', 'tokens', 'c']
     };
   });
 }

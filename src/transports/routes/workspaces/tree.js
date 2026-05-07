@@ -167,6 +167,70 @@ export default async function workspaceTreeRoutes(fastify) {
     };
   }
 
+  function resolveTargetTree(workspace, currentTree, nameOrId) {
+    if (!nameOrId || nameOrId === currentTree.id || nameOrId === currentTree.name) {
+      return currentTree;
+    }
+    const tree = workspace.getTree(nameOrId);
+    if (!tree) { throw new Error(`Target tree not found: ${nameOrId}`); }
+    return tree;
+  }
+
+  function treeSelectorFor(tree, path) {
+    return tree.type === 'directory'
+      ? { context: null, directory: { tree: tree.id, path } }
+      : { context: { tree: tree.id, path }, directory: null };
+  }
+
+  function resolveCrossTreeTargetPath(targetTree, fromPath, targetPath) {
+    const existingTarget = pathNodeView(targetTree, targetPath);
+    if (!existingTarget) { return targetPath; }
+    const sourceName = leafNameOf(fromPath);
+    const normalizedParent = normalizeTreePath(targetPath);
+    return normalizedParent === '/' ? `/${sourceName}` : `${normalizedParent}/${sourceName}`;
+  }
+
+  async function copyAcrossTrees(workspace, sourceTree, targetTree, fromPath, targetPath, recursive = false, move = false) {
+    const finalTargetPath = resolveCrossTreeTargetPath(targetTree, fromPath, targetPath);
+    const insertResult = await insertTreePath(targetTree, finalTargetPath, {});
+    if (insertResult?.error) { return insertResult; }
+
+    const docs = await workspace.list({
+      ...treeSelectorFor(sourceTree, fromPath),
+      limit: 0,
+      parse: false,
+    });
+    if (docs.error) {
+      return { data: null, count: 0, error: docs.error };
+    }
+
+    const documentIds = docs.map((doc) => doc?.id).filter((id) => typeof id === 'number');
+    if (documentIds.length > 0) {
+      const linked = await workspace.linkMany(documentIds, treeSelectorFor(targetTree, finalTargetPath));
+      if (linked.failed?.length) {
+        return { data: linked, count: linked.successful?.length || 0, error: 'Some documents could not be linked to the target tree' };
+      }
+      if (move) {
+        const unlinked = await workspace.unlinkMany(documentIds, treeSelectorFor(sourceTree, fromPath), [], { recursive });
+        if (unlinked.failed?.length) {
+          return { data: unlinked, count: unlinked.successful?.length || 0, error: 'Copied, but some source memberships could not be removed' };
+        }
+      }
+    }
+
+    return {
+      data: {
+        pathFrom: fromPath,
+        pathTo: finalTargetPath,
+        sourceTree: sourceTree.name,
+        targetTree: targetTree.name,
+        documentIds,
+      },
+      count: documentIds.length,
+      error: null,
+    };
+  }
+
   fastify.get('/', {
     onRequest: [fastify.authenticate],
   }, async (request, reply) => {
@@ -242,6 +306,7 @@ export default async function workspaceTreeRoutes(fastify) {
         type: 'object',
         properties: {
           to: { type: 'string' },
+          targetTreeNameOrTreeId: { type: 'string' },
           name: { type: 'string' },
           recursive: { type: 'boolean', default: false },
           label: { type: 'string' },
@@ -261,7 +326,10 @@ export default async function workspaceTreeRoutes(fastify) {
 
       if (body.to || body.name) {
         const targetPath = body.to || `${path.split('/').slice(0, -1).join('/') || '/'}/${body.name}`;
-        const result = await moveTreePath(resolved.tree, path, targetPath, body.recursive);
+        const targetTree = resolveTargetTree(resolved.workspace, resolved.tree, body.targetTreeNameOrTreeId);
+        const result = targetTree.id === resolved.tree.id
+          ? await moveTreePath(resolved.tree, path, targetPath, body.recursive)
+          : await copyAcrossTrees(resolved.workspace, resolved.tree, targetTree, path, targetPath, body.recursive, true);
         const responseObject = result?.error
           ? new ResponseObject().badRequest(result.error)
           : new ResponseObject().success(result, 'Tree path moved successfully');
@@ -296,6 +364,7 @@ export default async function workspaceTreeRoutes(fastify) {
         required: ['to'],
         properties: {
           to: { type: 'string' },
+          targetTreeNameOrTreeId: { type: 'string' },
           recursive: { type: 'boolean', default: false },
         },
       },
@@ -306,6 +375,14 @@ export default async function workspaceTreeRoutes(fastify) {
       if (!resolved) return;
       const fromPath = pathFromSplat(request);
       let toPath = request.body.to;
+      const targetTree = resolveTargetTree(resolved.workspace, resolved.tree, request.body.targetTreeNameOrTreeId);
+      if (targetTree.id !== resolved.tree.id) {
+        const result = await copyAcrossTrees(resolved.workspace, resolved.tree, targetTree, fromPath, toPath, request.body.recursive, false);
+        const responseObject = result?.error
+          ? new ResponseObject().badRequest(result.error)
+          : new ResponseObject().success(result, 'Tree path copied successfully');
+        return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+      }
       if (resolved.tree.type !== 'context') {
         const r = resolveDirectoryTargetPath(resolved.tree, fromPath, toPath);
         if (r.error) {

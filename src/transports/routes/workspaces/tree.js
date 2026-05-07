@@ -95,7 +95,11 @@ export default async function workspaceTreeRoutes(fastify) {
         metadata: body.metadata,
       }, body.autoCreateLayers ?? true);
     }
-    return await tree.insertPath(path);
+    return await tree.insertPath(path, {
+      leafType: body.type || 'directory',
+      querySpec: body.querySpec,
+      metadata: body.metadata,
+    });
   }
 
   // DirectoryTree.movePath/copyPath expect targetPath = FULL destination path

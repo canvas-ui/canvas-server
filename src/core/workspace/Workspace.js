@@ -493,7 +493,12 @@ class Workspace extends EventEmitter {
     }
 
     async list(spec = {}) {
-        return await this.#getActiveDb().list(this.#normalizeQuerySpec(this.#composeCanvasQuerySpec(spec)));
+        const querySpec = this.#normalizeQuerySpec(this.#composeCanvasQuerySpec(spec));
+        const searchQuery = querySpec.query ?? querySpec.search ?? querySpec.q;
+        if (typeof searchQuery === 'string' && searchQuery.trim()) {
+            return await this.#getActiveDb().search(querySpec);
+        }
+        return await this.#getActiveDb().list(querySpec);
     }
 
     async search(spec = {}) {
@@ -537,6 +542,8 @@ class Workspace extends EventEmitter {
 
         let features = spec.features ?? spec.attributes ?? null;
         let filters = Array.isArray(spec.filters) ? [...spec.filters] : (spec.filters ? [spec.filters] : []);
+        let query = spec.query ?? spec.search ?? spec.q ?? null;
+        let nextContext = spec.context;
         let touched = false;
 
         for (const path of paths) {
@@ -545,6 +552,10 @@ class Workspace extends EventEmitter {
             if (leaf?.type !== 'canvas' || !leaf.querySpec) { continue; }
             features = Workspace.#composeCanvasFeatures(features, leaf.querySpec.features);
             filters = Workspace.#composeCanvasFilters(filters, leaf.querySpec.filters);
+            query = Workspace.#composeCanvasQuery(query, leaf.querySpec.query ?? leaf.querySpec.search ?? leaf.querySpec.q);
+            if (tree.type === Workspace.DIRECTORY_TYPE) {
+                nextContext = Workspace.#withCanvasParentPath(nextContext, path);
+            }
             touched = true;
         }
 
@@ -552,8 +563,10 @@ class Workspace extends EventEmitter {
 
         return {
             ...spec,
+            context: nextContext,
             ...(features !== undefined ? { features } : {}),
             filters,
+            ...(query ? { query } : {}),
         };
     }
 
@@ -589,6 +602,36 @@ class Workspace extends EventEmitter {
         const b = Array.isArray(canvasFilters) ? canvasFilters : [];
         if (!a.length && !b.length) { return callerFilters || []; }
         return [...new Set([...a, ...b])];
+    }
+
+    static #composeCanvasQuery(callerQuery, canvasQuery) {
+        const a = typeof callerQuery === 'string' ? callerQuery.trim() : '';
+        const b = typeof canvasQuery === 'string' ? canvasQuery.trim() : '';
+        if (a && b && a !== b) return `${b} ${a}`;
+        return a || b || null;
+    }
+
+    static #withCanvasParentPath(context, canvasPath) {
+        const parentPath = Workspace.#parentPath(canvasPath);
+        if (typeof context === 'string') return parentPath;
+        if (Array.isArray(context)) {
+            return context.map((entry) => entry === canvasPath ? parentPath : entry);
+        }
+        if (context && typeof context === 'object') {
+            const pathValue = context.path ?? context.context;
+            if (Array.isArray(pathValue)) {
+                return { ...context, path: pathValue.map((entry) => entry === canvasPath ? parentPath : entry) };
+            }
+            return { ...context, path: parentPath };
+        }
+        return context;
+    }
+
+    static #parentPath(value) {
+        const normalized = String(value || '/').replace(/\/+/g, '/').replace(/\/$/, '') || '/';
+        if (normalized === '/') return '/';
+        const idx = normalized.lastIndexOf('/');
+        return idx <= 0 ? '/' : normalized.slice(0, idx);
     }
 
     getTree(nameOrId) {

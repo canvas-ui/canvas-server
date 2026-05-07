@@ -20,6 +20,7 @@ class HookService extends EventEmitter {
     #contextManager;
     #hooks = new Map(); // hookId -> hookInstance
     #workspaceListeners = new Map();
+    #recentDispatches = new Map();
     #initialized = false;
 
     constructor(options = {}) {
@@ -65,14 +66,19 @@ class HookService extends EventEmitter {
     }
 
     trackWorkspace(workspace) {
-        if (!workspace?.id || this.#workspaceListeners.has(workspace.id)) {
+        if (!workspace?.id) {
             return;
         }
+
+        const existing = this.#workspaceListeners.get(workspace.id);
+        if (existing?.workspace === workspace) { return; }
+        if (existing) { this.untrackWorkspace(workspace.id); }
 
         const hookService = this;
         const listener = async function (payload = {}) {
             const eventName = this.event;
             if (!eventName) { return; }
+            if (payload?.source === 'hook') { return; }
             try {
                 await hookService.dispatchEvent(eventName, payload, workspace.id);
             } catch (err) {
@@ -99,6 +105,9 @@ class HookService extends EventEmitter {
      * @param {string} workspaceId
      */
     async dispatchEvent(eventName, payload, workspaceId) {
+        if (payload?.source === 'hook') { return; }
+        if (this.#isDuplicateDispatch(eventName, payload, workspaceId)) { return; }
+
         logger.debug(`Dispatching event ${eventName} to ${this.#hooks.size} hooks`);
 
         const workspace = await this.#workspaceManager.getWorkspace(workspaceId);
@@ -109,7 +118,7 @@ class HookService extends EventEmitter {
 
         const promises = [];
         for (const hook of this.#hooks.values()) {
-            if (this.#shouldRunHook(hook, eventName, payload)) {
+            if (this.#shouldRunHook(hook, eventName)) {
                 promises.push(this.#runHook(hook, eventName, payload, workspaceId));
             }
         }
@@ -119,7 +128,7 @@ class HookService extends EventEmitter {
         await Promise.allSettled(promises);
     }
 
-    #shouldRunHook(hook, eventName, payload) {
+    #shouldRunHook(hook, eventName) {
         // Simple filter: if hook has 'events' array, check if eventName is in it
         // If no 'events' array, assume it wants all events (or let it filter internally)
         if (hook.events && Array.isArray(hook.events)) {
@@ -174,6 +183,7 @@ class HookService extends EventEmitter {
             const deleteDocument = async (id) => workspace.delete(id);
             const get = async (id, options = { parse: true }) => workspace.get(id, options);
             const list = async (spec = {}) => workspace.list(spec);
+            const find = async (spec = {}) => workspace.search(spec);
 
             await run({
                 event,
@@ -190,6 +200,7 @@ class HookService extends EventEmitter {
                 deleteDocument,
                 get,
                 list,
+                find,
                 link: async (documentId, contexts = []) => {
                     const targets = Array.isArray(contexts) ? contexts : [contexts];
                     for (const context of targets.filter(Boolean)) {
@@ -200,6 +211,30 @@ class HookService extends EventEmitter {
         } catch (err) {
             logger.debug(`Error running workspace hook ${hookPath}: ${err.message}`);
         }
+    }
+
+    #isDuplicateDispatch(eventName, payload = {}, workspaceId) {
+        const key = this.#buildDispatchKey(eventName, payload, workspaceId);
+        if (!key) { return false; }
+        const now = Date.now();
+        for (const [entryKey, timestamp] of this.#recentDispatches) {
+            if (now - timestamp > 1000) {
+                this.#recentDispatches.delete(entryKey);
+            }
+        }
+        if (this.#recentDispatches.has(key)) {
+            logger.debug(`Skipping duplicate hook event ${eventName} for workspace ${workspaceId}`);
+            return true;
+        }
+        this.#recentDispatches.set(key, now);
+        return false;
+    }
+
+    #buildDispatchKey(eventName, payload = {}, workspaceId) {
+        const ids = payload.ids || payload.documentIds || payload.id || payload.documentId || payload.document?.id || '';
+        const normalizedIds = Array.isArray(ids) ? ids.join(',') : String(ids || '');
+        if (!normalizedIds) { return null; }
+        return `${workspaceId}:${eventName}:${normalizedIds}:${payload.source || ''}`;
     }
 }
 

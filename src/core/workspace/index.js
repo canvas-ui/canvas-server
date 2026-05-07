@@ -27,6 +27,7 @@ import {
     WORKSPACE_DIRECTORIES,
     WORKSPACE_CONFIG_FILENAME,
     WORKSPACE_DEFAULT_HOST,
+    WORKSPACE_DATA_BACKENDS,
     WORKSPACE_SERVICES,
 } from './lib/constants.js';
 
@@ -204,9 +205,11 @@ class WorkspaceManager extends EventEmitter {
 
         let result;
         switch (serviceName) {
+            case 'git':
             case 'dotfiles':
                 result = await this.dotfileService.enable(workspace, userId);
                 break;
+            case 'webdav':
             case 'home':
                 await workspace.startHomeService();
                 result = true;
@@ -217,6 +220,7 @@ class WorkspaceManager extends EventEmitter {
                 result = true;
                 break;
             case 'imap':
+            case 'imapSync':
                 result = await this.imapService.enable(workspace);
                 break;
             case 'graph':
@@ -244,14 +248,17 @@ class WorkspaceManager extends EventEmitter {
 
         let result;
         switch (serviceName) {
+            case 'git':
             case 'dotfiles':
                 result = await this.dotfileService.disable(workspace);
                 break;
+            case 'webdav':
             case 'home':
                 await workspace.stopHomeService();
                 result = true;
                 break;
             case 'imap':
+            case 'imapSync':
                 result = await this.imapService.disable(workspace);
                 break;
             default:
@@ -278,11 +285,23 @@ class WorkspaceManager extends EventEmitter {
                 ...config.dotfiles,
                 initialized: this.dotfileService.isEnabled(workspace),
             },
+            git: {
+                ...config.git,
+                initialized: this.dotfileService.isEnabled(workspace),
+            },
             home: {
                 ...config.home,
-                initialized: config.home?.enabled === true,
+                initialized: config.home?.enabled === true || config.webdav?.enabled === true,
+            },
+            webdav: {
+                ...config.webdav,
+                initialized: config.home?.enabled === true || config.webdav?.enabled === true,
             },
             imap: await this.imapService.getWorkspaceStatus(workspace),
+            imapSync: {
+                ...config.imapSync,
+                initialized: this.imapService.isEnabled(workspace),
+            },
         };
     }
 
@@ -476,7 +495,8 @@ class WorkspaceManager extends EventEmitter {
             metadata: options.metadata || {},
             acl: options.acl || { tokens: {}, users: {} },
             roles: options.roles || [],
-            services: options.services || { ...WORKSPACE_SERVICES },
+            dataBackends: options.dataBackends || WorkspaceManager.#cloneConfigMap(WORKSPACE_DATA_BACKENDS),
+            services: options.services || WorkspaceManager.#cloneConfigMap(WORKSPACE_SERVICES),
             links: options.links || {},
         };
 
@@ -967,6 +987,10 @@ class WorkspaceManager extends EventEmitter {
         for (const key in WORKSPACE_DIRECTORIES) {
             await fsPromises.mkdir(path.join(dir, WORKSPACE_DIRECTORIES[key]), { recursive: true });
         }
+    }
+
+    static #cloneConfigMap(config) {
+        return Object.fromEntries(Object.entries(config || {}).map(([key, value]) => [key, { ...(value || {}) }]));
     }
 
 }

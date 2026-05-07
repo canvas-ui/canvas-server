@@ -15,12 +15,14 @@ import { INCOMING_ROOT_CONTEXT } from '../../../utils/incoming-documents.js';
 
 const HOME_STORED_BACKEND = 'fs:home';
 const HOME_BACKEND_FEATURE = 'data/backend/home';
+const CACHE_BACKEND = 'stored.cache';
 const DATA_STORED_BACKEND_PREFIX = 'fs:data';
 const CHECKSUM_PRIORITY = ['sha256', 'sha1', 'md5'];
 
 export class WorkspaceStoredIndex {
     static HOME_STORED_BACKEND = HOME_STORED_BACKEND;
     static HOME_BACKEND_FEATURE = HOME_BACKEND_FEATURE;
+    static CACHE_BACKEND = CACHE_BACKEND;
     static DATA_STORED_BACKEND_PREFIX = DATA_STORED_BACKEND_PREFIX;
 
     static dataBackendName(abstraction) {
@@ -35,8 +37,11 @@ export class WorkspaceStoredIndex {
         return `data/backend/data:${abstraction}`;
     }
 
+    #rootPath;
+    #cachePath;
     #dataPath;
     #homePath;
+    #dataBackends;
     #workspaceId;
     #logger;
 
@@ -48,14 +53,18 @@ export class WorkspaceStoredIndex {
 
     #stored = null;
     #listeners = [];
-    #dataBackends = new Set();
+    #registeredDataBackends = new Set();
+    #backendStatus = new Map();
 
-    constructor({ dataPath, homePath, workspaceId, logger, put, unlink, getIncomingTreeSelector, getDb }) {
+    constructor({ rootPath, cachePath, dataPath, homePath, dataBackends = {}, workspaceId, logger, put, unlink, getIncomingTreeSelector, getDb }) {
         if (!dataPath || !homePath) throw new Error('dataPath and homePath are required');
         if (!put || !unlink || !getIncomingTreeSelector || !getDb) throw new Error('put, unlink, getIncomingTreeSelector, getDb are required');
 
+        this.#rootPath = rootPath || path.dirname(dataPath);
+        this.#cachePath = cachePath || path.join(this.#rootPath, 'cache');
         this.#dataPath = dataPath;
         this.#homePath = homePath;
+        this.#dataBackends = dataBackends;
         this.#workspaceId = workspaceId;
         this.#logger = logger || console;
         this.#put = put;
@@ -66,6 +75,16 @@ export class WorkspaceStoredIndex {
 
     get isRunning() {
         return this.#stored !== null;
+    }
+
+    getBackendStatus(backendName) {
+        const backend = this.#stored?.getBackend(backendName);
+        const status = this.#backendStatus.get(backendName) || {};
+        return {
+            ...status,
+            running: backendName === CACHE_BACKEND ? this.isRunning : !!backend,
+            watching: backend?.watching || false,
+        };
     }
 
     /**
@@ -98,21 +117,18 @@ export class WorkspaceStoredIndex {
         try {
             this.#stored = new Stored({
                 index: { path: path.join(this.#dataPath, 'stored-index') },
+                cache: { path: this.#cachePath },
                 checksums: ['sha256', 'md5'],
                 primaryChecksum: 'sha256',
             });
 
-            this.#stored.addBackend(HOME_STORED_BACKEND, {
-                driver: 'file',
-                root: this.#homePath,
-                watch: true,
-                provider: 'fs',
-                account: 'workspace',
-                container: 'workspace',
-            });
+            await this.#registerConfiguredBackends();
 
             this.#bindEvents();
-            await this.#syncSnapshot();
+            await this.resync(HOME_STORED_BACKEND).catch((error) => {
+                this.#setBackendError(HOME_STORED_BACKEND, error);
+                this.#logger.warn({ workspaceId: this.#workspaceId, error: error.message }, 'Stored home resync failed');
+            });
         } catch (error) {
             this.#logger.warn({ workspaceId: this.#workspaceId, error: error.message }, 'Stored home indexing unavailable');
             await this.stop();
@@ -129,8 +145,30 @@ export class WorkspaceStoredIndex {
             this.#logger.warn({ workspaceId: this.#workspaceId, error: error.message }, 'Failed to stop stored home indexing');
         } finally {
             this.#stored = null;
-            this.#dataBackends.clear();
+            this.#registeredDataBackends.clear();
+            this.#backendStatus.clear();
         }
+    }
+
+    async resync(backendName = HOME_STORED_BACKEND) {
+        if (!this.#stored) throw new Error('WorkspaceStoredIndex is not running');
+        const config = this.#dataBackends[backendName];
+        if (!config?.enabled) throw new Error(`Data backend "${backendName}" is disabled`);
+        if (!config?.resync) throw new Error(`Data backend "${backendName}" does not support resync`);
+        if (!this.#stored.getBackend(backendName)) throw new Error(`Data backend "${backendName}" is not registered`);
+
+        const files = await this.#stored.scan(backendName);
+        for (const file of files) {
+            await this.#upsertDocument(file);
+        }
+        await this.#purgeOrphanedPaths(backendName, files);
+        this.#backendStatus.set(backendName, {
+            ...(this.#backendStatus.get(backendName) || {}),
+            lastScanAt: new Date().toISOString(),
+            lastError: null,
+            fileCount: files.length,
+        });
+        return { backend: backendName, count: files.length };
     }
 
     /**
@@ -142,7 +180,7 @@ export class WorkspaceStoredIndex {
         if (!this.#stored) throw new Error('WorkspaceStoredIndex is not running');
 
         const backendName = WorkspaceStoredIndex.dataBackendName(abstraction);
-        if (this.#dataBackends.has(backendName)) return backendName;
+        if (this.#registeredDataBackends.has(backendName)) return backendName;
 
         const root = WorkspaceStoredIndex.dataBackendRoot(this.#dataPath, abstraction);
         await fs.mkdir(root, { recursive: true });
@@ -156,8 +194,24 @@ export class WorkspaceStoredIndex {
             container: abstraction,
         });
 
-        this.#dataBackends.add(backendName);
+        this.#registeredDataBackends.add(backendName);
         return backendName;
+    }
+
+    async #registerConfiguredBackends() {
+        for (const [backendName, config] of Object.entries(this.#dataBackends || {})) {
+            if (!config?.enabled || config.supported === false || config.driver !== 'file') continue;
+            if (backendName === CACHE_BACKEND) continue;
+
+            this.#stored.addBackend(backendName, {
+                ...config,
+                root: this.#resolveBackendRoot(backendName, config),
+                provider: config.provider || 'fs',
+                account: config.account || 'workspace',
+                container: config.container || (backendName === HOME_STORED_BACKEND ? 'home' : 'data'),
+            });
+            this.#backendStatus.set(backendName, { lastScanAt: null, lastError: null });
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -202,22 +256,14 @@ export class WorkspaceStoredIndex {
     // Sync
     // ─────────────────────────────────────────────────────────────────────────
 
-    async #syncSnapshot() {
-        if (!this.#stored) return;
-        const files = await this.#stored.scan(HOME_STORED_BACKEND);
-        for (const file of files) {
-            await this.#upsertDocument(file);
-        }
-        await this.#purgeOrphanedPaths(files);
-    }
-
-    async #purgeOrphanedPaths(presentFiles = []) {
+    async #purgeOrphanedPaths(backendName, presentFiles = []) {
         const db = this.#getDb();
         const presentChecksums = new Set(
             presentFiles.flatMap((f) => this.#buildChecksumArray(f.checksums))
         );
 
-        const incomingRoot = `${INCOMING_ROOT_CONTEXT}/file/fs/workspace`;
+        const incomingRoot = this.#getIncomingRootForBackend(backendName);
+        if (!incomingRoot) return;
         const treeSelector = this.#getIncomingTreeSelector(incomingRoot);
         const docsInTree = await db.list({ directory: treeSelector }).catch(() => []);
 
@@ -337,12 +383,18 @@ export class WorkspaceStoredIndex {
         return Array.from(new Set(
             backends
                 .filter(Boolean)
+                .filter((backend) => this.#shouldIndexIncoming(backend.backend))
                 .map((backend) => {
+                    const root = this.#getIncomingRootForBackend(backend.backend);
+                    if (!root) return null;
                     const filePath = backend?.source?.path || backend?.key || '';
+                    const mode = this.#dataBackends[backend.backend]?.incomingPathMode || 'sourceDirectories';
+                    if (mode !== 'sourceDirectories') return root;
                     const dir = filePath ? path.dirname(filePath) : null;
                     const suffix = (dir && dir !== '.') ? `/${dir}` : '';
-                    return `${INCOMING_ROOT_CONTEXT}/file/fs/workspace${suffix}`;
+                    return `${root}${suffix}`;
                 })
+                .filter(Boolean)
         ));
     }
 
@@ -353,7 +405,7 @@ export class WorkspaceStoredIndex {
                 features.push(HOME_BACKEND_FEATURE);
             } else if (this.#isDataBackend(backend.backend)) {
                 const abstraction = backend.backend.slice(`${DATA_STORED_BACKEND_PREFIX}:`.length);
-                features.push(WorkspaceStoredIndex.dataBackendFeature(abstraction));
+                features.push(abstraction ? WorkspaceStoredIndex.dataBackendFeature(abstraction) : 'data/backend/data');
             }
             if (backend?.source?.provider) features.push(`data/source/${backend.source.provider}`);
         }
@@ -411,6 +463,35 @@ export class WorkspaceStoredIndex {
     }
 
     #isDataBackend(backendName) {
-        return typeof backendName === 'string' && backendName.startsWith(`${DATA_STORED_BACKEND_PREFIX}:`);
+        return backendName === DATA_STORED_BACKEND_PREFIX || (typeof backendName === 'string' && backendName.startsWith(`${DATA_STORED_BACKEND_PREFIX}:`));
+    }
+
+    #resolveBackendRoot(backendName, config = {}) {
+        const configuredRoot = config.root || '';
+        if (configuredRoot.includes('{WORKSPACE_ROOT}')) {
+            return configuredRoot.replaceAll('{WORKSPACE_ROOT}', this.#rootPath);
+        }
+        if (backendName === HOME_STORED_BACKEND) return this.#homePath;
+        if (backendName === DATA_STORED_BACKEND_PREFIX) return this.#dataPath;
+        return configuredRoot || this.#dataPath;
+    }
+
+    #shouldIndexIncoming(backendName) {
+        return this.#dataBackends[backendName]?.indexIncoming === true;
+    }
+
+    #getIncomingRootForBackend(backendName) {
+        const config = this.#dataBackends[backendName];
+        if (!config?.indexIncoming) return null;
+        if (backendName === HOME_STORED_BACKEND) return `${INCOMING_ROOT_CONTEXT}/file/fs/workspace`;
+        const source = String(backendName || '').replace(/[^a-z0-9._:-]+/gi, '-').toLowerCase();
+        return `${INCOMING_ROOT_CONTEXT}/file/${source}`;
+    }
+
+    #setBackendError(backendName, error) {
+        this.#backendStatus.set(backendName, {
+            ...(this.#backendStatus.get(backendName) || {}),
+            lastError: error?.message || String(error),
+        });
     }
 }

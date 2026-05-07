@@ -22,6 +22,7 @@ import { WorkspaceStoredIndex } from './lib/WorkspaceStoredIndex.js';
 import {
     WORKSPACE_STATUS_CODES,
     WORKSPACE_DIRECTORIES,
+    WORKSPACE_DATA_BACKENDS,
     WORKSPACE_SERVICES,
 } from './lib/constants.js';
 
@@ -100,11 +101,12 @@ class Workspace extends EventEmitter {
     get acl() { return this.#configStore.get('acl'); }
     get publicCanvasShares() { return this.#configStore.get('publicCanvasShares', {}); }
 
+    get dataBackends() {
+        return Workspace.#mergeConfigMap(WORKSPACE_DATA_BACKENDS, this.#configStore.get('dataBackends') || {});
+    }
+
     get services() {
-        return {
-            ...WORKSPACE_SERVICES,
-            ...(this.#configStore.get('services') || {}),
-        };
+        return Workspace.#mergeConfigMap(WORKSPACE_SERVICES, this.#configStore.get('services') || {});
     }
 
     get db() {
@@ -129,8 +131,23 @@ class Workspace extends EventEmitter {
         return path.join(this.#rootPath, WORKSPACE_DIRECTORIES.hooks);
     }
 
+    get cachePath() {
+        return path.join(this.#rootPath, WORKSPACE_DIRECTORIES.cache);
+    }
+
+    isDataBackendEnabled(backendName) {
+        return this.dataBackends[backendName]?.enabled === true;
+    }
+
     isServiceEnabled(serviceName) {
         return this.services[serviceName]?.enabled === true;
+    }
+
+    setDataBackendConfig(backendName, config) {
+        const dataBackends = this.dataBackends;
+        dataBackends[backendName] = { ...dataBackends[backendName], ...config };
+        this.#configStore.set('dataBackends', dataBackends);
+        this.emit('dataBackends.changed', { backend: backendName, config: dataBackends[backendName] });
     }
 
     setServiceConfig(serviceName, config) {
@@ -223,6 +240,7 @@ class Workspace extends EventEmitter {
         this.#logger.debug({ workspaceId: this.id }, 'Starting workspace');
         try {
             await Promise.all([
+                fsPromises.mkdir(this.cachePath, { recursive: true }),
                 fsPromises.mkdir(this.dataPath, { recursive: true }),
                 fsPromises.mkdir(this.homePath, { recursive: true }),
                 fsPromises.mkdir(this.hooksPath, { recursive: true }),
@@ -234,7 +252,7 @@ class Workspace extends EventEmitter {
             await this.#ensureContextTree();
             await this.#ensureDirectoryTree();
             this.#bindRuntimeEvents();
-            if (this.isServiceEnabled('home')) {
+            if (this.isServiceEnabled('home') || this.isDataBackendEnabled(WorkspaceStoredIndex.HOME_STORED_BACKEND)) {
                 await this.#startStoredIndex();
             }
 
@@ -733,18 +751,48 @@ class Workspace extends EventEmitter {
 
     async startHomeService() {
         if (!this.isActive) return;
+        this.setDataBackendConfig(WorkspaceStoredIndex.HOME_STORED_BACKEND, { enabled: true });
         await this.#startStoredIndex();
     }
 
     async stopHomeService() {
+        this.setDataBackendConfig(WorkspaceStoredIndex.HOME_STORED_BACKEND, { enabled: false });
         await this.#stopStoredIndex();
+    }
+
+    getDataBackendStatus() {
+        const dataBackends = this.dataBackends;
+        return Object.fromEntries(Object.entries(dataBackends).map(([name, config]) => {
+            const runtime = this.#storedIndex?.getBackendStatus(name) || {};
+            return [name, {
+                ...config,
+                root: Workspace.#resolveWorkspaceRoot(config.root, this.#rootPath),
+                running: runtime.running || false,
+                watching: runtime.watching || false,
+                lastScanAt: runtime.lastScanAt || null,
+                lastError: runtime.lastError || null,
+                cacheStats: runtime.cacheStats || null,
+            }];
+        }));
+    }
+
+    async resyncDataBackend(backendName) {
+        const config = this.dataBackends[backendName];
+        if (!config) throw new Error(`Unknown data backend: ${backendName}`);
+        if (!config.supported) throw new Error(`Data backend "${backendName}" is not supported yet`);
+        if (!config.resync) throw new Error(`Data backend "${backendName}" does not support resync`);
+        if (!this.#storedIndex?.isRunning) await this.#startStoredIndex();
+        return this.#storedIndex.resync(backendName);
     }
 
     async #startStoredIndex() {
         if (this.#storedIndex?.isRunning) return;
         this.#storedIndex = new WorkspaceStoredIndex({
+            rootPath: this.#rootPath,
+            cachePath: this.cachePath,
             dataPath: this.dataPath,
             homePath: this.homePath,
+            dataBackends: this.dataBackends,
             workspaceId: this.id,
             logger: this.#logger,
             put: this.put.bind(this),
@@ -835,6 +883,22 @@ class Workspace extends EventEmitter {
             binding.emitter.off('**', binding.listener);
         }
         this.#runtimeListeners = [];
+    }
+
+    static #mergeConfigMap(defaults, overrides) {
+        const out = {};
+        for (const [key, value] of Object.entries(defaults || {})) {
+            out[key] = { ...(value || {}) };
+        }
+        for (const [key, value] of Object.entries(overrides || {})) {
+            out[key] = { ...(out[key] || {}), ...(value || {}) };
+        }
+        return out;
+    }
+
+    static #resolveWorkspaceRoot(value, rootPath) {
+        if (typeof value !== 'string') return value;
+        return value.replaceAll('{WORKSPACE_ROOT}', rootPath);
     }
 
     #createRuntimeListener(emitter, source) {

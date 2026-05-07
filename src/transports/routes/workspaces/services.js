@@ -12,6 +12,92 @@ import { requireWorkspaceRead, requireWorkspaceWrite } from '../../middleware/wo
  */
 export default async function workspaceServicesRoutes(fastify, options) {
     /**
+     * List data backends and runtime status
+     */
+    fastify.get('/data-backends', {
+        onRequest: [fastify.authenticate, requireWorkspaceRead()]
+    }, async (request, reply) => {
+        try {
+            const workspace = request.workspace;
+            if (!workspace) {
+                const response = new ResponseObject().notFound('Workspace not found');
+                return reply.code(response.statusCode).send(response.getResponse());
+            }
+
+            const response = new ResponseObject().success(workspace.getDataBackendStatus());
+            return reply.code(response.statusCode).send(response.getResponse());
+        } catch (error) {
+            request.log.error(error);
+            const response = new ResponseObject().error(error.message);
+            return reply.code(response.statusCode).send(response.getResponse());
+        }
+    });
+
+    /**
+     * Patch data backend configuration
+     */
+    fastify.patch('/data-backends', {
+        onRequest: [fastify.authenticate, requireWorkspaceWrite()]
+    }, async (request, reply) => {
+        try {
+            const workspace = request.workspace;
+            if (!workspace) {
+                const response = new ResponseObject().notFound('Workspace not found');
+                return reply.code(response.statusCode).send(response.getResponse());
+            }
+
+            const updates = request.body?.dataBackends || request.body || {};
+            if (!updates || typeof updates !== 'object' || Array.isArray(updates)) {
+                const response = new ResponseObject().badRequest('Data backend config object is required');
+                return reply.code(response.statusCode).send(response.getResponse());
+            }
+
+            for (const [backendName, config] of Object.entries(updates)) {
+                if (!config || typeof config !== 'object' || Array.isArray(config)) continue;
+                workspace.setDataBackendConfig(backendName, config);
+                if (backendName === 'fs:home' && typeof config.enabled === 'boolean') {
+                    if (config.enabled) {
+                        await workspace.startHomeService();
+                    } else {
+                        await workspace.stopHomeService();
+                    }
+                }
+            }
+
+            const response = new ResponseObject().success(workspace.getDataBackendStatus());
+            return reply.code(response.statusCode).send(response.getResponse());
+        } catch (error) {
+            request.log.error(error);
+            const response = new ResponseObject().error(error.message);
+            return reply.code(response.statusCode).send(response.getResponse());
+        }
+    });
+
+    /**
+     * Resync one data backend
+     */
+    fastify.post('/data-backends/:backendId/resync', {
+        onRequest: [fastify.authenticate, requireWorkspaceWrite()]
+    }, async (request, reply) => {
+        try {
+            const workspace = request.workspace;
+            if (!workspace) {
+                const response = new ResponseObject().notFound('Workspace not found');
+                return reply.code(response.statusCode).send(response.getResponse());
+            }
+
+            const backendId = decodeURIComponent(request.params.backendId);
+            const result = await workspace.resyncDataBackend(backendId);
+            const response = new ResponseObject().success(result);
+            return reply.code(response.statusCode).send(response.getResponse());
+        } catch (error) {
+            request.log.error(error);
+            const response = new ResponseObject().error(error.message);
+            return reply.code(response.statusCode).send(response.getResponse());
+        }
+    });
+
+    /**
      * List all services and their status
      */
     fastify.get('/', {

@@ -16,6 +16,7 @@ const WORKSPACE_CONFIG_FILENAME = 'workspace.json';
 const WORKSPACE_DIRECTORIES = {
     db: 'db',
     config: 'config',
+    cache: 'cache',
     data: 'data',
     home: 'home',
     hooks: 'hooks',
@@ -24,17 +25,64 @@ const WORKSPACE_DIRECTORIES = {
     dotfiles: 'dotfiles.git', // Bare git repository for dotfiles
 };
 
+const WORKSPACE_DATA_BACKENDS = {
+    'fs:home': {
+        enabled: true,
+        supported: true,
+        driver: 'file',
+        root: '{WORKSPACE_ROOT}/home',
+        watch: true,
+        resync: true,
+        indexIncoming: true,
+        incomingPathMode: 'sourceDirectories',
+    },
+    'fs:data': {
+        enabled: true,
+        supported: true,
+        driver: 'file',
+        root: '{WORKSPACE_ROOT}/data',
+        managed: true,
+        watch: false,
+        resync: false,
+        indexIncoming: false,
+    },
+    'stored.cache': {
+        enabled: true,
+        supported: true,
+        root: '{WORKSPACE_ROOT}/cache',
+    },
+    s3: {
+        enabled: false,
+        supported: false,
+    },
+    imap: {
+        enabled: false,
+        supported: true,
+        indexIncoming: true,
+    },
+};
+
 // Available workspace services
 const WORKSPACE_SERVICES = {
     dotfiles: {
         enabled: false,
     },
+    git: {
+        enabled: false,
+    },
     imap: {
         enabled: false,
     },
-    home: {
+    imapSync: {
         enabled: false,
+    },
+    home: {
+        enabled: true,
         transports: ['webdav'], // Available: 'webdav', 's3' (future)
+    },
+    webdav: {
+        enabled: true,
+        backend: 'fs:home',
     },
 };
 
@@ -63,6 +111,7 @@ const WORKSPACE_CONFIG_TEMPLATE = {
         tokens: {} // Token-based ACL: { "sha256:hash": { permissions: [], description: "", createdAt: "", expiresAt: null } }
     },
     roles: [], // Associated role IDs
+    dataBackends: { ...WORKSPACE_DATA_BACKENDS },
     services: { ...WORKSPACE_SERVICES }, // Feature toggles
     created: null,
     updated: null,
@@ -73,6 +122,7 @@ export {
     WORKSPACE_CONFIG_FILENAME,
     WORKSPACE_DIRECTORIES,
     WORKSPACE_STATUS_CODES,
+    WORKSPACE_DATA_BACKENDS,
     WORKSPACE_SERVICES,
     WORKSPACE_CONFIG_TEMPLATE,
 };

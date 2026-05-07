@@ -125,6 +125,10 @@ export default async function workspaceRoutes(fastify, options) {
     prefix: '/:id/bitmaps',
     onRequest: [resolveWorkspaceAddress]
   });
+  fastify.register(import('./data-backends.js'), {
+    prefix: '/:id/data-backends',
+    onRequest: [resolveWorkspaceAddress]
+  });
   fastify.register(import('./services.js'), {
     prefix: '/:id/services',
     onRequest: [resolveWorkspaceAddress]

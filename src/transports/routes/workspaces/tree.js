@@ -182,18 +182,11 @@ export default async function workspaceTreeRoutes(fastify) {
       : { context: { tree: tree.id, path }, directory: null };
   }
 
-  function resolveCrossTreeTargetPath(targetTree, fromPath, targetPath) {
-    const existingTarget = pathNodeView(targetTree, targetPath);
-    if (!existingTarget) { return targetPath; }
-    const sourceName = leafNameOf(fromPath);
-    const normalizedParent = normalizeTreePath(targetPath);
-    return normalizedParent === '/' ? `/${sourceName}` : `${normalizedParent}/${sourceName}`;
-  }
-
   async function copyAcrossTrees(workspace, sourceTree, targetTree, fromPath, targetPath, recursive = false, move = false) {
-    const finalTargetPath = resolveCrossTreeTargetPath(targetTree, fromPath, targetPath);
-    const insertResult = await insertTreePath(targetTree, finalTargetPath, {});
-    if (insertResult?.error) { return insertResult; }
+    const normalizedTargetPath = normalizeTreePath(targetPath);
+    if (!pathNodeView(targetTree, normalizedTargetPath)) {
+      return { data: null, count: 0, error: `Target path not found: ${normalizedTargetPath}` };
+    }
 
     const docs = await workspace.list({
       ...treeSelectorFor(sourceTree, fromPath),
@@ -206,7 +199,7 @@ export default async function workspaceTreeRoutes(fastify) {
 
     const documentIds = docs.map((doc) => doc?.id).filter((id) => typeof id === 'number');
     if (documentIds.length > 0) {
-      const linked = await workspace.linkMany(documentIds, treeSelectorFor(targetTree, finalTargetPath));
+      const linked = await workspace.linkMany(documentIds, treeSelectorFor(targetTree, normalizedTargetPath));
       if (linked.failed?.length) {
         return { data: linked, count: linked.successful?.length || 0, error: 'Some documents could not be linked to the target tree' };
       }
@@ -221,7 +214,7 @@ export default async function workspaceTreeRoutes(fastify) {
     return {
       data: {
         pathFrom: fromPath,
-        pathTo: finalTargetPath,
+        pathTo: normalizedTargetPath,
         sourceTree: sourceTree.name,
         targetTree: targetTree.name,
         documentIds,

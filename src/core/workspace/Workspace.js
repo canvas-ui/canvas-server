@@ -484,6 +484,38 @@ class Workspace extends EventEmitter {
         return await this.#getActiveDb().listDocumentTreeMemberships(parseDocumentId(id, 'Document ID'), treeNameOrId);
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // Timeline API (delegated to db.timeline)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    async listTimelines() {
+        return await this.#getActiveDb().timeline.listTimelines();
+    }
+
+    async createTimeline(name) {
+        return await this.#getActiveDb().timeline.createTimeline(name);
+    }
+
+    hasTimeline(name) {
+        return this.#getActiveDb().timeline.hasTimeline(name);
+    }
+
+    async deleteTimeline(name) {
+        return await this.#getActiveDb().timeline.deleteTimeline(name);
+    }
+
+    async queryTimeline(timelineNames, interval, options = {}) {
+        return await this.#getActiveDb().timeline.queryInterval(timelineNames, interval, null, options);
+    }
+
+    async insertTimelineEntry(timelineName, id, interval) {
+        return await this.#getActiveDb().timeline.insert(timelineName, parseDocumentId(id, 'Document ID'), interval);
+    }
+
+    async removeTimelineEntry(timelineName, id) {
+        return await this.#getActiveDb().timeline.remove(timelineName, parseDocumentId(id, 'Document ID'));
+    }
+
     async hasByChecksumString(checksumString, { context = '/', features = [], attributes } = {}) {
         const db = this.#getActiveDb();
         return await db.hasByChecksumString(checksumString, {

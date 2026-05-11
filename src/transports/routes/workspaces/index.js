@@ -145,6 +145,10 @@ export default async function workspaceRoutes(fastify, options) {
     prefix: '/:id/links',
     onRequest: [resolveWorkspaceAddress]
   });
+  fastify.register(import('./timelines.js'), {
+    prefix: '/:id/timelines',
+    onRequest: [resolveWorkspaceAddress]
+  });
   // List all workspaces
   fastify.get('/', {
     onRequest: [fastify.authenticate]

@@ -3,7 +3,7 @@
 import ResponseObject from '../../ResponseObject.js';
 import { validateUser } from '../../auth/strategies.js';
 
-export default async function treeRoutes(fastify, options) {
+export default async function treeRoutes(fastify, _options) {
   // Add a pre-handler hook to ensure user is authenticated and valid
   fastify.addHook('preHandler', async (request, reply) => {
     try {
@@ -58,6 +58,43 @@ export default async function treeRoutes(fastify, options) {
       }
       const response = new ResponseObject().error('Failed to get context tree');
         return reply.code(response.statusCode).send(response.getResponse());
+    }
+  });
+
+  // Get context tree paths
+  // Path: /paths (relative to /:id/tree)
+  fastify.get('/paths', {
+    onRequest: [fastify.authenticate],
+  }, async (request, reply) => {
+
+    const contextId = request.params.id;
+
+    try {
+      const context = await fastify.contextManager.getContext(request.user.id, contextId);
+      if (!context) {
+        const response = new ResponseObject().notFound(`Context with ID ${contextId} not found`);
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+
+      const workspace = context.workspace;
+      if (!workspace) {
+        fastify.log.error(`Workspace not found or not loaded for context ${contextId}, user ${request.user.id}`);
+        const response = new ResponseObject().error(`Workspace for context ${contextId} is not available.`);
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+
+      const tree = workspace.getTree(context.treeId);
+      const paths = tree.paths;
+      const response = new ResponseObject().found(paths, 'Context tree paths retrieved successfully', 200, paths.length);
+      return reply.code(response.statusCode).send(response.getResponse());
+    } catch (error) {
+      fastify.log.error(`Get tree paths error for context ${contextId}: ${error.message}`);
+      if (error.message.includes('is not active') || error.message.includes('is not active or DB is not initialized')) {
+        const response = new ResponseObject().error(`Workspace for context ${contextId} is not active. Cannot perform tree operation.`);
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+      const response = new ResponseObject().error('Failed to get context tree paths');
+      return reply.code(response.statusCode).send(response.getResponse());
     }
   });
 

@@ -239,6 +239,22 @@ export default async function workspaceTreeRoutes(fastify) {
     }
   });
 
+  fastify.get('/paths', {
+    onRequest: [fastify.authenticate],
+  }, async (request, reply) => {
+    try {
+      const resolved = await getTreeInstance(request, reply);
+      if (!resolved) return;
+      const paths = resolved.tree.paths;
+      const responseObject = new ResponseObject().found(paths, 'Tree paths retrieved successfully', 200, paths.length);
+      return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+    } catch (error) {
+      fastify.log.error(`Get workspace tree paths error for ID ${request.params.id}: ${error.message}`);
+      const responseObject = new ResponseObject().serverError(error.message || 'Failed to get tree paths');
+      return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+    }
+  });
+
   fastify.get('/path/*', {
     onRequest: [fastify.authenticate],
   }, async (request, reply) => {

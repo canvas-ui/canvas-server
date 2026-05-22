@@ -3,7 +3,7 @@
 import ResponseObject from '../../ResponseObject.js';
 import { validateUser } from '../../auth/strategies.js';
 
-export default async function treeRoutes(fastify, _options) {
+export default async function treeRoutes(fastify) {
   // Add a pre-handler hook to ensure user is authenticated and valid
   fastify.addHook('preHandler', async (request, reply) => {
     try {

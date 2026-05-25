@@ -483,9 +483,9 @@ export class WorkspaceStoredIndex {
     #getIncomingRootForBackend(backendName) {
         const config = this.#dataBackends[backendName];
         if (!config?.indexIncoming) return null;
-        if (backendName === HOME_STORED_BACKEND) return `${INCOMING_ROOT_CONTEXT}/file/fs/workspace`;
+        if (backendName === HOME_STORED_BACKEND) return `${INCOMING_ROOT_CONTEXT}/fs/home`;
         const source = String(backendName || '').replace(/[^a-z0-9._:-]+/gi, '-').toLowerCase();
-        return `${INCOMING_ROOT_CONTEXT}/file/${source}`;
+        return `${INCOMING_ROOT_CONTEXT}/${source}`;
     }
 
     #setBackendError(backendName, error) {

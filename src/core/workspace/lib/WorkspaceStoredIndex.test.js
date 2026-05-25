@@ -82,7 +82,7 @@ describe('WorkspaceStoredIndex', () => {
         assert.equal(documents.size, 1);
         const [doc] = documents.values();
         assert.equal(doc.data.path, 'nested/a.txt');
-        assert.deepEqual(documentPaths.get(doc.id), ['/.incoming/file/fs/workspace/nested']);
+        assert.deepEqual(documentPaths.get(doc.id), ['/.incoming/fs/home/nested']);
         assert.equal(index.getBackendStatus('fs:home').running, true);
         assert.ok(index.getBackendStatus('fs:home').lastScanAt);
     });
@@ -96,5 +96,22 @@ describe('WorkspaceStoredIndex', () => {
         await index.resync('fs:home');
 
         assert.deepEqual(documentPaths.get(doc.id), []);
+    });
+
+    test('resync updates incoming paths when a home file moves', async () => {
+        index = createIndex();
+        await index.start();
+        const [doc] = documents.values();
+
+        await fs.ensureDir(path.join(rootPath, 'home', 'renamed'));
+        await fs.move(path.join(rootPath, 'home', 'nested', 'a.txt'), path.join(rootPath, 'home', 'renamed', 'a.txt'));
+        await index.resync('fs:home');
+
+        assert.equal(documents.size, 1);
+        assert.deepEqual(documentPaths.get(doc.id), ['/.incoming/fs/home/renamed']);
+        assert.deepEqual([...documents.values()][0].locations, [
+            { url: 'file://{WORKSPACE_ROOT}/home/renamed/a.txt', metadata: { backend: 'fs:home' } },
+            { url: 'stored://fs:home/renamed/a.txt', metadata: { backend: 'fs:home' } },
+        ]);
     });
 });

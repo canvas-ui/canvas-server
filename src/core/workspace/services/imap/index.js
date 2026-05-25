@@ -14,7 +14,7 @@ const logger = createLogger('imap-service');
 const DEFAULT_FOLDER = 'INBOX';
 const DEFAULT_POLL_INTERVAL = 60000;
 const DEFAULT_MODE = 'poll';
-const DEFAULT_INITIAL_SYNC_DAYS = 30;
+const DEFAULT_INITIAL_SYNC_DAYS = 180;
 const IMAP_FETCH_BATCH_SIZE = 200;
 
 class ImapService extends EventEmitter {

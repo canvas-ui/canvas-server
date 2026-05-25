@@ -8,7 +8,7 @@ function normalizeSegment(value, fallback = 'unknown') {
     .trim()
     .toLowerCase()
     .replace(/\\/g, '/')
-    .replace(/[^a-z0-9._/-]+/g, '-')
+    .replace(/[^a-z0-9._/@-]+/g, '-')
     .replace(/\/+/g, '/')
     .replace(/^-+|-+$/g, '');
 
@@ -58,7 +58,7 @@ function buildIncomingContext(kind, ...segments) {
 }
 
 export function getIncomingEmailContext(provider, accountId, folderName = 'inbox') {
-  return buildIncomingContext('email', provider, accountId, folderName);
+  return `${INCOMING_ROOT_CONTEXT}/${normalizeSegment(provider)}/${normalizeSegment(accountId)}/${normalizeSegment(folderName, 'inbox')}`;
 }
 
 export function getIncomingMessageContext(provider, accountId, channelName) {

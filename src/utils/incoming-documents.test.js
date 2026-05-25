@@ -11,7 +11,7 @@ import {
 test('builds email incoming paths with provider, account, and folder', () => {
   assert.equal(
     getIncomingEmailContext('imap', 'foo@bar.tld', 'Inbox'),
-    '/.incoming/email/imap/foo-bar.tld/inbox'
+    '/.incoming/imap/foo@bar.tld/inbox'
   );
 });
 

@@ -134,6 +134,37 @@ export default async function workspaceImapServiceRoutes(fastify) {
         }
     });
 
+    fastify.post('/mailboxes/folders/:mailboxId', {
+        onRequest: [fastify.authenticate, requireWorkspaceWrite()],
+        schema: {
+            params: {
+                type: 'object',
+                required: ['id', 'mailboxId'],
+                properties: {
+                    id: { type: 'string' },
+                    mailboxId: { type: 'string' },
+                },
+            },
+            body: {
+                type: 'object',
+                required: ['folders'],
+                properties: {
+                    folders: { type: 'array', items: { type: 'string' } },
+                },
+            },
+        },
+    }, async (request, reply) => {
+        try {
+            const mailboxes = await getImapService().subscribeFolders(request.workspace, request.params.mailboxId, request.body?.folders || []);
+            const response = new ResponseObject().success(mailboxes, 'Workspace IMAP folders subscribed successfully', 200, mailboxes.length);
+            return reply.code(response.statusCode).send(response.getResponse());
+        } catch (error) {
+            request.log.error(error);
+            const response = new ResponseObject().badRequest(error.message || 'Failed to subscribe workspace IMAP folders');
+            return reply.code(response.statusCode).send(response.getResponse());
+        }
+    });
+
     fastify.patch('/mailboxes/:mailboxId', {
         onRequest: [fastify.authenticate, requireWorkspaceWrite()],
         schema: {

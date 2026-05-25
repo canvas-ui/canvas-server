@@ -177,6 +177,47 @@ class ImapService extends EventEmitter {
         }));
     }
 
+    async subscribeFolders(workspace, mailboxId, folderPaths = []) {
+        const config = await this.#readConfig(workspace);
+        const sourceMailbox = config.mailboxes.find((entry) => entry.id === String(mailboxId));
+        if (!sourceMailbox) {
+            throw new Error(`Mailbox "${mailboxId}" not found`);
+        }
+
+        const folders = Array.from(new Set(folderPaths.map((folder) => String(folder || '').trim()).filter(Boolean)));
+        const mailboxes = [];
+
+        for (const folder of folders) {
+            let mailbox = config.mailboxes.find((entry) =>
+                entry.host === sourceMailbox.host && entry.user === sourceMailbox.user && entry.folder === folder
+            );
+
+            if (!mailbox) {
+                mailbox = this.#normalizeMailbox({
+                    ...sourceMailbox,
+                    id: this.#generateMailboxId({ ...sourceMailbox, folder }),
+                    folder,
+                    lastUid: 0,
+                    lastSyncAt: null,
+                    lastError: null,
+                });
+                config.mailboxes.push(mailbox);
+            }
+
+            mailboxes.push(mailbox);
+        }
+
+        await this.#writeConfig(workspace, config);
+
+        if (workspace.isServiceEnabled('imap')) {
+            for (const mailbox of mailboxes.filter((entry) => entry.enabled)) {
+                await this.startMailbox(workspace, mailbox.id, { persistEnabled: false, triggerSync: true });
+            }
+        }
+
+        return mailboxes.map((mailbox) => this.#serializeMailbox(workspace.id, mailbox));
+    }
+
     async startMailbox(workspace, mailboxId, options = {}) {
         const { persistEnabled = true, triggerSync = true } = options;
         let mailbox = await this.#getMailboxConfig(workspace, mailboxId);

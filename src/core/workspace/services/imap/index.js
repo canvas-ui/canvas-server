@@ -162,6 +162,21 @@ class ImapService extends EventEmitter {
         };
     }
 
+    async listMailboxFolders(workspace, mailboxId) {
+        const mailbox = await this.#getMailboxConfig(workspace, mailboxId);
+        if (!mailbox) {
+            throw new Error(`Mailbox "${mailboxId}" not found`);
+        }
+        return this.#listFolders(mailbox);
+    }
+
+    async discoverFolders(mailboxInput = {}) {
+        return this.#listFolders(this.#normalizeMailbox({
+            ...mailboxInput,
+            id: mailboxInput.id || 'folder-discovery',
+        }));
+    }
+
     async startMailbox(workspace, mailboxId, options = {}) {
         const { persistEnabled = true, triggerSync = true } = options;
         let mailbox = await this.#getMailboxConfig(workspace, mailboxId);
@@ -513,6 +528,61 @@ class ImapService extends EventEmitter {
             imap.once('error', finish);
             imap.connect();
         });
+    }
+
+    async #listFolders(mailbox) {
+        return new Promise((resolve, reject) => {
+            const imap = new Imap(this.#createImapOptions(mailbox));
+            let finished = false;
+
+            const finish = (error, payload = null) => {
+                if (finished) {
+                    return;
+                }
+                finished = true;
+                try { imap.end(); } catch {}
+                if (error) {
+                    reject(error);
+                    return;
+                }
+                resolve(payload);
+            };
+
+            imap.once('ready', () => {
+                imap.getBoxes((error, boxes) => {
+                    if (error) {
+                        finish(error);
+                        return;
+                    }
+                    finish(null, this.#flattenBoxes(boxes));
+                });
+            });
+
+            imap.once('error', finish);
+            imap.connect();
+        });
+    }
+
+    #flattenBoxes(boxes = {}, parentPath = '', parentDelimiter = '/') {
+        const folders = [];
+        for (const [name, box] of Object.entries(boxes || {})) {
+            const delimiter = box?.delimiter || parentDelimiter || '/';
+            const folderPath = parentPath ? `${parentPath}${delimiter}${name}` : name;
+            const attribs = (box?.attribs || []).map((attrib) => String(attrib).toLowerCase());
+
+            folders.push({
+                name,
+                path: folderPath,
+                delimiter,
+                selectable: !attribs.includes('\\noselect'),
+                attributes: box?.attribs || [],
+            });
+
+            if (box?.children) {
+                folders.push(...this.#flattenBoxes(box.children, folderPath, delimiter));
+            }
+        }
+        return folders.sort((a, b) => a.path.localeCompare(b.path));
     }
 
     async #persistBuffer(workspace, relativePath, buffer) {

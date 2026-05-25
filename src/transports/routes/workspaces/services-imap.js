@@ -64,6 +64,23 @@ export default async function workspaceImapServiceRoutes(fastify) {
         }
     });
 
+    fastify.post('/mailboxes/folders', {
+        onRequest: [fastify.authenticate, requireWorkspaceWrite()],
+        schema: {
+            body: mailboxSchema(['host', 'user', 'password']),
+        },
+    }, async (request, reply) => {
+        try {
+            const folders = await getImapService().discoverFolders(request.body || {});
+            const response = new ResponseObject().found(folders, 'Workspace IMAP folders discovered successfully', 200, folders.length);
+            return reply.code(response.statusCode).send(response.getResponse());
+        } catch (error) {
+            request.log.error(error);
+            const response = new ResponseObject().badRequest(error.message || 'Failed to discover workspace IMAP folders');
+            return reply.code(response.statusCode).send(response.getResponse());
+        }
+    });
+
     fastify.get('/mailboxes/:mailboxId', {
         onRequest: [fastify.authenticate, requireWorkspaceRead()],
         schema: {
@@ -89,6 +106,30 @@ export default async function workspaceImapServiceRoutes(fastify) {
         } catch (error) {
             request.log.error(error);
             const response = new ResponseObject().serverError('Failed to get workspace IMAP mailbox');
+            return reply.code(response.statusCode).send(response.getResponse());
+        }
+    });
+
+    fastify.get('/mailboxes/:mailboxId/folders', {
+        onRequest: [fastify.authenticate, requireWorkspaceRead()],
+        schema: {
+            params: {
+                type: 'object',
+                required: ['id', 'mailboxId'],
+                properties: {
+                    id: { type: 'string' },
+                    mailboxId: { type: 'string' },
+                },
+            },
+        },
+    }, async (request, reply) => {
+        try {
+            const folders = await getImapService().listMailboxFolders(request.workspace, request.params.mailboxId);
+            const response = new ResponseObject().found(folders, 'Workspace IMAP folders retrieved successfully', 200, folders.length);
+            return reply.code(response.statusCode).send(response.getResponse());
+        } catch (error) {
+            request.log.error(error);
+            const response = new ResponseObject().badRequest(error.message || 'Failed to list workspace IMAP folders');
             return reply.code(response.statusCode).send(response.getResponse());
         }
     });

@@ -110,7 +110,7 @@ export default async function workspaceImapServiceRoutes(fastify) {
         }
     });
 
-    fastify.get('/mailboxes/:mailboxId/folders', {
+    fastify.get('/mailboxes/folders/:mailboxId', {
         onRequest: [fastify.authenticate, requireWorkspaceRead()],
         schema: {
             params: {

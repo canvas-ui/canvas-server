@@ -154,8 +154,60 @@ Reuses existing `Stored.get` semantics (`src/index.js:120` finds a synced locati
 
 ## Critical Files
 - `src/services/synapsd/src/schemas/BaseDocument.js` (model ref — no change)
-- `src/services/synapsd/src/schemas/abstractions/Email.js` (drop `storageRef`)
+- `src/services/synapsd/src/schemas/abstractions/Email.js` (drop `storageRef`; `checksumFields: []`)
 - `src/services/synapsd/src/utils/path-helpers.js` (add `parseLocationUrl`)
 - `src/core/workspace/services/imap/index.js` (rewrite persist + emit `locations`)
 - `src/core/workspace/lib/WorkspaceStoredIndex.js` (email layout + `resolve()`)
 - `src/services/stored/src/backends/BackendManager.js` + `StorageBackend.js` (driver registry)
+
+---
+
+## Deletion & Lifecycle Semantics (agreed design — not yet implemented)
+
+### Content-addressable identity
+- **One document per checksum.** `checksumArray[0]` is the primary index key; a re-found blob (same bytes, different location/name) **updates** the existing doc's `locations`/`metadata` — never duplicates.
+- Every abstraction uses `checksumFields: []` (sha256 of content). **Email = raw `.eml` blob hash** (set by the ingest layer). Header identity (messageId/from/…) is NOT the content key — handled later by a contacts/identity index.
+- Consequence: there is no cross-document dedup refcount to maintain — a doc's `locations[]` IS its complete physical reference set.
+
+### Two reference dimensions
+1. **`locations[]`** — physical copies across backends (fs/s3/imap/http). Trimmed by *Destroy*.
+2. **context links** — tree memberships (incoming, `/work/...`). Trimmed by *Remove* (unlink). Separate bitmap, not `locations`.
+
+### Backend capability (drives Destroy)
+Add `capabilities`/`canDelete` to `StorageBackend`:
+| Backend | Delete | On Destroy of that location |
+|---------|--------|-----------------------------|
+| `file` (fs:home, fs:data) | RW | `delete(key)` — removes bytes |
+| `s3` | RW | real delete |
+| `imap` | RW (needs EXPUNGE) | STORE `\Deleted` + EXPUNGE by UID |
+| `http`/`https` | RO | drop the location entry only — no remote call |
+
+### Operations
+| UI | Primitive | Notes |
+|----|-----------|-------|
+| **Remove** (from tree) | `unlink(id, treeSelector)` | non-destructive; default action in curated contexts |
+| **Delete** (from index) | `db.delete(id)` | **warn**, especially once Canvas is the primary index |
+| **Destroy** (from backend[s]) | per-location, capability-driven | user ticks which backends to wipe |
+
+```
+Destroy(doc):
+  list locations (backend, key, capability); user ticks which to wipe
+  for each ticked:
+     if backend.canDelete: await backend.delete(key)   # fs / s3 / imap
+     # RO (http): no remote call
+     remove entry from doc.locations
+  if doc.locations.length == 0:
+     warn if still linked in N contexts → "also removes from N trees"
+     db.delete(doc)          # cascade — no contentless cards
+  else:
+     persist trimmed doc.locations[]
+```
+
+### Tree policy
+- **`.incoming` = read-only mirror.** Source of truth is the backend (mirrored per settings: fetch count, `initialSyncDays`). Context menu + content area expose **Resync only** — no Remove/Delete/Destroy. Resync re-pulls + purges orphans (`#purgeOrphanedPaths`); IMAP needs EXPUNGE/UID-vanished handling to prune server-side deletes locally. Resync-purge of an orphan = Destroy of its local `stored://` location (same machinery).
+- **Curated context trees = decoupled, no resync.** Hand-built model; link only what you care about. Destroy/Delete allowed here behind the flow above.
+
+### Implementation TODO (when greenlit)
+- `StorageBackend.capabilities` + honest `delete()` on file/s3; **IMAP `delete(key)`** (parse `<folder>;UID=<n>` → STORE `\Deleted` + EXPUNGE).
+- `WorkspaceStoredIndex`: `destroy(doc, pickedBackends)` + `referencesOf(checksum)` (locations + context-link count) + resync-purge using the same path.
+- UI: per-tree context-menu gating (incoming = Resync only); Destroy backend-picker dialog; Delete warning.

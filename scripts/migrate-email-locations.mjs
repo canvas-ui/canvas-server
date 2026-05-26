@@ -172,8 +172,9 @@ try {
                 { url: rawUrl, metadata: { backend: EMAIL_BACKEND, synced: true } },
                 { url: provenanceUrl, metadata: { provenance: true } },
             ];
-            const rawChecksumString = `sha256/${rawSha}`;
-            doc.checksumArray = Array.from(new Set([rawChecksumString, ...(doc.checksumArray || [])]));
+            // Re-key to the raw-blob hash as the sole, primary content checksum
+            // (db.put's update path re-indexes checksums: delete old + insert new).
+            doc.checksumArray = [`sha256/${rawSha}`];
             if (newAttachments.length) doc.data.attachments = newAttachments;
             delete doc.data.rawRef;
 

@@ -710,8 +710,9 @@ class ImapService extends EventEmitter {
             { url: rawUrl, metadata: { backend: backendName, size: rawBuffer.length, synced: true } },
             { url: provenanceUrl, metadata: { provenance: true } },
         ];
-        const rawChecksumString = `sha256/${rawChecksum}`;
-        emailDoc.checksumArray = Array.from(new Set([rawChecksumString, ...(emailDoc.checksumArray || [])]));
+        // Raw .eml blob hash is the primary, content-addressable checksum (one
+        // doc per checksum; re-fetched/byte-identical messages dedup here).
+        emailDoc.checksumArray = [`sha256/${rawChecksum}`];
 
         emailDoc.metadata = {
             ...(emailDoc.metadata || {}),

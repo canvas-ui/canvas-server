@@ -1,6 +1,7 @@
 'use strict';
 
 import ResponseObject from '../../ResponseObject.js';
+import { isIncomingContextSpec } from '../../../utils/incoming-documents.js';
 
 export default async function workspaceTreeRoutes(fastify) {
   async function getWorkspaceInstance(request, reply) {
@@ -184,6 +185,12 @@ export default async function workspaceTreeRoutes(fastify) {
 
   async function copyAcrossTrees(workspace, sourceTree, targetTree, fromPath, targetPath, recursive = false, move = false) {
     const normalizedTargetPath = normalizeTreePath(targetPath);
+    if (targetTree.type === 'directory' && isIncomingContextSpec(normalizedTargetPath)) {
+      return { data: null, count: 0, error: 'Incoming directory tree is read-only' };
+    }
+    if (move && sourceTree.type === 'directory' && isIncomingContextSpec(fromPath)) {
+      return { data: null, count: 0, error: 'Incoming directory tree is read-only' };
+    }
     if (!pathNodeView(targetTree, normalizedTargetPath)) {
       return { data: null, count: 0, error: `Target path not found: ${normalizedTargetPath}` };
     }

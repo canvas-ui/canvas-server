@@ -191,6 +191,7 @@ class GraphService extends EventEmitter {
                         const docId = await workspace.put(emailDoc, {
                             directory: workspace.getIncomingTreeSelector(contextSpec),
                             emitEvent: false,
+                            allowIncomingWrite: true,
                         });
                         emailDoc.id = docId;
 

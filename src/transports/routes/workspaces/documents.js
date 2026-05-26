@@ -66,6 +66,18 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     return reply.code(responseObject.statusCode).send(responseObject.getResponse());
   }
 
+  function rejectIncomingWrite(reply, workspace, selector) {
+    if (!selector || !isIncomingContextSpec(selector.path)) return false;
+    try {
+      if (selector.tree && workspace.getTree(selector.tree)?.type !== 'directory') return false;
+    } catch (_) {
+      return false;
+    }
+    const responseObject = new ResponseObject().badRequest('Incoming directory tree is read-only');
+    reply.code(responseObject.statusCode).send(responseObject.getResponse());
+    return true;
+  }
+
   function resolveInsertTarget(workspace, body, isTopLevelArray) {
     if (isTopLevelArray) {
       return { treeType: 'context', selector: workspace.getContextTreeSelector('/') };
@@ -254,6 +266,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
 
       const isTopLevelArray = Array.isArray(request.body);
       const { treeType: insertTreeType, selector: insertSelector } = resolveInsertTarget(workspace, request.body, isTopLevelArray);
+      if (insertTreeType === 'directory' && rejectIncomingWrite(reply, workspace, insertSelector)) return;
       const features = isTopLevelArray ? [] : (request.body.features || []);
       const enforcedFeatures = enforceClientTags(request, features);
 
@@ -424,6 +437,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       }
 
       const { treeType: updateTreeType, selector: updateSelector } = resolveInsertTarget(workspace, request.body, false);
+      if (updateTreeType === 'directory' && rejectIncomingWrite(reply, workspace, updateSelector)) return;
       const result = await workspace.putMany(itemsToUpdate, {
         context: updateTreeType === 'directory' ? null : updateSelector,
         directory: updateTreeType === 'directory' ? updateSelector : null,
@@ -461,6 +475,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return;
       const contextSelector = resolveContextSelector(workspace, request.query, '/');
+      if (rejectIncomingWrite(reply, workspace, contextSelector)) return;
 
       const rawIds = Array.isArray(request.body) ? request.body : [request.body];
       let documentIds;

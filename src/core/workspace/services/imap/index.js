@@ -812,6 +812,7 @@ class ImapService extends EventEmitter {
                             directory: workspace.getIncomingTreeSelector(incomingContext),
                             features: this.#getEmailFeatures(emailDoc, mailbox),
                             emitEvent: true,
+                            allowIncomingWrite: true,
                         });
                         emailDoc.id = docId;
                         emails.push(emailDoc);

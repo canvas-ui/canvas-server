@@ -250,6 +250,7 @@ class ChatService extends EventEmitter {
                                 const docId = await workspace.put(chatDoc, {
                                     directory: workspace.getIncomingTreeSelector(contextSpec),
                                     emitEvent: false,
+                                    allowIncomingWrite: true,
                                 });
                                 chatDoc.id = docId;
 
@@ -332,6 +333,7 @@ class ChatService extends EventEmitter {
                                 const docId = await workspace.put(chatDoc, {
                                     directory: workspace.getIncomingTreeSelector(contextSpec),
                                     emitEvent: false,
+                                    allowIncomingWrite: true,
                                 });
                                 chatDoc.id = docId;
 

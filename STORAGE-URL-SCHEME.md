@@ -116,7 +116,7 @@ AFTER   locations = [
 - `src/core/workspace/lib/WorkspaceStoredIndex.js:30-32,141-161` — allow an RFC-aligned email layout: `dataBackendRoot` for `email` → `path.join(dataPath, 'email')` (not `abstraction/email`); `ensureDataBackend('email')` registers `fs:data:email` at that root. **Add** public `resolve(url, {stream})` dispatching `stored://` (→ `Stored.getBackend`), `file://{WORKSPACE_ROOT}` (→ FS via `ws.rootPath`), `file://<device>` (→ proxy stub), using `parseLocationUrl`.
 - `src/transports/routes/workspaces/home.js:198` + `src/transports/webdav/Virtual*FS.js` — **no change** (already correct `file://{WORKSPACE_ROOT}`).
 - `src/core/workspace/lib/constants.js` — **no change** (no `cache` dir; email lives under existing `data`).
-- One-shot migration script (`scripts/`): scan existing email docs, convert `data.rawRef`/`storageRef` → `locations[]` + `checksumArray`, move/verify files into the new `data/email/<account>/<folder>/` layout, drop legacy fields.
+- No migration: all instances are dev/test (recreate DBs). Legacy `rawRef`/`storageRef` docs are simply abandoned.
 
 ---
 
@@ -148,7 +148,7 @@ Reuses existing `Stored.get` semantics (`src/index.js:120` finds a synced locati
 2. **Home:** drop a file into the WebDAV Home mount; `WorkspaceStoredIndex` emits a `File` doc with `file://{WORKSPACE_ROOT}/home/<rel>` + `stored://fs:home/<rel>` (existing behavior preserved — regression check).
 3. **Resolver round-trip:** `WorkspaceStoredIndex.resolve(url)` returns stream + stat for `stored://`, `file://{WORKSPACE_ROOT}`, and (stub) `file://<device>`.
 4. **Device:** `dotfile push` still yields `file://<uuid>/<path>` (no regression).
-5. **Migration:** dry-run on a copy of a real workspace DB; spot-check 5 emails before/after for correct `locations[]` and intact files.
+5. **Destroy/lifecycle:** wipe a doc's `fs:data` location → bytes gone + index entry deleted (locations emptied); wipe one of several locations → index kept, `locations[]` trimmed; RO `http` location → reference dropped, no remote call.
 
 ---
 
@@ -166,7 +166,8 @@ Reuses existing `Stored.get` semantics (`src/index.js:120` finds a synced locati
 
 ### Content-addressable identity
 - **One document per checksum.** `checksumArray[0]` is the primary index key; a re-found blob (same bytes, different location/name) **updates** the existing doc's `locations`/`metadata` — never duplicates.
-- Every abstraction uses `checksumFields: []` (sha256 of content). **Email = raw `.eml` blob hash** (set by the ingest layer). Header identity (messageId/from/…) is NOT the content key — handled later by a contacts/identity index.
+- The checksum source is per-abstraction (`indexOptions.checksumFields`): blob/whole-data for **file**/**email** (`checksumFields: []` → raw `.eml` blob hash set by the ingest layer); semantic fields elsewhere (**Note** = `data.subject`+`data.content`, **Tab/Website** = `data.url`). Either way it stays the single primary key.
+- For email, header identity (messageId/from/…) is NOT the content key — deferred to a future contacts/identity index.
 - Consequence: there is no cross-document dedup refcount to maintain — a doc's `locations[]` IS its complete physical reference set.
 
 ### Two reference dimensions
@@ -207,7 +208,17 @@ Destroy(doc):
 - **`.incoming` = read-only mirror.** Source of truth is the backend (mirrored per settings: fetch count, `initialSyncDays`). Context menu + content area expose **Resync only** — no Remove/Delete/Destroy. Resync re-pulls + purges orphans (`#purgeOrphanedPaths`); IMAP needs EXPUNGE/UID-vanished handling to prune server-side deletes locally. Resync-purge of an orphan = Destroy of its local `stored://` location (same machinery).
 - **Curated context trees = decoupled, no resync.** Hand-built model; link only what you care about. Destroy/Delete allowed here behind the flow above.
 
-### Implementation TODO (when greenlit)
-- `StorageBackend.capabilities` + honest `delete()` on file/s3; **IMAP `delete(key)`** (parse `<folder>;UID=<n>` → STORE `\Deleted` + EXPUNGE).
-- `WorkspaceStoredIndex`: `destroy(doc, pickedBackends)` + `referencesOf(checksum)` (locations + context-link count) + resync-purge using the same path.
-- UI: per-tree context-menu gating (incoming = Resync only); Destroy backend-picker dialog; Delete warning.
+### Implementation status
+**Architecture decision:** all storage backends live in `stored` (fs/s3/http/imap/…; future mongodb/redis, stored-queries to DB/API). `synapsd` = index only. `workspace` is storage-agnostic. IMAP ingest currently in `canvas-server` ImapService **moves to a stored imap backend** — Phase 1 below builds the read/delete half; Phase 2 (later) moves connect/poll/doc-build via an event-driven indexer (mirrors `FileBackend → WorkspaceStoredIndex`).
+
+**Done:**
+- `StorageBackend.capabilities`/`canDelete` (default RW; `HttpBackend` = read-only). `FileBackend.delete()` already real.
+- `Stored.deleteByUrl(url)` — capability-checked blob delete.
+- `WorkspaceStoredIndex.destroy(doc, {urls})` + `describeLocations(doc)` (per-location deletable flag for the picker); cascade `db.delete` when `locations[]` emptied; lazy backend registration shared with `resolve()`. `Workspace.destroyDocument`/`describeDocumentLocations` passthroughs.
+- **IMAP backend Phase 1** (`stored/backends/imap`): real `get` (fetch raw by UID) + `delete` (STORE `\Deleted` + EXPUNGE by UID, key `<folder>;UID=<n>`), caps `{read, delete, write:false}`. `destroy` routes imap:// via lazy `imap:<account>` registration; creds bridged from `config/imap.json` by `Workspace.#getImapConfig` (injected `getImapConfig`). No creds → reference-drop only.
+
+**Pending:**
+- **IMAP Phase 2:** move connect/poll/watch + `#buildEmailDocument` out of `ImapService` into the stored backend + a workspace indexer; delete `ImapService`. Do after prod ingest is proven stable.
+- `s3` real `delete()` (skeleton today).
+- resync-purge reusing `destroy` for orphaned incoming blobs.
+- UI: per-tree context-menu gating (incoming = Resync only); Destroy backend-picker dialog (uses `describeDocumentLocations`); Delete warning.

@@ -885,6 +885,50 @@ class Workspace extends EventEmitter {
         return this.#storedIndex.resync(backendName);
     }
 
+    /**
+     * Describe a document's locations for a Destroy picker (which can have bytes
+     * removed vs reference-dropped only).
+     */
+    async describeDocumentLocations(doc) {
+        if (!this.#storedIndex?.isRunning) await this.#startStoredIndex();
+        return this.#storedIndex.describeLocations(doc);
+    }
+
+    /**
+     * Destroy a document's blobs (the "Destroy" op). `options.urls` targets
+     * specific locations; default targets all. Removes the doc from the index
+     * when no locations remain. See WorkspaceStoredIndex.destroy.
+     */
+    async destroyDocument(doc, options = {}) {
+        if (!this.#storedIndex?.isRunning) await this.#startStoredIndex();
+        return this.#storedIndex.destroy(doc, options);
+    }
+
+    /**
+     * Resolve IMAP connection credentials for an account (mailbox.user) from
+     * config/imap.json, shaped for the stored ImapBackend. Returns null if not
+     * found — Destroy then treats imap:// locations as reference-drop only.
+     * (Phase 1 bridge; moves into stored backend config in the full migration.)
+     */
+    async #getImapConfig(account) {
+        try {
+            const raw = await fsPromises.readFile(path.join(this.#rootPath, 'config', 'imap.json'), 'utf8');
+            const cfg = JSON.parse(raw);
+            const mailbox = (cfg.mailboxes || []).find((m) => m.user === account);
+            if (!mailbox) return null;
+            return {
+                user: mailbox.user,
+                password: mailbox.password,
+                host: mailbox.host,
+                port: mailbox.port || 993,
+                tls: mailbox.tls !== false,
+                allowSelfSigned: mailbox.allowSelfSigned === true,
+            };
+        } catch {
+            return null;
+        }
+    }
+
     async #startStoredIndex() {
         if (this.#storedIndex?.isRunning) return;
         this.#storedIndex = new WorkspaceStoredIndex({
@@ -899,6 +943,7 @@ class Workspace extends EventEmitter {
             unlink: (id, options = {}, unlinkOptions = {}) => this.unlink(id, options, { ...unlinkOptions, allowIncomingWrite: true }),
             getIncomingTreeSelector: this.getIncomingTreeSelector.bind(this),
             getDb: () => this.#db,
+            getImapConfig: (account) => this.#getImapConfig(account),
         });
         await this.#storedIndex.start();
     }

@@ -55,13 +55,14 @@ export class WorkspaceStoredIndex {
     #unlink;
     #getIncomingTreeSelector;
     #getDb;
+    #getImapConfig;
 
     #stored = null;
     #listeners = [];
     #registeredDataBackends = new Set();
     #backendStatus = new Map();
 
-    constructor({ rootPath, cachePath, dataPath, homePath, dataBackends = {}, workspaceId, logger, put, unlink, getIncomingTreeSelector, getDb }) {
+    constructor({ rootPath, cachePath, dataPath, homePath, dataBackends = {}, workspaceId, logger, put, unlink, getIncomingTreeSelector, getDb, getImapConfig = null }) {
         if (!dataPath || !homePath) throw new Error('dataPath and homePath are required');
         if (!put || !unlink || !getIncomingTreeSelector || !getDb) throw new Error('put, unlink, getIncomingTreeSelector, getDb are required');
 
@@ -76,6 +77,7 @@ export class WorkspaceStoredIndex {
         this.#unlink = unlink;
         this.#getIncomingTreeSelector = getIncomingTreeSelector;
         this.#getDb = getDb;
+        this.#getImapConfig = getImapConfig;
     }
 
     get isRunning() {
@@ -376,10 +378,7 @@ export class WorkspaceStoredIndex {
             if (!this.#stored) throw new Error('WorkspaceStoredIndex is not running');
             // A data backend (e.g. fs:data:email) may not be registered yet —
             // register it lazily so reads work after a fresh start.
-            if (!this.#stored.getBackend(backend) && this.#isDataBackend(backend)) {
-                const abstraction = backend.slice(`${DATA_STORED_BACKEND_PREFIX}:`.length);
-                if (abstraction) await this.ensureDataBackend(abstraction);
-            }
+            await this.#ensureBackendForUrl(backend);
             return this.#stored.getByUrl(url, options);
         }
 
@@ -392,6 +391,133 @@ export class WorkspaceStoredIndex {
         }
 
         throw new Error(`No resolver for scheme: ${scheme}`);
+    }
+
+    // Lazily register a data backend (e.g. fs:data:email) so its locations resolve/delete.
+    async #ensureBackendForUrl(backend) {
+        if (!this.#stored.getBackend(backend) && this.#isDataBackend(backend)) {
+            const abstraction = backend.slice(`${DATA_STORED_BACKEND_PREFIX}:`.length);
+            if (abstraction) await this.ensureDataBackend(abstraction);
+        }
+        return this.#stored.getBackend(backend);
+    }
+
+    // Lazily register an imap backend (imap:<account>) from injected credentials,
+    // so imap:// locations can be EXPUNGEd. Returns the backend or null if no
+    // config resolver / credentials are available.
+    async #ensureImapBackend(account) {
+        const name = `imap:${account}`;
+        let be = this.#stored.getBackend(name);
+        if (be) return be;
+        if (!this.#getImapConfig) return null;
+        const cfg = await this.#getImapConfig(account);
+        if (!cfg) return null;
+        be = this.#stored.addBackend(name, { driver: 'imap', account, ...cfg });
+        return be;
+    }
+
+    /**
+     * Describe each of a document's locations for a Destroy picker: whether its
+     * bytes can actually be removed (RW backend / workspace file) or only its
+     * reference dropped (read-only http, unregistered/foreign backends).
+     * @returns {Promise<Array<{url, scheme, backend, kind, deletable}>>}
+     */
+    async describeLocations(doc) {
+        const out = [];
+        for (const loc of (doc?.locations || [])) {
+            const p = parseLocationUrl(loc?.url);
+            let kind = p?.scheme || 'unknown';
+            let deletable = false;
+            if (p?.scheme === 'stored') {
+                const be = this.#stored ? await this.#ensureBackendForUrl(p.backend) : null;
+                kind = 'stored';
+                deletable = !!be && be.canDelete;
+            } else if (p?.scheme === 'file' && p.backend === '{WORKSPACE_ROOT}') {
+                kind = 'workspace-file';
+                deletable = true;
+            } else if (p?.scheme === 'imap') {
+                // Deletable only if imap credentials are wired (server EXPUNGE).
+                const be = this.#stored ? await this.#ensureImapBackend(p.backend) : null;
+                kind = 'imap';
+                deletable = !!be && be.canDelete;
+            } else if (p?.scheme === 'http' || p?.scheme === 'https') {
+                kind = 'readonly';
+                deletable = false;
+            }
+            out.push({ url: loc.url, scheme: p?.scheme, backend: p?.backend, kind, deletable });
+        }
+        return out;
+    }
+
+    /**
+     * Destroy a document's blobs from backends (the "Destroy" op).
+     *
+     * For each targeted location: RW backend → delete bytes; read-only / foreign
+     * → drop the reference only (no remote mutation). Then trim `locations[]`.
+     * When no locations remain, the document carries no retrievable content, so
+     * it is removed from the index (cascades unlink from all contexts).
+     *
+     * NOTE: imap:// server-side removal (EXPUNGE) is not wired yet — imap
+     * locations are reference-dropped only. file://<deviceId> likewise.
+     *
+     * @param {object} doc                document instance/object with id + locations
+     * @param {{urls?: string[]}} [options]  specific location URLs to target (default: all)
+     * @returns {Promise<{deleted:string[], droppedRefs:string[], kept:string[], docDeleted:boolean}>}
+     */
+    async destroy(doc, options = {}) {
+        if (!this.#stored) throw new Error('WorkspaceStoredIndex is not running');
+        const db = this.#getDb();
+        const locations = Array.isArray(doc?.locations) ? [...doc.locations] : [];
+        const targets = Array.isArray(options.urls) ? new Set(options.urls) : new Set(locations.map((l) => l.url));
+
+        const result = { deleted: [], droppedRefs: [], kept: [], docDeleted: false };
+        const kept = [];
+
+        for (const loc of locations) {
+            if (!targets.has(loc.url)) { kept.push(loc); continue; }
+            const p = parseLocationUrl(loc.url);
+            try {
+                if (p?.scheme === 'stored') {
+                    const be = await this.#ensureBackendForUrl(p.backend);
+                    if (be && be.canDelete) {
+                        await this.#stored.deleteByUrl(loc.url);
+                        result.deleted.push(loc.url);
+                    } else {
+                        // read-only or unknown backend → reference drop only
+                        result.droppedRefs.push(loc.url);
+                    }
+                } else if (p?.scheme === 'file' && p.backend === '{WORKSPACE_ROOT}') {
+                    await fs.rm(path.join(this.#rootPath, p.key), { force: true });
+                    result.deleted.push(loc.url);
+                } else if (p?.scheme === 'imap') {
+                    const be = await this.#ensureImapBackend(p.backend);
+                    if (be && be.canDelete) {
+                        await be.delete(p.key); // STORE \Deleted + EXPUNGE by UID
+                        result.deleted.push(loc.url);
+                    } else {
+                        // no credentials wired → drop reference only
+                        result.droppedRefs.push(loc.url);
+                    }
+                } else {
+                    // http(s) RO, file://<device>, etc. → reference drop only
+                    result.droppedRefs.push(loc.url);
+                }
+            } catch (error) {
+                this.#logger.warn({ workspaceId: this.#workspaceId, url: loc.url, error: error.message }, 'Destroy: location wipe failed; keeping reference');
+                kept.push(loc);
+            }
+        }
+
+        doc.locations = kept;
+        result.kept = kept.map((l) => l.url);
+
+        if (kept.length === 0 && doc?.id != null) {
+            await db.delete(doc.id);
+            result.docDeleted = true;
+        } else if (doc?.id != null) {
+            await this.#put(doc); // persist trimmed locations (update in place)
+        }
+        return result;
     }
 
     #buildLocation(backendName, key) {

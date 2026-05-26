@@ -243,8 +243,10 @@ export default async function workspaceServicesRoutes(fastify, options) {
             const configPath = path.join(configDir, `${serviceName}.json`);
             await fs.writeFile(configPath, JSON.stringify(config, null, 2), 'utf-8');
 
-            if (serviceName === 'imap' && fastify.workspaceManager?.imapService && workspace.isServiceEnabled('imap')) {
-                await fastify.workspaceManager.imapService.reload(workspace);
+            // IMAP mailbox config lives in config/stored.json (managed via the
+            // /services/imap routes); re-arm sources when the service is enabled.
+            if (serviceName === 'imap' && workspace.isServiceEnabled('imap')) {
+                await workspace.enableImap();
             }
 
             const response = new ResponseObject().success({

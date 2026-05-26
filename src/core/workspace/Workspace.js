@@ -905,33 +905,33 @@ class Workspace extends EventEmitter {
     }
 
     /**
-     * Resolve IMAP connection credentials for an account (mailbox.user) from
-     * config/imap.json, shaped for the stored ImapBackend. Returns null if not
-     * found — Destroy then treats imap:// locations as reference-drop only.
-     * (Phase 1 bridge; moves into stored backend config in the full migration.)
+     * Resolve IMAP connection credentials for an account from config/stored.json
+     * (matched by account/user), shaped for the stored ImapBackend. Returns null
+     * if not found — Destroy then treats imap:// locations as reference-drop only.
      */
     async #getImapConfig(account) {
         try {
-            const raw = await fsPromises.readFile(path.join(this.#rootPath, 'config', 'imap.json'), 'utf8');
+            const raw = await fsPromises.readFile(path.join(this.#rootPath, 'config', 'stored.json'), 'utf8');
             const cfg = JSON.parse(raw);
-            const mailbox = (cfg.mailboxes || []).find((m) => m.user === account);
-            if (!mailbox) return null;
+            const entry = Object.values(cfg.backends || {}).find(
+                (b) => b?.driver === 'imap' && (b.account === account || b.user === account),
+            );
+            if (!entry) return null;
             return {
-                user: mailbox.user,
-                password: mailbox.password,
-                host: mailbox.host,
-                port: mailbox.port || 993,
-                tls: mailbox.tls !== false,
-                allowSelfSigned: mailbox.allowSelfSigned === true,
+                user: entry.user,
+                password: entry.password,
+                host: entry.host,
+                port: entry.port || 993,
+                tls: entry.tls !== false,
+                allowSelfSigned: entry.allowSelfSigned === true,
             };
         } catch {
             return null;
         }
     }
 
-    async #startStoredIndex() {
-        if (this.#storedIndex?.isRunning) return;
-        this.#storedIndex = new WorkspaceStoredIndex({
+    #buildStoredIndex() {
+        return new WorkspaceStoredIndex({
             rootPath: this.#rootPath,
             cachePath: this.cachePath,
             dataPath: this.dataPath,
@@ -945,6 +945,11 @@ class Workspace extends EventEmitter {
             getDb: () => this.#db,
             getImapConfig: (account) => this.#getImapConfig(account),
         });
+    }
+
+    async #startStoredIndex() {
+        if (this.#storedIndex?.isRunning) return;
+        this.#storedIndex = this.#buildStoredIndex();
         await this.#storedIndex.start();
     }
 
@@ -953,6 +958,38 @@ class Workspace extends EventEmitter {
         await this.#storedIndex.stop();
         this.#storedIndex = null;
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // IMAP mailboxes — delegated to WorkspaceStoredIndex (config in
+    // config/stored.json, protocol in the stored imap backend).
+    // ─────────────────────────────────────────────────────────────────────────
+
+    async #imap() {
+        if (!this.#storedIndex?.isRunning) await this.#startStoredIndex();
+        return this.#storedIndex;
+    }
+
+    // Read-only view that does NOT boot sources (safe for status polls).
+    #imapReadonly() {
+        return this.#storedIndex?.isRunning ? this.#storedIndex : this.#buildStoredIndex();
+    }
+
+    async listImapMailboxes() { return this.#imapReadonly().listMailboxes(); }
+    async getImapMailbox(id) { return this.#imapReadonly().getMailbox(id); }
+    async getImapStatus() { return this.#imapReadonly().getImapStatus(); }
+    async saveImapMailbox(input) { return (await this.#imap()).saveMailbox(input); }
+    async removeImapMailbox(id) { return (await this.#imap()).removeMailbox(id); }
+    async testImapMailbox(id) { return (await this.#imap()).testMailbox(id); }
+    async listImapMailboxFolders(id) { return (await this.#imap()).listMailboxFolders(id); }
+    async discoverImapFolders(input) { return (await this.#imap()).discoverFolders(input); }
+    async subscribeImapFolders(id, folders) { return (await this.#imap()).subscribeFolders(id, folders); }
+    async syncImapMailbox(id) { return (await this.#imap()).syncMailbox(id); }
+    async startImapMailbox(id) { return (await this.#imap()).startMailbox(id); }
+    async stopImapMailbox(id) { return (await this.#imap()).stopMailbox(id); }
+
+    // Service-level enable/disable for 'imap'.
+    async enableImap() { await this.#startStoredIndex(); return this.getImapStatus(); }
+    async disableImap() { if (this.#storedIndex?.isRunning) await this.#storedIndex.disableImap(); return true; }
 
     // ─────────────────────────────────────────────────────────────────────────
     // Tree setup

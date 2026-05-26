@@ -26,18 +26,14 @@ function mailboxSchema(required = []) {
 }
 
 export default async function workspaceImapServiceRoutes(fastify) {
-    function getImapService() {
-        if (!fastify.workspaceManager?.imapService) {
-            throw new Error('IMAP service not available');
-        }
-        return fastify.workspaceManager.imapService;
-    }
+    // IMAP is owned by the workspace's stored layer; routes delegate to
+    // request.workspace.* (config in config/stored.json, protocol in stored).
 
     fastify.get('/mailboxes', {
         onRequest: [fastify.authenticate, requireWorkspaceRead()],
     }, async (request, reply) => {
         try {
-            const mailboxes = await getImapService().listMailboxes(request.workspace);
+            const mailboxes = await request.workspace.listImapMailboxes();
             const response = new ResponseObject().found(mailboxes, 'Workspace IMAP mailboxes retrieved successfully', 200, mailboxes.length);
             return reply.code(response.statusCode).send(response.getResponse());
         } catch (error) {
@@ -54,7 +50,7 @@ export default async function workspaceImapServiceRoutes(fastify) {
         },
     }, async (request, reply) => {
         try {
-            const mailbox = await getImapService().saveMailbox(request.workspace, request.body || {});
+            const mailbox = await request.workspace.saveImapMailbox(request.body || {});
             const response = new ResponseObject().created(mailbox, 'Workspace IMAP mailbox created successfully');
             return reply.code(response.statusCode).send(response.getResponse());
         } catch (error) {
@@ -71,7 +67,7 @@ export default async function workspaceImapServiceRoutes(fastify) {
         },
     }, async (request, reply) => {
         try {
-            const folders = await getImapService().discoverFolders(request.body || {});
+            const folders = await request.workspace.discoverImapFolders(request.body || {});
             const response = new ResponseObject().found(folders, 'Workspace IMAP folders discovered successfully', 200, folders.length);
             return reply.code(response.statusCode).send(response.getResponse());
         } catch (error) {
@@ -95,7 +91,7 @@ export default async function workspaceImapServiceRoutes(fastify) {
         },
     }, async (request, reply) => {
         try {
-            const mailbox = await getImapService().getMailbox(request.workspace, request.params.mailboxId);
+            const mailbox = await request.workspace.getImapMailbox(request.params.mailboxId);
             if (!mailbox) {
                 const response = new ResponseObject().notFound('Workspace IMAP mailbox not found');
                 return reply.code(response.statusCode).send(response.getResponse());
@@ -124,7 +120,7 @@ export default async function workspaceImapServiceRoutes(fastify) {
         },
     }, async (request, reply) => {
         try {
-            const folders = await getImapService().listMailboxFolders(request.workspace, request.params.mailboxId);
+            const folders = await request.workspace.listImapMailboxFolders(request.params.mailboxId);
             const response = new ResponseObject().found(folders, 'Workspace IMAP folders retrieved successfully', 200, folders.length);
             return reply.code(response.statusCode).send(response.getResponse());
         } catch (error) {
@@ -155,7 +151,7 @@ export default async function workspaceImapServiceRoutes(fastify) {
         },
     }, async (request, reply) => {
         try {
-            const mailboxes = await getImapService().subscribeFolders(request.workspace, request.params.mailboxId, request.body?.folders || []);
+            const mailboxes = await request.workspace.subscribeImapFolders(request.params.mailboxId, request.body?.folders || []);
             const response = new ResponseObject().success(mailboxes, 'Workspace IMAP folders subscribed successfully', 200, mailboxes.length);
             return reply.code(response.statusCode).send(response.getResponse());
         } catch (error) {
@@ -180,7 +176,7 @@ export default async function workspaceImapServiceRoutes(fastify) {
         },
     }, async (request, reply) => {
         try {
-            const mailbox = await getImapService().saveMailbox(request.workspace, {
+            const mailbox = await request.workspace.saveImapMailbox({
                 ...(request.body || {}),
                 id: request.params.mailboxId,
             });
@@ -207,7 +203,7 @@ export default async function workspaceImapServiceRoutes(fastify) {
         },
     }, async (request, reply) => {
         try {
-            const deleted = await getImapService().removeMailbox(request.workspace, request.params.mailboxId);
+            const deleted = await request.workspace.removeImapMailbox(request.params.mailboxId);
             if (!deleted) {
                 const response = new ResponseObject().notFound('Workspace IMAP mailbox not found');
                 return reply.code(response.statusCode).send(response.getResponse());
@@ -236,7 +232,7 @@ export default async function workspaceImapServiceRoutes(fastify) {
         },
     }, async (request, reply) => {
         try {
-            const result = await getImapService().testMailbox(request.workspace, request.params.mailboxId);
+            const result = await request.workspace.testImapMailbox(request.params.mailboxId);
             const response = new ResponseObject().success(result, 'Workspace IMAP mailbox tested successfully');
             return reply.code(response.statusCode).send(response.getResponse());
         } catch (error) {
@@ -260,7 +256,7 @@ export default async function workspaceImapServiceRoutes(fastify) {
         },
     }, async (request, reply) => {
         try {
-            const result = await getImapService().syncMailbox(request.workspace, request.params.mailboxId);
+            const result = await request.workspace.syncImapMailbox(request.params.mailboxId);
             const response = new ResponseObject().success(result, 'Workspace IMAP mailbox synced successfully');
             return reply.code(response.statusCode).send(response.getResponse());
         } catch (error) {
@@ -285,7 +281,7 @@ export default async function workspaceImapServiceRoutes(fastify) {
     }, async (request, reply) => {
         try {
             request.workspace.setServiceConfig('imap', { enabled: true });
-            const result = await getImapService().startMailbox(request.workspace, request.params.mailboxId);
+            const result = await request.workspace.startImapMailbox(request.params.mailboxId);
             const response = new ResponseObject().success(result, 'Workspace IMAP mailbox started successfully');
             return reply.code(response.statusCode).send(response.getResponse());
         } catch (error) {
@@ -309,7 +305,7 @@ export default async function workspaceImapServiceRoutes(fastify) {
         },
     }, async (request, reply) => {
         try {
-            const result = await getImapService().stopMailbox(request.workspace, request.params.mailboxId);
+            const result = await request.workspace.stopImapMailbox(request.params.mailboxId);
             const response = new ResponseObject().success(result, 'Workspace IMAP mailbox stopped successfully');
             return reply.code(response.statusCode).send(response.getResponse());
         } catch (error) {

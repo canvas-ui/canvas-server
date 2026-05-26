@@ -17,7 +17,6 @@ import { createLogger } from '../../utils/log.js';
 import Workspace from './Workspace.js';
 import DotfileManager from './services/dotfile/index.js';
 import HookService from './services/hook/index.js';
-import ImapService from './services/imap/index.js';
 import GraphService from './services/graph/index.js';
 import ChatService from './services/chat/index.js';
 
@@ -122,7 +121,6 @@ class WorkspaceManager extends EventEmitter {
     // Services
     dotfileService = null;
     hookService = null;
-    imapService = null;
     graphService = null;
     chatService = null;
 
@@ -162,12 +160,8 @@ class WorkspaceManager extends EventEmitter {
         });
         await this.hookService.initialize();
 
-        // Initialize Imap Service
-        this.imapService = new ImapService({
-            workspaceManager: this,
-            hookService: this.hookService
-        });
-        await this.imapService.initialize();
+        // IMAP ingest is owned by the stored layer (WorkspaceStoredIndex + the
+        // stored imap backend); no standalone service to initialize.
 
         // Initialize Graph Service
         this.graphService = new GraphService({
@@ -221,7 +215,7 @@ class WorkspaceManager extends EventEmitter {
                 break;
             case 'imap':
             case 'imapSync':
-                result = await this.imapService.enable(workspace);
+                result = await workspace.enableImap();
                 break;
             case 'graph':
                 result = await this.graphService.enable(workspace);
@@ -259,7 +253,7 @@ class WorkspaceManager extends EventEmitter {
                 break;
             case 'imap':
             case 'imapSync':
-                result = await this.imapService.disable(workspace);
+                result = await workspace.disableImap();
                 break;
             default:
                 throw new Error(`Unknown service: ${serviceName}`);
@@ -279,6 +273,7 @@ class WorkspaceManager extends EventEmitter {
         if (!workspace) throw new Error('Workspace not found');
 
         const config = workspace.services;
+        const imapStatus = await workspace.getImapStatus();
 
         return {
             dotfiles: {
@@ -297,10 +292,10 @@ class WorkspaceManager extends EventEmitter {
                 ...config.webdav,
                 initialized: config.home?.enabled === true || config.webdav?.enabled === true,
             },
-            imap: await this.imapService.getWorkspaceStatus(workspace),
+            imap: { ...config.imap, ...imapStatus },
             imapSync: {
                 ...config.imapSync,
-                initialized: this.imapService.isEnabled(workspace),
+                initialized: imapStatus.initialized,
             },
         };
     }

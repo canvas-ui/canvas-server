@@ -1,0 +1,161 @@
+# Unified Storage URL Scheme — Design Spec
+
+## Context
+
+Canvas indexes blobs across heterogeneous backends (workspace home, device FS, S3, HTTP, IMAP, SMB, WebDAV). The data model already supports this: `BaseDocument.locations: [{url, metadata?}]` (schema v2.2) is the source of truth for *where* a blob lives, and `BaseDocument.checksumArray` (`<algo>/<hash>`) is the source of truth for *what* it is.
+
+**The codebase already has a working location-URL convention.** Today, three forms are produced and consumed:
+
+- `stored://<backend>/<key>` — built by `WorkspaceStoredIndex.#buildDocumentLocations` (backends `fs:home`, `fs:data:<abstraction>`); dispatched by the `Stored` service (`src/services/stored`).
+- `file://{WORKSPACE_ROOT}/home/<path>` — built by `routes/workspaces/home.js:198` and `WorkspaceStoredIndex`; resolved by the WebDAV virtual-FS layers via `url.slice(7).replace('{WORKSPACE_ROOT}', ws.rootPath)` (`VirtualContextFS.js:148`, `VirtualDirectoryFS.js:134`, `VirtualNamedContextFS.js:161`).
+- `file://<deviceId>/<path>` — device-local, built by `path-helpers.deviceFileUrl()`.
+
+The real inconsistency is narrow: **Email bypasses `locations[]` entirely.** `src/core/workspace/services/imap/index.js:535-585` writes the raw message to `data/email/raw/<sha>.eml` and attachments to `data/email/attachments/<rawSha>/...`, recording them only in ad-hoc `data.rawRef = {backend, key, checksum}` and per-attachment `storageRef`. `emailDoc.locations` is never set, so emails are invisible to the unified resolver, dedup, and eviction paths.
+
+**Goal:** lock down the *existing* `stored://` + `file://` grammar as the single scheme, bring Email onto it with an RFC-aligned on-disk layout, define remote backends (s3/http/imap/smb/webdav) and a single resolver. This is a design spec; the code changes it describes are a follow-up, executed per-repo.
+
+### Decisions
+1. **Scheme:** extend the existing `stored://` + `file://{WORKSPACE_ROOT}` + `file://<device>` conventions. **No `workspace://` scheme, no `cache/` authority** (not a real workspace dir). Remote sources become named `Stored` backends; the canonical fetch URL is always `stored://<backend>/<key>`. Native RFC URLs (e.g. `imap://…;UID=`, `s3://bucket/key`) may appear as **secondary provenance** entries in `locations[]`.
+2. **Email storage:** route through a `Stored` data backend with an RFC-aligned layout `data/email/<account>/<folder>/<sha256>.eml` (RFC 5322 message bodies; `<account>` = `user@domain`, `<folder>` = URL-encoded IMAP path). Replaces both `data/email/raw/` and the generic `data/abstraction/email/`.
+3. **Cross-repo:** the three affected repos (`canvas-synapsd`, `canvas-stored`, `canvas-server`) are submodules editable in one tree; changes are pushed per-repo. This is one design doc covering all three.
+
+### Facts this spec relies on
+- Checksums in `checksumArray` are `<algo>/<hash>` (sha256), **not** `sha256:<hex>`. The colon form is internal to `Stored` keys only.
+- `rawRef` is **not** in Email's Zod schema (set at runtime via `.passthrough()`); only `attachments[].storageRef`/`url`/`checksum` are declared.
+- IMAP sync lives in **canvas-server**, not synapsd.
+- Home→`locations` is produced by `WorkspaceStoredIndex`, **not** webdav `server.js _handleHome` (which only serves raw FS).
+
+---
+
+## URL Grammar (canonical)
+
+Every `locations[].url` matches one of:
+
+| Scheme | Example | Resolves via | Notes |
+|--------|---------|--------------|-------|
+| `stored://<backend>/<key>` | `stored://fs:data:email/a@b.com/INBOX/9f3..eml` | `Stored.getBackend(backend).get(key)` | **Canonical fetchable form** for all managed blobs |
+| `file://{WORKSPACE_ROOT}/home/<path>` | `file://{WORKSPACE_ROOT}/home/docs/x.pdf` | strip `file://`, sub `{WORKSPACE_ROOT}`→`ws.rootPath`, read FS | Existing WebDAV/home convention — unchanged |
+| `file://<deviceId>/<path>` | `file://jdoe@host/$HOME/.bashrc` | device proxy (future) / local FS | Built by `deviceFileUrl()` |
+| `imap://<account>/<folder>;UID=<n>` | `imap://a@b.com/INBOX;UID=4711` | provenance only (RFC 5092) | Secondary entry; not the fetch URL |
+| `s3://`, `https://`, `smb://`, `webdav://` | `s3://bucket/key` | provenance, or fetch once registered as a backend | |
+
+**Backend names** encode provider+account: `fs:home`, `fs:data:<abstraction>`, `s3:<account>`, `imap:<account>`, etc. (matches `WorkspaceStoredIndex.#buildLocation` derivation).
+
+**Rules:** content checksums live only in `checksumArray`; per-location extras (size, mtime, etag, synced flag, provenance) live in `locations[].metadata`; one checksum → N `locations[]`.
+
+---
+
+## Shape of the change
+
+```mermaid
+flowchart TD
+  subgraph sources[Blob sources]
+    HOME[Home FS watcher]
+    IMAP[IMAP sync]
+    DEV[Device push]
+    REMOTE[S3 / HTTP / SMB]
+  end
+
+  subgraph synapsd[canvas-synapsd]
+    LOC["BaseDocument.locations: url + metadata<br/>checksumArray: algo/hash"]
+    PH["path-helpers: deviceFileUrl + NEW parseLocationUrl"]
+  end
+
+  subgraph server[canvas-server]
+    WSI["WorkspaceStoredIndex<br/>#buildDocumentLocations + NEW resolve(url)"]
+    EMAIL["imap/index.js #buildEmailDocument<br/>(rewrite: drop rawRef, emit locations)"]
+  end
+
+  subgraph stored[canvas-stored]
+    SVC["Stored service: get/put/getBackend/stat"]
+    BM["BackendManager.DRIVERS<br/>+ s3/http/imap/smb/webdav"]
+  end
+
+  HOME --> WSI
+  IMAP --> EMAIL --> WSI
+  DEV --> LOC
+  REMOTE --> BM
+  WSI --> LOC
+  WSI --> SVC --> BM
+  LOC --> WSI
+  PH -.parse.-> WSI
+```
+
+**Email before → after:**
+```
+BEFORE  data.rawRef = {backend:'workspace', key:'data/email/raw/<sha>.eml', checksum:'sha256:<hex>'}
+        attachments[].storageRef = {backend:'workspace', key:'data/email/attachments/<rawSha>/<sha>-<name>'}
+        locations = []                       # email invisible to resolver/dedup
+
+AFTER   locations = [
+          {url:'stored://fs:data:email/<account>/<folder>/<sha>.eml', metadata:{size, synced:true}},
+          {url:'imap://<account>/<folder>;UID=<n>', metadata:{provenance:true}}   # RFC 5092
+        ]
+        checksumArray = ['sha256/<hex>']
+        attachments[] = {filename, contentType, size, checksum:'sha256/<hex>',
+                         url:'stored://fs:data:email/<account>/<folder>/<sha>/<name>'}  # storageRef removed
+```
+
+---
+
+## Files to Touch (cross-repo)
+
+### canvas-synapsd (`src/services/synapsd/`)
+- `src/utils/path-helpers.js` — **add** `parseLocationUrl(url)` → `{scheme, backend, key, query}` (WHATWG `new URL` + scheme conventions; handles `stored://`, `file://{WORKSPACE_ROOT}`, `file://<device>`, `imap://…;UID=`, `s3://`). Keep `deviceFileUrl()`. Do **not** add `workspaceUrl` (scheme rejected).
+- `src/schemas/abstractions/Email.js:74-86` — drop `attachments[].storageRef`; keep `url` + `checksum`. No `rawRef` to remove (not in schema). Bump `DOCUMENT_SCHEMA_VERSION`.
+- `src/schemas/abstractions/File.js:104-110` `resolveUri()` — stays a `{VAR}` expander; full URL→path resolution is the resolver's job (below). No new scheme handling needed.
+- `src/schemas/BaseDocument.js` — **no change** (`locations`/`checksumArray` already present; v2.2).
+
+### canvas-stored (`src/services/stored/`)
+- `src/backends/BackendManager.js:6` — extend `DRIVERS` with `s3`, `http`, `imap`, `smb`, `webdav`.
+- **New** `src/backends/{s3,http,imap}/index.js` — implement `StorageBackend` (`put/get/delete/stat/list`; `get(key,{stream})` like `file/index.js:48`). **Skeletons only** in the first pass.
+- `src/index.js` — optional `getByUrl(url)` helper parsing `stored://<backend>/<key>` → `getBackend(backend).get(key)`. (`get/getBackend/stat/has` already exist.)
+
+### canvas-server (`src/`)
+- `src/core/workspace/services/imap/index.js:518-585` — rewrite `#persistBuffer`/`#buildEmailDocument`: persist via the email data backend at `data/email/<account>/<folder>/<sha>.eml` (account=`mailbox.user`, folder=URL-encoded `box.name`); set `emailDoc.locations` (canonical `stored://fs:data:email/…` + provenance `imap://…;UID=`); push `sha256/<hex>` to `checksumArray`; **delete** `data.rawRef`; rewrite attachments to `url` (stored://) + `checksum` only.
+- `src/core/workspace/lib/WorkspaceStoredIndex.js:30-32,141-161` — allow an RFC-aligned email layout: `dataBackendRoot` for `email` → `path.join(dataPath, 'email')` (not `abstraction/email`); `ensureDataBackend('email')` registers `fs:data:email` at that root. **Add** public `resolve(url, {stream})` dispatching `stored://` (→ `Stored.getBackend`), `file://{WORKSPACE_ROOT}` (→ FS via `ws.rootPath`), `file://<device>` (→ proxy stub), using `parseLocationUrl`.
+- `src/transports/routes/workspaces/home.js:198` + `src/transports/webdav/Virtual*FS.js` — **no change** (already correct `file://{WORKSPACE_ROOT}`).
+- `src/core/workspace/lib/constants.js` — **no change** (no `cache` dir; email lives under existing `data`).
+- One-shot migration script (`scripts/`): scan existing email docs, convert `data.rawRef`/`storageRef` → `locations[]` + `checksumArray`, move/verify files into the new `data/email/<account>/<folder>/` layout, drop legacy fields.
+
+---
+
+## Resolver
+
+Single entry point on `WorkspaceStoredIndex` (holds the `Stored` instance + workspace paths). `resolve(url, {stream})` → buffer/stream + stat:
+
+| URL scheme | Dispatch |
+|------------|----------|
+| `stored://<backend>/<key>` | `this.#stored.getBackend(backend).get(key, {stream})` |
+| `file://{WORKSPACE_ROOT}/<path>` | substitute `ws.rootPath`, `fs.readFile`/`createReadStream` |
+| `file://<deviceId>/<path>` | local FS if current device else device-proxy stub |
+| `imap://`, `s3://`, `http(s)://` | provenance-only unless a matching backend is registered, then route through `Stored` |
+
+Reuses existing `Stored.get` semantics (`src/index.js:120` finds a synced location and streams).
+
+---
+
+## Out of Scope (first pass)
+- Full s3/http/smb/webdav driver impl — interfaces/skeletons only.
+- Device-proxy fetch for `file://<deviceId>` of a remote device.
+- Cross-workspace URLs (deferred until a real use case).
+- Frontend/REST surface — unchanged.
+
+---
+
+## Verification (when code lands)
+1. **Email ingest:** sync an IMAP folder; assert `email.locations[0].url === 'stored://fs:data:email/<account>/<folder>/<sha>.eml'`, file exists at `<data>/email/<account>/<folder>/<sha>.eml`, a provenance `imap://…;UID=` entry exists, `data.rawRef` is gone, `checksumArray` has `sha256/<hex>`, attachments have `url`+`checksum` and no `storageRef`.
+2. **Home:** drop a file into the WebDAV Home mount; `WorkspaceStoredIndex` emits a `File` doc with `file://{WORKSPACE_ROOT}/home/<rel>` + `stored://fs:home/<rel>` (existing behavior preserved — regression check).
+3. **Resolver round-trip:** `WorkspaceStoredIndex.resolve(url)` returns stream + stat for `stored://`, `file://{WORKSPACE_ROOT}`, and (stub) `file://<device>`.
+4. **Device:** `dotfile push` still yields `file://<uuid>/<path>` (no regression).
+5. **Migration:** dry-run on a copy of a real workspace DB; spot-check 5 emails before/after for correct `locations[]` and intact files.
+
+---
+
+## Critical Files
+- `src/services/synapsd/src/schemas/BaseDocument.js` (model ref — no change)
+- `src/services/synapsd/src/schemas/abstractions/Email.js` (drop `storageRef`)
+- `src/services/synapsd/src/utils/path-helpers.js` (add `parseLocationUrl`)
+- `src/core/workspace/services/imap/index.js` (rewrite persist + emit `locations`)
+- `src/core/workspace/lib/WorkspaceStoredIndex.js` (email layout + `resolve()`)
+- `src/services/stored/src/backends/BackendManager.js` + `StorageBackend.js` (driver registry)

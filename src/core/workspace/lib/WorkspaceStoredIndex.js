@@ -2,7 +2,9 @@
 
 import path from 'path';
 import fs from 'fs/promises';
+import { createReadStream } from 'fs';
 import Stored from '../../../services/stored/src/index.js';
+import { parseLocationUrl } from '../../../services/synapsd/src/utils/path-helpers.js';
 import { INCOMING_ROOT_CONTEXT } from '../../../utils/incoming-documents.js';
 
 /*
@@ -30,6 +32,9 @@ export class WorkspaceStoredIndex {
     }
 
     static dataBackendRoot(dataPath, abstraction) {
+        // Email uses an RFC-aligned layout rooted directly at data/email/<account>/<folder>/…
+        // (RFC 5322 bodies) instead of the generic data/abstraction/<x> tree.
+        if (abstraction === 'email') return path.join(dataPath, 'email');
         return path.join(dataPath, 'abstraction', abstraction);
     }
 
@@ -347,6 +352,46 @@ export class WorkspaceStoredIndex {
         return allowFallback && storedFile.backend && storedFile.key
             ? [this.#buildLocation(storedFile.backend, storedFile.key)]
             : [];
+    }
+
+    /**
+     * Resolve a `locations[].url` to its bytes (Buffer, or a stream with
+     * { stream: true }). Single entry point for the unified URL grammar.
+     *
+     *   stored://<backend>/<key>      → Stored backend (data backends are
+     *                                   registered on demand)
+     *   file://{WORKSPACE_ROOT}/<p>   → workspace FS (substitutes rootPath)
+     *   file://<deviceId>/<p>         → NOT IMPLEMENTED (device-proxy stub)
+     *
+     * @param {string} url
+     * @param {{stream?: boolean}} [options]
+     * @returns {Promise<Buffer|ReadStream|null>}
+     */
+    async resolve(url, options = {}) {
+        const parsed = parseLocationUrl(url);
+        if (!parsed) throw new Error(`Unparseable location URL: ${url}`);
+        const { scheme, backend, key } = parsed;
+
+        if (scheme === 'stored') {
+            if (!this.#stored) throw new Error('WorkspaceStoredIndex is not running');
+            // A data backend (e.g. fs:data:email) may not be registered yet —
+            // register it lazily so reads work after a fresh start.
+            if (!this.#stored.getBackend(backend) && this.#isDataBackend(backend)) {
+                const abstraction = backend.slice(`${DATA_STORED_BACKEND_PREFIX}:`.length);
+                if (abstraction) await this.ensureDataBackend(abstraction);
+            }
+            return this.#stored.getByUrl(url, options);
+        }
+
+        if (scheme === 'file') {
+            if (backend === '{WORKSPACE_ROOT}') {
+                const abs = path.join(this.#rootPath, key);
+                return options.stream ? createReadStream(abs) : fs.readFile(abs);
+            }
+            throw new Error(`Device-proxy resolution not implemented for ${url}`);
+        }
+
+        throw new Error(`No resolver for scheme: ${scheme}`);
     }
 
     #buildLocation(backendName, key) {

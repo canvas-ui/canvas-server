@@ -9,6 +9,7 @@ import { simpleParser } from 'mailparser';
 import { createLogger } from '../../../../utils/log.js';
 import { getIncomingEmailContext } from '../../../../utils/incoming-documents.js';
 import Email from '../../../../services/synapsd/src/schemas/abstractions/Email.js';
+import { WorkspaceStoredIndex } from '../../lib/WorkspaceStoredIndex.js';
 
 const logger = createLogger('imap-service');
 const DEFAULT_FOLDER = 'INBOX';
@@ -626,11 +627,18 @@ class ImapService extends EventEmitter {
         return folders.sort((a, b) => a.path.localeCompare(b.path));
     }
 
-    async #persistBuffer(workspace, relativePath, buffer) {
-        const filePath = path.join(workspace.dataPath, relativePath);
+    // Backend name + on-disk root for the workspace email data store.
+    // Layout: <dataPath>/email/<account>/<folder>/<sha>.eml  (RFC-aligned)
+    #emailBackendName() {
+        return WorkspaceStoredIndex.dataBackendName('email'); // 'fs:data:email'
+    }
+
+    async #persistEmailBlob(workspace, key, buffer) {
+        const root = WorkspaceStoredIndex.dataBackendRoot(workspace.dataPath, 'email');
+        const filePath = path.join(root, key);
         await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
         await fs.promises.writeFile(filePath, buffer);
-        return path.posix.join('data', relativePath.split(path.sep).join('/'));
+        return key;
     }
 
     #createChecksum(buffer) {
@@ -643,12 +651,27 @@ class ImapService extends EventEmitter {
         return sanitized || fallback;
     }
 
-    async #buildEmailDocument(workspace, parsed, rawBuffer, imapMetadata = {}) {
-        const rawChecksum = this.#createChecksum(rawBuffer);
-        const rawRelativePath = path.join('email', 'raw', `${rawChecksum}.eml`);
-        const rawKey = await this.#persistBuffer(workspace, rawRelativePath, rawBuffer);
+    // <account> kept human-readable (user@domain); only path-dangerous chars stripped.
+    #safeAccount(value) {
+        return String(value || 'unknown').replace(/[/\\]+/g, '_').trim() || 'unknown';
+    }
 
-        const attachmentBasePath = path.join('email', 'attachments', rawChecksum);
+    // <folder> = URL-encoded IMAP path, hierarchy separators preserved.
+    #encodeFolder(value) {
+        return String(value || 'INBOX').split('/').map(encodeURIComponent).join('/') || 'INBOX';
+    }
+
+    async #buildEmailDocument(workspace, parsed, rawBuffer, imapMetadata = {}) {
+        const backendName = this.#emailBackendName();
+        const rawChecksum = this.#createChecksum(rawBuffer);
+        const account = this.#safeAccount(imapMetadata.accountId);
+        const folder = this.#encodeFolder(imapMetadata.folderPath || imapMetadata.folderName);
+
+        const rawKey = path.posix.join(account, folder, `${rawChecksum}.eml`);
+        await this.#persistEmailBlob(workspace, rawKey, rawBuffer);
+        const rawUrl = `stored://${backendName}/${rawKey}`;
+
+        // Attachments live in a per-email directory keyed by the raw message hash.
         const attachments = [];
         for (const attachment of parsed.attachments || []) {
             const content = Buffer.isBuffer(attachment.content)
@@ -656,8 +679,8 @@ class ImapService extends EventEmitter {
                 : Buffer.from(attachment.content || '');
             const checksum = this.#createChecksum(content);
             const fileName = this.#safeFileName(attachment.filename, `${checksum}.bin`);
-            const attachmentRelativePath = path.join(attachmentBasePath, `${checksum}-${fileName}`);
-            const attachmentKey = await this.#persistBuffer(workspace, attachmentRelativePath, content);
+            const attachmentKey = path.posix.join(account, folder, rawChecksum, fileName);
+            await this.#persistEmailBlob(workspace, attachmentKey, content);
 
             attachments.push({
                 filename: attachment.filename || fileName,
@@ -665,12 +688,8 @@ class ImapService extends EventEmitter {
                 size: attachment.size,
                 contentId: attachment.contentId,
                 isInline: attachment.contentDisposition === 'inline',
-                checksum: `sha256:${checksum}`,
-                url: attachmentKey,
-                storageRef: {
-                    backend: 'workspace',
-                    key: attachmentKey,
-                },
+                checksum: `sha256/${checksum}`,
+                url: `stored://${backendName}/${attachmentKey}`,
             });
         }
 
@@ -681,11 +700,19 @@ class ImapService extends EventEmitter {
             path: imapMetadata.folderPath || emailDoc.data.folder?.path,
             name: imapMetadata.folderName || emailDoc.data.folder?.name,
         };
-        emailDoc.data.rawRef = {
-            backend: 'workspace',
-            key: rawKey,
-            checksum: `sha256:${rawChecksum}`,
-        };
+
+        // Unified storage addressing (replaces ad-hoc data.rawRef):
+        //  - canonical fetchable location (stored://) + RFC 5092 provenance (imap://)
+        //  - raw-blob checksum added to the document's checksumArray
+        const uid = Number(imapMetadata.uid) || null;
+        const provenanceUrl = `imap://${account}/${folder}${uid ? `;UID=${uid}` : ''}`;
+        emailDoc.locations = [
+            { url: rawUrl, metadata: { backend: backendName, size: rawBuffer.length, synced: true } },
+            { url: provenanceUrl, metadata: { provenance: true } },
+        ];
+        const rawChecksumString = `sha256/${rawChecksum}`;
+        emailDoc.checksumArray = Array.from(new Set([rawChecksumString, ...(emailDoc.checksumArray || [])]));
+
         emailDoc.metadata = {
             ...(emailDoc.metadata || {}),
             source: 'imap',

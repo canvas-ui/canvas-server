@@ -131,8 +131,7 @@ export class WorkspaceStoredIndex {
 
         try {
             this.#stored = new Stored({
-                index: { path: path.join(this.#dataPath, 'stored-index') },
-                cache: { path: this.#cachePath },
+                root: path.join(this.#rootPath, '.stored'),
                 checksums: ['sha256', 'md5'],
                 primaryChecksum: 'sha256',
             });

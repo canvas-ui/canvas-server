@@ -158,34 +158,6 @@ class Workspace extends EventEmitter {
         this.emit('services.changed', { service: serviceName, config: services[serviceName] });
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // UI Configuration
-    // ─────────────────────────────────────────────────────────────────────────
-
-    setIcon(url) {
-        if (url == null || url === '') {
-            this.#configStore.set('icon', null);
-            this.emit('icon.changed', { id: this.id, icon: null });
-            return true;
-        }
-        if (typeof url !== 'string') return false;
-        this.#configStore.set('icon', url);
-        this.emit('icon.changed', { id: this.id, icon: url });
-        return true;
-    }
-
-    setHomeScreen(homeScreen) {
-        if (homeScreen == null) {
-            this.#configStore.set('homeScreen', {});
-            this.emit('homeScreen.changed', { id: this.id, homeScreen: {} });
-            return true;
-        }
-        if (typeof homeScreen !== 'object' || Array.isArray(homeScreen)) return false;
-        this.#configStore.set('homeScreen', homeScreen);
-        this.emit('homeScreen.changed', { id: this.id, homeScreen });
-        return true;
-    }
-
     setPublicCanvasShares(shares) {
         if (!shares || typeof shares !== 'object' || Array.isArray(shares)) return false;
         this.#configStore.set('publicCanvasShares', shares);

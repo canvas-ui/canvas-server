@@ -191,6 +191,59 @@ export class WorkspaceStoredIndex {
         return backendName;
     }
 
+    /**
+     * Apply a data-backend config change to the running stored runtime. Lets
+     * the UI flip `enabled` / `watch` without a workspace restart.
+     *   - enabled: register & start (and resync if supported) / unregister
+     *   - watch: start/stop chokidar on the live backend
+     * Other fields just update the cached config (read by #shouldIndexIncoming
+     * et al.) and take effect on the next event.
+     */
+    async applyBackendConfig(name, fullConfig = {}, patch = {}) {
+        if (!this.#stored) return;
+        this.#dataBackends = { ...this.#dataBackends, [name]: fullConfig };
+
+        if (name === CACHE_BACKEND) return;
+
+        const isFile = fullConfig.driver === 'file' && fullConfig.supported !== false;
+
+        if ('enabled' in patch) {
+            const live = this.#stored.getBackend(name);
+            if (patch.enabled && !live && isFile) {
+                this.#stored.addBackend(name, {
+                    ...fullConfig,
+                    root: this.#resolveBackendRoot(name, fullConfig),
+                    provider: fullConfig.provider || 'fs',
+                    account: fullConfig.account || 'workspace',
+                    container: fullConfig.container || (name === HOME_STORED_BACKEND ? 'home' : 'data'),
+                });
+                this.#backendStatus.set(name, { lastScanAt: null, lastError: null });
+                if (fullConfig.resync) {
+                    await this.resync(name).catch((err) => this.#setBackendError(name, err));
+                }
+            } else if (!patch.enabled && live) {
+                await live.stop?.().catch(() => {});
+                this.#stored.removeBackend?.(name);
+                this.#backendStatus.delete(name);
+            }
+        }
+
+        if ('watch' in patch) {
+            const live = this.#stored.getBackend(name);
+            if (live) {
+                if (patch.watch && !live.watching) {
+                    await live.watch?.();
+                    // Catch up on anything that landed while watch was off
+                    if (fullConfig.resync) {
+                        await this.resync(name).catch((err) => this.#setBackendError(name, err));
+                    }
+                } else if (!patch.watch && live.watching) {
+                    await live.stop?.();
+                }
+            }
+        }
+    }
+
     async #registerConfiguredBackends() {
         for (const [backendName, config] of Object.entries(this.#dataBackends || {})) {
             if (!config?.enabled || config.supported === false || config.driver !== 'file') continue;

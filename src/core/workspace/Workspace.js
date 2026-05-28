@@ -144,11 +144,17 @@ class Workspace extends EventEmitter {
         return this.services[serviceName]?.enabled === true;
     }
 
-    setDataBackendConfig(backendName, config) {
+    async setDataBackendConfig(backendName, patch) {
         const dataBackends = this.dataBackends;
-        dataBackends[backendName] = { ...dataBackends[backendName], ...config };
+        const next = { ...dataBackends[backendName], ...patch };
+        dataBackends[backendName] = next;
         this.#configStore.set('dataBackends', dataBackends);
-        this.emit('dataBackends.changed', { backend: backendName, config: dataBackends[backendName] });
+        this.emit('dataBackends.changed', { backend: backendName, config: next });
+        if (this.#storedIndex?.isRunning) {
+            await this.#storedIndex.applyBackendConfig(backendName, next, patch).catch((err) =>
+                this.#logger.warn({ workspaceId: this.id, backend: backendName, error: err.message }, 'Failed to apply data-backend config'),
+            );
+        }
     }
 
     setServiceConfig(serviceName, config) {
@@ -760,12 +766,12 @@ class Workspace extends EventEmitter {
 
     async startHomeService() {
         if (!this.isActive) return;
-        this.setDataBackendConfig(WorkspaceStoredIndex.HOME_STORED_BACKEND, { enabled: true });
+        await this.setDataBackendConfig(WorkspaceStoredIndex.HOME_STORED_BACKEND, { enabled: true });
         await this.#startStoredIndex();
     }
 
     async stopHomeService() {
-        this.setDataBackendConfig(WorkspaceStoredIndex.HOME_STORED_BACKEND, { enabled: false });
+        await this.setDataBackendConfig(WorkspaceStoredIndex.HOME_STORED_BACKEND, { enabled: false });
         await this.#stopStoredIndex();
     }
 

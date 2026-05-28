@@ -1,9 +1,10 @@
 'use strict';
 
 import path from 'path';
-import { existsSync, createReadStream } from 'fs';
+import { createReadStream } from 'fs';
 import { stat as fsStat } from 'fs/promises';
 import schemaRegistry from '../../services/synapsd/src/schemas/SchemaRegistry.js';
+import { docName as sharedDocName, norm as sharedNorm, localPath as sharedLocalPath } from './vfs-shared.js';
 
 /**
  * Virtual filesystem for a named context's WebDAV view.
@@ -154,40 +155,15 @@ export default class VirtualNamedContextFS {
     }
 
     #localPath(doc) {
-        const ws = this.#ctx.workspace;
-        if (!ws) return null;
-        const urls = (doc.locations || []).map((l) => l.url);
-        for (const url of urls) {
-            if (!url.startsWith('file://')) continue;
-            const p = url.slice(7).replace('{WORKSPACE_ROOT}', ws.rootPath);
-            if (existsSync(p)) return p;
-        }
-        return null;
+        return sharedLocalPath(doc, this.#ctx.workspace?.rootPath);
     }
 }
 
 // ── Module-level helpers ────────────────────────────────────────────────────
 
-function norm(p) {
-    if (!p || p === '/') return '/';
-    let n = p.startsWith('/') ? p : '/' + p;
-    if (n !== '/' && n.endsWith('/')) n = n.slice(0, -1);
-    return n;
-}
-
-function docName(doc) {
-    if (doc.data?.filename) return doc.data.filename;
-    if (doc.data?.title) return `${sanitize(doc.data.title)}.json`;
-    if (doc.data?.subject) return `${sanitize(doc.data.subject)}.json`;
-    if (doc.data?.url) return `${sanitize(doc.data.url)}.json`;
-    const schema = (doc.schema || 'doc').split('/').pop();
-    return `${schema}_${doc.id}.json`;
-}
+const norm = sharedNorm;
+const docName = sharedDocName;
 
 function docContentType(doc) {
     return doc.data?.mime || doc.metadata?.contentType || 'application/octet-stream';
-}
-
-function sanitize(s) {
-    return String(s).replace(/[/\\:*?"<>|]/g, '_').slice(0, 100);
 }

@@ -627,18 +627,17 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     }
   });
 
-  // ── Evict documents from storage backends ───────────────────────────────
+  // ── Destroy documents (storage-level wipe via Stored) ───────────────────
   //
-  // Removes files physically from one or more storage backends.
-  // When all backends are cleared the document is also deleted from the DB.
-  // When only some backends are cleared the DB record is updated to reflect
-  // the remaining locations.
+  // Removes blobs through Stored.deleteByUrl for every targeted location
+  // (RW backends only; read-only locations are reference-dropped). When the
+  // document has no remaining locations the index entry is cascaded as well.
   //
-  // Body: { documentIds: number[], backends?: string[] }
-  //   backends omitted   → evict from all backends (rejected if >1 backend)
-  //   backends specified → evict only those backends
+  // Body: { documentIds: number[], urls?: string[] }
+  //   urls omitted   → destroy all locations on each doc
+  //   urls specified → destroy only those location URLs (must belong to the doc)
 
-  fastify.delete('/evict', {
+  fastify.delete('/destroy', {
     onRequest: [fastify.authenticate],
     schema: {
       params: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } },
@@ -651,10 +650,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
             items: { anyOf: [{ type: 'string' }, { type: 'number' }] },
             minItems: 1,
           },
-          backends: {
-            type: 'array',
-            items: { type: 'string' },
-          },
+          urls: { type: 'array', items: { type: 'string' } },
         },
       },
     },
@@ -663,42 +659,33 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return;
 
-      const { documentIds: rawIds, backends = null } = request.body;
+      const { documentIds: rawIds, urls = null } = request.body;
       let documentIds;
       try {
         documentIds = parseDocumentIdArray(rawIds, 'Document ID array');
       } catch (e) {
-        const responseObject = new ResponseObject().badRequest(e.message);
-        return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+        const r = new ResponseObject().badRequest(e.message);
+        return reply.code(r.statusCode).send(r.getResponse());
       }
 
-      const result = await workspace.evictDocumentsFromBackends(documentIds, { backends });
-
-      if (result.failed?.length) {
-        fastify.log.warn({
-          workspace: request.params.id,
-          userId: request.user?.id,
-          op: 'workspace.documents.evict',
-          requested: documentIds.length,
-          successful: result.successful?.length || 0,
-          failed: result.failed?.length || 0,
-          failedSamples: (result.failed || []).slice(0, 5),
-        }, 'Workspace document evict had failures');
+      const results = { successful: [], failed: [] };
+      for (const id of documentIds) {
+        try {
+          const doc = await workspace.get(id);
+          if (!doc) { results.failed.push({ id, reason: 'not found' }); continue; }
+          const res = await workspace.destroyDocument(doc, urls ? { urls } : {});
+          results.successful.push({ id, ...res });
+        } catch (err) {
+          results.failed.push({ id, reason: err.message });
+        }
       }
 
-      const total = (result.successful?.length || 0) + (result.skipped?.length || 0);
-      const message = total > 0
-        ? `Evicted ${result.successful?.length || 0} document(s) from backends`
-        : result.failed?.length > 0
-          ? 'Eviction failed — see result for details'
-          : 'No documents evicted';
-
-      const responseObject = new ResponseObject().success(result, message);
-      return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+      const r = new ResponseObject().success(results, `Destroyed ${results.successful.length} document(s)`);
+      return reply.code(r.statusCode).send(r.getResponse());
     } catch (error) {
       fastify.log.error(error);
-      const responseObject = new ResponseObject().serverError('Failed to evict documents from backends');
-      return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+      const r = new ResponseObject().serverError('Failed to destroy documents');
+      return reply.code(r.statusCode).send(r.getResponse());
     }
   });
 
@@ -735,6 +722,73 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       fastify.log.error(error);
       const responseObject = new ResponseObject().serverError('Failed to get document');
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+    }
+  });
+
+  // ── Get document content (stream bytes from first reachable location) ──
+
+  fastify.get('/:docId/content', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      params: { type: 'object', required: ['id', 'docId'], properties: { id: { type: 'string' }, docId: { type: 'string' } } },
+      querystring: { type: 'object', properties: { download: { type: 'string' }, url: { type: 'string' } } },
+    },
+  }, async (request, reply) => {
+    try {
+      const workspace = await getWorkspaceInstance(request, reply);
+      if (!workspace) return;
+
+      let documentId;
+      try { documentId = parseDocumentId(request.params.docId, 'Document ID parameter'); }
+      catch (e) { const r = new ResponseObject().badRequest(e.message); return reply.code(r.statusCode).send(r.getResponse()); }
+
+      const doc = await workspace.get(documentId);
+      if (!doc) { const r = new ResponseObject().notFound('Document not found'); return reply.code(r.statusCode).send(r.getResponse()); }
+
+      const resolved = await workspace.resolveDocument(doc, { stream: true, url: request.query.url });
+      if (!resolved) { const r = new ResponseObject().notFound('No reachable location'); return reply.code(r.statusCode).send(r.getResponse()); }
+
+      const mime = doc.data?.mime || doc.metadata?.contentType || 'application/octet-stream';
+      const filename = doc.data?.filename || `document-${documentId}`;
+      reply.header('Content-Type', mime);
+      if (doc.data?.size) reply.header('Content-Length', doc.data.size);
+      if (request.query.download !== undefined) {
+        reply.header('Content-Disposition', `attachment; filename="${filename}"`);
+      }
+      return reply.send(resolved.stream || resolved.buffer);
+    } catch (error) {
+      fastify.log.error(error);
+      const r = new ResponseObject().serverError('Failed to read document content');
+      return reply.code(r.statusCode).send(r.getResponse());
+    }
+  });
+
+  // ── Describe document locations (Destroy picker) ────────────────────────
+
+  fastify.get('/:docId/locations', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      params: { type: 'object', required: ['id', 'docId'], properties: { id: { type: 'string' }, docId: { type: 'string' } } },
+    },
+  }, async (request, reply) => {
+    try {
+      const workspace = await getWorkspaceInstance(request, reply);
+      if (!workspace) return;
+
+      let documentId;
+      try { documentId = parseDocumentId(request.params.docId, 'Document ID parameter'); }
+      catch (e) { const r = new ResponseObject().badRequest(e.message); return reply.code(r.statusCode).send(r.getResponse()); }
+
+      const doc = await workspace.get(documentId);
+      if (!doc) { const r = new ResponseObject().notFound('Document not found'); return reply.code(r.statusCode).send(r.getResponse()); }
+
+      const locations = await workspace.describeDocumentLocations(doc);
+      const r = new ResponseObject().found(locations, 'Document locations described');
+      return reply.code(r.statusCode).send(r.getResponse());
+    } catch (error) {
+      fastify.log.error(error);
+      const r = new ResponseObject().serverError('Failed to describe document locations');
+      return reply.code(r.statusCode).send(r.getResponse());
     }
   });
 

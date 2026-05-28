@@ -1,16 +1,14 @@
 'use strict';
 
 import path from 'path';
-import { existsSync, createReadStream } from 'fs';
+import { createReadStream } from 'fs';
 import { stat as fsStat } from 'fs/promises';
+import { docName, inferDocFromFile, localPath, mimeFor, norm } from './vfs-shared.js';
 
 /**
  * Virtual filesystem adapter for the workspace DirectoryTree (VFS).
- * Maps traditional path-based directory structure to a FS-like interface
- * for WebDAV browsing.
- *
- * DirectoryTree nodes → directories
- * Documents at each path → files
+ * Same shape as VirtualContextFS but indexed via the directory tree's
+ * path bitmap (find/OIDs → docs).
  */
 export default class VirtualDirectoryFS {
     #ws;
@@ -21,21 +19,18 @@ export default class VirtualDirectoryFS {
         this.#tree = tree || workspace.getDefaultDirectoryTree();
     }
 
-    // ── Public API ───────────────────────────────────────────────────────────
+    // ── Read API ─────────────────────────────────────────────────────────────
 
     async stat(vPath) {
         const n = norm(vPath);
         const dirTree = this.#tree;
 
-        // Root always exists
         if (n === '/') return { isDir: true, name: 'Directories', size: 0 };
 
-        // Has documents directly → directory
         if (dirTree.pathExists(n)) {
             return { isDir: true, name: path.posix.basename(n), size: 0 };
         }
 
-        // Known child directory segment of parent
         const parent = path.posix.dirname(n);
         const basename = path.posix.basename(n);
         const childDirs = await dirTree.listDirectories(parent);
@@ -43,11 +38,10 @@ export default class VirtualDirectoryFS {
             return { isDir: true, name: basename, size: 0 };
         }
 
-        // Document at parent path
         if (parent === '/' || dirTree.pathExists(parent)) {
             const doc = await this.#findDoc(parent, basename);
             if (doc) {
-                const local = this.#localPath(doc);
+                const local = localPath(doc, this.#ws.rootPath);
                 const sz = local
                     ? (await fsStat(local).catch(() => null))?.size ?? 0
                     : Buffer.byteLength(JSON.stringify(doc, null, 2));
@@ -65,14 +59,12 @@ export default class VirtualDirectoryFS {
         const entries = [];
         const used = new Set();
 
-        // 1. Child directories
         const childDirs = await dirTree.listDirectories(n);
         for (const name of childDirs) {
             entries.push({ name, isDir: true, size: 0 });
             used.add(name);
         }
 
-        // 2. Documents at this path (bitmap → OIDs → documents)
         const bitmap = await dirTree.find(n);
         if (bitmap && bitmap.size > 0) {
             const oids = bitmap.toArray().slice(0, 1000);
@@ -87,7 +79,7 @@ export default class VirtualDirectoryFS {
                 }
                 used.add(name);
 
-                const local = this.#localPath(doc);
+                const local = localPath(doc, this.#ws.rootPath);
                 const sz = local
                     ? (await fsStat(local).catch(() => null))?.size ?? 0
                     : Buffer.byteLength(JSON.stringify(doc, null, 2));
@@ -117,6 +109,57 @@ export default class VirtualDirectoryFS {
         return { buffer: buf, size: buf.length, contentType: 'application/json' };
     }
 
+    // ── Write API ────────────────────────────────────────────────────────────
+
+    async put(vPath, body) {
+        const n = norm(vPath);
+        const parent = path.posix.dirname(n);
+        const filename = path.posix.basename(n);
+        if (!filename || parent === n) throw httpError(400, 'Invalid path');
+
+        const inferred = inferDocFromFile(filename, body);
+        if (!inferred) throw httpError(403, 'Only .md / .todo.json / .url are writable here');
+
+        if (!this.#tree.pathExists(parent)) await this.#tree.insertPath(parent);
+
+        const existing = await this.#findDoc(parent, filename);
+        const selector = this.#ws.getDirectoryTreeSelector(parent, this.#tree.name);
+
+        if (existing) {
+            await this.#ws.put({ ...existing, data: { ...existing.data, ...inferred.data, filename } }, { directory: selector });
+            return { created: false };
+        }
+        await this.#ws.put({ schema: inferred.schema, data: { ...inferred.data, filename } }, { directory: selector });
+        return { created: true };
+    }
+
+    async del(vPath) {
+        const n = norm(vPath);
+        const parent = path.posix.dirname(n);
+        const filename = path.posix.basename(n);
+
+        // Doc takes precedence over tree-path delete (unlink semantics)
+        const doc = await this.#findDoc(parent, filename);
+        if (doc) {
+            const selector = this.#ws.getDirectoryTreeSelector(parent, this.#tree.name);
+            await this.#ws.unlink(doc.id, { directory: selector });
+            return { deleted: 'doc' };
+        }
+
+        if (this.#tree.pathExists(n)) {
+            await this.#tree.removePath(n, true);
+            return { deleted: 'path' };
+        }
+        throw httpError(404, 'Not Found');
+    }
+
+    async mkcol(vPath) {
+        const n = norm(vPath);
+        if (this.#tree.pathExists(n)) throw httpError(405, 'Already exists');
+        await this.#tree.insertPath(n);
+        return { created: true };
+    }
+
     // ── Private helpers ──────────────────────────────────────────────────────
 
     async #findDoc(dirPath, filename) {
@@ -127,43 +170,10 @@ export default class VirtualDirectoryFS {
         const docs = await this.#ws.getDocumentsByIdArray(oids);
         return docs.find(d => d && docName(d) === filename) || null;
     }
-
-    #localPath(doc) {
-        const urls = (doc.locations || []).map((l) => l.url);
-        for (const url of urls) {
-            if (!url.startsWith('file://')) continue;
-            const p = url.slice(7).replace('{WORKSPACE_ROOT}', this.#ws.rootPath);
-            if (existsSync(p)) return p;
-        }
-        return null;
-    }
 }
 
-// ── Module-level helpers ────────────────────────────────────────────────────
-
-function norm(p) {
-    if (!p || p === '/') return '/';
-    let n = p.startsWith('/') ? p : '/' + p;
-    if (n !== '/' && n.endsWith('/')) n = n.slice(0, -1);
-    return n;
-}
-
-function docName(doc) {
-    if (doc.data?.filename) return doc.data.filename;
-    const schema = (doc.schema || 'doc').split('/').pop();
-    return `${schema}_${doc.id}.json`;
-}
-
-const EXT_MIME = {
-    '.html': 'text/html', '.css': 'text/css', '.js': 'application/javascript',
-    '.json': 'application/json', '.xml': 'application/xml', '.txt': 'text/plain',
-    '.md': 'text/markdown', '.png': 'image/png', '.jpg': 'image/jpeg',
-    '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.svg': 'image/svg+xml',
-    '.webp': 'image/webp', '.pdf': 'application/pdf', '.zip': 'application/zip',
-    '.gz': 'application/gzip', '.tar': 'application/x-tar',
-    '.mp3': 'audio/mpeg', '.mp4': 'video/mp4', '.wav': 'audio/wav',
-};
-
-function mimeFor(filePath) {
-    return EXT_MIME[path.extname(filePath).toLowerCase()] || 'application/octet-stream';
+function httpError(statusCode, message) {
+    const err = new Error(message);
+    err.statusCode = statusCode;
+    return err;
 }

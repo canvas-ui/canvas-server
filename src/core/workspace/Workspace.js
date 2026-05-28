@@ -414,91 +414,28 @@ class Workspace extends EventEmitter {
     }
 
     /**
-     * Evict documents from one or more storage backends, deleting physically stored
-     * files and, when all backends are cleared, removing the document from the DB.
-     *
-     * Rules:
-     *  - No locations on document → delete from DB directly (pure index record).
-     *  - backends not specified + single backend → evict all, then delete from DB.
-     *  - backends not specified + multiple backends detected → reject; caller must
-     *    specify which backends to target to avoid orphaning files on remote storage.
-     *  - backends specified → evict only those; keep DB record if any backend remains.
-     *
-     * The file watcher handles incoming-tree path cleanup automatically when files
-     * are physically removed, so no explicit tree unlinking is needed here.
+     * Resolve a document's content by streaming/reading the first reachable
+     * location (stored:// or file://{WORKSPACE_ROOT}/...).
+     * @param {object} doc document with `locations[]`
+     * @param {{stream?: boolean, url?: string}} [options]
+     * @returns {Promise<{buffer?: Buffer, stream?: ReadStream, url: string}|null>}
      */
-    async evictDocumentsFromBackends(documentIds, { backends = null } = {}) {
-        const db = this.#getActiveDb();
-        const results = { successful: [], failed: [], skipped: [] };
-
-        for (const rawId of documentIds) {
-            const id = parseDocumentId(rawId, 'Document ID');
+    async resolveDocument(doc, options = {}) {
+        if (!this.#storedIndex?.isRunning) await this.#startStoredIndex();
+        const locations = Array.isArray(doc?.locations) ? doc.locations : [];
+        const candidates = options.url ? [{ url: options.url }] : locations;
+        let lastError = null;
+        for (const loc of candidates) {
+            if (!loc?.url) continue;
             try {
-                const docs = await db.getDocumentsByIdArray([id], { parse: true });
-                const doc = docs?.data?.[0];
-                if (!doc) {
-                    results.failed.push({ id, reason: 'not found' });
-                    continue;
-                }
-
-                const checksumArray = doc.checksumArray || [];
-                const docLocations = Array.isArray(doc.locations) ? doc.locations : [];
-
-                // Pure index record with no storage locations — just delete from DB
-                if (docLocations.length === 0) {
-                    await db.delete(id);
-                    results.successful.push({ id, action: 'db-deleted', reason: 'no storage locations' });
-                    continue;
-                }
-
-                const docBackends = [...new Set(
-                    docLocations.map(l => l.metadata?.backend).filter(Boolean)
-                )];
-
-                // Safety: if caller didn't specify backends and there are multiple distinct
-                // backends, we cannot safely decide which physical files to delete.
-                if (!backends && docBackends.length > 1) {
-                    results.failed.push({
-                        id,
-                        reason: 'multiple backends detected — specify backends explicitly to avoid orphaning data',
-                        backends: docBackends,
-                    });
-                    continue;
-                }
-
-                // Evict via Stored
-                let deletedBackends = [];
-                let remainingBackends = [...docBackends];
-
-                if (this.#storedIndex?.isRunning && checksumArray.length > 0) {
-                    const evictResult = await this.#storedIndex.evict(checksumArray[0], backends);
-                    deletedBackends = evictResult.deleted;
-                    remainingBackends = evictResult.remainingBackends;
-                } else if (!this.#storedIndex?.isRunning) {
-                    results.failed.push({ id, reason: 'home service not running — cannot evict from storage backends' });
-                    continue;
-                }
-
-                if (remainingBackends.length === 0) {
-                    // All backends cleared — safe to remove from DB entirely
-                    await db.delete(id);
-                    results.successful.push({ id, action: 'db-deleted', backendsCleared: deletedBackends });
-                } else if (deletedBackends.length > 0) {
-                    // Partial eviction — strip removed locations from the DB record
-                    const updatedLocations = docLocations.filter(
-                        l => !deletedBackends.includes(l.metadata?.backend)
-                    );
-                    await this.put({ ...doc, locations: updatedLocations }, null);
-                    results.successful.push({ id, action: 'updated', backendsCleared: deletedBackends, remainingBackends });
-                } else {
-                    results.skipped.push({ id, reason: 'no matching backends found to evict', requested: backends });
-                }
+                const data = await this.#storedIndex.resolve(loc.url, options);
+                if (data != null) return { ...(options.stream ? { stream: data } : { buffer: data }), url: loc.url };
             } catch (err) {
-                results.failed.push({ id, reason: err.message });
+                lastError = err;
             }
         }
-
-        return results;
+        if (lastError) throw lastError;
+        return null;
     }
 
     async getByChecksumString(checksumString, options = { parse: true }) {

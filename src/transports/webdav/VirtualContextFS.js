@@ -1,16 +1,17 @@
 'use strict';
 
 import path from 'path';
-import { existsSync, createReadStream } from 'fs';
+import { createReadStream } from 'fs';
 import { stat as fsStat } from 'fs/promises';
+import { docName, inferDocFromFile, localPath, mimeFor, norm } from './vfs-shared.js';
 
 /**
  * Virtual filesystem adapter for the workspace context tree.
  * Maps the tree structure to a FS-like interface so WebDAV can browse it
  * as if it were a normal directory hierarchy.
  *
- * Tree nodes → directories
- * Documents at each tree path → files
+ * Tree nodes → directories. Documents at each tree path → files.
+ * Writes are extension-inferred: .md → note, .todo.json → todo, .url → tab.
  */
 export default class VirtualContextFS {
     #ws;
@@ -21,28 +22,22 @@ export default class VirtualContextFS {
         this.#tree = tree || workspace.getDefaultContextTree();
     }
 
-    // ── Public API ───────────────────────────────────────────────────────────
+    // ── Read API ─────────────────────────────────────────────────────────────
 
-    /**
-     * Stat a virtual path. Returns descriptor or null.
-     * @returns {{ isDir, name, size, doc?, localFile? } | null}
-     */
     async stat(vPath) {
         const n = norm(vPath);
         const tree = this.#tree;
 
-        // Tree node → directory
         if (n === '/' || tree.pathExists(n)) {
             return { isDir: true, name: path.posix.basename(n) || 'context', size: 0 };
         }
 
-        // Document → file
         const parent = path.posix.dirname(n);
         const fname = path.posix.basename(n);
         if (parent !== n && tree.pathExists(parent)) {
             const doc = await this.#findDoc(parent, fname);
             if (doc) {
-                const local = this.#localPath(doc);
+                const local = localPath(doc, this.#ws.rootPath);
                 const sz = local
                     ? (await fsStat(local).catch(() => null))?.size ?? 0
                     : Buffer.byteLength(JSON.stringify(doc, null, 2));
@@ -52,10 +47,6 @@ export default class VirtualContextFS {
         return null;
     }
 
-    /**
-     * List entries in a virtual directory.
-     * @returns {Array<{ name, isDir, size }>|null}
-     */
     async readdir(vPath) {
         const n = norm(vPath);
         const tree = this.#tree;
@@ -64,7 +55,6 @@ export default class VirtualContextFS {
         const entries = [];
         const used = new Set();
 
-        // 1. Child tree nodes → subdirectories
         const node = this.#treeNode(n);
         if (node?.children) {
             for (const c of node.children) {
@@ -73,7 +63,6 @@ export default class VirtualContextFS {
             }
         }
 
-        // 2. Documents → files
         try {
             const docs = await tree.list({ path: n, parse: true, limit: 1000 });
             if (Array.isArray(docs)) {
@@ -85,7 +74,7 @@ export default class VirtualContextFS {
                     }
                     used.add(name);
 
-                    const local = this.#localPath(doc);
+                    const local = localPath(doc, this.#ws.rootPath);
                     const sz = local
                         ? (await fsStat(local).catch(() => null))?.size ?? 0
                         : Buffer.byteLength(JSON.stringify(doc, null, 2));
@@ -97,15 +86,10 @@ export default class VirtualContextFS {
         return entries;
     }
 
-    /**
-     * Get file content for a virtual path.
-     * @returns {{ stream?, buffer?, size, contentType }|null}
-     */
     async getContent(vPath) {
         const info = await this.stat(vPath);
         if (!info || info.isDir) return null;
 
-        // Serve actual file from storage backend if available
         if (info.localFile) {
             const st = await fsStat(info.localFile).catch(() => null);
             if (st) {
@@ -117,9 +101,58 @@ export default class VirtualContextFS {
             }
         }
 
-        // Fallback: serve document as JSON
-        const buf = Buffer.from(JSON.stringify(info.doc, null, 2), 'utf-8');
-        return { buffer: buf, size: buf.length, contentType: 'application/json' };
+        const buf = renderDocBuffer(info.doc);
+        return { buffer: buf, size: buf.length, contentType: contentTypeForDoc(info.doc) };
+    }
+
+    // ── Write API ────────────────────────────────────────────────────────────
+
+    async put(vPath, body) {
+        const n = norm(vPath);
+        const parent = path.posix.dirname(n);
+        const filename = path.posix.basename(n);
+        if (!filename || parent === n) throw httpError(400, 'Invalid path');
+
+        const inferred = inferDocFromFile(filename, body);
+        if (!inferred) throw httpError(403, 'Only .md / .todo.json / .url are writable here');
+
+        if (!this.#tree.pathExists(parent)) await this.#tree.insertPath(parent);
+
+        const existing = await this.#findDoc(parent, filename);
+        const selector = this.#ws.getContextTreeSelector(parent, this.#tree.name);
+
+        if (existing) {
+            await this.#ws.put({ ...existing, data: { ...existing.data, ...inferred.data, filename } }, { context: selector });
+            return { created: false };
+        }
+        await this.#ws.put({ schema: inferred.schema, data: { ...inferred.data, filename } }, { context: selector });
+        return { created: true };
+    }
+
+    async del(vPath) {
+        const n = norm(vPath);
+        const parent = path.posix.dirname(n);
+        const filename = path.posix.basename(n);
+
+        const doc = await this.#findDoc(parent, filename);
+        if (doc) {
+            const selector = this.#ws.getContextTreeSelector(parent, this.#tree.name);
+            await this.#ws.unlink(doc.id, { context: selector });
+            return { deleted: 'doc' };
+        }
+
+        if (this.#tree.pathExists(n)) {
+            await this.#tree.removePath(n, true);
+            return { deleted: 'path' };
+        }
+        throw httpError(404, 'Not Found');
+    }
+
+    async mkcol(vPath) {
+        const n = norm(vPath);
+        if (this.#tree.pathExists(n)) throw httpError(405, 'Already exists');
+        await this.#tree.insertPath(n);
+        return { created: true };
     }
 
     // ── Private helpers ──────────────────────────────────────────────────────
@@ -141,43 +174,25 @@ export default class VirtualContextFS {
             return Array.isArray(docs) ? docs.find(d => docName(d) === filename) || null : null;
         } catch { return null; }
     }
-
-    #localPath(doc) {
-        const urls = (doc.locations || []).map((l) => l.url);
-        for (const url of urls) {
-            if (!url.startsWith('file://')) continue;
-            const p = url.slice(7).replace('{WORKSPACE_ROOT}', this.#ws.rootPath);
-            if (existsSync(p)) return p;
-        }
-        return null;
-    }
 }
 
 // ── Module-level helpers ────────────────────────────────────────────────────
 
-function norm(p) {
-    if (!p || p === '/') return '/';
-    let n = p.startsWith('/') ? p : '/' + p;
-    if (n !== '/' && n.endsWith('/')) n = n.slice(0, -1);
-    return n;
+function httpError(statusCode, message) {
+    const err = new Error(message);
+    err.statusCode = statusCode;
+    return err;
 }
 
-function docName(doc) {
-    if (doc.data?.filename) return doc.data.filename;
-    const schema = (doc.schema || 'doc').split('/').pop();
-    return `${schema}_${doc.id}.json`;
+function renderDocBuffer(doc) {
+    if (doc.schema === 'data/abstraction/note') return Buffer.from(String(doc.data?.content ?? ''), 'utf-8');
+    if (doc.schema === 'data/abstraction/tab')  return Buffer.from(`[InternetShortcut]\nURL=${doc.data?.url ?? ''}\n`, 'utf-8');
+    if (doc.schema === 'data/abstraction/todo') return Buffer.from(JSON.stringify(doc.data ?? {}, null, 2), 'utf-8');
+    return Buffer.from(JSON.stringify(doc, null, 2), 'utf-8');
 }
 
-const EXT_MIME = {
-    '.html': 'text/html', '.css': 'text/css', '.js': 'application/javascript',
-    '.json': 'application/json', '.xml': 'application/xml', '.txt': 'text/plain',
-    '.md': 'text/markdown', '.png': 'image/png', '.jpg': 'image/jpeg',
-    '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.svg': 'image/svg+xml',
-    '.webp': 'image/webp', '.pdf': 'application/pdf', '.zip': 'application/zip',
-    '.gz': 'application/gzip', '.tar': 'application/x-tar',
-    '.mp3': 'audio/mpeg', '.mp4': 'video/mp4', '.wav': 'audio/wav',
-};
-
-function mimeFor(filePath) {
-    return EXT_MIME[path.extname(filePath).toLowerCase()] || 'application/octet-stream';
+function contentTypeForDoc(doc) {
+    if (doc.schema === 'data/abstraction/note') return 'text/markdown; charset=utf-8';
+    if (doc.schema === 'data/abstraction/tab')  return 'application/internet-shortcut';
+    return 'application/json';
 }

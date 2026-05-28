@@ -387,13 +387,23 @@ export class WebDAVHandler {
       switch (method) {
         case 'OPTIONS':  return this._options({ res });
         case 'PROPFIND': return await this._vPropfind(res, { prefix, rel, vRel, headers, body, vfs, treeType });
+        case 'PROPPATCH': return await this._vProppatch(res, { prefix, rel, vRel, headers, body, vfs });
         case 'GET':      return await this._vGet(res, { vRel, vfs, treeType });
         case 'HEAD':     return await this._vHead(res, { vRel, vfs });
-        default:         return send(res, 403, 'Virtual tree is read-only');
+        case 'PUT':      return await this._vPut(res, { vRel, body, vfs });
+        case 'DELETE':   return await this._vDelete(res, { vRel, vfs });
+        case 'MKCOL':    return await this._vMkcol(res, { vRel, vfs });
+        case 'MOVE':     return await this._vMove(res, { vRel, vfs, prefix, headers });
+        case 'LOCK':     return await this._vLock(res, { prefix, rel, headers, body });
+        case 'UNLOCK':   return await this._unlock({ res, headers });
+        default:         return send(res, 405, 'Method Not Allowed');
       }
     } catch (err) {
       logger.error({ err, method, path: vRel, treeType }, 'Virtual WebDAV request failed');
-      if (!res.headersSent) send(res, 500);
+      if (!res.headersSent) {
+        const code = err.statusCode || 500;
+        send(res, code, err.message);
+      }
     }
   }
 
@@ -459,6 +469,103 @@ export class WebDAVHandler {
     });
     res.end();
   }
+
+  async _vProppatch(res, { prefix, rel, vRel, body, vfs }) {
+    await readBody(body, XML_BODY_LIMIT);
+    const info = await vfs.stat(vRel);
+    if (!info) return send(res, 404, 'Not Found');
+    sendXml(res, 207,
+      `<?xml version="1.0" encoding="utf-8"?>\n<D:multistatus xmlns:D="DAV:">\n` +
+      `  <D:response>\n    <D:href>${esc(encSegments(prefix + rel))}</D:href>\n` +
+      `    <D:propstat><D:prop/><D:status>HTTP/1.1 200 OK</D:status></D:propstat>\n` +
+      `  </D:response>\n</D:multistatus>`);
+  }
+
+  async _vPut(res, { vRel, body, vfs }) {
+    if (typeof vfs.put !== 'function') return send(res, 403, 'This virtual tree is read-only');
+    const buf = await readBodyBuffer(body, 16 * 1024 * 1024);
+    const result = await vfs.put(vRel, buf);
+    send(res, result?.created === false ? 204 : 201);
+  }
+
+  async _vDelete(res, { vRel, vfs }) {
+    if (typeof vfs.del !== 'function') return send(res, 403, 'This virtual tree is read-only');
+    await vfs.del(vRel);
+    send(res, 204);
+  }
+
+  async _vMkcol(res, { vRel, vfs }) {
+    if (typeof vfs.mkcol !== 'function') return send(res, 403, 'This virtual tree is read-only');
+    await vfs.mkcol(vRel);
+    send(res, 201);
+  }
+
+  async _vMove(res, { vRel, vfs, prefix, headers }) {
+    if (typeof vfs.put !== 'function' || typeof vfs.del !== 'function') return send(res, 403, 'This virtual tree is read-only');
+    const dest = headers['destination'];
+    if (!dest) return send(res, 400, 'Destination header required');
+    let destUrl;
+    try { destUrl = new URL(dest, `http://${headers['host']}`); }
+    catch { return send(res, 400, 'Invalid Destination'); }
+    const destDecoded = decodeURIComponent(destUrl.pathname);
+    const destRel = destDecoded.startsWith(prefix) ? (destDecoded.slice(prefix.length) || '/') : null;
+    if (!destRel) return send(res, 502, 'Destination outside scope');
+
+    // Strip /Trees/<tree> or /Contexts prefix to get vfs-relative path
+    const m = destRel.match(/^\/(Trees\/[^/]+|Contexts)(\/.*)?$/);
+    if (!m) return send(res, 502, 'Destination not in same virtual tree');
+    const destVRel = m[2] || '/';
+
+    const content = await vfs.getContent(vRel);
+    if (!content) return send(res, 404, 'Source not found');
+    const buf = content.buffer || (content.stream ? await streamToBuffer(content.stream) : null);
+    if (!buf) return send(res, 500);
+    await vfs.put(destVRel, buf);
+    await vfs.del(vRel);
+    send(res, 201);
+  }
+
+  async _vLock(res, { prefix, rel, headers, body }) {
+    cleanLocks();
+    const bodyStr = await readBody(body, XML_BODY_LIMIT);
+    const ownerMatch = bodyStr.match(/<(?:D:)?owner[^>]*>([\s\S]*?)<\/(?:D:)?owner>/i);
+    const token = `urn:uuid:${crypto.randomUUID()}`;
+    const lock = {
+      token, path: rel,
+      owner: ownerMatch ? ownerMatch[1].trim() : '',
+      exclusive: true,
+      depth: headers['depth'] || 'infinity',
+      expires: Date.now() + parseTimeout(headers['timeout']),
+    };
+    locks.set(token, lock);
+    sendXml(res, 200, lockXml(lock, prefix, rel), { 'Lock-Token': `<${token}>` });
+  }
+}
+
+async function readBodyBuffer(body, maxBytes = Infinity) {
+  if (!body) return Buffer.alloc(0);
+  if (Buffer.isBuffer(body)) {
+    if (body.length > maxBytes) throw bodyTooLargeError();
+    return body;
+  }
+  if (typeof body === 'string') return Buffer.from(body, 'utf-8');
+  if (typeof body.pipe === 'function') {
+    const chunks = [];
+    let total = 0;
+    for await (const chunk of body) {
+      total += chunk.length;
+      if (total > maxBytes) { if (typeof body.destroy === 'function') body.destroy(); throw bodyTooLargeError(); }
+      chunks.push(chunk);
+    }
+    return Buffer.concat(chunks);
+  }
+  return Buffer.alloc(0);
+}
+
+async function streamToBuffer(stream) {
+  const chunks = [];
+  for await (const chunk of stream) chunks.push(chunk);
+  return Buffer.concat(chunks);
 }
 
 // ── Response helpers ────────────────────────────────────────────────────────

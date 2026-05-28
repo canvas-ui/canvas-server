@@ -319,7 +319,6 @@ Mounted under **`/workspaces/:id/services/imap`** (same `authenticate` as other 
 | PUT | `/workspaces/:id/home/*` | `authenticate` | write | Upload/replace file (raw body streamed to path) |
 | POST | `/workspaces/:id/home/mkdir` | `authenticate` | write | Create directory (`{ "path" }` body) |
 | DELETE | `/workspaces/:id/home/*` | `authenticate` | write | Delete file or directory |
-| POST | `/workspaces/:id/home/actions/index` | `authenticate` | write | Promote `home/` paths into SynapsD (`{ files[], context? }`) |
 
 ### Hooks (workspace JS hooks)
 

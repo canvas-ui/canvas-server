@@ -3,11 +3,8 @@
 import { promises as fs, createReadStream } from 'fs';
 import { pipeline } from 'stream/promises';
 import path from 'path';
-import crypto from 'crypto';
 import ResponseObject from '../../ResponseObject.js';
 import { requireWorkspaceRead, requireWorkspaceWrite } from '../../middleware/workspace-acl.js';
-
-const HOME_BACKEND_FEATURE = 'data/backend/home';
 
 const MIME = {
   '.html': 'text/html', '.css': 'text/css', '.js': 'application/javascript',
@@ -38,13 +35,6 @@ async function statEntry(abs, name) {
     mtime: s.mtime.toISOString(),
     ctime: s.birthtime.toISOString(),
   };
-}
-
-async function sha256File(filePath) {
-  const hash = crypto.createHash('sha256');
-  const stream = createReadStream(filePath);
-  for await (const chunk of stream) hash.update(chunk);
-  return hash.digest('hex');
 }
 
 export default async function homeRoutes(fastify) {
@@ -158,73 +148,6 @@ export default async function homeRoutes(fastify) {
     } catch {
       return reply.code(404).send(new ResponseObject().notFound('Not found').getResponse());
     }
-  });
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // Promote files to SynapsD index
-  // ─────────────────────────────────────────────────────────────────────────
-
-  fastify.post('/actions/index', {
-    onRequest: [fastify.authenticate, requireWorkspaceWrite()],
-  }, async (request, reply) => {
-    const workspace = request.workspace;
-    if (!workspace.isActive) {
-      return reply.code(400).send(new ResponseObject().badRequest('Workspace not active').getResponse());
-    }
-
-    const { files, context = '/' } = request.body || {};
-    const contextTreeSelector = workspace.getContextTreeSelector(context);
-    if (!Array.isArray(files) || files.length === 0) {
-      return reply.code(400).send(new ResponseObject().badRequest('files array required').getResponse());
-    }
-
-    const results = { indexed: [], failed: [] };
-
-    for (const filePath of files) {
-      if (typeof filePath !== 'string') {
-        results.failed.push({ path: filePath, error: 'invalid path' });
-        continue;
-      }
-
-      const abs = resolveSafe(workspace.homePath, filePath);
-      if (!abs) {
-        results.failed.push({ path: filePath, error: 'path traversal' });
-        continue;
-      }
-
-      try {
-        const stat = await fs.stat(abs);
-        const name = path.basename(filePath);
-        const dataPath = `file://{WORKSPACE_ROOT}/home/${filePath}`;
-
-        if (stat.isDirectory()) {
-          await workspace.put({
-            schema: 'data/abstraction/folder',
-            data: { name, path: filePath, backend: 'home' },
-            locations: [{ url: dataPath }],
-          }, { context: contextTreeSelector, features: [HOME_BACKEND_FEATURE] });
-
-          results.indexed.push({ path: filePath, type: 'folder' });
-        } else {
-          const checksum = await sha256File(abs);
-          const checksumString = `sha256/${checksum}`;
-
-          await workspace.put({
-            schema: 'data/abstraction/file',
-            checksumArray: [checksumString],
-            data: { filename: name, size: stat.size, mime: mime(abs) },
-            locations: [{ url: dataPath }],
-          }, { context: contextTreeSelector, features: [HOME_BACKEND_FEATURE] });
-
-          results.indexed.push({ path: filePath, type: 'file', checksum: checksumString });
-        }
-      } catch (err) {
-        results.failed.push({ path: filePath, error: err.message });
-      }
-    }
-
-    const r = new ResponseObject().success(results, `Indexed ${results.indexed.length} files`);
-    return reply.code(r.statusCode).send(r.getResponse());
   });
 
   // ─────────────────────────────────────────────────────────────────────────

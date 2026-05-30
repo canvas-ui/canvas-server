@@ -50,7 +50,7 @@ export default class VirtualNamedContextFS {
         if (parts.length === 2 && FOLDER_MAP.has(parts[0])) {
             const doc = await this.#findDoc(parts[0], parts[1]);
             if (doc) {
-                return { isDir: false, name: parts[1], size: await docSize(doc, this.#ctx.workspace?.rootPath), doc };
+                return { isDir: false, name: parts[1], size: docSize(doc), doc };
             }
         }
 
@@ -90,7 +90,7 @@ export default class VirtualNamedContextFS {
 
     async #readdirFolder(folderName) {
         const docs = await this.#listDocs(FOLDER_MAP.get(folderName), 1000);
-        return docs?.length ? docEntries(docs, this.#ctx.workspace?.rootPath) : [];
+        return docs?.length ? docEntries(docs) : [];
     }
 
     async #findDoc(folderName, filename) {

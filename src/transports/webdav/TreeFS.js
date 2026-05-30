@@ -35,7 +35,7 @@ export default class TreeFS {
         const fname = path.posix.basename(n);
         if (parent === '/' || this.#tree.pathExists(parent)) {
             const doc = await this.#findDoc(parent, fname);
-            if (doc) { return { isDir: false, name: fname, size: await docSize(doc, this.#ws.rootPath), doc }; }
+            if (doc) { return { isDir: false, name: fname, size: docSize(doc), doc }; }
         }
         return null;
     }
@@ -49,7 +49,7 @@ export default class TreeFS {
             used.add(name);
             return { name, isDir: true, size: 0 };
         });
-        const files = await docEntries(await this.#list(n), this.#ws.rootPath, used);
+        const files = docEntries(await this.#list(n), used);
         return [...dirs, ...files];
     }
 

@@ -10,6 +10,17 @@ import {
   shouldExcludeIncoming,
 } from '../../../utils/incoming-documents.js';
 
+// Human filename for a location URL: basename of the key after scheme://backend/.
+function locationFilename(url) {
+  if (!url) return null;
+  const afterScheme = String(url).replace(/^[a-z][a-z0-9+.-]*:\/\//i, '');
+  const slash = afterScheme.indexOf('/');
+  const key = slash >= 0 ? afterScheme.slice(slash + 1) : afterScheme;
+  const base = key.split('/').filter(Boolean).pop();
+  if (!base) return null;
+  try { return decodeURIComponent(base); } catch { return base; }
+}
+
 /**
  * Workspace document routes handler for the API
  * @param {FastifyInstance} fastify - Fastify instance
@@ -748,10 +759,10 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       const resolved = await workspace.resolveDocument(doc, { stream: true, url: request.query.url });
       if (!resolved) { const r = new ResponseObject().notFound('No reachable location'); return reply.code(r.statusCode).send(r.getResponse()); }
 
-      const mime = doc.data?.mime || doc.metadata?.contentType || 'application/octet-stream';
-      const filename = doc.data?.filename || `document-${documentId}`;
+      const mime = doc.metadata?.contentType || 'application/octet-stream';
+      const filename = locationFilename(resolved.url) || `document-${documentId}`;
       reply.header('Content-Type', mime);
-      if (doc.data?.size) reply.header('Content-Length', doc.data.size);
+      if (Number.isFinite(doc.metadata?.size)) reply.header('Content-Length', doc.metadata.size);
       if (request.query.download !== undefined) {
         reply.header('Content-Disposition', `attachment; filename="${filename}"`);
       }

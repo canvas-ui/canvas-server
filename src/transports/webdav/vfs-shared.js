@@ -1,8 +1,6 @@
 'use strict';
 
 import path from 'path';
-import { existsSync } from 'fs';
-import { stat as fsStat } from 'fs/promises';
 
 // ── Schema ↔ extension mapping (writable abstractions) ──────────────────────
 
@@ -56,12 +54,26 @@ function extractUrlFromShortcut(text) {
  * filenames so re-PUT targets the existing doc instead of creating a new one.
  */
 export function docName(doc) {
-    if (doc.data?.filename) return doc.data.filename;
+    if (doc.data?.filename) return doc.data.filename; // notes/todos/tabs written via WebDAV
     if (doc.schema === NOTE_SCHEMA) return `${sanitize(doc.data?.title || `note-${doc.id}`)}.md`;
     if (doc.schema === TODO_SCHEMA) return `${sanitize(doc.data?.title || `todo-${doc.id}`)}.todo.json`;
     if (doc.schema === TAB_SCHEMA)  return `${sanitize(doc.data?.title || doc.data?.url || `tab-${doc.id}`)}.url`;
+    const fromLocation = locationBasename(doc); // blobs: name comes from a location key
+    if (fromLocation) return fromLocation;
     const schema = (doc.schema || 'doc').split('/').pop();
     return `${schema}_${doc.id}.json`;
+}
+
+// Basename of the first location's key (everything after scheme://backend/).
+function locationBasename(doc) {
+    const url = (doc.locations || [])[0]?.url;
+    if (!url) return null;
+    const afterScheme = url.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '');
+    const slash = afterScheme.indexOf('/');
+    const key = slash >= 0 ? afterScheme.slice(slash + 1) : afterScheme;
+    const base = key.split('/').filter(Boolean).pop();
+    if (!base) return null;
+    try { return sanitize(decodeURIComponent(base)); } catch { return sanitize(base); }
 }
 
 function sanitize(s) {
@@ -78,19 +90,6 @@ export function norm(p) {
     let n = p.startsWith('/') ? p : '/' + p;
     if (n !== '/' && n.endsWith('/')) n = n.slice(0, -1);
     return n;
-}
-
-// ── Local-file resolution (file://{WORKSPACE_ROOT}/...) ────────────────────
-
-export function localPath(doc, rootPath) {
-    if (!rootPath) return null;
-    const urls = (doc.locations || []).map((l) => l.url);
-    for (const url of urls) {
-        if (!url.startsWith('file://')) continue;
-        const p = url.slice(7).replace('{WORKSPACE_ROOT}', rootPath);
-        if (existsSync(p)) return p;
-    }
-    return null;
 }
 
 // ── MIME ────────────────────────────────────────────────────────────────────
@@ -112,18 +111,16 @@ export function mimeFor(filePath) {
 
 // ── Document → file mapping (shared by all virtual FS impls) ────────────────
 
-// Size of a doc as a file: the stored byte size when known, then an on-disk
-// file size, else its serialized byte length.
-export async function docSize(doc, rootPath) {
-    if (Number.isFinite(doc?.data?.size)) { return doc.data.size; }
-    const local = localPath(doc, rootPath);
-    if (local) { return (await fsStat(local).catch(() => null))?.size ?? 0; }
-    return Buffer.byteLength(JSON.stringify(doc, null, 2));
+// Size of a doc as a file: the stored byte size (a checksum-invariant) when
+// known, else its inline JSON byte length.
+export function docSize(doc) {
+    if (Number.isFinite(doc?.metadata?.size)) { return doc.metadata.size; }
+    return Buffer.byteLength(JSON.stringify(doc?.data ?? {}, null, 2));
 }
 
 // Turn a list of docs into deduplicated file entries ({ name, isDir, size }).
 // Name collisions get the doc id appended before the extension.
-export async function docEntries(docs, rootPath, used = new Set()) {
+export function docEntries(docs, used = new Set()) {
     const entries = [];
     for (const doc of docs) {
         if (!doc) { continue; }
@@ -133,7 +130,7 @@ export async function docEntries(docs, rootPath, used = new Set()) {
             name = `${path.basename(name, e)}_${doc.id}${e}`;
         }
         used.add(name);
-        entries.push({ name, isDir: false, size: await docSize(doc, rootPath) });
+        entries.push({ name, isDir: false, size: docSize(doc) });
     }
     return entries;
 }
@@ -147,17 +144,17 @@ export function renderDoc(doc) {
     return { buffer: Buffer.from(JSON.stringify(doc, null, 2), 'utf-8'), contentType: 'application/json' };
 }
 
-// Resolve a doc's downloadable content. File-backed docs (stored:// or
-// file://) stream their real bytes through the workspace resolver; everything
-// else renders the abstraction (note/tab/todo → text body, else JSON).
+// Resolve a doc's downloadable content. File-backed docs stream their real
+// bytes through the workspace resolver (stored:// etc.); everything else
+// renders the abstraction (note/tab/todo → text body, else JSON).
 export async function resolveDocContent(workspace, doc, filename) {
     if (doc?.locations?.length) {
         const resolved = await workspace.resolveDocument(doc, { stream: true }).catch(() => null);
         if (resolved?.stream) {
             return {
                 stream: resolved.stream,
-                size: Number.isFinite(doc.data?.size) ? doc.data.size : undefined,
-                contentType: doc.data?.mime || mimeFor(filename),
+                size: Number.isFinite(doc.metadata?.size) ? doc.metadata.size : undefined,
+                contentType: doc.metadata?.contentType || mimeFor(filename),
             };
         }
     }

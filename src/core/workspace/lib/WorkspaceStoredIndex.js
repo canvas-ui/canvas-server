@@ -1042,54 +1042,38 @@ export class WorkspaceStoredIndex {
         return Array.from(new Set(features));
     }
 
+    // A file doc is a pure blob: identity is the checksum, bytes live in
+    // `stored` (referenced by canonical stored:// URLs), and size/mime are
+    // doc-level invariants. No inline `data`, no duplicated backend descriptors —
+    // anything else is derivable from the URL via `stored`.
     #buildDocument(storedFile = {}, checksumArray = [], backends = [], existingDocument = null) {
-        const key = storedFile.key || existingDocument?.data?.path || '';
-        const filename = key ? path.basename(key) : (existingDocument?.data?.filename || 'file');
-        const size = Number.isFinite(storedFile.size) ? storedFile.size : existingDocument?.data?.size;
-        const mimeType = storedFile.mimeType || existingDocument?.data?.mime;
+        const size = Number.isFinite(storedFile.size) ? storedFile.size : existingDocument?.metadata?.size;
+        const mime = storedFile.mimeType || existingDocument?.metadata?.contentType;
 
-        const data = {
-            ...(existingDocument?.data || {}),
-            filename,
-            path: key,
-            backend: storedFile.backend || existingDocument?.data?.backend || HOME_STORED_BACKEND,
-        };
-
-        if (Number.isFinite(size)) data.size = size; else delete data.size;
-        if (typeof mimeType === 'string' && mimeType.length > 0) data.mime = mimeType; else delete data.mime;
+        const metadata = { ...(existingDocument?.metadata || {}) };
+        if (Number.isFinite(size)) metadata.size = size; else delete metadata.size;
+        if (typeof mime === 'string' && mime.length > 0) metadata.contentType = mime;
 
         return {
             schema: 'data/abstraction/file',
             checksumArray: checksumArray.length > 0 ? checksumArray : (existingDocument?.checksumArray || []),
-            data,
+            data: {},
             locations: this.#buildDocumentLocations(backends),
-            metadata: {
-                ...(existingDocument?.metadata || {}),
-                backends,
-            },
+            metadata,
         };
     }
 
     #buildDocumentLocations(backends = []) {
-        return Array.from(
-            new Map(
-                backends.flatMap((backend) => {
-                    if (!backend?.key) return [];
-                    const entries = [];
-                    if (backend.backend === HOME_STORED_BACKEND) {
-                        entries.push([
-                            `file://{WORKSPACE_ROOT}/home/${backend.key}`,
-                            { url: `file://{WORKSPACE_ROOT}/home/${backend.key}`, metadata: { backend: backend.backend } },
-                        ]);
-                    }
-                    entries.push([
-                        `stored://${backend.backend}/${backend.key}`,
-                        { url: `stored://${backend.backend}/${backend.key}`, metadata: { backend: backend.backend } },
-                    ]);
-                    return entries;
-                })
-            ).values()
-        );
+        const seen = new Set();
+        const locations = [];
+        for (const backend of backends) {
+            if (!backend?.key) continue;
+            const url = `stored://${backend.backend}/${backend.key}`;
+            if (seen.has(url)) continue;
+            seen.add(url);
+            locations.push({ url });
+        }
+        return locations;
     }
 
     #isDataBackend(backendName) {

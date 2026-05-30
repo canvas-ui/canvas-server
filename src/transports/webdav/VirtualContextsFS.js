@@ -25,7 +25,7 @@ export default class VirtualContextsFS {
         this.#contextManager = contextManager;
     }
 
-    // ── Public API (same interface as VirtualContextFS / VirtualDirectoryFS) ──
+    // ── Public API (same interface as TreeFS / VirtualNamedContextFS) ──
 
     async stat(vPath) {
         const parts = split(vPath);

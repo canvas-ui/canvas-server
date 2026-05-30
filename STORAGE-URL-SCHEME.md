@@ -7,7 +7,7 @@ Canvas indexes blobs across heterogeneous backends (workspace home, device FS, S
 **The codebase already has a working location-URL convention.** Today, three forms are produced and consumed:
 
 - `stored://<backend>/<key>` — built by `WorkspaceStoredIndex.#buildDocumentLocations` (backends `fs:home`, `fs:data:<abstraction>`); dispatched by the `Stored` service (`src/services/stored`).
-- `file://{WORKSPACE_ROOT}/home/<path>` — built by `routes/workspaces/home.js:198` and `WorkspaceStoredIndex`; resolved by the WebDAV virtual-FS layers via `url.slice(7).replace('{WORKSPACE_ROOT}', ws.rootPath)` (`VirtualContextFS.js:148`, `VirtualDirectoryFS.js:134`, `VirtualNamedContextFS.js:161`).
+- `file://{WORKSPACE_ROOT}/home/<path>` — built by `routes/workspaces/home.js:198` and `WorkspaceStoredIndex`; resolved by the WebDAV virtual-FS layers via `url.slice(7).replace('{WORKSPACE_ROOT}', ws.rootPath)` (the shared `localPath()` in `vfs-shared.js`, used by `TreeFS.js` and `VirtualNamedContextFS.js`).
 - `file://<deviceId>/<path>` — device-local, built by `path-helpers.deviceFileUrl()`.
 
 The real inconsistency is narrow: **Email bypasses `locations[]` entirely.** `src/core/workspace/services/imap/index.js:535-585` writes the raw message to `data/email/raw/<sha>.eml` and attachments to `data/email/attachments/<rawSha>/...`, recording them only in ad-hoc `data.rawRef = {backend, key, checksum}` and per-attachment `storageRef`. `emailDoc.locations` is never set, so emails are invisible to the unified resolver, dedup, and eviction paths.

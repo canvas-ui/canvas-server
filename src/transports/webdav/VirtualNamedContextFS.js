@@ -1,10 +1,9 @@
 'use strict';
 
-import path from 'path';
 import { createReadStream } from 'fs';
 import { stat as fsStat } from 'fs/promises';
 import schemaRegistry from '../../services/synapsd/src/schemas/SchemaRegistry.js';
-import { docName as sharedDocName, norm as sharedNorm, localPath as sharedLocalPath } from './vfs-shared.js';
+import { docName, docEntries, norm, localPath as sharedLocalPath, renderDoc } from './vfs-shared.js';
 
 /**
  * Virtual filesystem for a named context's WebDAV view.
@@ -57,11 +56,7 @@ export default class VirtualNamedContextFS {
                 const sz = local
                     ? (await fsStat(local).catch(() => null))?.size ?? 0
                     : Buffer.byteLength(JSON.stringify(doc, null, 2));
-                return {
-                    isDir: false, name: parts[1], size: sz,
-                    contentType: docContentType(doc),
-                    doc, localFile: local || null,
-                };
+                return { isDir: false, name: parts[1], size: sz, doc, localFile: local || null };
             }
         }
 
@@ -106,36 +101,15 @@ export default class VirtualNamedContextFS {
             }
         }
 
-        const buf = Buffer.from(JSON.stringify(info.doc, null, 2), 'utf-8');
-        return { buffer: buf, size: buf.length, contentType: 'application/json' };
+        const { buffer, contentType } = renderDoc(info.doc);
+        return { buffer, size: buffer.length, contentType };
     }
 
     // ── Private helpers ──────────────────────────────────────────────────────
 
     async #readdirFolder(folderName) {
-        const feature = FOLDER_MAP.get(folderName);
-        const docs = await this.#listDocs(feature, 1000);
-        if (!docs?.length) return [];
-
-        const entries = [];
-        const used = new Set();
-
-        for (const doc of docs) {
-            let name = docName(doc);
-            if (used.has(name)) {
-                const e = path.extname(name);
-                name = `${path.basename(name, e)}_${doc.id}${e}`;
-            }
-            used.add(name);
-
-            const local = this.#localPath(doc);
-            const sz = local
-                ? (await fsStat(local).catch(() => null))?.size ?? 0
-                : Buffer.byteLength(JSON.stringify(doc, null, 2));
-            entries.push({ name, isDir: false, size: sz, contentType: docContentType(doc) });
-        }
-
-        return entries;
+        const docs = await this.#listDocs(FOLDER_MAP.get(folderName), 1000);
+        return docs?.length ? docEntries(docs, this.#ctx.workspace?.rootPath) : [];
     }
 
     async #findDoc(folderName, filename) {
@@ -160,9 +134,6 @@ export default class VirtualNamedContextFS {
 }
 
 // ── Module-level helpers ────────────────────────────────────────────────────
-
-const norm = sharedNorm;
-const docName = sharedDocName;
 
 function docContentType(doc) {
     return doc.data?.mime || doc.metadata?.contentType || 'application/octet-stream';

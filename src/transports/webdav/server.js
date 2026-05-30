@@ -5,9 +5,8 @@ import { pipeline } from 'stream/promises';
 import path from 'path';
 import crypto from 'crypto';
 import { createLogger } from '../../utils/log.js';
-import VirtualContextFS from './VirtualContextFS.js';
+import TreeFS from './TreeFS.js';
 import VirtualContextsFS from './VirtualContextsFS.js';
-import VirtualDirectoryFS from './VirtualDirectoryFS.js';
 
 const logger = createLogger('webdav');
 
@@ -29,7 +28,8 @@ const mime = (p) => MIME[path.extname(p).toLowerCase()] || 'application/octet-st
 const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const httpDate = (d) => new Date(d).toUTCString();
 const isoDate = (d) => new Date(d).toISOString();
-const encSegments = (p) => p.split('/').map(s => s ? encodeURIComponent(s) : '').join('/');
+const encSeg = (s) => { try { return encodeURIComponent(s); } catch { return encodeURIComponent(s.replace(/[\uD800-\uDFFF]/g, '\uFFFD')); } };
+const encSegments = (p) => p.split('/').map(s => s ? encSeg(s) : '').join('/');
 const etag = (s) => `"${s.ino}-${s.size}-${Math.floor(s.mtimeMs)}"`;
 
 // ── In-memory lock store (Class 2 WebDAV) ───────────────────────────────────
@@ -113,9 +113,7 @@ export class WebDAVHandler {
           return send(res, 404, 'Tree not found');
         }
         const treePath = '/' + parts.slice(1).join('/');
-        const vfs = tree.type === 'directory'
-          ? new VirtualDirectoryFS(workspace, tree)
-          : new VirtualContextFS(workspace, tree);
+        const vfs = new TreeFS(workspace, tree);
         return await this._handleVirtual(res, {
           method,
           prefix,
@@ -144,7 +142,7 @@ export class WebDAVHandler {
     if (method === 'OPTIONS') return this._options({ res });
     if (method === 'GET') {
       const html = `<!DOCTYPE html><html><body><h1>WebDAV</h1><ul>${
-        ROOTS.map(r => `<li><a href="${esc(encodeURIComponent(r.name))}/">${esc(r.name)}/</a></li>`).join('')
+        ROOTS.map(r => `<li><a href="${esc(encSeg(r.name))}/">${esc(r.name)}/</a></li>`).join('')
       }</ul></body></html>`;
       return sendBody(res, 200, html, 'text/html; charset=utf-8');
     }
@@ -379,9 +377,7 @@ export class WebDAVHandler {
   // ── Virtual tree handlers ──────────────────────────────────────────────
 
   async _handleVirtual(res, { method, prefix, rel, vRel, workspace, headers, body, vfs: prebuiltVfs, treeType }) {
-    const vfs = prebuiltVfs || (treeType === 'directory'
-      ? new VirtualDirectoryFS(workspace)
-      : new VirtualContextFS(workspace));
+    const vfs = prebuiltVfs || new TreeFS(workspace, workspace.getDefaultContextTree());
 
     try {
       switch (method) {
@@ -439,7 +435,7 @@ export class WebDAVHandler {
       const html = `<!DOCTYPE html><html><body><h1>${esc(label)}: ${esc(vRel)}</h1><ul>${
         children.map(c => {
           const suffix = c.isDir ? '/' : '';
-          return `<li><a href="${esc(encodeURIComponent(c.name))}${suffix}">${esc(c.name)}${suffix}</a></li>`;
+          return `<li><a href="${esc(encSeg(c.name))}${suffix}">${esc(c.name)}${suffix}</a></li>`;
         }).join('')
       }</ul></body></html>`;
       return sendBody(res, 200, html, 'text/html; charset=utf-8');

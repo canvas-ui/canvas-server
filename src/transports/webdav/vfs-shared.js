@@ -2,6 +2,7 @@
 
 import path from 'path';
 import { existsSync } from 'fs';
+import { stat as fsStat } from 'fs/promises';
 
 // ── Schema ↔ extension mapping (writable abstractions) ──────────────────────
 
@@ -64,7 +65,10 @@ export function docName(doc) {
 }
 
 function sanitize(s) {
-    return String(s).replace(/[/\\:*?"<>|]/g, '_').slice(0, 120);
+    const cleaned = String(s)
+        .replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '') // drop lone surrogates
+        .replace(/[/\\:*?"<>|\x00-\x1f]/g, '_');
+    return [...cleaned].slice(0, 120).join(''); // slice by code point, never split a pair
 }
 
 // ── Path normalization shared by all virtual FS impls ──────────────────────
@@ -104,4 +108,46 @@ const EXT_MIME = {
 
 export function mimeFor(filePath) {
     return EXT_MIME[path.extname(filePath).toLowerCase()] || 'application/octet-stream';
+}
+
+// ── Document → file mapping (shared by all virtual FS impls) ────────────────
+
+// Size of a doc as a file: local file size when backed on disk, else its
+// serialized byte length.
+export async function docSize(doc, rootPath) {
+    const local = localPath(doc, rootPath);
+    if (local) { return (await fsStat(local).catch(() => null))?.size ?? 0; }
+    return Buffer.byteLength(JSON.stringify(doc, null, 2));
+}
+
+// Turn a list of docs into deduplicated file entries ({ name, isDir, size }).
+// Name collisions get the doc id appended before the extension.
+export async function docEntries(docs, rootPath, used = new Set()) {
+    const entries = [];
+    for (const doc of docs) {
+        if (!doc) { continue; }
+        let name = docName(doc);
+        if (used.has(name)) {
+            const e = path.extname(name);
+            name = `${path.basename(name, e)}_${doc.id}${e}`;
+        }
+        used.add(name);
+        entries.push({ name, isDir: false, size: await docSize(doc, rootPath) });
+    }
+    return entries;
+}
+
+// Render a non-local doc to a downloadable buffer + content type. Notes/tabs/
+// todos get human-friendly bodies; everything else falls back to JSON.
+export function renderDoc(doc) {
+    if (doc.schema === NOTE_SCHEMA) { return { buffer: Buffer.from(String(doc.data?.content ?? ''), 'utf-8'), contentType: 'text/markdown; charset=utf-8' }; }
+    if (doc.schema === TAB_SCHEMA)  { return { buffer: Buffer.from(`[InternetShortcut]\nURL=${doc.data?.url ?? ''}\n`, 'utf-8'), contentType: 'application/internet-shortcut' }; }
+    if (doc.schema === TODO_SCHEMA) { return { buffer: Buffer.from(JSON.stringify(doc.data ?? {}, null, 2), 'utf-8'), contentType: 'application/json' }; }
+    return { buffer: Buffer.from(JSON.stringify(doc, null, 2), 'utf-8'), contentType: 'application/json' };
+}
+
+export function httpError(statusCode, message) {
+    const err = new Error(message);
+    err.statusCode = statusCode;
+    return err;
 }

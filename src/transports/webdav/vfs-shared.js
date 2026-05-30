@@ -112,9 +112,10 @@ export function mimeFor(filePath) {
 
 // ── Document → file mapping (shared by all virtual FS impls) ────────────────
 
-// Size of a doc as a file: local file size when backed on disk, else its
-// serialized byte length.
+// Size of a doc as a file: the stored byte size when known, then an on-disk
+// file size, else its serialized byte length.
 export async function docSize(doc, rootPath) {
+    if (Number.isFinite(doc?.data?.size)) { return doc.data.size; }
     const local = localPath(doc, rootPath);
     if (local) { return (await fsStat(local).catch(() => null))?.size ?? 0; }
     return Buffer.byteLength(JSON.stringify(doc, null, 2));
@@ -144,6 +145,24 @@ export function renderDoc(doc) {
     if (doc.schema === TAB_SCHEMA)  { return { buffer: Buffer.from(`[InternetShortcut]\nURL=${doc.data?.url ?? ''}\n`, 'utf-8'), contentType: 'application/internet-shortcut' }; }
     if (doc.schema === TODO_SCHEMA) { return { buffer: Buffer.from(JSON.stringify(doc.data ?? {}, null, 2), 'utf-8'), contentType: 'application/json' }; }
     return { buffer: Buffer.from(JSON.stringify(doc, null, 2), 'utf-8'), contentType: 'application/json' };
+}
+
+// Resolve a doc's downloadable content. File-backed docs (stored:// or
+// file://) stream their real bytes through the workspace resolver; everything
+// else renders the abstraction (note/tab/todo → text body, else JSON).
+export async function resolveDocContent(workspace, doc, filename) {
+    if (doc?.locations?.length) {
+        const resolved = await workspace.resolveDocument(doc, { stream: true }).catch(() => null);
+        if (resolved?.stream) {
+            return {
+                stream: resolved.stream,
+                size: Number.isFinite(doc.data?.size) ? doc.data.size : undefined,
+                contentType: doc.data?.mime || mimeFor(filename),
+            };
+        }
+    }
+    const { buffer, contentType } = renderDoc(doc);
+    return { buffer, size: buffer.length, contentType };
 }
 
 export function httpError(statusCode, message) {

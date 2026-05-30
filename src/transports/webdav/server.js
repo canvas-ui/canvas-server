@@ -445,7 +445,9 @@ export class WebDAVHandler {
     if (!content) return send(res, 404, 'Not Found');
 
     if (content.stream) {
-      res.writeHead(200, { 'Content-Type': content.contentType, 'Content-Length': content.size });
+      const headers = { 'Content-Type': content.contentType };
+      if (Number.isFinite(content.size)) headers['Content-Length'] = content.size;
+      res.writeHead(200, headers);
       await pipeline(content.stream, res);
     } else if (content.buffer) {
       res.writeHead(200, { 'Content-Type': content.contentType, 'Content-Length': content.buffer.length });

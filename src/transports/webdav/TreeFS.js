@@ -1,11 +1,9 @@
 'use strict';
 
 import path from 'path';
-import { createReadStream } from 'fs';
-import { stat as fsStat } from 'fs/promises';
 import {
     docEntries, docName, docSize, httpError, inferDocFromFile,
-    localPath, mimeFor, norm, renderDoc,
+    norm, resolveDocContent,
 } from './vfs-shared.js';
 
 /**
@@ -37,10 +35,7 @@ export default class TreeFS {
         const fname = path.posix.basename(n);
         if (parent === '/' || this.#tree.pathExists(parent)) {
             const doc = await this.#findDoc(parent, fname);
-            if (doc) {
-                const local = localPath(doc, this.#ws.rootPath);
-                return { isDir: false, name: fname, size: await docSize(doc, this.#ws.rootPath), doc, localFile: local || null };
-            }
+            if (doc) { return { isDir: false, name: fname, size: await docSize(doc, this.#ws.rootPath), doc }; }
         }
         return null;
     }
@@ -61,14 +56,7 @@ export default class TreeFS {
     async getContent(vPath) {
         const info = await this.stat(vPath);
         if (!info || info.isDir) { return null; }
-
-        if (info.localFile) {
-            const st = await fsStat(info.localFile).catch(() => null);
-            if (st) { return { stream: createReadStream(info.localFile), size: st.size, contentType: mimeFor(info.localFile) }; }
-        }
-
-        const { buffer, contentType } = renderDoc(info.doc);
-        return { buffer, size: buffer.length, contentType };
+        return resolveDocContent(this.#ws, info.doc, info.name);
     }
 
     // ── Write API ────────────────────────────────────────────────────────────

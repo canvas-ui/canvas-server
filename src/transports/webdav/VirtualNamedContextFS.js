@@ -1,9 +1,7 @@
 'use strict';
 
-import { createReadStream } from 'fs';
-import { stat as fsStat } from 'fs/promises';
 import schemaRegistry from '../../services/synapsd/src/schemas/SchemaRegistry.js';
-import { docName, docEntries, norm, localPath as sharedLocalPath, renderDoc } from './vfs-shared.js';
+import { docName, docEntries, docSize, norm, resolveDocContent } from './vfs-shared.js';
 
 /**
  * Virtual filesystem for a named context's WebDAV view.
@@ -52,11 +50,7 @@ export default class VirtualNamedContextFS {
         if (parts.length === 2 && FOLDER_MAP.has(parts[0])) {
             const doc = await this.#findDoc(parts[0], parts[1]);
             if (doc) {
-                const local = this.#localPath(doc);
-                const sz = local
-                    ? (await fsStat(local).catch(() => null))?.size ?? 0
-                    : Buffer.byteLength(JSON.stringify(doc, null, 2));
-                return { isDir: false, name: parts[1], size: sz, doc, localFile: local || null };
+                return { isDir: false, name: parts[1], size: await docSize(doc, this.#ctx.workspace?.rootPath), doc };
             }
         }
 
@@ -89,20 +83,7 @@ export default class VirtualNamedContextFS {
     async getContent(vPath) {
         const info = await this.stat(vPath);
         if (!info || info.isDir) return null;
-
-        if (info.localFile) {
-            const st = await fsStat(info.localFile).catch(() => null);
-            if (st) {
-                return {
-                    stream: createReadStream(info.localFile),
-                    size: st.size,
-                    contentType: docContentType(info.doc),
-                };
-            }
-        }
-
-        const { buffer, contentType } = renderDoc(info.doc);
-        return { buffer, size: buffer.length, contentType };
+        return resolveDocContent(this.#ctx.workspace, info.doc, info.name);
     }
 
     // ── Private helpers ──────────────────────────────────────────────────────
@@ -127,14 +108,4 @@ export default class VirtualNamedContextFS {
             });
         } catch { return null; }
     }
-
-    #localPath(doc) {
-        return sharedLocalPath(doc, this.#ctx.workspace?.rootPath);
-    }
-}
-
-// ── Module-level helpers ────────────────────────────────────────────────────
-
-function docContentType(doc) {
-    return doc.data?.mime || doc.metadata?.contentType || 'application/octet-stream';
 }

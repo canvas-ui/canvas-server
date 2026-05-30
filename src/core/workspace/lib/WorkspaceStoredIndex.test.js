@@ -50,6 +50,10 @@ describe('WorkspaceStoredIndex', () => {
             async listDocumentTreePaths(id) {
                 return documentPaths.get(id) || [];
             },
+            async delete(id) {
+                for (const [key, doc] of documents) { if (doc.id === id) documents.delete(key); }
+                documentPaths.delete(id);
+            },
         };
 
         return new WorkspaceStoredIndex({
@@ -88,7 +92,7 @@ describe('WorkspaceStoredIndex', () => {
         assert.ok(index.getBackendStatus('fs:home').lastScanAt);
     });
 
-    test('resync removes stale incoming paths for deleted home files', async () => {
+    test('resync purges docs whose only location was deleted', async () => {
         index = createIndex();
         await index.start();
         const [doc] = documents.values();
@@ -96,7 +100,8 @@ describe('WorkspaceStoredIndex', () => {
         await fs.remove(path.join(rootPath, 'home', 'nested', 'a.txt'));
         await index.resync('fs:home');
 
-        assert.deepEqual(documentPaths.get(doc.id), []);
+        assert.equal(documents.size, 0);
+        assert.equal(documentPaths.get(doc.id), undefined);
     });
 
     test('resync updates incoming paths when a home file moves', async () => {

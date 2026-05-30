@@ -737,8 +737,12 @@ export class WorkspaceStoredIndex {
             const primaryChecksum = doc.checksumArray?.[0];
             if (!primaryChecksum || presentChecksums.has(primaryChecksum)) continue;
 
-            const currentPaths = await db.listDocumentTreePaths(doc.id, 'incoming').catch(() => []);
-            await this.#removeStalePaths(doc.id, currentPaths, []);
+            // Gone from this backend — drop its locations; the helper purges the
+            // doc if nothing else holds the content, else keeps it on survivors.
+            const removedUrls = (doc.locations || [])
+                .filter((l) => parseLocationUrl(l.url)?.backend === backendName)
+                .map((l) => l.url);
+            await this.#reconcileRemovedLocations(doc, removedUrls);
         }
     }
 
@@ -772,21 +776,40 @@ export class WorkspaceStoredIndex {
     async #unlinkDocument(storedFile = {}) {
         const checksumArray = this.#buildChecksumArray(storedFile.checksums);
         if (checksumArray.length === 0) return null;
+        if (!storedFile.backend || !storedFile.key) return null;
 
         const db = this.#getDb();
         const existingDocument = await db.getByChecksumString(checksumArray[0]).catch(() => null);
         if (!existingDocument?.id) return null;
 
-        const meta = this.#getMeta(storedFile);
-        const backends = this.#resolveLocations(storedFile, meta, false);
-        const incomingPaths = this.#buildIncomingPaths(backends);
-        const currentIncomingPaths = await db.listDocumentTreePaths(existingDocument.id, 'incoming').catch(() => []);
-        const documentData = this.#buildDocument(storedFile, checksumArray, backends, existingDocument);
-        const features = this.#buildFeatures(backends);
+        return this.#reconcileRemovedLocations(existingDocument, [`stored://${storedFile.backend}/${storedFile.key}`]);
+    }
 
-        await this.#put({ ...documentData, id: existingDocument.id }, { features });
-        await this.#removeStalePaths(existingDocument.id, currentIncomingPaths, incomingPaths);
-        return existingDocument.id;
+    /**
+     * A backing blob vanished from one or more locations. Drop those locations;
+     * if none survive, the doc has no retrievable content → purge it from the DB
+     * (cascades unlink from every tree). Otherwise keep it on its survivors and
+     * untick only the incoming-tree path(s) the dead locations backed.
+     */
+    async #reconcileRemovedLocations(doc, removedUrls = []) {
+        const db = this.#getDb();
+        const removed = new Set(removedUrls);
+        const remaining = (Array.isArray(doc.locations) ? doc.locations : []).filter((l) => !removed.has(l.url));
+
+        if (remaining.length === 0) {
+            await db.delete(doc.id);
+            return null;
+        }
+
+        const survivors = remaining
+            .map((l) => parseLocationUrl(l.url))
+            .filter(Boolean)
+            .map((p) => ({ backend: p.backend, key: p.key }));
+        const currentIncomingPaths = await db.listDocumentTreePaths(doc.id, 'incoming').catch(() => []);
+
+        await this.#put({ id: doc.id, locations: remaining }, {});
+        await this.#removeStalePaths(doc.id, currentIncomingPaths, this.#buildIncomingPaths(survivors));
+        return doc.id;
     }
 
     async #removeStalePaths(docId, currentPaths = [], nextPaths = []) {

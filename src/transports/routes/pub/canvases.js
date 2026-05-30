@@ -1,6 +1,7 @@
 'use strict';
 
 import ResponseObject from '../../ResponseObject.js';
+import { parseDocumentId } from '../../../utils/documentId.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DEFAULT_PUBLIC_CANVAS_LIMIT = 5000;
@@ -65,13 +66,17 @@ function serializeDocuments(documents) {
   };
 }
 
-async function resolveWorkspaceId(fastify, userId, identifier) {
-  if (!identifier) return null;
-  if (UUID_RE.test(identifier)) return identifier;
-  return await fastify.workspaceManager.resolveWorkspaceId(userId, identifier);
+function locationFilename(url) {
+  if (!url) return null;
+  const afterScheme = String(url).replace(/^[a-z][a-z0-9+.-]*:\/\//i, '');
+  const slash = afterScheme.indexOf('/');
+  const key = slash >= 0 ? afterScheme.slice(slash + 1) : afterScheme;
+  const base = key.split('/').filter(Boolean).pop();
+  if (!base) return null;
+  try { return decodeURIComponent(base); } catch { return base; }
 }
 
-async function buildPublicCanvasPayload(fastify, code, query = {}) {
+async function resolvePublicCanvasContext(fastify, code, query = {}) {
   const resolved = await fastify.workspaceManager.resolvePublicCanvasShare(code);
   if (!resolved) return null;
 
@@ -89,21 +94,46 @@ async function buildPublicCanvasPayload(fastify, code, query = {}) {
   const context = tree.type === 'directory'
     ? workspace.getDirectoryTreeSelector(share.path, tree.name)
     : workspace.getContextTreeSelector(share.path, tree.name);
-  const listSpec = {
-    context,
-    attributes: mergeAttributes(
-      normalizeQuerySpecFeatures(layer.querySpec?.features),
-      buildAttributes(query)
-    ),
-    filters: [
-      ...normalizeStringArray(layer.querySpec?.filters),
-      ...normalizeStringArray(query.filters),
-    ],
-    limit: clampLimit(query.limit),
-    offset: query.offset,
-    page: query.page,
-  };
 
+  return {
+    workspace,
+    share,
+    layer,
+    tree,
+    listSpec: {
+      context,
+      attributes: mergeAttributes(
+        normalizeQuerySpecFeatures(layer.querySpec?.features),
+        buildAttributes(query)
+      ),
+      filters: [
+        ...normalizeStringArray(layer.querySpec?.filters),
+        ...normalizeStringArray(query.filters),
+      ],
+      limit: clampLimit(query.limit),
+      offset: query.offset,
+      page: query.page,
+    },
+  };
+}
+
+async function isDocumentVisibleOnPublicCanvas(workspace, listSpec, documentId) {
+  const documents = await workspace.list({ ...listSpec, limit: MAX_PUBLIC_PAGE_SIZE });
+  const data = Array.isArray(documents?.data) ? documents.data : (Array.isArray(documents) ? documents : []);
+  return data.some((doc) => doc.id === documentId);
+}
+
+async function resolveWorkspaceId(fastify, userId, identifier) {
+  if (!identifier) return null;
+  if (UUID_RE.test(identifier)) return identifier;
+  return await fastify.workspaceManager.resolveWorkspaceId(userId, identifier);
+}
+
+async function buildPublicCanvasPayload(fastify, code, query = {}) {
+  const ctx = await resolvePublicCanvasContext(fastify, code, query);
+  if (!ctx) return null;
+
+  const { workspace, share, layer, tree, listSpec } = ctx;
   const documents = await workspace.list(listSpec);
   if (documents.error) {
     const error = new Error(documents.error);
@@ -276,6 +306,62 @@ export default async function pubCanvasRoutes(fastify) {
       const response = error.statusCode === 404
         ? new ResponseObject().notFound(error.message)
         : new ResponseObject().serverError('Failed to read public canvas');
+      return reply.code(response.statusCode).send(response.getResponse());
+    }
+  });
+
+  fastify.get('/:code/documents/:docId/content', {
+    schema: {
+      params: {
+        type: 'object',
+        required: ['code', 'docId'],
+        properties: {
+          code: { type: 'string', maxLength: 8 },
+          docId: { type: 'string' },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    try {
+      let documentId;
+      try { documentId = parseDocumentId(request.params.docId, 'Document ID parameter'); }
+      catch (e) { const r = new ResponseObject().badRequest(e.message); return reply.code(r.statusCode).send(r.getResponse()); }
+
+      const ctx = await resolvePublicCanvasContext(fastify, request.params.code);
+      if (!ctx) {
+        const response = new ResponseObject().notFound('Public canvas not found');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+
+      const visible = await isDocumentVisibleOnPublicCanvas(ctx.workspace, ctx.listSpec, documentId);
+      if (!visible) {
+        const response = new ResponseObject().notFound('Document not found on this canvas');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+
+      const doc = await ctx.workspace.get(documentId);
+      if (!doc) {
+        const response = new ResponseObject().notFound('Document not found');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+
+      const resolved = await ctx.workspace.resolveDocument(doc, { stream: true });
+      if (!resolved) {
+        const response = new ResponseObject().notFound('No reachable location');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+
+      const mime = doc.metadata?.contentType || 'application/octet-stream';
+      const filename = locationFilename(resolved.url) || `document-${documentId}`;
+      reply.header('Content-Type', mime);
+      if (Number.isFinite(doc.metadata?.size)) reply.header('Content-Length', doc.metadata.size);
+      reply.header('Content-Disposition', `inline; filename="${filename}"`);
+      return reply.send(resolved.stream || resolved.buffer);
+    } catch (error) {
+      fastify.log.error({ err: error }, 'Failed to read public canvas document content');
+      const response = error.statusCode === 404
+        ? new ResponseObject().notFound(error.message)
+        : new ResponseObject().serverError('Failed to read public canvas document content');
       return reply.code(response.statusCode).send(response.getResponse());
     }
   });

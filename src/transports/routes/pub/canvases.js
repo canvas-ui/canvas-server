@@ -320,6 +320,12 @@ export default async function pubCanvasRoutes(fastify) {
           docId: { type: 'string' },
         },
       },
+      querystring: {
+        type: 'object',
+        properties: {
+          download: { type: 'string' },
+        },
+      },
     },
   }, async (request, reply) => {
     try {
@@ -355,7 +361,7 @@ export default async function pubCanvasRoutes(fastify) {
       const filename = locationFilename(resolved.url) || `document-${documentId}`;
       reply.header('Content-Type', mime);
       if (Number.isFinite(doc.metadata?.size)) reply.header('Content-Length', doc.metadata.size);
-      reply.header('Content-Disposition', `inline; filename="${filename}"`);
+      reply.header('Content-Disposition', `${request.query.download !== undefined ? 'attachment' : 'inline'}; filename="${filename}"`);
       return reply.send(resolved.stream || resolved.buffer);
     } catch (error) {
       fastify.log.error({ err: error }, 'Failed to read public canvas document content');

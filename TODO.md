@@ -2,6 +2,11 @@
 
 ## WebUI .2
 
+- Esc to close all boxes/menus
+- .icomming tree should not show any actions that require rw access as that subtree is ro by default
+- locked layers should show rw opts as greyed out (or we can implement the same on all locked layers but incoming subtree does not allow creation of directories
+
+
 ### Workspaces
 
 - Workspace dirs should contain /cache

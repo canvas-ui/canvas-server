@@ -1,0 +1,16 @@
+{
+  "channel": "dev",
+  "branch": "dev",
+  "canvasRoot": "/opt/canvas-server",
+  "canvasServerHome": "/opt/canvas-server/server",
+  "canvasUser": "canvas",
+  "canvasGroup": "www-data",
+  "logFile": "/var/log/canvas-deploy.log",
+  "lockFile": "/var/run/canvas-update.lock",
+  "requiredNodeVersion": 20,
+  "proxy": {
+    "http": "",
+    "https": "",
+    "noProxy": "localhost,127.0.0.1,.local"
+  }
+}

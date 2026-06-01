@@ -20,7 +20,6 @@ RUN apt-get update && apt-get install -y \
 # Install global Node.js development tools
 RUN npm install -g \
     nodemon \
-    pm2 \
     typescript \
     ts-node \
     eslint \

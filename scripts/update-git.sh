@@ -1,168 +1,188 @@
 #!/bin/bash
+# Git pull + rebuild for canvas-server. Config: $CANVAS_SERVER_HOME/config/update.json
+# Cron example (daily 3am, dev channel):
+#   0 3 * * * CANVAS_SERVER_HOME=/opt/canvas-server/server /opt/canvas-server/scripts/update-git.sh
+set -euo pipefail
 
-# Configuration
+TARGET_BRANCH_CLI=
+CANVAS_ROOT="${CANVAS_ROOT:-}"
+CANVAS_SERVER_HOME="${CANVAS_SERVER_HOME:-}"
+UPDATE_CONFIG="${UPDATE_CONFIG:-}"
+CANVAS_USER="${CANVAS_USER:-}"
+CANVAS_GROUP="${CANVAS_GROUP:-}"
+TARGET_BRANCH="${TARGET_BRANCH:-}"
+LOG_FILE="${LOG_FILE:-}"
+REQUIRED_NODE_VERSION="${REQUIRED_NODE_VERSION:-}"
+LOCKFILE="${LOCKFILE:-}"
+
+usage() {
+    cat <<EOF
+Usage: $0 [-b branch] [-c config.json] [-h]
+  -b  Git branch (overrides config; default: dev)
+  -c  Path to update.json (default: \$CANVAS_SERVER_HOME/config/update.json)
+  -h  This help
+
+Config file: copy server/config/update.example.json to config/update.json
+Env overrides: TARGET_BRANCH, CANVAS_ROOT, CANVAS_SERVER_HOME, HTTP_PROXY, HTTPS_PROXY, NO_PROXY
+Channel in JSON: "dev" -> branch dev, "prod" -> branch main (unless "branch" is set)
+EOF
+}
+
+set_if_unset() {
+    local name=$1 value=$2
+    if [[ -z "${!name-}" ]]; then
+        export "$name=$value"
+    fi
+}
+
+load_update_config() {
+    [[ -f "$UPDATE_CONFIG" ]] || return 0
+  eval "$(UPDATE_CONFIG="$UPDATE_CONFIG" node --input-type=module -e "
+import { readFileSync } from 'fs';
+const c = JSON.parse(readFileSync(process.env.UPDATE_CONFIG, 'utf8'));
+const line = (k, v) => {
+  if (v == null || v === '') return;
+  process.stdout.write('set_if_unset ' + k + ' ' + JSON.stringify(String(v)) + '\n');
+};
+const channel = c.channel === 'prod' ? 'main' : 'dev';
+line('TARGET_BRANCH', c.branch || channel);
+line('CANVAS_ROOT', c.canvasRoot);
+line('CANVAS_SERVER_HOME', c.canvasServerHome);
+line('CANVAS_USER', c.canvasUser);
+line('CANVAS_GROUP', c.canvasGroup);
+line('LOG_FILE', c.logFile);
+line('LOCKFILE', c.lockFile);
+line('REQUIRED_NODE_VERSION', c.requiredNodeVersion);
+const p = c.proxy || {};
+line('HTTP_PROXY', p.http || p.https);
+line('HTTPS_PROXY', p.https || p.http);
+line('NO_PROXY', p.noProxy);
+")"
+}
+
+apply_proxy_env() {
+    local http="${HTTP_PROXY:-${http_proxy:-}}"
+    local https="${HTTPS_PROXY:-${https_proxy:-$http}}"
+    local noproxy="${NO_PROXY:-${no_proxy:-}}"
+    [[ -n "$http" ]] && export http_proxy="$http" HTTP_PROXY="$http"
+    [[ -n "$https" ]] && export https_proxy="$https" HTTPS_PROXY="$https"
+    [[ -n "$noproxy" ]] && export no_proxy="$noproxy" NO_PROXY="$noproxy"
+}
+
+while getopts "b:c:h" opt; do
+    case $opt in
+        b) TARGET_BRANCH_CLI="$OPTARG" ;;
+        c) UPDATE_CONFIG="$OPTARG" ;;
+        h) usage; exit 0 ;;
+        *) usage; exit 1 ;;
+    esac
+done
+
 CANVAS_ROOT="${CANVAS_ROOT:-/opt/canvas-server}"
+CANVAS_SERVER_HOME="${CANVAS_SERVER_HOME:-$CANVAS_ROOT/server}"
+UPDATE_CONFIG="${UPDATE_CONFIG:-$CANVAS_SERVER_HOME/config/update.json}"
+
+load_update_config
+
 CANVAS_USER="${CANVAS_USER:-canvas}"
 CANVAS_GROUP="${CANVAS_GROUP:-www-data}"
 TARGET_BRANCH="${TARGET_BRANCH:-dev}"
 LOG_FILE="${LOG_FILE:-/var/log/canvas-deploy.log}"
 REQUIRED_NODE_VERSION="${REQUIRED_NODE_VERSION:-20}"
-LOCKFILE="/var/run/canvas-update.lock"
+LOCKFILE="${LOCKFILE:-/var/run/canvas-update.lock}"
+[[ -n "$TARGET_BRANCH_CLI" ]] && TARGET_BRANCH="$TARGET_BRANCH_CLI"
 
-# Exit on any error
-set -e
+apply_proxy_env
 
-# Function to log messages
 log_message() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
 }
 
-# Function to execute commands as CANVAS_USER
 run_as_canvas_user() {
-    if [ "$(id -u)" == "0" ]; then
+    if [[ "$(id -u)" == "0" ]]; then
         su -s /bin/bash "$CANVAS_USER" -c "cd $CANVAS_ROOT && $1"
     else
         cd "$CANVAS_ROOT" && eval "$1"
     fi
 }
 
-# Function to check command existence
 check_command() {
-    if ! command -v "$1" >/dev/null 2>&1; then
-        log_message "Error: $1 is not installed"
-        exit 1
-    fi
+    command -v "$1" >/dev/null 2>&1 || { log_message "Error: $1 is not installed"; exit 1; }
 }
 
-# Function to check Node.js version
 check_node_version() {
     local current_version
     current_version=$(node -v | cut -d'v' -f2 | cut -d'.' -f1)
-    if [ "$current_version" -lt $REQUIRED_NODE_VERSION ]; then
-        log_message "Error: Node.js version must be >= $REQUIRED_NODE_VERSION. Current version: $current_version"
+    if [[ "$current_version" -lt $REQUIRED_NODE_VERSION ]]; then
+        log_message "Error: Node.js >= $REQUIRED_NODE_VERSION required (have $current_version)"
         exit 1
     fi
 }
 
-# Function to recursively clean all node_modules directories
 clean_node_modules() {
-    log_message "Recursively cleaning all node_modules directories..."
-
-    # Find and remove all node_modules directories
-    local node_modules_dirs
-    node_modules_dirs=$(find "$CANVAS_ROOT" -type d -name "node_modules" 2>/dev/null)
-
-    if [ -n "$node_modules_dirs" ]; then
-        echo "$node_modules_dirs" | while IFS= read -r dir; do
-            if [ -d "$dir" ]; then
-                log_message "Removing: $dir"
-                rm -rf "$dir"
-            fi
-        done
-        log_message "Successfully cleaned $(echo "$node_modules_dirs" | wc -l) node_modules directories"
-    else
-        log_message "No node_modules directories found to clean"
-    fi
+    log_message "Recursively cleaning node_modules..."
+    local dir
+    while IFS= read -r dir; do
+        [[ -d "$dir" ]] && rm -rf "$dir"
+    done < <(find "$CANVAS_ROOT" -type d -name node_modules 2>/dev/null)
 }
 
-# Create log file if it doesn't exist
 touch "$LOG_FILE"
-chown "$CANVAS_USER:$CANVAS_GROUP" "$LOG_FILE"
+chown "$CANVAS_USER:$CANVAS_GROUP" "$LOG_FILE" 2>/dev/null || true
 
-# Check system requirements
 log_message "Checking system requirements..."
-check_command "git"
-check_command "node"
-check_command "pm2"
+check_command git
+check_command node
 check_node_version
 
-log_message "Starting canvas-server update ($TARGET_BRANCH)..."
-
-# Ensure we run under root
-if [ "$(id -u)" != "0" ]; then
+if [[ "$(id -u)" != "0" ]]; then
     echo "Please run this script as root"
     exit 1
 fi
 
-# Check for CANVAS_USER and CANVAS_GROUP
-if ! getent passwd "$CANVAS_USER" >/dev/null; then
-    echo "Error: User $CANVAS_USER does not exist"
-    exit 1
-fi
+getent passwd "$CANVAS_USER" >/dev/null || { echo "Error: user $CANVAS_USER missing"; exit 1; }
+getent group "$CANVAS_GROUP" >/dev/null || { echo "Error: group $CANVAS_GROUP missing"; exit 1; }
 
-if ! getent group "$CANVAS_GROUP" >/dev/null; then
-    echo "Error: Group $CANVAS_GROUP does not exist"
-    exit 1
-fi
-
-# Check for a lock file
-if [ -e "$LOCKFILE" ]; then
-    log_message "Another instance of the script is already running."
+if [[ -e "$LOCKFILE" ]]; then
+    log_message "Another update is already running ($LOCKFILE)."
     exit 1
 fi
 
 trap 'rm -f "$LOCKFILE"' EXIT
 touch "$LOCKFILE"
 
-# Check if directory exists, if not clone the repository
-if [ ! -d "$CANVAS_ROOT" ]; then
-    log_message "Canvas-server directory not found at $CANVAS_ROOT. Please install canvas-server first."
-    exit 1
-fi
+log_message "Starting canvas-server update (branch=$TARGET_BRANCH, root=$CANVAS_ROOT)..."
 
-# Stop the PM2 service
-log_message "Stopping canvas-server service..."
-systemctl stop canvas-server || log_message "Service was not running"
+[[ -d "$CANVAS_ROOT" ]] || { log_message "Missing $CANVAS_ROOT — install first."; exit 1; }
 
-# Clean installation
+log_message "Stopping canvas-server..."
+systemctl stop canvas-server 2>/dev/null || log_message "Service was not running"
+
 clean_node_modules
 
-# Make sure permissions are correct
 log_message "Setting permissions on $CANVAS_ROOT..."
-if ! chown -R "$CANVAS_USER:$CANVAS_GROUP" "$CANVAS_ROOT"; then
-    log_message "Error: Failed to set permissions."
-    exit 1
-fi
+chown -R "$CANVAS_USER:$CANVAS_GROUP" "$CANVAS_ROOT"
 
-# Pull latest changes
-log_message "Pulling latest changes from git..."
+log_message "Pulling origin/$TARGET_BRANCH..."
 run_as_canvas_user "/usr/bin/git fetch origin $TARGET_BRANCH"
 run_as_canvas_user "/usr/bin/git reset --hard origin/$TARGET_BRANCH"
 
-# Update submodules
 log_message "Updating submodules..."
 run_as_canvas_user "/usr/bin/git submodule update --init --remote"
 
-# Wipe stale web UI build artifacts so vite can re-emit cleanly
 WEB_DIST="$CANVAS_ROOT/src/ui/web/dist"
-log_message "Removing stale web dist at $WEB_DIST..."
+log_message "Removing stale web dist..."
 rm -rf "$WEB_DIST"
 
-# Install dependencies (postinstall triggers web build via vite)
 log_message "Installing dependencies..."
-if ! run_as_canvas_user "/usr/bin/npm install"; then
-    log_message "Error: npm install failed."
-    exit 1
-fi
+run_as_canvas_user "/usr/bin/npm install" || { log_message "npm install failed"; exit 1; }
 
-# Force explicit web rebuild and fail loud if it breaks
 log_message "Rebuilding web UI..."
-if ! run_as_canvas_user "/usr/bin/npm run build"; then
-    log_message "Error: web UI build failed."
-    exit 1
-fi
+run_as_canvas_user "/usr/bin/npm run build" || { log_message "web build failed"; exit 1; }
 
-# Sanity check: dist must exist with index.html
-if [ ! -f "$WEB_DIST/index.html" ]; then
-    log_message "Error: web build produced no $WEB_DIST/index.html."
-    exit 1
-fi
+[[ -f "$WEB_DIST/index.html" ]] || { log_message "Missing $WEB_DIST/index.html"; exit 1; }
 
-# Start the application
 log_message "Starting canvas-server..."
-if ! systemctl start canvas-server; then
-    log_message "Error: Failed to start canvas-server."
-    exit 1
-fi
+systemctl start canvas-server || { log_message "Failed to start canvas-server"; exit 1; }
 
-log_message "Update completed successfully!"
+log_message "Update completed successfully."

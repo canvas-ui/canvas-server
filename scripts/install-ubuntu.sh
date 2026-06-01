@@ -262,18 +262,6 @@ else
     echo "Node.js $(node --version) already installed"
 fi
 
-# Install pm2 globally
-echo "Checking PM2 installation..."
-if [ ! $(command -v pm2) ]; then
-    echo "Installing PM2 globally..."
-    if ! npm install -g pm2; then
-        handle_error "$?" "Failed to install pm2 globally"
-    fi
-    echo "PM2 installed successfully"
-else
-    echo "PM2 already installed"
-fi
-
 # Create service group
 echo "Creating service group $CANVAS_GROUP..."
 if ! getent group $CANVAS_GROUP > /dev/null 2>&1; then

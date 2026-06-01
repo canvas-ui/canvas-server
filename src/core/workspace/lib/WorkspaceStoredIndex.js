@@ -108,7 +108,7 @@ export class WorkspaceStoredIndex {
         try {
             this.#stored = new Stored({
                 root: path.join(this.#rootPath, '.stored'),
-                checksums: ['sha256', 'md5'],
+                checksums: ['sha256'],
                 primaryChecksum: 'sha256',
             });
 
@@ -150,7 +150,7 @@ export class WorkspaceStoredIndex {
         if (!config?.resync) throw new Error(`Data backend "${backendName}" does not support resync`);
         if (!this.#stored.getBackend(backendName)) throw new Error(`Data backend "${backendName}" is not registered`);
 
-        const files = await this.#stored.scan(backendName);
+        const { files = [] } = await this.#stored.scan(backendName);
         for (const file of files) {
             await this.#upsertDocument(file);
         }
@@ -750,8 +750,15 @@ export class WorkspaceStoredIndex {
         const checksumArray = this.#buildChecksumArray(storedFile.checksums);
         if (checksumArray.length === 0) return null;
 
-        const meta = this.#getMeta(storedFile);
-        const backends = this.#resolveLocations(storedFile, meta, true);
+        const meta = await this.#getMeta(storedFile);
+        // Prefer Stored's canonical location list (single source of truth for the
+        // stored:// grammar + native URLs); fall back to local synthesis only for
+        // not-yet-indexed inputs.
+        let backends = this.#resolveLocations(storedFile, meta, true);
+        if (meta?.id) {
+            const canonical = await this.#stored.locations(meta.id);
+            if (canonical.length) backends = canonical;
+        }
         const incomingPaths = this.#buildIncomingPaths(backends);
         if (incomingPaths.length === 0) return null;
 
@@ -823,9 +830,9 @@ export class WorkspaceStoredIndex {
     // Builders
     // ─────────────────────────────────────────────────────────────────────────
 
-    #getMeta(storedFile = {}) {
+    async #getMeta(storedFile = {}) {
         if (!this.#stored) return null;
-        if (storedFile.id && this.#stored.has(storedFile.id)) return this.#stored.stat(storedFile.id);
+        if (storedFile.id && await this.#stored.has(storedFile.id)) return this.#stored.stat(storedFile.id);
         if (storedFile.backend && storedFile.key) return this.#stored.stat(`${storedFile.backend}:${storedFile.key}`);
         return null;
     }
@@ -861,7 +868,7 @@ export class WorkspaceStoredIndex {
             // A data backend (e.g. fs:data:email) may not be registered yet —
             // register it lazily so reads work after a fresh start.
             await this.#ensureBackendForUrl(backend);
-            return this.#stored.getByUrl(url, options);
+            return options.stream ? this.#stored.getStreamByUrl(url) : this.#stored.getByUrl(url);
         }
 
         if (scheme === 'file') {
@@ -962,8 +969,9 @@ export class WorkspaceStoredIndex {
                 if (p?.scheme === 'stored') {
                     const be = await this.#ensureBackendForUrl(p.backend);
                     if (be && be.canDelete) {
-                        await this.#stored.deleteByUrl(loc.url);
-                        result.deleted.push(loc.url);
+                        const res = await this.#stored.deleteByUrl(loc.url);
+                        if (res.ok) result.deleted.push(loc.url);
+                        else result.droppedRefs.push(loc.url);
                     } else {
                         // read-only or unknown backend → reference drop only
                         result.droppedRefs.push(loc.url);
@@ -1091,10 +1099,14 @@ export class WorkspaceStoredIndex {
         const locations = [];
         for (const backend of backends) {
             if (!backend?.key) continue;
-            const url = `stored://${backend.backend}/${backend.key}`;
+            const url = backend.url || `stored://${backend.backend}/${backend.key}`;
             if (seen.has(url)) continue;
             seen.add(url);
-            locations.push({ url });
+            // Surface the real protocol URL for remote backends (https/smb/s3/imap).
+            // Local fs paths are kept server-side only (stored:// is the address).
+            locations.push(backend.nativeUrl && backend.driver !== 'file'
+                ? { url, nativeUrl: backend.nativeUrl }
+                : { url });
         }
         return locations;
     }

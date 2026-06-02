@@ -1,5 +1,10 @@
 # TODO List
 
+Backend bugs observed (not CLI):
+1. dot init says "already initialized" when target dir exists but isn't a valid bare repo (silent no-op) — fixed manually by rm -rf + reinit
+2. ws start on inactive workspace hung past 30s, caused server crash earlier in session — couldn't repro after restart
+
+
 ## WebUI .2
 
 - Esc to close all boxes/menus

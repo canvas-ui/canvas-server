@@ -7,7 +7,7 @@ Data from all sources is indexed and abstracted away from its physical location.
 ## Install & Run
 
 ```bash
-git clone https://github.com/canvas-ai/canvas-server /path/to/canvas-server
+git clone https://github.com/canvas-ui/canvas-server /path/to/canvas-server
 cd /path/to/canvas-server
 npm run update-submodules
 npm install
@@ -17,7 +17,7 @@ npm run dev
 ## Docker
 
 ```bash
-git clone https://github.com/canvas-ai/canvas-server /path/to/canvas-server
+git clone https://github.com/canvas-ui/canvas-server /path/to/canvas-server
 cd /path/to/canvas-server
 CANVAS_SERVER_HOME=~/.canvas docker-compose up --build
 ```

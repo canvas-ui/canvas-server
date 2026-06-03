@@ -7,7 +7,7 @@
 CANVAS_ROOT="${CANVAS_ROOT:-/opt/canvas-server}"
 CANVAS_USER="${CANVAS_USER:-canvas}"
 CANVAS_GROUP="${CANVAS_GROUP:-www-data}"
-CANVAS_REPO_URL="${CANVAS_REPO_URL:-https://github.com/canvas-ai/canvas-server.git}"
+CANVAS_REPO_URL="${CANVAS_REPO_URL:-https://github.com/canvas-ui/canvas-server.git}"
 CANVAS_REPO_TARGET_BRANCH="${CANVAS_REPO_TARGET_BRANCH:-dev}"
 NODEJS_VERSION="${NODEJS_VERSION:-20}"
 WEB_ADMIN_EMAIL="${WEB_ADMIN_EMAIL:-$(hostname)@cnvs.ai}"

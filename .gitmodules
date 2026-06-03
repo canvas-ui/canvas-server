@@ -1,23 +1,23 @@
 [submodule "src/ui/web"]
 	path = src/ui/web
-	url = https://github.com/canvas-ai/canvas-web.git
+	url = https://github.com/canvas-ui/canvas-web.git
 	branch = main
 [submodule "src/ui/cli"]
 	path = src/ui/cli
-	url = https://github.com/canvas-ai/canvas-cli.git
+	url = https://github.com/canvas-ui/canvas-cli.git
 [submodule "src/ui/shell"]
 	path = src/ui/shell
-	url = https://github.com/canvas-ai/canvas-shell.git
+	url = https://github.com/canvas-ui/canvas-shell.git
 [submodule "extensions/browser-extensions"]
 	path = extensions/browser-extensions
-	url = git@github.com:canvas-ai/canvas-browser-extensions.git
+	url = git@github.com:canvas-ui/canvas-browser-extensions.git
 [submodule "src/services/synapsd"]
 	path = src/services/synapsd
-	url = https://github.com/canvas-ai/canvas-synapsd.git
+	url = https://github.com/canvas-ui/canvas-synapsd.git
 	branch = main
 [submodule "src/services/neurald"]
 	path = src/services/neurald
-	url = https://github.com/canvas-ai/canvas-neurald.git
+	url = https://github.com/canvas-ui/canvas-neurald.git
 [submodule "src/services/stored"]
 	path = src/services/stored
-	url = https://github.com/canvas-ai/canvas-stored.git
+	url = https://github.com/canvas-ui/canvas-stored.git

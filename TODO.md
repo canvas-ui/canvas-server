@@ -1,5 +1,12 @@
 # TODO List
 
+## WebUI
+
+View
+/workspaces
+
+## canvas-edge
+
 Lets desing a `canvas-edge` service module with the following functionality
 
 - The main purpose it to be used as a thin transport layer 
@@ -13,7 +20,7 @@ Lets desing a `canvas-edge` service module with the following functionality
 
 - Workspace type: local, remote
 - Agent type: local, remote
-- 
+- Role type: local, remote
 
 Backend bugs observed (not CLI):
 1. dot init says "already initialized" when target dir exists but isn't a valid bare repo (silent no-op) — fixed manually by rm -rf + reinit

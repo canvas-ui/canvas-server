@@ -1,8 +1,8 @@
 #!/bin/bash
+
 # Git pull + rebuild for canvas-server. Config: $CANVAS_SERVER_HOME/config/update.json
 # Cron example (daily 3am, dev channel):
 #   0 3 * * * CANVAS_SERVER_HOME=/opt/canvas-server/server /opt/canvas-server/scripts/update-git.sh
-set -euo pipefail
 
 TARGET_BRANCH_CLI=
 CANVAS_ROOT="${CANVAS_ROOT:-}"

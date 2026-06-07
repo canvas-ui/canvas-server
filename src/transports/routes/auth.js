@@ -55,7 +55,7 @@ export default async function authRoutes(fastify, options) {
       const config = {
         strategies: {
           local: {
-            enabled: true,
+            enabled: authService.isLocalEnabled(),
             passwordPolicy: authService.getPasswordPolicy(),
             requireEmailVerification: authService.isEmailVerificationRequired()
           },
@@ -214,12 +214,17 @@ export default async function authRoutes(fastify, options) {
             description: 'Username (3-39 chars, lowercase letters, numbers, underscores, hyphens only)'
           },
           email: { type: 'string', format: 'email' },
-          password: { type: 'string', minLength: 12 }
+          password: { type: 'string', minLength: 8 }
         }
       }
     }
   }, async (request, reply) => {
     try {
+      if (!authService.isLocalEnabled()) {
+        const response = new ResponseObject().forbidden('Registration is disabled');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+
       const result = await register(request.body, fastify.users);
 
       if (!result.success) {
@@ -272,7 +277,7 @@ export default async function authRoutes(fastify, options) {
         required: ['currentPassword', 'newPassword'],
         properties: {
           currentPassword: { type: 'string', minLength: 1 },
-          newPassword: { type: 'string', minLength: 12 }
+          newPassword: { type: 'string', minLength: 8 }
         }
       }
     }
@@ -331,7 +336,7 @@ export default async function authRoutes(fastify, options) {
         required: ['token', 'newPassword'],
         properties: {
           token: { type: 'string' },
-          newPassword: { type: 'string', minLength: 12 }
+          newPassword: { type: 'string', minLength: 8 }
         }
       }
     }

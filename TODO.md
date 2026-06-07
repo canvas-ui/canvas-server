@@ -16,7 +16,7 @@ Lets design a `canvas-edge` service module with the following functionality
 - Re
 -
 -
--
+- Offline icon cache for offline-only mode
 
 - Workspace type: local, remote
 - Agent type: local, remote

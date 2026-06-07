@@ -27,6 +27,11 @@ Backend bugs observed (not CLI):
 2. ws start on inactive workspace hung past 30s, caused server crash earlier in session — couldn't repro after restart
 
 
+## Contexts
+
+- Load icon + color from bound path, default to icon + color of a bound workspace
+
+
 ## WebUI .2
 
 - Esc to close all boxes/menus

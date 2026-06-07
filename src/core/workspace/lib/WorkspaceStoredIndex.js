@@ -69,6 +69,7 @@ export class WorkspaceStoredIndex {
     #listeners = [];
     #registeredDataBackends = new Set();
     #backendStatus = new Map();
+    #resyncing = new Set();
 
     constructor({ rootPath, cachePath, dataPath, homePath, dataBackends = {}, workspaceId, logger, put, unlink, getIncomingTreeSelector, getDb, getImapConfig = null }) {
         if (!dataPath || !homePath) throw new Error('dataPath and homePath are required');
@@ -116,10 +117,12 @@ export class WorkspaceStoredIndex {
             await this.#registerStoredConfigBackends();
 
             this.#bindEvents();
-            await this.resync(HOME_STORED_BACKEND).catch((error) => {
-                this.#setBackendError(HOME_STORED_BACKEND, error);
-                this.#logger.warn({ workspaceId: this.#workspaceId, error: error.message }, 'Stored home resync failed');
-            });
+            // No full resync on start: the synapsd document index is durable
+            // across restarts and the file watcher (ignoreInitial) picks up live
+            // changes. Reconciling drift (files changed while the server was
+            // down, or a remote/large backend) is an explicit, user-triggered
+            // operation via resyncDataBackend() — a potentially slow scan that
+            // must not block workspace/server startup.
             // Start imap accounts (initial sync + poll) once event bindings exist.
             await this.#startStoredConfigSources();
         } catch (error) {
@@ -143,25 +146,67 @@ export class WorkspaceStoredIndex {
         }
     }
 
-    async resync(backendName = HOME_STORED_BACKEND) {
+    #assertResyncable(backendName) {
         if (!this.#stored) throw new Error('WorkspaceStoredIndex is not running');
         const config = this.#dataBackends[backendName];
         if (!config?.enabled) throw new Error(`Data backend "${backendName}" is disabled`);
         if (!config?.resync) throw new Error(`Data backend "${backendName}" does not support resync`);
         if (!this.#stored.getBackend(backendName)) throw new Error(`Data backend "${backendName}" is not registered`);
+    }
 
-        const { files = [] } = await this.#stored.scan(backendName);
-        for (const file of files) {
-            await this.#upsertDocument(file);
+    /**
+     * Launch a resync without blocking the caller. Validation errors are thrown
+     * synchronously; the (potentially slow) scan runs in the background and its
+     * outcome is recorded in the backend status (queryable via getBackendStatus).
+     */
+    resyncInBackground(backendName = HOME_STORED_BACKEND) {
+        this.#assertResyncable(backendName);
+        if (this.#resyncing.has(backendName)) {
+            return { backend: backendName, started: false, alreadyRunning: true };
         }
-        await this.#purgeOrphanedPaths(backendName, files);
+        this.resync(backendName).catch((error) => {
+            this.#setBackendError(backendName, error);
+            this.#logger.warn({ workspaceId: this.#workspaceId, backend: backendName, error: error.message }, 'Background resync failed');
+        });
+        return { backend: backendName, started: true, resyncing: true };
+    }
+
+    async resync(backendName = HOME_STORED_BACKEND) {
+        this.#assertResyncable(backendName);
+
+        // Re-entrancy guard: a resync of the same backend already in flight must
+        // not be duplicated (the scan is expensive and writes are not idempotent
+        // under concurrency).
+        if (this.#resyncing.has(backendName)) {
+            return { backend: backendName, count: null, alreadyRunning: true };
+        }
+        this.#resyncing.add(backendName);
         this.#backendStatus.set(backendName, {
             ...(this.#backendStatus.get(backendName) || {}),
-            lastScanAt: new Date().toISOString(),
-            lastError: null,
-            fileCount: files.length,
+            resyncing: true,
+            resyncStartedAt: new Date().toISOString(),
         });
-        return { backend: backendName, count: files.length };
+
+        try {
+            const { files = [] } = await this.#stored.scan(backendName);
+            for (const file of files) {
+                await this.#upsertDocument(file);
+            }
+            await this.#purgeOrphanedPaths(backendName, files);
+            this.#backendStatus.set(backendName, {
+                ...(this.#backendStatus.get(backendName) || {}),
+                lastScanAt: new Date().toISOString(),
+                lastError: null,
+                fileCount: files.length,
+            });
+            return { backend: backendName, count: files.length };
+        } finally {
+            this.#resyncing.delete(backendName);
+            this.#backendStatus.set(backendName, {
+                ...(this.#backendStatus.get(backendName) || {}),
+                resyncing: false,
+            });
+        }
     }
 
     /**

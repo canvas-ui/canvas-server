@@ -308,7 +308,7 @@ async function findWorkspaceByTokenHash(workspaceManager, workspaceIdentifier, t
 async function loadWorkspaceForTokenAccess(workspaceManager, workspaceEntry) {
   try {
     // Load the workspace by ID (this bypasses owner check since we validated ACL)
-    const workspace = await workspaceManager.getWorkspaceById(workspaceEntry.id);
+    const workspace = await workspaceManager.getWorkspace(workspaceEntry.id);
     return workspace;
 
   } catch (error) {
@@ -430,7 +430,7 @@ async function loadWorkspaceForUserAccess(workspaceManager, workspaceEntry, user
   try {
     // Load the workspace by ID with the owner as the requesting user
     // This allows the user to access a workspace they have email-based permissions for
-    const workspace = await workspaceManager.getWorkspaceById(workspaceEntry.id, workspaceEntry.owner);
+    const workspace = await workspaceManager.getWorkspace(workspaceEntry.id, workspaceEntry.owner);
     return workspace;
 
   } catch (error) {

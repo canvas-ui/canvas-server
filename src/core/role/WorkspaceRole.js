@@ -50,7 +50,7 @@ class WorkspaceRole extends Role {
         const config = await super._prepareContainerConfig(containerConfig);
 
         // Get workspace information
-        const workspace = await this.#workspaceManager.getWorkspaceById(this.workspaceId);
+        const workspace = await this.#workspaceManager.getWorkspace(this.workspaceId);
         if (!workspace) {
             throw new Error(`Workspace not found: ${this.workspaceId}`);
         }
@@ -103,7 +103,7 @@ class WorkspaceRole extends Role {
      * @returns {Promise<Object>} Workspace information
      */
     async getWorkspaceInfo() {
-        return await this.#workspaceManager.getWorkspaceById(this.workspaceId);
+        return await this.#workspaceManager.getWorkspace(this.workspaceId);
     }
 
     /**
@@ -112,7 +112,7 @@ class WorkspaceRole extends Role {
      * @returns {Promise<string>} Socket path
      */
     async getSocketPath(socketName = 'api') {
-        const workspace = await this.#workspaceManager.getWorkspaceById(this.workspaceId);
+        const workspace = await this.#workspaceManager.getWorkspace(this.workspaceId);
         if (!workspace) {
             throw new Error(`Workspace not found: ${this.workspaceId}`);
         }

@@ -21,6 +21,7 @@ class HookService extends EventEmitter {
     #hooks = new Map(); // hookId -> hookInstance
     #workspaceListeners = new Map();
     #recentDispatches = new Map();
+    #hookModuleCache = new Map(); // hookPath -> { mtimeMs, run } | { mtimeMs: null }
     #initialized = false;
 
     constructor(options = {}) {
@@ -148,18 +149,32 @@ class HookService extends EventEmitter {
 
     async #runWorkspaceHook(workspace, eventName, payload) {
         const hookPath = path.join(workspace.hooksPath || path.join(workspace.rootPath, 'hooks'), `${eventName}.js`);
-        if (!fs.existsSync(hookPath)) {
-            return;
+
+        // Resolve the hook's exported function from cache. We key on mtime so an
+        // edited hook is hot-reloaded, but an unchanged hook is compiled once
+        // instead of re-imported on every event (which also leaked a module into
+        // the ESM registry per call).
+        let stat;
+        try {
+            stat = fs.statSync(hookPath);
+        } catch {
+            return; // hook file does not exist for this event
         }
 
         try {
-            const moduleUrl = `${pathToFileURL(hookPath).href}?ts=${Date.now()}`;
-            const hookModule = await import(moduleUrl);
-            const run = hookModule.default || hookModule.run;
+            let cached = this.#hookModuleCache.get(hookPath);
+            if (!cached || cached.mtimeMs !== stat.mtimeMs) {
+                const moduleUrl = `${pathToFileURL(hookPath).href}?mtime=${stat.mtimeMs}`;
+                const hookModule = await import(moduleUrl);
+                const run = hookModule.default || hookModule.run;
 
-            if (typeof run !== 'function') {
-                throw new Error(`Hook "${hookPath}" does not export a function`);
+                if (typeof run !== 'function') {
+                    throw new Error(`Hook "${hookPath}" does not export a function`);
+                }
+                cached = { mtimeMs: stat.mtimeMs, run };
+                this.#hookModuleCache.set(hookPath, cached);
             }
+            const run = cached.run;
 
             const event = {
                 name: eventName,

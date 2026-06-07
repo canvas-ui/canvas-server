@@ -92,7 +92,7 @@ class DotfileManager extends EventEmitter {
         if (typeof workspaceIdOrObject === 'object' && workspaceIdOrObject.id) {
             workspace = workspaceIdOrObject;
         } else {
-            workspace = await this.workspaceManager.getWorkspaceById(workspaceIdOrObject, requestingUserId);
+            workspace = await this.workspaceManager.getWorkspace(workspaceIdOrObject, requestingUserId);
             if (!workspace) {
                 return false;
             }
@@ -152,7 +152,7 @@ class DotfileManager extends EventEmitter {
         if (typeof workspaceIdOrObject === 'object' && workspaceIdOrObject.id) {
             workspace = workspaceIdOrObject;
         } else {
-            workspace = await this.workspaceManager.getWorkspaceById(workspaceIdOrObject, requestingUserId);
+            workspace = await this.workspaceManager.getWorkspace(workspaceIdOrObject, requestingUserId);
             if (!workspace) {
                 throw new Error(`Workspace ${workspaceIdOrObject} not found or access denied`);
             }
@@ -220,7 +220,7 @@ class DotfileManager extends EventEmitter {
         if (typeof workspaceIdOrObject === 'object' && workspaceIdOrObject.id) {
             workspace = workspaceIdOrObject;
         } else {
-            workspace = await this.workspaceManager.getWorkspaceById(workspaceIdOrObject, requestingUserId);
+            workspace = await this.workspaceManager.getWorkspace(workspaceIdOrObject, requestingUserId);
             if (!workspace) {
                 throw new Error(`Workspace ${workspaceIdOrObject} not found or access denied`);
             }
@@ -268,7 +268,7 @@ class DotfileManager extends EventEmitter {
         if (typeof workspaceIdOrObject === 'object' && workspaceIdOrObject.id) {
             workspace = workspaceIdOrObject;
         } else {
-            workspace = await this.workspaceManager.getWorkspaceById(workspaceIdOrObject, requestingUserId);
+            workspace = await this.workspaceManager.getWorkspace(workspaceIdOrObject, requestingUserId);
             if (!workspace) {
                 throw new Error(`Workspace ${workspaceIdOrObject} not found or access denied`);
             }

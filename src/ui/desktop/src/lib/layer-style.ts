@@ -28,6 +28,20 @@ export function loadPhosphorFillIcons(): Promise<string[]> {
   return fillIconsPromise
 }
 
+// Search the whole Iconify catalog (all collections) on demand. Keeps the
+// bundle slim — only matching names are fetched, SVGs still lazy-load.
+export async function searchIcons(query: string, limit = 120): Promise<string[]> {
+  const q = query.trim()
+  if (!q) return []
+  try {
+    const r = await fetch(`https://api.iconify.design/search?query=${encodeURIComponent(q)}&limit=${limit}`)
+    const data: { icons?: string[] } = await r.json()
+    return Array.isArray(data.icons) ? data.icons : []
+  } catch {
+    return []
+  }
+}
+
 export const DEFAULT_FOLDER_ICON = 'ph:folder-fill'
 export const DEFAULT_CANVAS_ICON = 'ph:squares-four-fill'
 export const DEFAULT_WORKSPACE_ICON = 'ph:stack-fill'

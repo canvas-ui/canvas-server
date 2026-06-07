@@ -9,7 +9,7 @@ import { Icon } from '@iconify/react'
 import { X, Loader2 } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import {
-  loadPhosphorFillIcons, LAYER_COLORS, DEFAULT_FOLDER_ICON,
+  loadPhosphorFillIcons, searchIcons, LAYER_COLORS, DEFAULT_FOLDER_ICON,
   type LayerStyle,
 } from '../../lib/layer-style'
 
@@ -26,7 +26,9 @@ interface LayerIconPickerProps {
 export function LayerIconPicker({ x, y, current, onChange, onClose }: LayerIconPickerProps) {
   const [query, setQuery] = useState('')
   const [allIcons, setAllIcons] = useState<string[]>([])
+  const [results, setResults] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
+  const [searching, setSearching] = useState(false)
   const searchRef = useRef<HTMLInputElement>(null)
   // Manual double-click: Iconify swaps the icon's inner DOM async, which breaks
   // native dblclick (it needs both clicks on the same element).
@@ -49,11 +51,22 @@ export function LayerIconPicker({ x, y, current, onChange, onClose }: LayerIconP
     return () => { active = false }
   }, [])
 
-  const icons = useMemo(() => {
-    const q = query.trim().toLowerCase()
-    const list = q ? allIcons.filter((n) => n.includes(q)) : allIcons
-    return list.slice(0, MAX_RESULTS)
-  }, [query, allIcons])
+  // While typing, search the whole Iconify catalog (debounced); otherwise
+  // browse the cached Phosphor list.
+  useEffect(() => {
+    const q = query.trim()
+    if (!q) { setResults([]); setSearching(false); return }
+    setSearching(true)
+    const t = setTimeout(() => {
+      searchIcons(q).then((r) => { setResults(r); setSearching(false) })
+    }, 250)
+    return () => clearTimeout(t)
+  }, [query])
+
+  const icons = useMemo(
+    () => (query.trim() ? results : allIcons).slice(0, MAX_RESULTS),
+    [query, results, allIcons],
+  )
 
   const left = Math.min(x, window.innerWidth - 290)
   const top = Math.min(y, window.innerHeight - 360)
@@ -130,9 +143,9 @@ export function LayerIconPicker({ x, y, current, onChange, onClose }: LayerIconP
         />
 
         {/* Icon grid */}
-        {loading ? (
+        {loading || searching ? (
           <div className="flex items-center justify-center gap-2 py-8 text-xs text-muted-foreground">
-            <Loader2 className="w-4 h-4 animate-spin" /> Loading icons…
+            <Loader2 className="w-4 h-4 animate-spin" /> {searching ? 'Searching…' : 'Loading icons…'}
           </div>
         ) : (
         <div className="grid grid-cols-7 gap-0.5 max-h-[200px] overflow-y-auto">
@@ -151,7 +164,7 @@ export function LayerIconPicker({ x, y, current, onChange, onClose }: LayerIconP
             <button
               key={name}
               type="button"
-              title={name.replace('ph:', '').replace('-fill', '')}
+              title={name.replace(/^[^:]+:/, '').replace('-fill', '')}
               onClick={() => handleIconClick(name)}
               className={cn(
                 'aspect-square flex items-center justify-center rounded-sm hover:bg-accent',
@@ -163,7 +176,7 @@ export function LayerIconPicker({ x, y, current, onChange, onClose }: LayerIconP
           ))}
         </div>
         )}
-        {!loading && icons.length === 0 && (
+        {!loading && !searching && icons.length === 0 && (
           <div className="px-1 py-3 text-center text-[11px] text-muted-foreground">No icons match “{query}”</div>
         )}
       </div>

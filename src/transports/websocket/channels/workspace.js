@@ -27,6 +27,18 @@ export default function registerWorkspaceWebSocket(fastify, socket) {
   // Map<key, listener> so we can cleanly remove on disconnect.
   const listeners = new Map();
 
+  // Positive-only access cache for this socket. Avoids re-validating the same
+  // workspace on every event during bulk operations (e.g. WebDAV uploads).
+  // Negatives are not cached so a share granted mid-session still takes effect.
+  const accessCache = new Set();
+
+  // Resolve a user id to a human-readable email for log messages (best-effort,
+  // synchronous index lookup – no disk I/O).
+  const emailFor = (userId) => {
+    try { return fastify.users?.indexStore?.get?.(userId)?.email || userId; }
+    catch { return userId; }
+  };
+
   /**
    * Wildcard listener -> forwards every event from WorkspaceManager.
    * Uses standard EventEmitter2 "this.event" to determine event name.
@@ -34,10 +46,14 @@ export default function registerWorkspaceWebSocket(fastify, socket) {
   const wildcardListener = async function (eventPayload) {
     try {
       const eventName = this.event; // event string from EventEmitter2
+      // Only treat eventPayload.id as a workspace identifier when it looks like
+      // a workspace UUID. Document events carry a numeric `id` that must not be
+      // mistaken for a workspace.
+      const payloadId = eventPayload?.id;
       const workspaceIdentifiers = [
         eventPayload?.workspaceId,
         eventPayload?.workspaceName,
-        eventPayload?.id
+        UUID_RE.test(String(payloadId ?? '')) ? payloadId : null
       ].filter(Boolean);
       const userId = socket.user?.id;
 
@@ -52,15 +68,22 @@ export default function registerWorkspaceWebSocket(fastify, socket) {
         return;
       }
 
-      // Verify access using token-based ACL validation
-      const hasAccess = await validateWorkspaceAccess(socket, workspaceIdentifiers);
+      // Verify access (cached positives skip revalidation on the hot path).
+      let hasAccess = workspaceIdentifiers.some((identifier) => accessCache.has(identifier));
       if (!hasAccess) {
-        logger.debug(`Access denied for user ${userId} to workspace ${workspaceIdentifiers.join(', ')} – not forwarding ${eventName}`);
+        hasAccess = await validateWorkspaceAccess(socket, workspaceIdentifiers);
+        if (hasAccess) {
+          for (const identifier of workspaceIdentifiers) accessCache.add(identifier);
+        }
+      }
+
+      if (!hasAccess) {
+        logger.debug(`Access denied for user ${emailFor(userId)} to workspace ${workspaceIdentifiers.join(', ')} – not forwarding ${eventName}`);
         return;
       }
 
       socket.emit(eventName, eventPayload);
-      logger.debug(`➡️  forwarded ${eventName} to ${userId}`);
+      logger.debug(`➡️  forwarded ${eventName} to ${emailFor(userId)}`);
     } catch (err) {
       logger.debug(`Error forwarding workspace event: ${err.message}`);
     }
@@ -110,11 +133,14 @@ async function validateWorkspaceAccess(socket, workspaceIdentifierInput) {
     try {
       for (const workspaceIdentifier of workspaceIdentifiers) {
         const isWorkspaceId = UUID_RE.test(workspaceIdentifier);
-        const workspace = isWorkspaceId
-          ? await workspaceManager.getWorkspaceById(workspaceIdentifier, userId)
-          : await workspaceManager.getWorkspaceByName(userId, workspaceIdentifier, userId);
+        // Names resolve to an id via the in-memory name index; ids are used
+        // directly. hasWorkspace performs an index-only owner check (no
+        // workspace instantiation, no disk I/O).
+        const workspaceId = isWorkspaceId
+          ? workspaceIdentifier
+          : workspaceManager.resolveWorkspaceId(userId, workspaceIdentifier);
 
-        if (workspace) {
+        if (workspaceId && await workspaceManager.hasWorkspace(workspaceId, userId)) {
           logger.debug(`Owner access granted for workspace ${workspaceIdentifier}`);
           return true;
         }

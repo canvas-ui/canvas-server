@@ -212,6 +212,60 @@ export default async function treeRoutes(fastify) {
     }
   });
 
+  // Update a layer's presentation (icon/color via metadata, label, etc.)
+  // Path: /paths (relative to /:id/tree)
+  fastify.patch('/paths', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      body: {
+        type: 'object',
+        required: ['path'],
+        properties: {
+          path: { type: 'string' },
+          label: { type: 'string' },
+          description: { type: 'string' },
+          color: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+          metadata: { type: 'object' },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    const contextId = request.params.id;
+
+    try {
+      const context = await fastify.contextManager.getContext(request.user.id, contextId);
+      if (!context) {
+        const response = new ResponseObject().notFound(`Context with ID ${contextId} not found`);
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+
+      const workspace = context.workspace;
+      if (!workspace) {
+        const response = new ResponseObject().error(`Workspace for context ${contextId} is not available.`);
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+
+      const tree = workspace.getTree(context.treeId);
+      const { path, ...updates } = request.body;
+      const layer = tree.getLayerForPath(path);
+      if (!layer) {
+        const response = new ResponseObject().notFound(`Path not found: ${path}`);
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+
+      const updated = await tree.updateLayer(layer.id, updates);
+      const response = new ResponseObject().success(
+        typeof updated.toJSON === 'function' ? updated.toJSON() : updated,
+        'Tree path updated successfully',
+      );
+      return reply.code(response.statusCode).send(response.getResponse());
+    } catch (error) {
+      fastify.log.error(`Update path error for context ${contextId}: ${error.message}`);
+      const response = new ResponseObject().error(error.message || 'Failed to update tree path');
+      return reply.code(response.statusCode).send(response.getResponse());
+    }
+  });
+
   // Move path in tree
   // Path: /paths/move (relative to /:id/tree)
   fastify.post('/paths/move', {

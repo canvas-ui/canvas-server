@@ -144,9 +144,9 @@ class AuthService {
             enabled: true,
             requireEmailVerification: false,
             passwordPolicy: {
-              minLength: 12,
-              requireUppercase: true,
-              requireLowercase: true,
+              minLength: 8,
+              requireUppercase: false,
+              requireLowercase: false,
               requireNumbers: true,
               requireSpecialChars: true,
               maxLength: 128
@@ -214,6 +214,19 @@ class AuthService {
     } catch (e) {
       console.warn('[AuthService] Failed to read auth configuration, using defaults only:', e.message);
       this.#authConfig = null;
+    }
+  }
+
+  /**
+   * Read auth.json fresh from disk (falls back to startup-cached value on error)
+   * @private
+   */
+  #readAuthConfig() {
+    const configPath = path.join(process.cwd(), 'server/config/auth.json');
+    try {
+      return JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    } catch {
+      return this.#authConfig;
     }
   }
 
@@ -918,14 +931,14 @@ class AuthService {
   }
 
   /**
-   * Get password policy from config with safe defaults
+   * Get password policy from config with safe defaults (reads fresh from disk)
    */
   getPasswordPolicy() {
-    const policy = this.#authConfig?.strategies?.local?.passwordPolicy || {};
+    const policy = this.#readAuthConfig()?.strategies?.local?.passwordPolicy || {};
     return {
-      minLength: policy.minLength ?? 12,
-      requireUppercase: policy.requireUppercase ?? true,
-      requireLowercase: policy.requireLowercase ?? true,
+      minLength: policy.minLength ?? 6,
+      requireUppercase: policy.requireUppercase ?? false,
+      requireLowercase: policy.requireLowercase ?? false,
       requireNumbers: policy.requireNumbers ?? true,
       requireSpecialChars: policy.requireSpecialChars ?? true,
       maxLength: policy.maxLength ?? 128
@@ -933,7 +946,7 @@ class AuthService {
   }
 
   /**
-   * Get rate limiting config for a given key
+   * Get rate limiting config for a given key (uses startup cache — rate limits are baked in at startup)
    */
   getRateLimitConfig(key) {
     const rl = this.#authConfig?.strategies?.local?.rateLimiting || {};
@@ -948,10 +961,18 @@ class AuthService {
   }
 
   /**
-   * Whether local strategy requires email verification
+   * Whether local strategy requires email verification (reads fresh from disk)
    */
   isEmailVerificationRequired() {
-    return !!this.#authConfig?.strategies?.local?.requireEmailVerification;
+    return !!this.#readAuthConfig()?.strategies?.local?.requireEmailVerification;
+  }
+
+  /**
+   * Whether local (password) strategy is enabled (reads fresh from disk)
+   */
+  isLocalEnabled() {
+    const local = this.#readAuthConfig()?.strategies?.local;
+    return local?.enabled !== false; // default true if missing
   }
 
   /**

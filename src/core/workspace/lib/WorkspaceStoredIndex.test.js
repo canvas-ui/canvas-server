@@ -83,6 +83,9 @@ describe('WorkspaceStoredIndex', () => {
         index = createIndex();
         await index.start();
 
+        // start() no longer scans; reconciliation is an explicit operation.
+        await index.resync('fs:home');
+
         assert.equal(documents.size, 1);
         const [doc] = documents.values();
         assert.deepEqual(doc.data, {});
@@ -95,6 +98,7 @@ describe('WorkspaceStoredIndex', () => {
     test('resync purges docs whose only location was deleted', async () => {
         index = createIndex();
         await index.start();
+        await index.resync('fs:home');
         const [doc] = documents.values();
 
         await fs.remove(path.join(rootPath, 'home', 'nested', 'a.txt'));
@@ -107,6 +111,7 @@ describe('WorkspaceStoredIndex', () => {
     test('resync updates incoming paths when a home file moves', async () => {
         index = createIndex();
         await index.start();
+        await index.resync('fs:home');
         const [doc] = documents.values();
 
         await fs.ensureDir(path.join(rootPath, 'home', 'renamed'));

@@ -55,7 +55,7 @@ export default async function authRoutes(fastify, options) {
       const config = {
         strategies: {
           local: {
-            enabled: true,
+            enabled: authService.isLocalEnabled(),
             passwordPolicy: authService.getPasswordPolicy(),
             requireEmailVerification: authService.isEmailVerificationRequired()
           },
@@ -214,12 +214,17 @@ export default async function authRoutes(fastify, options) {
             description: 'Username (3-39 chars, lowercase letters, numbers, underscores, hyphens only)'
           },
           email: { type: 'string', format: 'email' },
-          password: { type: 'string', minLength: 12 }
+          password: { type: 'string', minLength: 8 }
         }
       }
     }
   }, async (request, reply) => {
     try {
+      if (!authService.isLocalEnabled()) {
+        const response = new ResponseObject().forbidden('Registration is disabled');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+
       const result = await register(request.body, fastify.users);
 
       if (!result.success) {
@@ -272,7 +277,7 @@ export default async function authRoutes(fastify, options) {
         required: ['currentPassword', 'newPassword'],
         properties: {
           currentPassword: { type: 'string', minLength: 1 },
-          newPassword: { type: 'string', minLength: 12 }
+          newPassword: { type: 'string', minLength: 8 }
         }
       }
     }
@@ -331,7 +336,7 @@ export default async function authRoutes(fastify, options) {
         required: ['token', 'newPassword'],
         properties: {
           token: { type: 'string' },
-          newPassword: { type: 'string', minLength: 12 }
+          newPassword: { type: 'string', minLength: 8 }
         }
       }
     }
@@ -871,6 +876,54 @@ export default async function authRoutes(fastify, options) {
 
       fastify.log.error(`[Auth/Me] Unexpected error: ${error.message}`, error);
       const response = new ResponseObject().serverError('Failed to get user profile');
+      return reply.code(response.statusCode).send(response.getResponse());
+    }
+  });
+
+  // Refresh a JWT session: mint a fresh JWT while the current one is still valid.
+  // This enables clients (e.g. the browser extension) to keep a session alive across
+  // the JWT expiry window without re-prompting for credentials. Only JWT-authenticated
+  // sessions can be refreshed — API/device tokens are opaque and already long-lived,
+  // so there is nothing to renew for them.
+  fastify.post('/token/refresh', {
+    onRequest: [fastify.authenticateCustom]
+  }, async (request, reply) => {
+    if (reply.sent) return;
+
+    try {
+      if (request.authStrategy && request.authStrategy !== 'jwt') {
+        const response = new ResponseObject().badRequest('Only JWT sessions can be refreshed; API tokens do not expire');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+
+      const userId = request.user?.id;
+      if (!userId) {
+        const response = new ResponseObject().unauthorized('Authentication required');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+
+      const user = await fastify.users.get(userId);
+      if (!user) {
+        const response = new ResponseObject().unauthorized('User account no longer exists');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+
+      const token = authService.generateJWT(user);
+      const expiresIn = authService.getJwtExpiry() || '1d';
+
+      const response = new ResponseObject().success({
+        token,
+        expiresIn,
+        user: {
+          id: user.id,
+          name: user.name || user.email,
+          email: user.email
+        }
+      }, 'Token refreshed successfully');
+      return reply.code(response.statusCode).send(response.getResponse());
+    } catch (error) {
+      fastify.log.error(`[Auth/Refresh] Failed to refresh token: ${error.message}`);
+      const response = new ResponseObject().serverError('Failed to refresh token');
       return reply.code(response.statusCode).send(response.getResponse());
     }
   });

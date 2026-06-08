@@ -357,7 +357,12 @@ export default async function workspaceTreeRoutes(fastify) {
         const responseObject = new ResponseObject().badRequest(`Path cannot be updated: ${path}`);
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());
       }
-      const updated = await resolved.tree.updateLayer(node.id, body);
+      // Strip move/control fields (incl. the schema-injected `recursive` default)
+      // so only real layer fields reach updateLayer — otherwise locked layers
+      // reject presentation-only edits.
+      const { to, name, targetTreeNameOrTreeId, recursive, ...layerUpdates } = body;
+      void to; void name; void targetTreeNameOrTreeId; void recursive;
+      const updated = await resolved.tree.updateLayer(node.id, layerUpdates);
       const responseObject = new ResponseObject().success({
         ...(typeof updated.toJSON === 'function' ? updated.toJSON() : updated),
         treeId: resolved.tree.id,

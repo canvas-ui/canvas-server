@@ -7,7 +7,7 @@ View
 
 ## canvas-edge
 
-Lets desing a `canvas-edge` service module with the following functionality
+Lets design a `canvas-edge` service module with the following functionality
 
 - The main purpose it to be used as a thin transport layer 
   - Workspace -> WorkspaceD
@@ -16,7 +16,7 @@ Lets desing a `canvas-edge` service module with the following functionality
 - Re
 -
 -
--
+- Offline icon cache for offline-only mode
 
 - Workspace type: local, remote
 - Agent type: local, remote
@@ -27,10 +27,15 @@ Backend bugs observed (not CLI):
 2. ws start on inactive workspace hung past 30s, caused server crash earlier in session — couldn't repro after restart
 
 
+## Contexts
+
+- Load icon + color from bound path, default to icon + color of a bound workspace
+
+
 ## WebUI .2
 
 - Esc to close all boxes/menus
-- .icomming tree should not show any actions that require rw access as that subtree is ro by default
+- .incoming tree should not show any actions that require rw access as that subtree is ro by default
 - locked layers should show rw opts as greyed out (or we can implement the same on all locked layers but incoming subtree does not allow creation of directories
 
 

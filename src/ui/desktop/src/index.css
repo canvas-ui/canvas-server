@@ -1,0 +1,65 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 0 0% 0%;
+    --card: 0 0% 100%;
+    --card-foreground: 0 0% 0%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 0%;
+    --primary: 0 0% 0%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 174 100% 43%;
+    --secondary-foreground: 0 0% 0%;
+    --muted: 240 5% 96%;
+    --muted-foreground: 240 5% 40%;
+    --accent: 240 5% 96%;
+    --accent-foreground: 0 0% 0%;
+    --destructive: 0 100% 42%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 240 5% 90%;
+    --input: 240 5% 96%;
+    --ring: 0 0% 0%;
+    --radius: 8px;
+    --m0-width: 48px;
+    --m1-width: 280px;
+    --desk: 240 6% 90%;
+  }
+
+  .dark {
+    --background: 240 6% 10%;
+    --foreground: 0 0% 98%;
+    --card: 240 5% 11%;
+    --card-foreground: 0 0% 98%;
+    --popover: 240 6% 10%;
+    --popover-foreground: 0 0% 98%;
+    --primary: 0 0% 98%;
+    --primary-foreground: 240 6% 10%;
+    --muted: 240 4% 16%;
+    --muted-foreground: 240 5% 65%;
+    --accent: 240 4% 20%;
+    --accent-foreground: 0 0% 98%;
+    --border: 240 4% 18%;
+    --input: 240 4% 18%;
+    --ring: 0 0% 83%;
+  }
+
+  * { border-color: hsl(var(--border)); }
+
+  /* Transparent page so the overlay window's translucency shows the desktop. */
+  html, body, #root {
+    height: 100%;
+    margin: 0;
+    background: transparent;
+    color: hsl(var(--foreground));
+    font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+  }
+
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: hsl(var(--muted-foreground) / 0.3); border-radius: 4px; }
+}

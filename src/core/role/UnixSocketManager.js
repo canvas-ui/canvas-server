@@ -60,7 +60,7 @@ class UnixSocketManager {
                 if (!context.workspaceId) {
                     throw new Error('Workspace ID required for workspace role socket');
                 }
-                const workspace = await this.#workspaceManager.getWorkspaceById(context.workspaceId);
+                const workspace = await this.#workspaceManager.getWorkspace(context.workspaceId);
                 if (!workspace) {
                     throw new Error(`Workspace not found: ${context.workspaceId}`);
                 }

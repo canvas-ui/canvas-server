@@ -791,13 +791,18 @@ class Workspace extends EventEmitter {
         }));
     }
 
-    async resyncDataBackend(backendName) {
+    async resyncDataBackend(backendName, { background = true } = {}) {
         const config = this.dataBackends[backendName];
         if (!config) throw new Error(`Unknown data backend: ${backendName}`);
         if (!config.supported) throw new Error(`Data backend "${backendName}" is not supported yet`);
         if (!config.resync) throw new Error(`Data backend "${backendName}" does not support resync`);
         if (!this.#storedIndex?.isRunning) await this.#startStoredIndex();
-        return this.#storedIndex.resync(backendName);
+        // A resync is a potentially slow full scan (large/remote backends); by
+        // default it runs in the background and progress is reported via the
+        // backend status. Pass { background: false } to await completion.
+        return background
+            ? this.#storedIndex.resyncInBackground(backendName)
+            : this.#storedIndex.resync(backendName);
     }
 
     /**

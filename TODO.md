@@ -1,16 +1,44 @@
 # TODO List
 
-List of WebUI bugs to chew through:
+## WebUI cosmetics
 
-- Delete-key for documents/objects isn't wired — the document list uses per-row delete buttons with no multi-row keyboard-selection model, so that's a separate, larger change. 
-Delete key → Remove (MenuTreeView.tsx) Delete/Backspace on the selected layer triggers a confirmed remove. Scoped to the tree container via tabIndex/onKeyDown (not a global window listener) so it can't fire while you're in the document list. Locked layers are blocked with a notice. Caveat: this covers layers. Delete-key for documents/objects isn't wired — the document list uses per-row delete buttons with no multi-row keyboard-selection model, so that's a separate, larger change. 
+Lets update our current webui @src/ui/web as follows:
+- Content area section should be tabbed
+- Workspace name should pre prepended with the workspace icon, tab should have a bottom border of the color of the workspace or layer
 
-## Phase #3
-- Our side-by-side midnight-command like view is unusable, the idea was to be able to easily tick/untick items
-  Make the workspace dual-pane (Midnight-Commander-style) view usable by enabling the same "MC" primitives (at least F5 - copy, F6 - move and drag-and-drop). Primitives exist: SideWorkspaceCanvas + focusedPane + shared clipboard in pages/workspaces/[workspaceName]/index.tsx; multi-select + copy/cut/paste + drag in components/common/document-list.tsx; pasteDocumentsToWorkspacePath links a subset. Goal: open layer "work" in one pane, target path in the other, select docs in "work", and F5/copy → insert/link only those into the target path. Due to the way we use URLs, the current implementation refreshes the whole site when focus is changed often times loosing the state information in the process.
+## Phase #4 - Modular widget/applet systems and Canvas UI
 
-## Phase #4
-- WebUI should have a "Pinned" section with pinned paths, it should be a nice list with folder names pointing to any of the 2 supported trees. This seems like a UI/App concern even though we'll rely on that feature in our tauri/electron UIs too. OK, might not be, maybe we should implement it on the DB level as a abstraction on top of the tree abstraction or better, in the workspace as pinned paths. Not sure whether pinning of a path should lock it or whether we'd just return some "Path not found" error. Internally "DC-Migration" -> /work/customer-foo/projects/DC-Migration so behaviour would be exactly the same as when traversing the full path
+We need to implement a proper, modular, extendible widget/applet system that could be shared between our electron and tauri desktop and android UIs and our main webui. It has to be easily extendible, hence, have a developer-friendly architecture - it should take only a few minutes to create a widget that for example displays a list of recent notes.
+Lets not reinvent the wheel and re-use an existing framework that can seamlessly work with agents - A2UI / AGUI / CopilotKit
+- https://developers.googleblog.com/introducing-a2ui-an-open-project-for-agent-driven-interfaces/
+- https://github.com/ag-ui-protocol/ag-ui
+- https://www.copilotkit.ai/
+
+### Widgets/Applets
+
+- Central component for the "Canvas" and "Toolbox" elements
+- Widgets are self-contained, they can show a clock, video or audio player, a list of recent emails or messages with a specific filter or a list of recently added files or notes or direct messages from your agents
+- Widgets can write or update documents or trigger actions(lets say to add a note or quick-reply to a message - chat, email or agent)
+- Widgets should be movable and resizeable metro-ui style with a default, minimum and (optional) maximum size configuration, api  should also support auto-resize on screen change(if widgets implement it)
+- Widgets should support placement on a Canvas(canvas-server Canvas), Toolbox or both
+- Widgets need to store their configuration
+  - Each Canvas and Context object has a metadata section, we can store the canvas layout information in metadata.ui.layout and specific canvas widget configuration in metadata.ui.applets (or .widgets) .widget-name {}
+- Widgets need to be controllable by agents - "Lucy, show me yesterdays emails related to the migration project on my tv canvas" 
+
+### Canvases
+
+- Use react-grid-layout for widget placement and management
+- Squared grid layout simillar to the (old) Metro UI with a minimum size and minimum scaling factor as described above
+- All layout/widget configuration is stored in metadata.ui.
+
+### Toolbox
+
+- Has a global section that contains widgets that are always visible, and a contextualized section that only shows elements related to the current bound/selected context OR chosen/selected canvas
+- Good place to store data may be in canvas.metadata.ui.toolbox or context.metadata.ui.toolbox 
+
+## Phase #5
+- WebUI should have a "Pinned" section next to Context/Directory tree and Lyers. It should be a nice list of "pinned" folder shortcuts with folder names pointing to any of the 2 supported trees. This seems like a UI/App concern even though we'll rely on that feature in our tauri/electron UIs/desktop overlays too. OK, might not be, maybe we should implement it on the DB level or probably better in the workspace as pinned paths. Not sure whether pinning of a path should lock it or whether we'd just return some "Path not found" error if a pinned path changes. Internally a pinned "DC-Migration" layer points to /work/customer-foo/projects/DC-Migration so behaviour would be exactly the same as when traversing the full path. Having multiple pinned layers with the same name is allowed - its a user-concern to mitigate this.
+
 
 - Copy/Cut-Paste in layer view (selecting a specific layer > copy > selecting layer B > paste) always uses "/", we should support copy-paste between layers too
 - .incoming tree mirrors the backend layout and is immutable but we should still allow removing data within that tree from the backend(s). 
@@ -52,77 +80,6 @@ Backend bugs observed (not CLI):
 ## Contexts
 
 - Load icon + color from bound path, default to icon + color of a bound workspace
-
-
-## WebUI .2
-
-- Esc to close all boxes/menus
-- .incoming tree should not show any actions that require rw access as that subtree is ro by default
-- locked layers should show rw opts as greyed out (or we can implement the same on all locked layers but incoming subtree does not allow creation of directories
-
-
-### Workspaces
-
-- Workspace dirs should contain /cache
-  - Cache should be the default cacache dir for remote resources for stored
-  - StoreD should always be configured with a default file backend in /data and a cache backend in /cache, local files would not be cached but it may make sense to cache uploads in /cache first and treat is as "incoming"
-- We need to re-intorduce both workspace services
-  - Webdav (already present in the webui)
-  - Git dotfile access (currently missing)
-  - We should provide the user commands for windows(if possible, webdav is tricky these days), mac-os and linux how to mount those folders
-  - We should also provide rclone commands directly for each workspace, logging on and creating a workspace should have a "Mount locally" button that would either navigate the user how to do that or do it for him (probably a is the MVP option here)
- 
-
-### Toolbox and Canvas(es)
-
-- Toolbox is one of the main elements the user will interact with
-- Our main menu(left) is where you select what you want to focus on - the workspace, context or directory path or a specific canvas or context - representing the task you work on (lets say work://projects/customer-foo/devops/jira-1234), toolbox on the other hand is - as the name suggest - what you use to work with your data.
-- A toolbox should inherently be exportable, meaning, you should be able to open your toolbox in a separate browser window or on your phone or tablet and use touch gestures to dynamically amend what you see on your computer screen(electron or web-based canvas elements) or use those devices to talk to your agents
-
-Toolbox layout:
-- Toolbox should by default be placed on the rigth side as a extendible side-panel
-- Toolbox layout should be as follows:
-  - TL: Launcher mode, cca 40px "dot" element near the right-bottom side of the screen to trigger voice mode or toggle the toolbox, electron-specific(omit for now)
-  - T0: Panel mode, slim dark panel with buttons and a small widget area
-    - Buttons(icon-only, default setup):
-      - Home
-        - A toolbox should have a "home screen" or "notification area" - a place where you could put a clock and/or audio player widget, get notifications and display various data, maybe we can extend T0 - keeping the nice dark color - for the Home area and shrink it and display white-background content when switching between different sections
-      - Tools (Would open a tabbed T1 section with the following tabs
-        - Timeline
-          - Vertical zoomable timeline element on the left, first click selects start date, second click end data, Material design v2 styled toggle switches on the right for ad-hoc filters:
-            - Index actions:
-                - Created
-                - Updated
-                - Deleted
-            - Content related (single toggle whether to also search through indexed events based on document content)
-            - Quick filter
-                - Today
-                - Yesterday
-                - This week
-                - This month
-                - This year
-        - Features
-          - Material design v2 styled toggle switches for all feature bitmaps
-      - Agents: Opens a list of agents in T1 simillar that we do for Contexts or Workspaces, selecting an agent will start a chat with that agent in T2 **we 
-      - Toggle toolbox mode or voice mode - button at the bottom of the panel, placeholder for now
-  - T1: Extended mode, cca 500px wide panel with controlls - main toolbox area
-  - T2: Content mode - Can overlay on top of T1 for things like ad-hoc note taking, replies to messages or chat with agents
-
- 
-- As with every other integration, there are 2 modi operandi that we need to take into account - context and workspace mode - or in the context of our toolbox, elements that change(or load) when you navigate to a Context or Canvas and elements that are global - iow always available.
-  - I would probably opt for a highligted button right under the Home icon in T0 that would appear when a user navigates to a Context or a Canvas (clicking on it would load T1 with context-relevant widgets)
-  
-### Widgets
-
-- A central component for the "Canvas" and "Toolbox" elements are "applets" or a better more common term "widgets"
-  - Widgets are self-contained elements that can show a clock, video or audio player, a list of recent emails or messages with a specific filter or recently added files etc; we should also support widgets that can write or update documents or trigger actions(lets say to add a note or quick-reply to a message - chat, email or agent)
-  - Widgets should be movable and resizeable metro-ui style with a default, minimum and (optional) maximum size configuration, they should also support auto-resize
-  - Widgets should support being placed on a Canvas(canvas-server Canvas), Toolbox or both
-  - Widgets need to store their configuration
-    - Each Canvas and Context object has a metadata section, we can store the canvas layout information in metadata.layout and specific canvas widget configuration in metadata.applets (or .widgets) .widget-name {}
-      - The difference here is, storing layout / widget data in a Canvas moves witht he canvas, storing it in a Context moves with the context - you can have one layout and traverse various parts of the tree to display data across various paths with the same UI    
-    - Toolbox widgets that are "context-specific" can also be loaded from canvas or context - as a ad-hoc example, if .metadata.toolbox exists, load related widget
-  - Lets first create a bare-bones toolbox and then revisit this point
 
 ## UUID + ULID channges
 
@@ -254,30 +211,27 @@ Agents should be running as self-contained docker containers but for now, we'll 
 
 ### Add support for hooks
 
-- We **need** to support hooks for all canvas actions, for example I want to run a hook that automatically sorts all URLs I throw into the to-sort context. qwen3:latest is really good at this (give it context paths or the whole tree, url title and a few simple instructions how the tree is structures and done)
+- We **need** to support hooks for all canvas actions, for example I want to run a hook that automatically sorts all URLs I throw into the to-sort context path. qwen3:latest is really good at this (give it context paths or the whole tree, url title and a few simple instructions how the tree is structures and done)
 - I want to run my youtube downloader whenever a youtube link is thrown into home://downloads and download videos to either my S3 or workspace home file backends
 - Same for website backups/analytics, file postprocessing etc
 
 ### Import/export workspace(s)
 
-We need to reintroduce the importWorkspace(workspacePath, destroyExisting = bool) and exportWorkspace(nameOrID, destinationPath) methods in our workspace manager.
+We need to reintroduce the importWorkspace() and exportWorkspace() methods in our workspace manager.
 
 The design should be as follows(I'm open to suggestsions here):
-- importWorkspace(workspacePath, ): Takes a extracted local folder path or a zip or tar file. If the path is a zip or tar/tar.gz we'd first extract it to a temporary folder (not sure where, maybe in users "home" but users "home" is actually his Universe workspace which would prevent the user from ever bee able to import(and replace)/export his universe) - once extracted or in case a path is supplied, we'd check if there is a workspace.json and fail if its not found or not correct. We'd rewrite the original owner with the current owner
-ID, update rootPath, configPath and the updatedAt timestamp. store the original owner and details into metadata: {}. On success we'd initialize it the same way as we do for a new workspace
+- importWorkspace(): Takes a zip or tar/tar.gz as input. Server uploads it into the users workspaces dir with a random temporary name, once extracted, we'd search for a valid workspace.json, then rewrite the owner/sanitize the config, rename the workspace folder to the real workspace name or workspace.N if we colide and import that workspace into the index.
 
-- exportWorkspace(nameOrId, dstPath, format = zip|tar|gzip) would first stop the workspace, then create a archive - again question is where to store it, "cache" folder which would be excluded from zip
+- exportWorkspace(nameOrId, format = zip|tar|gzip) would first stop the workspace, then create an archive in the users workspaces path - then make it available for download.
 
 ### Config file search paths for workspaces
 
 ```text
-Workspace config paths
-    $WORKSPACE_ROOT/.canvas/config/workspace.json
-    $WORKSPACE_ROOT/.canvas/workspace.json
+Workspace config search paths
+    $WORKSPACE_ROOT/.workspace/config/workspace.json
+    $WORKSPACE_ROOT/.workspace/workspace.json
     $WORKSPACE_ROOT/.workspace.json
-    $WORKSPACE_ROOT/workspace.json
-
-    workspace directories relative to the workspace.json location
+    $WORKSPACE_ROOT/workspace.json    
 ```
 
 ### Extend workspaces API (partly blocked by synapsd)

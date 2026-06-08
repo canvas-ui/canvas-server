@@ -351,6 +351,7 @@ function setupPublicCanvasNamespace(fastify, io) {
     const listener = function (payload = {}) {
       const eventName = this.event;
       if (!eventName || payload?.workspaceId !== share.workspaceId) return;
+      if (eventName === 'tree.layer.updated' && payload.layerId && payload.layerId !== share.layerId) return;
       socket.emit('canvas:changed', {
         code: share.code,
         event: eventName,

@@ -79,7 +79,7 @@ function locationBasename(doc) {
 function sanitize(s) {
     const cleaned = String(s)
         .replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '') // drop lone surrogates
-        .replace(/[/\\:*?"<>|\x00-\x1f]/g, '_');
+        .replace(/[/\\:*?"<>|]|\p{Cc}/gu, '_');
     return [...cleaned].slice(0, 120).join(''); // slice by code point, never split a pair
 }
 

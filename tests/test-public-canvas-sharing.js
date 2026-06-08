@@ -58,11 +58,21 @@ async function main() {
   assert(lockedCanvas.data.payload.locked, 'Shared canvas should be locked');
   assert(lockedCanvas.data.payload.lockedBy.includes(`public-share:${share.data.payload.code}`));
 
-  const publicRead = await request('GET', `/pub/c/${share.data.payload.code}`, undefined, null);
-  assert.strictEqual(publicRead.response.status, 200, JSON.stringify(publicRead.data));
-  assert.strictEqual(publicRead.data.payload.share.code, share.data.payload.code);
-  assert.strictEqual(publicRead.data.payload.canvas.type, 'canvas');
-  assert(Array.isArray(publicRead.data.payload.documents.data), 'Public documents should be returned under documents.data');
+  const widgetUi = {
+    layout: [{ i: 'clock-1', x: 0, y: 0, w: 4, h: 3, minW: 2, minH: 2 }],
+    widgets: { 'clock-1': { type: 'clock', config: {} } },
+  };
+  const savedUi = await request('PATCH', `/workspaces/${workspace.id}/trees/context/path/status`, {
+    metadata: { ui: widgetUi },
+  });
+  assert.strictEqual(savedUi.response.status, 200, JSON.stringify(savedUi.data));
+
+  const publicAfterSave = await request('GET', `/pub/c/${share.data.payload.code}`, undefined, null);
+  assert.strictEqual(publicAfterSave.response.status, 200, JSON.stringify(publicAfterSave.data));
+  assert.strictEqual(publicAfterSave.data.payload.share.code, share.data.payload.code);
+  assert.strictEqual(publicAfterSave.data.payload.canvas.type, 'canvas');
+  assert.strictEqual(publicAfterSave.data.payload.canvas.metadata.ui.widgets['clock-1'].type, 'clock');
+  assert(Array.isArray(publicAfterSave.data.payload.documents.data), 'Public documents should be returned under documents.data');
 
   const lookup = await request('GET', `/pub/c?workspaceId=${workspace.id}&treeName=context&path=${encodeURIComponent(canvasPath)}`);
   assert.strictEqual(lookup.response.status, 200, JSON.stringify(lookup.data));
@@ -76,7 +86,27 @@ async function main() {
 
   const unlockedCanvas = await request('GET', `/workspaces/${workspace.id}/trees/context/path/status`);
   assert.strictEqual(unlockedCanvas.response.status, 200, JSON.stringify(unlockedCanvas.data));
-  assert(!unlockedCanvas.data.payload.lockedBy.includes(`public-share:${share.data.payload.code}`));
+  assert(!unlockedCanvas.data.payload.locked, 'Shared canvas should unlock after unshare');
+  assert.strictEqual(unlockedCanvas.data.payload.lockedBy.length, 0, 'All public-share locks should be removed');
+
+  // Share/unshare cycles must not accumulate stale public-share:* locks.
+  for (let i = 0; i < 3; i++) {
+    const cycleShare = await request('POST', '/pub/c', {
+      workspaceId: workspace.id,
+      treeName: 'context',
+      path: canvasPath,
+    });
+    assert.strictEqual(cycleShare.response.status, 201, JSON.stringify(cycleShare.data));
+    const cycleCode = cycleShare.data.payload.code;
+    const locked = await request('GET', `/workspaces/${workspace.id}/trees/context/path/status`);
+    assert.strictEqual(locked.data.payload.lockedBy.filter((id) => String(id).startsWith('public-share:')).length, 1);
+    assert(locked.data.payload.lockedBy.includes(`public-share:${cycleCode}`));
+    const cycleDelete = await request('DELETE', `/pub/c/${cycleCode}`);
+    assert.strictEqual(cycleDelete.response.status, 200, JSON.stringify(cycleDelete.data));
+    const afterCycle = await request('GET', `/workspaces/${workspace.id}/trees/context/path/status`);
+    assert(!afterCycle.data.payload.locked, `Canvas should unlock after cycle ${i + 1}`);
+    assert.strictEqual(afterCycle.data.payload.lockedBy.length, 0);
+  }
 
   const afterDelete = await request('GET', `/pub/c/${share.data.payload.code}`, undefined, null);
   assert.strictEqual(afterDelete.response.status, 404, JSON.stringify(afterDelete.data));

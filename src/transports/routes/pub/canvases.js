@@ -83,7 +83,8 @@ async function resolvePublicCanvasContext(fastify, code, query = {}) {
   const { workspace, share } = resolved;
   if (!workspace.isActive) await workspace.start();
 
-  const tree = workspace.getTree(share.treeName);
+  // Prefer the immutable treeId; treeName is volatile (tree renames break it).
+  const tree = workspace.getTree(share.treeId || share.treeName);
   const layer = tree.getLayerForPath(share.path);
   if (!layer || layer.type !== 'canvas' || layer.id !== share.layerId) {
     const error = new Error('Public canvas no longer exists');

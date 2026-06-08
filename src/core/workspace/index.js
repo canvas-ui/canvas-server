@@ -580,6 +580,7 @@ class WorkspaceManager extends EventEmitter {
             && share?.layerId === layer.id
         ));
         if (existing) {
+            await WorkspaceManager.#reconcilePublicCanvasLocks(tree, existing, shares);
             await WorkspaceManager.#lockPublicCanvasLayer(tree, existing);
             return existing;
         }
@@ -589,6 +590,7 @@ class WorkspaceManager extends EventEmitter {
             code,
             workspaceId: workspace.id,
             owner: workspace.owner,
+            treeId: tree.id,
             treeName: tree.name,
             treeType: tree.type,
             path,
@@ -597,6 +599,7 @@ class WorkspaceManager extends EventEmitter {
         };
 
         const nextShares = { ...shares, [code]: share };
+        await WorkspaceManager.#reconcilePublicCanvasLocks(tree, share, nextShares);
         await WorkspaceManager.#lockPublicCanvasLayer(tree, share);
         workspace.setPublicCanvasShares(nextShares);
         await this.updateWorkspaceConfig(workspace.owner, workspace.id, ownerUserId, { publicCanvasShares: nextShares });
@@ -654,20 +657,20 @@ class WorkspaceManager extends EventEmitter {
 
         const shares = { ...(workspace.publicCanvasShares || {}) };
         delete shares[share.code];
+
+        if (!workspace.isActive) await workspace.start();
+
         let tree = null;
         try {
-            tree = workspace.getTree(share.treeName);
+            // Prefer the immutable treeId; treeName is volatile (tree renames).
+            tree = workspace.getTree(share.treeId || share.treeName);
         } catch (_) {
             // Legacy/remnant shares may point at trees that no longer exist.
         }
-        const hasSiblingShare = Object.values(shares).some((item) => (
-            item?.workspaceId === share.workspaceId
-            && item?.treeName === share.treeName
-            && item?.layerId === share.layerId
-        ));
-        if (tree && !hasSiblingShare) {
-            await WorkspaceManager.#unlockPublicCanvasLayer(tree, share);
+        if (tree) {
+            await WorkspaceManager.#reconcilePublicCanvasLocks(tree, share, shares);
         }
+
         workspace.setPublicCanvasShares(shares);
         await this.updateWorkspaceConfig(workspace.owner, workspace.id, requestingUserId, { publicCanvasShares: shares });
         return true;
@@ -883,6 +886,52 @@ class WorkspaceManager extends EventEmitter {
             if (!String(error?.message || '').includes('Layer not found')) {
                 throw error;
             }
+        }
+    }
+
+    static #getShareLayer(tree, share) {
+        if (share?.path && typeof tree.getLayerForPath === 'function') {
+            try {
+                const layer = tree.getLayerForPath(share.path);
+                if (layer) return layer;
+            } catch (_) {
+                // fall through
+            }
+        }
+        if (typeof tree.getLayerById === 'function') {
+            try {
+                return tree.getLayerById(share.layerId);
+            } catch (_) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    // Each public share adds a distinct public-share:<code> lock. Remove any that
+    // no longer exist in workspace config (including the share being deleted).
+    static async #reconcilePublicCanvasLocks(tree, share, remainingShares) {
+        if (typeof tree.unlockLayer !== 'function') return;
+
+        const allowed = new Set(
+            Object.values(remainingShares || {})
+                .filter((item) => (
+                    item?.workspaceId === share.workspaceId
+                    && item?.treeName === share.treeName
+                    && item?.layerId === share.layerId
+                ))
+                .map((item) => WorkspaceManager.#publicShareLockId(item.code))
+        );
+
+        const layer = WorkspaceManager.#getShareLayer(tree, share);
+        const locks = Array.isArray(layer?.lockedBy) ? [...layer.lockedBy] : [];
+        for (const lockId of locks) {
+            if (!String(lockId).startsWith('public-share:')) continue;
+            if (allowed.has(lockId)) continue;
+            await WorkspaceManager.#unlockPublicCanvasLayer(tree, {
+                layerId: share.layerId,
+                code: String(lockId).slice('public-share:'.length),
+            });
         }
     }
 

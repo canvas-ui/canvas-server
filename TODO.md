@@ -1,20 +1,21 @@
 # TODO List
 
-List of WebUI bugs to chew through
+List of WebUI bugs to chew through:
 
-- Probably a backend bug, It seems that "Subtract from Targets" layer subtraction does not work correctly. I accidently merged my "work" layer into "/home/Hudba/Playlist" trashing my home with work links, when I select "work" and ctrl+select all the home + Hudba + Playlist layers, subtract does trigger but it does not work. Ah OK, it does not work with multiple layers, with individual layers it works so either a webui issue or backend indeed. OK something fishy going on, as if some of the db transactions were not correctly persistet(ouch!)
+- Delete-key for documents/objects isn't wired — the document list uses per-row delete buttons with no multi-row keyboard-selection model, so that's a separate, larger change. 
+Delete key → Remove (MenuTreeView.tsx) Delete/Backspace on the selected layer triggers a confirmed remove. Scoped to the tree container via tabIndex/onKeyDown (not a global window listener) so it can't fire while you're in the document list. Locked layers are blocked with a notice. Caveat: this covers layers. Delete-key for documents/objects isn't wired — the document list uses per-row delete buttons with no multi-row keyboard-selection model, so that's a separate, larger change. Flag it if you want it next.
+
+## Phase #3
 - Our side-by-side midnight-command like view is unusable, the idea was to be able to easily tick/untick items
   - Lets say I add "work" to "/home/Hudba/playlist/work" but work layer already contains all data tagged as work including some work music, I should be able to open the "work" layer on one side and the - by default empty - "/home/Hudba/Playlists/work" path on the other, select - in work - what documents I want to link to the path and F5/copy/insert them so that only a subset would ever be merged. We are essentially building a graph using bitmap-based trees
-- We should show who is locking a layer and if a specific "holder" does not exist, allow the selective removal of that lock
-- WebUI Context menu boxes should always show on visible area, currently they often end up outside of the view area
-- WebUI Hitting the "delete" key on the keyboard when a layer or object is selected should trigger a Remove action
-- WebUI "Show layer content" should be functionally equivalent to choosing a layer in the layers view - it should show its content (all documents "ticked" in its bitmap)
-- WebUI should have a "Pinned" section with pinned paths, it should be a nice list with folder names pointing to any of the 2 supported trees. This seems like a UI concern even though we'll rely on that feature in our tauri/electron UIs too. OK, might not be, maybe we should implement it on the DB level as a abstraction on top of the tree abstraction or better, in the workspace as pinned paths. Not sure whether pinning of a path in would lock it or whether we'd just return some "Path not found" error, internally "DC-Migration" -> /work/customer-foo/projects/DC-Migration so behaviour would be exactly the same as when traversing the full path
+
+## Phase #4
+- WebUI should have a "Pinned" section with pinned paths, it should be a nice list with folder names pointing to any of the 2 supported trees. This seems like a UI/App concern even though we'll rely on that feature in our tauri/electron UIs too. OK, might not be, maybe we should implement it on the DB level as a abstraction on top of the tree abstraction or better, in the workspace as pinned paths. Not sure whether pinning of a path should lock it or whether we'd just return some "Path not found" error. Internally "DC-Migration" -> /work/customer-foo/projects/DC-Migration so behaviour would be exactly the same as when traversing the full path
+
 - Copy/Cut-Paste in layer view (selecting a specific layer > copy > selecting layer B > paste) always uses "/", we should support copy-paste between layers too
 - .incoming tree mirrors the backend layout and is immutable but we should still allow removing data within that tree from the backend(s). 
 In general, we need to design a backend removal dialog with tick boxes for each backend, which will require a stored queue(persistent) since some backends may take time.
 - Removing a object from all its backens will also wipe it from the DB
-
 - .incoming tree should show a "Sync" button for each backend or directory, so that users can trigger a refresh (and sync all newly coppied or renamed files for example)
 - .icoming tree should not have a import option nor 
 

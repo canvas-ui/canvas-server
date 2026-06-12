@@ -1106,6 +1106,45 @@ class Context extends EventEmitter {
         return result;
     }
 
+    /**
+     * Link existing documents (by id) into this context — the organizational
+     * counterpart of putMany, which expects full document objects. Facade in
+     * front of Workspace.linkMany, consistent with unlinkMany.
+     */
+    async linkMany(accessingUserId, documentIdArray, features = [], options = {}) {
+        if (!this.checkPermission(accessingUserId, 'documentWrite')) {
+            throw new Error('Access denied: User requires documentWrite permission.');
+        }
+        const workspace = this.#requireWorkspace();
+        if (!Array.isArray(documentIdArray)) {
+            throw new Error('Document ID array must be an array');
+        }
+
+        const numericDocumentIdArray = parseDocumentIdArray(documentIdArray, 'Document ID array');
+        const contextSelector = this.#buildContextSelector([
+            ...this.#pathArray,
+            ...this.#serverContextArray,
+            ...this.#clientContextArray,
+        ]);
+
+        const result = await workspace.linkMany(numericDocumentIdArray, {
+            context: contextSelector,
+            features: [...this.#attributes, ...features],
+            emitEvent: options.emitEvent,
+        });
+
+        this.emit('document.inserted', {
+            contextId: this.#id,
+            documentIds: numericDocumentIdArray,
+            context: contextSelector,
+            features,
+            workspaceId: this.#workspace.id,
+            timestamp: new Date().toISOString(),
+        });
+
+        return result;
+    }
+
     async unlinkMany(accessingUserId, documentIdArray, features, options = {}) {
         if (!this.checkPermission(accessingUserId, 'documentReadWrite')) {
             throw new Error('Access denied: User requires documentReadWrite permission.');

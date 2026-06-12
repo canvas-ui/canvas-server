@@ -57,7 +57,9 @@ export async function createServer(options = {}) {
     statusCode: error?.statusCode || 401,
   });
   const getPrimaryAuthFailure = (failures = []) => failures.find((failure) => (
-    failure.message !== 'Not a JWT token' && failure.message !== 'Not an API token'
+    failure.message !== 'Not a JWT token'
+    && failure.message !== 'Not an API token'
+    && failure.message !== 'Not a canvas token'
   )) || failures[failures.length - 1] || null;
   const server = Fastify({
     logger: fastifyLogger,
@@ -106,6 +108,17 @@ export async function createServer(options = {}) {
       return;
     } catch (apiError) {
       failures.push(buildAuthFailure('api', apiError));
+      request.log.debug({ reason: apiError.message }, 'API token authentication failed, trying device token');
+    }
+
+    // Devices are first-class principals: a device token must be able to read
+    // (canvas-fuse, agent containers), matching the websocket auth chain.
+    try {
+      await server.verifyDeviceToken(request, reply);
+      request.authStrategy = 'device';
+      return;
+    } catch (deviceError) {
+      failures.push(buildAuthFailure('device', deviceError));
       request.authFailures = failures;
 
       const primaryFailure = getPrimaryAuthFailure(failures);

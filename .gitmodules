@@ -21,3 +21,6 @@
 [submodule "src/services/stored"]
 	path = src/services/stored
 	url = https://github.com/canvas-ui/canvas-stored.git
+[submodule "src/ui/fuse"]
+	path = src/ui/fuse
+	url = git@github.com:canvas-ui/canvas-fuse.git

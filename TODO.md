@@ -1,5 +1,34 @@
 # TODO List
 
+Review and refine(if required) all websocket events and their integration across webui and browser-extension to properly handle at least:
+- all tree events (both, context + directory)
+- all document events
+Make sure all active connections are properly shut down on server restart, active ws connections currently prevent a clean server restart (a bug that resurfaced recently)
+
+
+## MVP Scope (deadline EO 06/26)
+
+### 
+
+### Storage backend (stored)
+
+### Browser extension
+
+- All tasks done
+
+### Desktop overlay
+
+- Tauri based
+- 
+
+### WebUI
+
+
+
+
+Agent runtime
+
+
 ## WebUI cosmetics
 
 Lets update our current webui @src/ui/web as follows:

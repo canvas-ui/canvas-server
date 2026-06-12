@@ -140,19 +140,21 @@ export default async function documentRoutes(fastify, options) {
       const features = Array.isArray(request.body) ? [] : (request.body.features || []);
       const enforcedFeatures = enforceClientTags(request, features);
 
-      let itemsToInsert;
+      // Ids link existing documents into the context; document objects are
+      // inserted/updated. putMany expects full objects, so ids go via linkMany.
+      let result;
       if (Array.isArray(request.body)) {
-        itemsToInsert = request.body;
+        result = await context.linkMany(request.user.id, request.body, enforcedFeatures);
       } else if (request.body.documentIds) {
-        itemsToInsert = Array.isArray(request.body.documentIds) ? request.body.documentIds : [request.body.documentIds];
+        const ids = Array.isArray(request.body.documentIds) ? request.body.documentIds : [request.body.documentIds];
+        result = await context.linkMany(request.user.id, ids, enforcedFeatures);
       } else if (request.body.documents) {
-        itemsToInsert = Array.isArray(request.body.documents) ? request.body.documents : [request.body.documents];
+        const docs = Array.isArray(request.body.documents) ? request.body.documents : [request.body.documents];
+        result = await context.putMany(request.user.id, docs, enforcedFeatures);
       } else {
         const response = new ResponseObject().badRequest('Body must include either "documents" or "documentIds", or be an array of IDs');
         return reply.code(response.statusCode).send(response.getResponse());
       }
-
-      const result = await context.putMany(request.user.id, itemsToInsert, enforcedFeatures);
 
       const response = new ResponseObject().created(result, 'Documents inserted successfully');
       return reply.code(response.statusCode).send(response.getResponse());

@@ -1,26 +1,26 @@
 [submodule "src/ui/web"]
 	path = src/ui/web
-	url = https://github.com/canvas-ui/canvas-web.git
+	url = git@github.com:canvas-ui/canvas-web.git
 	branch = main
 [submodule "src/ui/cli"]
 	path = src/ui/cli
-	url = https://github.com/canvas-ui/canvas-cli.git
+	url = git@github.com:canvas-ui/canvas-cli.git
 [submodule "src/ui/shell"]
 	path = src/ui/shell
-	url = https://github.com/canvas-ui/canvas-shell.git
+	url = git@github.com:canvas-ui/canvas-shell.git
 [submodule "extensions/browser-extensions"]
 	path = extensions/browser-extensions
 	url = git@github.com:canvas-ui/canvas-browser-extensions.git
 [submodule "src/services/synapsd"]
 	path = src/services/synapsd
-	url = https://github.com/canvas-ui/canvas-synapsd.git
+	url = git@github.com:canvas-ui/canvas-synapsd.git
 	branch = main
 [submodule "src/services/neurald"]
 	path = src/services/neurald
-	url = https://github.com/canvas-ui/canvas-neurald.git
+	url = git@github.com:canvas-ui/canvas-neurald.git
 [submodule "src/services/stored"]
 	path = src/services/stored
-	url = https://github.com/canvas-ui/canvas-stored.git
+	url = git@github.com:canvas-ui/canvas-stored.git
 [submodule "src/ui/fuse"]
 	path = src/ui/fuse
 	url = git@github.com:canvas-ui/canvas-fuse.git

@@ -49,13 +49,16 @@ Move dotfiles.git → git.git; existing content becomes repo root or dotfiles/ (
 Alias /dotfiles/git/* → /git/* for a while; update canvas dot URL.
 Add hooks/ template on init; HookService loads from that path post-push.
 
-WORKSPACE_ROOT}/git/
-  bare.git/          # canonical bare remote (HTTP git targets this)
-  hooks/             # deployed files only — HookService reads here
-  # no dotfiles/ on server unless you add a server-side apply feature later
-    
-
-
+{WORKSPACE_ROOT}
+  /.stored
+  /config
+  /db
+  /home                # Roaming profile exported via SMB and Webdav
+  /git
+    bare.git/          # canonical bare remote (HTTP git targets this)
+    hooks/             # deployed files only — HookService reads here
+    # no dotfiles/ on server unless you add a server-side apply feature later
+  /workspace.json
 
 ## Rename dotfiles.git to git
 

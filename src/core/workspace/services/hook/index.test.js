@@ -7,7 +7,7 @@ function createWorkspace(id = 'workspace-1') {
     const workspace = new EventEmitter({ wildcard: true, delimiter: '.', newListener: false });
     workspace.id = id;
     workspace.rootPath = '/tmp/workspace';
-    workspace.hooksPath = '/tmp/workspace/hooks';
+    workspace.hooksPath = '/tmp/workspace/git/hooks';
     workspace.isActive = false;
     return workspace;
 }

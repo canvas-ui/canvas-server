@@ -22,6 +22,7 @@ import { WorkspaceStoredIndex } from './lib/WorkspaceStoredIndex.js';
 import {
     WORKSPACE_STATUS_CODES,
     WORKSPACE_DIRECTORIES,
+    WORKSPACE_GIT_BARE_DIR,
     WORKSPACE_DATA_BACKENDS,
     WORKSPACE_SERVICES,
 } from './lib/constants.js';
@@ -126,6 +127,14 @@ class Workspace extends EventEmitter {
 
     get dataPath() {
         return path.join(this.#rootPath, WORKSPACE_DIRECTORIES.data);
+    }
+
+    get gitPath() {
+        return path.join(this.#rootPath, WORKSPACE_DIRECTORIES.git);
+    }
+
+    get gitBarePath() {
+        return path.join(this.gitPath, WORKSPACE_GIT_BARE_DIR);
     }
 
     get hooksPath() {

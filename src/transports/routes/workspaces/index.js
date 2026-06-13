@@ -113,6 +113,10 @@ export default async function workspaceRoutes(fastify, options) {
     prefix: '/:id/dotfiles',
     onRequest: [resolveWorkspaceAddress]
   });
+  fastify.register(import('./git.js'), {
+    prefix: '/:id/git',
+    onRequest: [resolveWorkspaceAddress]
+  });
   fastify.register(import('./hooks.js'), {
     prefix: '/:id/hooks',
     onRequest: [resolveWorkspaceAddress]

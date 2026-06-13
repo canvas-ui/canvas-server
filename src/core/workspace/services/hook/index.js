@@ -42,7 +42,7 @@ class HookService extends EventEmitter {
         // Register system hooks
         await this.#registerSystemHooks();
 
-        // TODO: Load user hooks from workspace/hooks directory
+        // TODO: User hooks live in git/hooks (deployed from git/bare.git)
 
         this.#initialized = true;
         logger.debug('HookService initialized');

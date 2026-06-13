@@ -282,7 +282,12 @@ The same path handlers are mounted on **`/workspaces/:id/tree/...`** with no `:t
 | DELETE | `/workspaces/:id/dotfiles` | `authenticate` | write | Delete dotfiles |
 | GET | `/workspaces/:id/dotfiles/status` | `authenticate` | read | Git repository status |
 | POST | `/workspaces/:id/dotfiles/init` | `authenticate` | write | Initialize git repository |
-| GET/POST | `/workspaces/:id/dotfiles/git/*` | Basic/Bearer | read/write | Git HTTP backend |
+
+### Git (workspace bare repo: hooks, dotfiles, user content)
+
+| Method | Path | Auth | ACL | Description |
+|--------|------|------|-----|-------------|
+| GET/POST | `/workspaces/:id/git/*` | Basic/Bearer | read/write | Git HTTP backend (`git/bare.git` on disk) |
 
 ### Services
 

@@ -19,11 +19,13 @@ const WORKSPACE_DIRECTORIES = {
     cache: 'cache',
     data: 'data',
     home: 'home',
-    hooks: 'hooks',
+    git: 'git',
+    hooks: 'git/hooks',
     roles: 'roles',
     var: 'var', // For Unix sockets
-    dotfiles: 'dotfiles.git', // Bare git repository for dotfiles
 };
+
+const WORKSPACE_GIT_BARE_DIR = 'bare.git';
 
 const WORKSPACE_DATA_BACKENDS = {
     'fs:home': {
@@ -121,6 +123,7 @@ export {
     WORKSPACE_DEFAULT_HOST,
     WORKSPACE_CONFIG_FILENAME,
     WORKSPACE_DIRECTORIES,
+    WORKSPACE_GIT_BARE_DIR,
     WORKSPACE_STATUS_CODES,
     WORKSPACE_DATA_BACKENDS,
     WORKSPACE_SERVICES,

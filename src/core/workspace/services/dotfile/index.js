@@ -1,28 +1,16 @@
 'use strict';
 
-// Core dependencies
 import path from 'path';
 import os from 'os';
 import { existsSync } from 'fs';
 import * as fsPromises from 'fs/promises';
 import { spawn } from 'child_process';
 import EventEmitter from 'eventemitter2';
-
-// Logging
 import { createLogger } from '../../../../utils/log.js';
+import { WORKSPACE_DIRECTORIES, WORKSPACE_GIT_BARE_DIR } from '../../lib/constants.js';
+
 const logger = createLogger('dotfile-manager');
-
-const DOTFILES_DIR = 'dotfiles.git';
-const TEMPLATE_DIRNAME = 'files'; // relative to this module directory
-
-/**
- * DotfileManager - Manages workspace-based Git repositories for dotfiles
- *
- * When enabled for a workspace:
- * - Creates {workspace}/dotfiles.git bare repository
- * - Initializes with template files (.gitignore, .dot/ scripts)
- * - Provides Git HTTP backend for clone/push/pull operations
- */
+const TEMPLATE_DIRNAME = 'files';
 
 async function spawnPromise(command, args, options = {}) {
     return new Promise((resolve, reject) => {
@@ -40,31 +28,22 @@ async function spawnPromise(command, args, options = {}) {
 }
 
 function getModuleDir() {
-    const url = new URL(import.meta.url);
-    return path.dirname(url.pathname);
+    return path.dirname(new URL(import.meta.url).pathname);
 }
 
 async function copyTemplateInto(targetDir) {
-    const moduleDir = getModuleDir();
-    const templateRoot = path.resolve(moduleDir, TEMPLATE_DIRNAME);
-    // Ensure target exists
+    const templateRoot = path.resolve(getModuleDir(), TEMPLATE_DIRNAME);
     await fsPromises.mkdir(targetDir, { recursive: true });
-    // Copy .gitignore template (no backward compatibility)
     const gitignoreSrc = path.join(templateRoot, '.gitignore');
     if (existsSync(gitignoreSrc)) {
-        const gitignoreDst = path.join(targetDir, '.gitignore');
-        await fsPromises.copyFile(gitignoreSrc, gitignoreDst);
+        await fsPromises.copyFile(gitignoreSrc, path.join(targetDir, '.gitignore'));
     }
-    // Copy .dot directory (if present)
     const dotDirSrc = path.join(templateRoot, '.dot');
     if (existsSync(dotDirSrc)) {
         await fsPromises.cp(dotDirSrc, path.join(targetDir, '.dot'), { recursive: true, force: true });
     }
 }
 
-/**
- * DotfileManager - Manages workspace-based Git repositories for dotfiles
- */
 class DotfileManager extends EventEmitter {
     constructor(options = {}) {
         super();
@@ -75,43 +54,38 @@ class DotfileManager extends EventEmitter {
         logger.debug('DotfileManager initialized');
     }
 
-    // Initialize method for compatibility with Server.js
     async initialize() {
         return this;
     }
 
-    // Get repository path for workspace
-    #getDotfilesRepoPath(workspace) {
-        return path.join(workspace.rootPath, DOTFILES_DIR);
+    #getGitDir(workspace) {
+        return path.join(workspace.rootPath, WORKSPACE_DIRECTORIES.git);
     }
 
-    // Check if repository exists
-    async hasRepository(userId, workspaceIdOrObject, requestingUserId) {
-        // Handle workspace object vs ID
-        let workspace;
+    #getBareRepoPath(workspace) {
+        return path.join(this.#getGitDir(workspace), WORKSPACE_GIT_BARE_DIR);
+    }
+
+    async #resolveWorkspace(workspaceIdOrObject, requestingUserId) {
         if (typeof workspaceIdOrObject === 'object' && workspaceIdOrObject.id) {
-            workspace = workspaceIdOrObject;
-        } else {
-            workspace = await this.workspaceManager.getWorkspace(workspaceIdOrObject, requestingUserId);
-            if (!workspace) {
-                return false;
-            }
+            return workspaceIdOrObject;
         }
-        const repoPath = this.#getDotfilesRepoPath(workspace);
-        return existsSync(repoPath);
+        const workspace = await this.workspaceManager.getWorkspace(workspaceIdOrObject, requestingUserId);
+        if (!workspace) {
+            throw new Error(`Workspace ${workspaceIdOrObject} not found or access denied`);
+        }
+        return workspace;
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Service Enable/Disable API
-    // ─────────────────────────────────────────────────────────────────────────
+    async hasRepository(userId, workspaceIdOrObject, requestingUserId) {
+        const workspace = await this.#resolveWorkspace(workspaceIdOrObject, requestingUserId);
+        return existsSync(this.#getBareRepoPath(workspace));
+    }
 
-    /**
-     * Enable dotfiles service for a workspace (creates repo if needed)
-     */
     async enable(workspace, userId) {
         if (!workspace?.id) throw new Error('Invalid workspace');
 
-        const repoPath = this.#getDotfilesRepoPath(workspace);
+        const repoPath = this.#getBareRepoPath(workspace);
         const hasRepo = existsSync(repoPath);
 
         if (!hasRepo) {
@@ -119,161 +93,125 @@ class DotfileManager extends EventEmitter {
         }
 
         this.emit('dotfiles.enabled', { workspaceId: workspace.id, path: repoPath });
-        logger.debug(`Dotfiles service enabled for workspace ${workspace.id}`);
-
+        logger.debug(`Git service enabled for workspace ${workspace.id}`);
         return { success: true, path: repoPath, initialized: !hasRepo };
     }
 
-    /**
-     * Disable dotfiles service for a workspace
-     * Note: Does NOT delete the repository - just disables the service
-     */
     async disable(workspace) {
         if (!workspace?.id) return { success: true };
-
         this.emit('dotfiles.disabled', { workspaceId: workspace.id });
-        logger.debug(`Dotfiles service disabled for workspace ${workspace.id}`);
-
         return { success: true };
     }
 
-    /**
-     * Check if dotfiles service is enabled (repo exists)
-     */
     isEnabled(workspace) {
         if (!workspace?.rootPath) return false;
-        return existsSync(this.#getDotfilesRepoPath(workspace));
+        return existsSync(this.#getBareRepoPath(workspace));
     }
 
-    // Initialize Git repositories (bare and seed working repo)
     async initializeRepository(userId, workspaceIdOrObject, requestingUserId) {
-        // Handle workspace object vs ID
-        let workspace;
-        if (typeof workspaceIdOrObject === 'object' && workspaceIdOrObject.id) {
-            workspace = workspaceIdOrObject;
-        } else {
-            workspace = await this.workspaceManager.getWorkspace(workspaceIdOrObject, requestingUserId);
-            if (!workspace) {
-                throw new Error(`Workspace ${workspaceIdOrObject} not found or access denied`);
-            }
-        }
-        const repoPath = this.#getDotfilesRepoPath(workspace);
+        const workspace = await this.#resolveWorkspace(workspaceIdOrObject, requestingUserId);
+        const repoPath = this.#getBareRepoPath(workspace);
+        const gitDir = this.#getGitDir(workspace);
+
+        await fsPromises.mkdir(workspace.hooksPath, { recursive: true });
 
         if (!existsSync(repoPath)) {
             await fsPromises.mkdir(repoPath, { recursive: true });
-            // Initialize bare repository with native git
             await spawnPromise('git', ['init', '--bare', '--initial-branch=main'], { cwd: repoPath });
         } else {
-            // If repository already exists and has any refs, treat as initialized and skip seeding
-            let hasRefs = false;
             try {
                 const { stdout } = await spawnPromise('git', ['show-ref'], { cwd: repoPath });
-                if (stdout && stdout.trim().length > 0) hasRefs = true;
-            } catch (err) {
-                // show-ref exits non-zero for empty repos; keep hasRefs=false
-            }
-            if (hasRefs) {
-                this.emit('repository.initialized', { userId, workspace: workspace.id, path: repoPath });
-                return { success: true, message: 'Repository already initialized', path: repoPath };
-            }
+                if (stdout?.trim()) {
+                    this.emit('repository.initialized', { userId, workspace: workspace.id, path: repoPath });
+                    return { success: true, message: 'Repository already initialized', path: repoPath };
+                }
+            } catch (_) {}
         }
 
-        // Seed a working repository with template files and push to bare repo (only for empty repos)
-        const tmpWorkDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'canvas-dotfiles-'));
+        const tmpWorkDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'canvas-git-'));
         try {
-            // Initialize a non-bare repo
             await spawnPromise('git', ['init', '--initial-branch=main'], { cwd: tmpWorkDir });
 
-            // Materialize template files into working directory
-            await copyTemplateInto(tmpWorkDir);
+            const dotfilesDir = path.join(tmpWorkDir, 'dotfiles');
+            await copyTemplateInto(dotfilesDir);
 
-            // Ensure .dot/encrypted.index exists
-            const encIndexPath = path.join(tmpWorkDir, '.dot', 'encrypted.index');
+            const encIndexPath = path.join(dotfilesDir, '.dot', 'encrypted.index');
             await fsPromises.mkdir(path.dirname(encIndexPath), { recursive: true });
             if (!existsSync(encIndexPath)) {
                 await fsPromises.writeFile(encIndexPath, '');
             }
 
-            // Stage and commit
+            const hooksSeedDir = path.join(tmpWorkDir, 'hooks');
+            await fsPromises.mkdir(hooksSeedDir, { recursive: true });
+            await fsPromises.writeFile(path.join(hooksSeedDir, 'README.md'),
+                '# Workspace hooks\n\nEvent hooks are root-level `*.js` files named after workspace events (e.g. `document.inserted.js`).\nOptional shared code lives under `lib/`.\n');
+            await fsPromises.writeFile(path.join(hooksSeedDir, 'example.document.inserted.js'),
+                `export default async function run({ eventName, payload, logger }) {\n  logger.debug(\`example hook: \${eventName} id=\${payload?.id}\`);\n}\n`);
+
             await spawnPromise('git', ['add', '.'], { cwd: tmpWorkDir });
-            // Configure identity unconditionally (simpler)
             await spawnPromise('git', ['config', 'user.name', 'canvas-server'], { cwd: tmpWorkDir });
             await spawnPromise('git', ['config', 'user.email', 'noreply@canvas.local'], { cwd: tmpWorkDir });
-            await spawnPromise('git', ['commit', '-m', 'Initialize Canvas dotfiles repository'], { cwd: tmpWorkDir });
-
-            // Add bare repo as remote and push
+            await spawnPromise('git', ['commit', '-m', 'Initialize Canvas workspace git repository'], { cwd: tmpWorkDir });
             await spawnPromise('git', ['remote', 'add', 'origin', repoPath], { cwd: tmpWorkDir });
             await spawnPromise('git', ['push', '-u', 'origin', 'main'], { cwd: tmpWorkDir });
         } finally {
-            // Cleanup temp workdir
             try { await fsPromises.rm(tmpWorkDir, { recursive: true, force: true }); } catch (_) {}
         }
 
+        await this.#deployHooks(workspace);
         this.emit('repository.initialized', { userId, workspace: workspace.id, path: repoPath });
         return { success: true, message: 'Repository initialized successfully', path: repoPath };
     }
 
-    // Get repository status
-    async getRepositoryStatus(userId, workspaceIdOrObject, requestingUserId) {
-        // Handle workspace object vs ID
-        let workspace;
-        if (typeof workspaceIdOrObject === 'object' && workspaceIdOrObject.id) {
-            workspace = workspaceIdOrObject;
-        } else {
-            workspace = await this.workspaceManager.getWorkspace(workspaceIdOrObject, requestingUserId);
-            if (!workspace) {
-                throw new Error(`Workspace ${workspaceIdOrObject} not found or access denied`);
-            }
+    async #deployHooks(workspace) {
+        const barePath = this.#getBareRepoPath(workspace);
+        const gitDir = this.#getGitDir(workspace);
+        const hooksDir = workspace.hooksPath;
+
+        if (!existsSync(barePath)) return;
+
+        await fsPromises.mkdir(hooksDir, { recursive: true });
+        try {
+            await spawnPromise('git', [
+                `--git-dir=${barePath}`,
+                `--work-tree=${gitDir}`,
+                'checkout', '-f', 'main', '--', 'hooks/',
+            ]);
+        } catch (err) {
+            logger.debug(`Hook deploy skipped for ${workspace.id}: ${err.message}`);
         }
-        const repoPath = this.#getDotfilesRepoPath(workspace);
+    }
+
+    async getRepositoryStatus(userId, workspaceIdOrObject, requestingUserId) {
+        const workspace = await this.#resolveWorkspace(workspaceIdOrObject, requestingUserId);
+        const repoPath = this.#getBareRepoPath(workspace);
 
         if (!existsSync(repoPath)) {
             return { initialized: false, path: repoPath };
         }
 
-        // Read branches from filesystem
         let branches = [];
         let currentBranch = null;
-
         try {
             const refsHeadsPath = path.join(repoPath, 'refs', 'heads');
             if (existsSync(refsHeadsPath)) {
                 const refFiles = await fsPromises.readdir(refsHeadsPath);
                 for (const file of refFiles) {
                     const filePath = path.join(refsHeadsPath, file);
-                    const stats = await fsPromises.stat(filePath);
-                    if (stats.isFile()) {
+                    if ((await fsPromises.stat(filePath)).isFile()) {
                         branches.push(file);
                     }
                 }
                 currentBranch = branches.includes('main') ? 'main' : branches[0];
             }
-        } catch (error) {
-            // Empty repository - no branches yet
-        }
+        } catch (_) {}
 
-        return {
-            initialized: true,
-            path: repoPath,
-            branches,
-            currentBranch,
-            bare: true
-        };
+        return { initialized: true, path: repoPath, branches, currentBranch, bare: true };
     }
 
-    // Handle Git HTTP backend operations
     async handleGitHttpBackend(userId, workspaceIdOrObject, requestingUserId, service, request, reply) {
-        // Handle workspace object vs ID
-        let workspace;
-        if (typeof workspaceIdOrObject === 'object' && workspaceIdOrObject.id) {
-            workspace = workspaceIdOrObject;
-        } else {
-            workspace = await this.workspaceManager.getWorkspace(workspaceIdOrObject, requestingUserId);
-            if (!workspace) {
-                throw new Error(`Workspace ${workspaceIdOrObject} not found or access denied`);
-            }
-        }
-        const repoPath = this.#getDotfilesRepoPath(workspace);
+        const workspace = await this.#resolveWorkspace(workspaceIdOrObject, requestingUserId);
+        const repoPath = this.#getBareRepoPath(workspace);
 
         if (!existsSync(repoPath)) {
             throw new Error('Repository not initialized');
@@ -285,45 +223,31 @@ class DotfileManager extends EventEmitter {
             case 'git-upload-pack':
                 return this.#handleUploadPack(repoPath, request, reply);
             case 'git-receive-pack':
-                return this.#handleReceivePack(repoPath, request, reply);
+                return this.#handleReceivePack(workspace, repoPath, request, reply);
             default:
                 throw new Error(`Unsupported Git service: ${service}`);
         }
     }
 
-            // Handle info/refs requests
     async #handleInfoRefs(repoPath, request, reply) {
         const service = request.query.service;
-
         if (!service || (service !== 'git-upload-pack' && service !== 'git-receive-pack')) {
             return reply.code(400).send('Invalid service');
         }
 
-        // Set correct content type based on service
         const contentType = `application/x-${service}-advertisement`;
-        reply
-            .type(contentType)
-            .header('cache-control', 'no-cache, max-age=0, must-revalidate');
+        reply.type(contentType).header('cache-control', 'no-cache, max-age=0, must-revalidate');
 
-        // Setup environment for git process
-        const env = {
-            ...process.env,
-            'GIT_HTTP_EXPORT_ALL': '1'
-        };
-
-        // Handle Git-Protocol header if present
+        const env = { ...process.env, GIT_HTTP_EXPORT_ALL: '1' };
         const gitProtocol = request.headers['git-protocol'];
-        if (gitProtocol) {
-            env['GIT_PROTOCOL'] = gitProtocol;
-        }
+        if (gitProtocol) env.GIT_PROTOCOL = gitProtocol;
 
         const serviceName = service.replace('git-', '');
         const gitProcess = spawn('git', [serviceName, '--stateless-rpc', '--advertise-refs', repoPath], {
             stdio: ['pipe', 'pipe', 'pipe'],
-            env: env
+            env,
         });
 
-        // Return a Promise that resolves when the git process completes
         return new Promise((resolve, reject) => {
             const chunks = [];
             let totalSize = 0;
@@ -332,174 +256,98 @@ class DotfileManager extends EventEmitter {
                 chunks.push(chunk);
                 totalSize += chunk.length;
             });
-
             gitProcess.stderr.on('data', (data) => {
                 logger.debug(`Git ${serviceName}: ${data.toString().trim()}`);
             });
-
-            gitProcess.on('error', (error) => {
-                logger.debug(`Git ${serviceName} error: ${error.message}`);
-                reject(error);
-            });
-
+            gitProcess.on('error', reject);
             gitProcess.on('close', (code) => {
                 if (code !== 0) {
                     reply.code(500).send('Git process failed');
                     resolve();
                     return;
                 }
-
-                // Combine output
                 const refs = Buffer.concat(chunks, totalSize);
-
-                // Build the complete response with service header
                 const serviceHeader = `# service=${service}\n`;
                 const headerLength = (serviceHeader.length + 4).toString(16).padStart(4, '0');
-
-                // Create the final response
-                const response = Buffer.concat([
+                reply.send(Buffer.concat([
                     Buffer.from(headerLength + serviceHeader),
                     Buffer.from('0000'),
-                    refs
-                ]);
-
-                reply.send(response);
+                    refs,
+                ]));
                 resolve();
             });
-
             gitProcess.stdin.end();
         });
     }
-                                                // Handle git-upload-pack requests
-    async #handleUploadPack(repoPath, request, reply) {
-        // Hijack the response to prevent Fastify from interfering with binary data
-        reply.hijack();
 
-        // Write headers directly to raw response
+    async #handleUploadPack(repoPath, request, reply) {
+        reply.hijack();
         reply.raw.writeHead(200, {
             'Content-Type': 'application/x-git-upload-pack-result',
-            'Cache-Control': 'no-cache, max-age=0, must-revalidate'
+            'Cache-Control': 'no-cache, max-age=0, must-revalidate',
         });
 
-        // Setup environment for git process
-        const env = {
-            ...process.env,
-            'GIT_HTTP_EXPORT_ALL': '1',
-            'SSH_ORIGINAL_COMMAND': 'upload-pack'
-        };
-
-        // Handle Git-Protocol header if present
+        const env = { ...process.env, GIT_HTTP_EXPORT_ALL: '1', SSH_ORIGINAL_COMMAND: 'upload-pack' };
         const gitProtocol = request.headers['git-protocol'];
-        if (gitProtocol) {
-            env['GIT_PROTOCOL'] = gitProtocol;
-        }
+        if (gitProtocol) env.GIT_PROTOCOL = gitProtocol;
 
-        const gitProcess = spawn('git', ['upload-pack', '--stateless-rpc', repoPath], {
-            stdio: ['pipe', 'pipe', 'pipe'],
-            env: env
-        });
-
-        // Pipe git stdout directly to the raw response
+        const gitProcess = spawn('git', ['upload-pack', '--stateless-rpc', repoPath], { stdio: ['pipe', 'pipe', 'pipe'], env });
         gitProcess.stdout.pipe(reply.raw, { end: false });
+        gitProcess.stderr.on('data', (data) => logger.debug(`Git upload-pack: ${data.toString().trim()}`));
 
-        gitProcess.stderr.on('data', (data) => {
-            logger.debug(`Git upload-pack: ${data.toString().trim()}`);
-        });
-
-        // Handle request body
         if (request.body) {
-            const bodyBuffer = Buffer.isBuffer(request.body) ? request.body : Buffer.from(request.body);
-            gitProcess.stdin.write(bodyBuffer);
+            gitProcess.stdin.write(Buffer.isBuffer(request.body) ? request.body : Buffer.from(request.body));
             gitProcess.stdin.end();
         } else {
             request.raw.pipe(gitProcess.stdin);
         }
 
-        // Wait for git process to complete
         return new Promise((resolve, reject) => {
-            gitProcess.on('error', (error) => {
-                logger.debug(`Git upload-pack error: ${error.message}`);
-                reply.raw.end();
-                reject(error);
-            });
-
+            gitProcess.on('error', (error) => { reply.raw.end(); reject(error); });
             gitProcess.on('close', (code) => {
                 reply.raw.end();
-
-                if (code !== 0) {
-                    reject(new Error(`Git upload-pack failed with code ${code}`));
-                } else {
-                    resolve();
-                }
+                code !== 0 ? reject(new Error(`Git upload-pack failed with code ${code}`)) : resolve();
             });
         });
     }
 
-                                // Handle git-receive-pack requests
-    async #handleReceivePack(repoPath, request, reply) {
-        // Hijack the response to prevent Fastify from interfering with binary data
+    async #handleReceivePack(workspace, repoPath, request, reply) {
         reply.hijack();
-
-        // Write headers directly to raw response
         reply.raw.writeHead(200, {
             'Content-Type': 'application/x-git-receive-pack-result',
-            'Cache-Control': 'no-cache, max-age=0, must-revalidate'
+            'Cache-Control': 'no-cache, max-age=0, must-revalidate',
         });
 
-        // Setup environment for git process
-        const env = {
-            ...process.env,
-            'GIT_HTTP_EXPORT_ALL': '1',
-            'SSH_ORIGINAL_COMMAND': 'receive-pack'
-        };
-
-        // Handle Git-Protocol header if present
+        const env = { ...process.env, GIT_HTTP_EXPORT_ALL: '1', SSH_ORIGINAL_COMMAND: 'receive-pack' };
         const gitProtocol = request.headers['git-protocol'];
-        if (gitProtocol) {
-            env['GIT_PROTOCOL'] = gitProtocol;
-        }
+        if (gitProtocol) env.GIT_PROTOCOL = gitProtocol;
 
-        const gitProcess = spawn('git', ['receive-pack', '--stateless-rpc', repoPath], {
-            stdio: ['pipe', 'pipe', 'pipe'],
-            env: env
-        });
-
-        // Pipe git stdout directly to the raw response
+        const gitProcess = spawn('git', ['receive-pack', '--stateless-rpc', repoPath], { stdio: ['pipe', 'pipe', 'pipe'], env });
         gitProcess.stdout.pipe(reply.raw, { end: false });
+        gitProcess.stderr.on('data', (data) => logger.debug(`Git receive-pack: ${data.toString().trim()}`));
 
-        gitProcess.stderr.on('data', (data) => {
-            logger.debug(`Git receive-pack: ${data.toString().trim()}`);
-        });
-
-        // Handle request body
         if (request.body) {
-            const bodyBuffer = Buffer.isBuffer(request.body) ? request.body : Buffer.from(request.body);
-            gitProcess.stdin.write(bodyBuffer);
+            gitProcess.stdin.write(Buffer.isBuffer(request.body) ? request.body : Buffer.from(request.body));
             gitProcess.stdin.end();
         } else {
             request.raw.pipe(gitProcess.stdin);
         }
 
-        // Wait for git process to complete
         return new Promise((resolve, reject) => {
-            gitProcess.on('error', (error) => {
-                logger.debug(`Git receive-pack error: ${error.message}`);
+            gitProcess.on('error', (error) => { reply.raw.end(); reject(error); });
+            gitProcess.on('close', async (code) => {
                 reply.raw.end();
-                reject(error);
-            });
-
-            gitProcess.on('close', (code) => {
-                reply.raw.end();
-
                 if (code !== 0) {
                     reject(new Error(`Git receive-pack failed with code ${code}`));
-                } else {
-                    resolve();
+                    return;
                 }
+                try { await this.#deployHooks(workspace); } catch (err) {
+                    logger.debug(`Hook deploy after push failed for ${workspace.id}: ${err.message}`);
+                }
+                resolve();
             });
         });
     }
 }
 
 export default DotfileManager;
-

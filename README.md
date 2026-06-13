@@ -187,9 +187,21 @@ $ systemctl --user enable --now rclone-context@Universe
 
 ## Authentication
 
+Full configuration, examples, and troubleshooting: **[Authentication Guide](docs/auth.md)**
+
+| Strategy | Description |
+|----------|-------------|
+| **Local** | Email/password accounts stored on the server |
+| **IMAP** | Login with mail-server credentials; auto-creates users per configured domain |
+| **LDAP / AD** | Directory bind (OpenLDAP, Active Directory); auto-creates users on first login |
+
+Token types:
+
 - **JWT tokens** — web UI sessions
 - **API tokens** (`canvas-*` prefix) — CLI, Electron, browser extensions, programmatic access
 - **Workspace tokens** (`canvas-workspace-*`) — scoped to a single workspace
+
+LDAP/AD is available today via `strategies.ldap` in `server/config/auth.json` (uses the bundled `ldapjs` package). Active Directory is LDAP under the hood — point at your DC with `ldaps://` and an AD-specific search filter. See [LDAP / Active Directory](docs/auth.md#ldap--active-directory-authentication) in the auth guide.
 
 ## Roles
 

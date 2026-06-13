@@ -1,5 +1,72 @@
 # TODO List
 
+## MVP Scope
+
+MVP deployment has to happen before **30.06.2026**!
+
+### Canvas server runtime
+
+- [ ] canvas-server deployed at the customers LAB environment (proxmox LXC)
+  - [ ] 24.04, auto-updates, git fetch check-for-update script over LAB proxy
+  - [ ] AD/LDAP auth
+  - [ ] Samba-exported workspace home folders (simple for bash loop over user workspaces config + reload, domain perms, facl)
+  - [ ] (optional) per-user docker runtime (VM)
+  - [ ] (optional) CNAME or shortlink
+
+### Target functionality/features
+
+- [ ] UI
+  - [x] canvas-cli
+  - [x] canvas-web 
+  - [x] canvas-browser-extension
+  - [ ] basic desktop overlay (tauri)
+
+- [ ] Roaming profiles
+  - [ ] Webdav for workspace/home
+  - [ ] canvas-fuse
+  - [ ] (optional) dotfiles endpoint via
+    - git repo (git clone/push/pull) http(s)://host/workspaces/<workspace>/git/
+    - dotfiles(app logic) http(s)://host/workspaces/<workspace>/dotfiles/
+    - hooks http(s)://host/workspaces/<workspace>/hooks/
+
+- [ ] Contextualized data 
+  - [ ] Files
+  - [ ] Notes
+  - [ ] Browser tabs
+  - [ ] (optional) Dotfile
+
+- [ ] Workspace hooks
+- [ ] Agent runtime
+
+## Tasks
+
+Workspace > Settings > Devices
+Editable table with existing registered devices
+
+Migration path (minimal)
+Extract git HTTP from DotfileManager → generic GitRepoService targeting {workspace}/git.git.
+Move dotfiles.git → git.git; existing content becomes repo root or dotfiles/ (pick one, migrate once).
+Alias /dotfiles/git/* → /git/* for a while; update canvas dot URL.
+Add hooks/ template on init; HookService loads from that path post-push.
+
+WORKSPACE_ROOT}/git/
+  bare.git/          # canonical bare remote (HTTP git targets this)
+  hooks/             # deployed files only — HookService reads here
+  # no dotfiles/ on server unless you add a server-side apply feature later
+    
+
+
+
+## Rename dotfiles.git to git
+
+### Add support for hooks
+
+- We **need** to support hooks for all canvas actions, for example I want to run a hook that automatically sorts all URLs I throw into the to-sort context path. qwen3:latest is really good at this (give it context paths or the whole tree, url title and a few simple instructions how the tree is structures and done)
+- I want to run my youtube downloader whenever a youtube link is thrown into home://downloads and download videos to either my S3 or workspace home file backends
+- Same for website backups/analytics, file postprocessing etc
+
+
+
 Review and refine(if required) all websocket events and their integration across webui and browser-extension to properly handle at least:
 - all tree events (both, context + directory)
 - all document events
@@ -12,21 +79,9 @@ Make sure all active connections are properly shut down on server restart, activ
 
 ### Storage backend (stored)
 
-### Browser extension
+- Rename fs:home and fs:data to workspace:home and workspace:data
+- Ensure 
 
-- All tasks done
-
-### Desktop overlay
-
-- Tauri based
-- 
-
-### WebUI
-
-
-
-
-Agent runtime
 
 
 ## WebUI cosmetics
@@ -53,12 +108,6 @@ Lets not reinvent the wheel and re-use an existing framework that can seamlessly
 - Widgets need to store their configuration
   - Each Canvas and Context object has a metadata section, we can store the canvas layout information in metadata.ui.layout and specific canvas widget configuration in metadata.ui.applets (or .widgets) .widget-name {}
 - Widgets need to be controllable by agents - "Lucy, show me yesterdays emails related to the migration project on my tv canvas" 
-
-### Canvases
-
-- Use react-grid-layout for widget placement and management
-- Squared grid layout simillar to the (old) Metro UI with a minimum size and minimum scaling factor as described above
-- All layout/widget configuration is stored in metadata.ui.
 
 ### Toolbox
 
@@ -88,19 +137,23 @@ View
 
 Lets design a `canvas-edge` service module with the following functionality
 
-- The main purpose it to be used as a thin transport layer 
-  - Workspace -> WorkspaceD
-
+- The main purpose it to be used as a thin transport layer for containerized roles, agents and workspaces
 - Works behind NAT
 - Re
 -
 -
 - Offline icon cache for offline-only mode
 
-- Workspace type: local, remote
-- Agent type: local, remote
-- Role type: local, remote
+## Canvas Roles
 
+Role runtime:
+  - docker
+  - pm2
+Role type
+  - canvas-agent
+  - canvas-workspace
+  - generic
+ 
 Backend bugs observed (not CLI):
 1. dot init says "already initialized" when target dir exists but isn't a valid bare repo (silent no-op) — fixed manually by rm -rf + reinit
 2. ws start on inactive workspace hung past 30s, caused server crash earlier in session — couldn't repro after restart
@@ -229,20 +282,14 @@ Agents should be running as self-contained docker containers but for now, we'll 
 ### Add support for additional data sources
 
 - `git`
-  - Aim is to streamline our dotfiles management feature
-  - Needs to support branches  
+  - Aim is to streamline our dotfiles management feature/extract git support into a separate module
+  - Needs to support branches
 - `sql`
-  - We'd cache the result internally as a JSON document(with some TTL?); you may want to create a canvas aggregating data from various sql db sources along with your emails etc, working with them in any tool would be a curl https://your-canvas-instance/workspaces/:wid/canvases/:cid/documents | jq .. away
+  - We'd cache the result internally; you may want to create a canvas aggregating data from various sql db sources along with your emails etc, working with them in any tool would be a curl https://your-canvas-instance/workspaces/:wid/canvases/:cid/documents | jq .. away
 - `generic REST endpoint`
   - Lets say a corporate backend with a specific REST API endpoint + query returning a list of non-compliant servers, again could be paired with a TTL for the localy cached result as metadata (this is a pure app concern,  not sure whether we should - at this point - add some form of data invalidation based on TTL to the DB)
 
 ### Add support for a different (internal) data abstraction - map (2d topological radial surface)
-
-### Add support for hooks
-
-- We **need** to support hooks for all canvas actions, for example I want to run a hook that automatically sorts all URLs I throw into the to-sort context path. qwen3:latest is really good at this (give it context paths or the whole tree, url title and a few simple instructions how the tree is structures and done)
-- I want to run my youtube downloader whenever a youtube link is thrown into home://downloads and download videos to either my S3 or workspace home file backends
-- Same for website backups/analytics, file postprocessing etc
 
 ### Import/export workspace(s)
 

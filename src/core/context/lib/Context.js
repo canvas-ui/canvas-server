@@ -1204,7 +1204,7 @@ class Context extends EventEmitter {
         if (accessingUserId !== this.#userId) {
             throw new Error('Access denied: This operation is only available to the context owner.');
         }
-        return await this.#requireWorkspace().getDocumentById(id, options);
+        return await this.#requireWorkspace().get(id, options);
     }
 
     async getDocumentsByIdArray(accessingUserId, idArray, options = { parse: true, limit: null }) {

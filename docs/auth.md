@@ -9,6 +9,7 @@ Canvas Server supports multiple authentication strategies to provide flexible us
 - [Configuration](#configuration)
 - [Local Authentication](#local-authentication)
 - [IMAP Authentication](#imap-authentication)
+- [LDAP / Active Directory Authentication](#ldap--active-directory-authentication)
 - [TLS/SSL Configuration](#tlsssl-configuration)
 - [API Reference](#api-reference)
 - [Security Considerations](#security-considerations)
@@ -20,6 +21,7 @@ Canvas Server provides a unified authentication system that supports:
 
 - **Local Authentication**: Traditional email/password with local user accounts
 - **IMAP Authentication**: Authentication against external email servers with auto-user creation
+- **LDAP / Active Directory**: Directory bind authentication with auto-user creation (AD uses the LDAP strategy)
 - **JWT Tokens**: Secure session management
 - **API Tokens**: Long-lived tokens for programmatic access
 
@@ -30,8 +32,8 @@ Canvas Server provides a unified authentication system that supports:
 Authentication strategies are automatically selected based on:
 
 1. **Auto-detection** (default): Determines the best strategy based on user existence and domain configuration
-2. **Explicit strategy**: Users can specify `local`, `imap`, or `auto` during login
-3. **Domain-based routing**: IMAP domains are automatically detected from email addresses
+2. **Explicit strategy**: Users can specify `local`, `imap`, `ldap`, or `auto` during login
+3. **Domain-based routing**: IMAP domains are automatically detected from email addresses; LDAP is used when enabled and no local user exists
 
 ### Flow Diagram
 
@@ -42,7 +44,10 @@ User Login Request
         ↓
    Check existing user
         ↓
-User exists? → Yes → Use existing auth method (local/imap)
+User exists? → Yes → Use existing auth method (local/imap/ldap)
+        ↓ No
+   LDAP enabled?
+        ↓ Yes → Use LDAP authentication
         ↓ No
    Check IMAP domain config
         ↓
@@ -70,6 +75,22 @@ Authentication is configured in `server/config/auth.json`:
       "domains": {
         // Domain configurations here
       }
+    },
+    "ldap": {
+      "enabled": false,
+      "servers": {
+        "primary": {
+          "url": "ldaps://dc.example.com:636",
+          "bindDN": "CN=svc-canvas,OU=Service Accounts,DC=example,DC=com",
+          "bindPassword": "",
+          "searchBase": "DC=example,DC=com",
+          "searchFilter": "(&(objectClass=user)(userPrincipalName={{email}}))",
+          "attributes": ["mail", "cn", "displayName", "memberOf"],
+          "tls": true
+        }
+      },
+      "defaultUserType": "user",
+      "defaultStatus": "active"
     }
   },
   "defaultStrategy": "local",
@@ -189,6 +210,165 @@ Auto-created IMAP users have these properties:
   "updated": "2024-01-01T00:00:00.000Z"
 }
 ```
+
+## LDAP / Active Directory Authentication
+
+LDAP authentication is **implemented and available**. Active Directory is not a separate strategy — AD exposes an LDAP interface, so you configure `strategies.ldap` and point it at your domain controller.
+
+Implementation: `src/transports/auth/ldap-strategy.js` (uses the `ldapjs` package, already in `package.json`).
+
+### How it works
+
+1. Service account (optional) binds to LDAP and searches for the user by email
+2. User is authenticated with a second bind using their DN + password
+3. On success, Canvas creates a local user record if one does not exist (`authMethod: "ldap"`)
+4. Multiple servers (`primary`, `secondary`, …) are tried in order for failover
+
+Login with `"strategy": "ldap"` or `"strategy": "auto"`. When `auto` is used and LDAP is enabled, **new** users (no existing local record) are routed to LDAP before IMAP/local.
+
+### Configuration
+
+Edit `server/config/auth.json` (created automatically on first run if missing):
+
+```json
+{
+  "strategies": {
+    "ldap": {
+      "enabled": true,
+      "servers": {
+        "primary": {
+          "url": "ldaps://dc.example.com:636",
+          "bindDN": "CN=svc-canvas,OU=Service Accounts,DC=example,DC=com",
+          "bindPassword": "service-account-password",
+          "searchBase": "DC=example,DC=com",
+          "searchFilter": "(&(objectClass=user)(userPrincipalName={{email}}))",
+          "attributes": ["mail", "cn", "displayName", "memberOf"],
+          "tls": true
+        }
+      },
+      "defaultUserType": "user",
+      "defaultStatus": "active"
+    }
+  }
+}
+```
+
+### Server properties
+
+| Property | Type | Required | Description |
+|----------|------|----------|-------------|
+| `url` | string | ✅ | LDAP URL (`ldap://host:389` or `ldaps://host:636`) |
+| `searchBase` | string | ✅ | LDAP search base (e.g. `DC=corp,DC=local`) |
+| `searchFilter` | string | ✅ | Filter with `{{email}}` placeholder |
+| `bindDN` | string | ❌ | Service account DN for user lookup (recommended for AD) |
+| `bindPassword` | string | ❌ | Service account password |
+| `attributes` | string[] | ❌ | Attributes to fetch (default: `mail`, `cn`, `displayName`) |
+| `tls` | boolean | ❌ | Enable TLS options on the client (use `true` with `ldaps://`) |
+
+Global LDAP settings:
+
+| Property | Type | Description | Default |
+|----------|------|-------------|---------|
+| `enabled` | boolean | Enable LDAP login | `false` |
+| `defaultUserType` | string | User type for auto-created accounts | `"user"` |
+| `defaultStatus` | string | Status for auto-created accounts | `"active"` |
+
+### Active Directory setup
+
+Typical AD configuration:
+
+```json
+{
+  "strategies": {
+    "local": {
+      "enabled": false,
+      "allowRegistration": false
+    },
+    "ldap": {
+      "enabled": true,
+      "servers": {
+        "primary": {
+          "url": "ldaps://dc01.corp.example.com:636",
+          "bindDN": "CN=canvas-svc,OU=Service Accounts,DC=corp,DC=example,DC=com",
+          "bindPassword": "…",
+          "searchBase": "DC=corp,DC=example,DC=com",
+          "searchFilter": "(&(objectClass=user)(!(userAccountControl:1.2.840.113556.1.4.803:=2))(mail={{email}}))",
+          "attributes": ["mail", "cn", "displayName", "memberOf", "sAMAccountName"],
+          "tls": true
+        }
+      },
+      "defaultUserType": "user",
+      "defaultStatus": "active"
+    }
+  },
+  "defaultStrategy": "ldap"
+}
+```
+
+**Search filter options** (pick one that matches how users log in):
+
+| Login identifier | Example filter |
+|------------------|----------------|
+| Email / UPN | `(&(objectClass=user)(userPrincipalName={{email}}))` |
+| Email attribute | `(&(objectClass=user)(mail={{email}}))` |
+| sAMAccountName | `(&(objectClass=user)(sAMAccountName={{email}}))` — user must enter `jdoe`, not `jdoe@corp.example.com` |
+
+The `(!(userAccountControl:…:=2))` clause excludes disabled AD accounts.
+
+**Service account**: Create a dedicated AD user with read access to the search base. Do not use a domain admin account.
+
+### OpenLDAP example
+
+```json
+{
+  "url": "ldap://ldap.example.com:389",
+  "bindDN": "cn=admin,dc=example,dc=com",
+  "bindPassword": "…",
+  "searchBase": "ou=users,dc=example,dc=com",
+  "searchFilter": "(mail={{email}})",
+  "attributes": ["mail", "cn", "displayName"],
+  "tls": false
+}
+```
+
+### API
+
+Same login endpoint as other strategies:
+
+```http
+POST /auth/login
+Content-Type: application/json
+
+{
+  "email": "user@corp.example.com",
+  "password": "password",
+  "strategy": "ldap"
+}
+```
+
+Check whether LDAP is enabled:
+
+```http
+GET /auth/config
+```
+
+Response includes `"ldap": { "enabled": true }`.
+
+### What's not implemented yet
+
+These are gaps if you need full enterprise AD integration:
+
+| Gap | Notes |
+|-----|-------|
+| **No domain-based LDAP routing** | Unlike IMAP, enabling LDAP applies to all new users in `auto` mode — no per-domain server map |
+| **No AD group → Canvas role mapping** | `memberOf` is fetched but not used for authorization |
+| **No Kerberos / SSO / NTLM** | Password bind only; no Windows integrated auth |
+| **No username-without-domain login** | Filter uses `{{email}}` as-is; sAMAccountName login requires filter + UX changes |
+| **Limited TLS config** | `tls: true` sets `rejectUnauthorized: false` — fine for dev, tighten for production |
+| **Bind password in config file** | No env-var / secret-manager indirection yet |
+| **No `autoCreateUsers` toggle** | Users are always auto-created on first successful LDAP bind (same as IMAP default behaviour) |
+
+For most AD deployments, enabling LDAP with a service account + UPN/mail filter is enough to get login working today. Group-based roles and SSO would be separate follow-up work.
 
 ## TLS/SSL Configuration
 
@@ -360,6 +540,9 @@ Returns available authentication strategies and IMAP domains.
             "requireAppPassword": false
           }
         ]
+      },
+      "ldap": {
+        "enabled": true
       }
     }
   }
@@ -377,7 +560,7 @@ POST /auth/login
 {
   "email": "user@company.com",
   "password": "password123",
-  "strategy": "auto"  // Optional: "local", "imap", "auto"
+  "strategy": "auto"  // Optional: "local", "imap", "ldap", "auto"
 }
 ```
 
@@ -426,6 +609,8 @@ Common error responses include:
 | `Invalid email or password` | 401 | Invalid credentials for local auth |
 | `Unsupported login domain` | 400 | Domain not configured for IMAP |
 | `Email server authentication failed` | 401 | IMAP server rejected credentials |
+| `LDAP authentication failed` | 401 | LDAP bind or search failed |
+| `LDAP authentication not configured properly` | 400 | LDAP enabled but misconfigured or `ldapjs` missing |
 | `User account is not active` | 401 | User account disabled |
 
 ## Security Considerations
@@ -494,6 +679,19 @@ For local authentication, enforce:
 3. Review user creation permissions
 4. Check for email uniqueness constraints
 
+#### LDAP / AD Login Fails
+
+**Symptoms**: `LDAP authentication failed`, `User not found in LDAP directory`, or `LDAP bind failed`
+
+**Solutions**:
+1. Verify `url`, `searchBase`, and `searchFilter` against your directory (test with `ldapsearch`)
+2. Confirm the service account (`bindDN` / `bindPassword`) can search the base
+3. For AD: match filter to login format (UPN vs `mail` vs sAMAccountName)
+4. Use `ldaps://` on port 636 (or LDAP + StartTLS if you add that support later)
+5. Check firewall paths from Canvas server to domain controller
+6. Ensure `ldapjs` is installed (`npm install` — it is a declared dependency)
+7. Set `"enabled": true` under `strategies.ldap` and restart the server
+
 ### Debugging
 
 Enable debug logging:
@@ -522,6 +720,14 @@ Log levels:
 ```
 [IMAP] Authentication failed for user@company.com: Invalid credentials
 [Auth/Login] IMAP authentication failed: IMAP authentication failed: Invalid credentials
+```
+
+**Successful LDAP Authentication**:
+```
+[LDAP] Attempting authentication for user@corp.example.com against ldaps://dc01.corp.example.com:636
+[LDAP] Found user: CN=Jane Doe,OU=Users,DC=corp,DC=example,DC=com
+[LDAP] Successfully authenticated user@corp.example.com
+[LDAP] Successfully created user: user@corp.example.com
 ```
 
 ## Configuration Examples

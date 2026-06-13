@@ -121,6 +121,16 @@ class Workspace extends EventEmitter {
         return this.#db.stats;
     }
 
+    /**
+     * Async stats superset including LanceDB FTS + dense-vector internals
+     * (row counts, embedded-doc count, embedder/model state, queue backlog).
+     * Used by the Workspace Settings UI. Returns null when inactive.
+     */
+    async getStats() {
+        if (!this.isActive || !this.#db) return null;
+        return await this.#db.getStats();
+    }
+
     get homePath() {
         return path.join(this.#rootPath, WORKSPACE_DIRECTORIES.home);
     }

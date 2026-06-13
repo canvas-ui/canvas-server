@@ -194,6 +194,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
           ...paginationQueryProps,
           q: { type: 'string' },
           search: { type: 'string' },
+          mode: { type: 'string', enum: ['fts', 'vector', 'hybrid'] },
           includeIncoming: { type: 'boolean', default: false },
         },
       },
@@ -218,7 +219,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       };
 
       const documents = searchQuery
-        ? await workspace.search({ query: searchQuery, ...spec })
+        ? await workspace.search({ query: searchQuery, mode: request.query.mode, ...spec })
         : await workspace.list(spec);
 
       if (documents.error) {

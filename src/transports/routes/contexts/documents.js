@@ -48,6 +48,7 @@ export default async function documentRoutes(fastify, options) {
           page: { type: 'integer' },
           q: { type: 'string' },
           search: { type: 'string' },
+          mode: { type: 'string', enum: ['fts', 'vector', 'hybrid'] },
         },
       },
     },
@@ -75,7 +76,7 @@ export default async function documentRoutes(fastify, options) {
       const spec = { attributes, filters, options };
 
       const dbResult = searchQuery
-        ? await context.search(request.user.id, { query: searchQuery, ...spec })
+        ? await context.search(request.user.id, { query: searchQuery, mode: request.query.mode, ...spec })
         : await context.list(request.user.id, spec);
 
       if (dbResult.error) {

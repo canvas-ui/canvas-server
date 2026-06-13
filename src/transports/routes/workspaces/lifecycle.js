@@ -65,11 +65,42 @@ export default async function workspaceLifecycleRoutes(fastify, options) {
         const responseObject = new ResponseObject().badRequest('Workspace is not active');
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());
       }
-      const responseObject = new ResponseObject().found(workspace.stats, 'Workspace stats retrieved successfully');
+      const stats = await workspace.getStats();
+      const responseObject = new ResponseObject().found(stats, 'Workspace stats retrieved successfully');
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
     } catch (error) {
       fastify.log.error(error);
       const responseObject = new ResponseObject().serverError('Failed to get workspace stats');
+      return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+    }
+  });
+
+  // Get database stats (SynapsD internals: FTS + dense-vector + embedder/queue).
+  // Lives under the /db namespace — future dump/snapshot routes belong here too.
+  fastify.get('/db/stats', {
+    onRequest: [fastify.authenticate, requireWorkspaceRead()],
+    schema: {
+      params: {
+        type: 'object',
+        required: ['id'],
+        properties: {
+          id: { type: 'string' }
+        }
+      }
+    }
+  }, async (request, reply) => {
+    try {
+      const workspace = request.workspace;
+      if (!workspace.isActive) {
+        const responseObject = new ResponseObject().badRequest('Workspace is not active');
+        return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+      }
+      const stats = await workspace.getStats();
+      const responseObject = new ResponseObject().found(stats, 'Database stats retrieved successfully');
+      return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+    } catch (error) {
+      fastify.log.error(error);
+      const responseObject = new ResponseObject().serverError('Failed to get database stats');
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
     }
   });

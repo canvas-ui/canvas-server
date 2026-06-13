@@ -134,10 +134,10 @@ export async function createServer(options = {}) {
     server.verifyDeviceToken
   ], { relation: 'or' }));
 
-  // Client ingestion authentication (web UI or integrations)
-  // JWT sets request.client to a server-instance deviceId; device tokens set request.client.deviceId explicitly.
+  // Client ingestion authentication (web UI, extension API tokens, or device tokens).
   server.decorate('authenticateClient', server.auth([
     server.verifyJWT,
+    server.verifyApiToken,
     server.verifyDeviceToken
   ], { relation: 'or' }));
 

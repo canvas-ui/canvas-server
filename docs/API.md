@@ -239,10 +239,62 @@ The same path handlers are mounted on **`/workspaces/:id/tree/...`** with no `:t
 
 ### Bitmaps
 
+Low-level introspection of SynapsD roaring bitmap indexes. The workspace must be **active** (started).
+
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| GET | `/workspaces/:id/bitmaps` | `authenticate` | List bitmaps |
-| GET | `/workspaces/:id/bitmaps/*` | `authenticate` | Get bitmap by path (JSON or raw `.bitmap`) |
+| GET | `/workspaces/:id/bitmaps` | `authenticate` | List all bitmap metadata |
+| GET | `/workspaces/:id/bitmaps/*` | `authenticate` | Get one bitmap or list by key prefix |
+| DELETE | `/workspaces/:id/bitmaps/*` | `authenticate` | Delete bitmap by exact key |
+
+**Query parameters — `GET /workspaces/:id/bitmaps`:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `includeInternal` | boolean | `false` | Include engine-managed `internal/*` bitmaps (timelines, Lance FTS/vectors, GC, etc.) |
+| `includeData` | boolean | `false` | Include full document ID arrays (`ids`) on each entry |
+| `includeRaw` | boolean | — | Not supported on the list endpoint (400); use an exact bitmap path |
+
+By default the root listing returns user-facing bitmap keys only (`context/*`, `vfs/*`, `tag/*`, `data/*`, …) and **omits** keys under `internal/`. Pass `includeInternal=true` to include those engine-managed indexes — useful for debugging timeline tiers, search coverage, and GC state.
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" \
+  'http://127.0.0.1:8001/rest/v2/workspaces/my-workspace/bitmaps?includeInternal=true'
+```
+
+**Query parameters — `GET /workspaces/:id/bitmaps/*`:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `includeData` | boolean | `false` | Include document ID array |
+| `includeRaw` | boolean | `false` | Return serialized roaring bytes (`application/octet-stream`) instead of JSON; exact key only |
+
+Path semantics:
+
+- **Exact key** (e.g. `tag/inbox`, `internal/lance/fts`) → single bitmap in `payload`
+- **Prefix** (e.g. `context/<treeId>`, `internal/ts`) → array of matching bitmaps (prefix scans always include `internal/*` when the prefix matches)
+- **`.bitmap` suffix** (e.g. `tag/inbox.bitmap`) → same as `includeRaw=true` on that exact key
+
+Default metadata shape per bitmap:
+
+```json
+{
+  "key": "tag/inbox",
+  "size": 42,
+  "isEmpty": false,
+  "min": 1,
+  "max": 108
+}
+```
+
+With `includeData=true`, each entry also includes `"ids": [1, 2, 3, ...]`.
+
+Raw responses set headers `X-Bitmap-Key`, `X-Bitmap-Cardinality`, `X-Bitmap-Is-Empty`, `X-Bitmap-Min`, `X-Bitmap-Max` and download as `<key>.roar`.
+
+**DELETE `/workspaces/:id/bitmaps/*`** — exact key only. Returns **403** for protected namespaces:
+
+- `data/*` — managed by document lifecycle
+- `internal/*` — engine-managed; deleting these corrupts index state
 
 ### Tokens (workspace sharing)
 

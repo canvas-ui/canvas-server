@@ -29,7 +29,21 @@
   "overrides": {
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
-    "csstype": "3.2.3"
+    "@anthropic-ai/sdk": "0.104.1",
+    "csstype": "3.2.3",
+    "fast-jwt": "6.2.4",
+    "fast-uri": "3.1.2",
+    "semver": "5.7.2",
+    "tar": "7.5.16",
+    "fastembed": {
+      "tar": "$tar"
+    },
+    "@mariozechner/pi-ai": {
+      "@anthropic-ai/sdk": "0.104.1"
+    },
+    "dockerode": {
+      "uuid": "11.1.1"
+    }
   },
   "author": "me@idnc.sk",
   "license": "AGPL-3.0-or-later",
@@ -53,20 +67,20 @@
     "fastify": "^4.29.1",
     "fastify-socket.io": "^5.1.0",
     "imap": "^0.8.19",
-    "imapflow": "^1.2.16",
+    "imapflow": "^1.4.0",
     "jsonwebtoken": "^9.0.3",
     "ldapjs": "^3.0.7",
     "lmdb": "^3.5.2",
-    "mailparser": "^3.9.4",
+    "mailparser": "^3.9.9",
     "nanoid": "^5.1.7",
     "node-machine-id": "^1.1.12",
-    "nodemailer": "^7.0.13",
+    "nodemailer": "^8.0.11",
     "pino": "^10.3.1",
     "pino-pretty": "^13.1.3",
     "randomcolor": "^0.6.2",
     "socket.io": "^4.8.3",
     "ulid": "^3.0.2",
-    "uuid": "^11.1.0",
+    "uuid": "^11.1.1",
     "validator": "^13.15.26",
     "zod": "^3.25.76"
   },

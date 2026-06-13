@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "dependencies": {
-    "@mariozechner/pi-coding-agent": "^0.70.2",
-    "@mariozechner/pi-ai": "^0.70.2"
+    "@mariozechner/pi-coding-agent": "^0.73.1",
+    "@mariozechner/pi-ai": "^0.73.1"
   }
 }

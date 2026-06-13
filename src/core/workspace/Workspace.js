@@ -687,8 +687,8 @@ class Workspace extends EventEmitter {
         return await this.#getActiveDb().getDocumentsByIdArray(parseDocumentIdArray(ids, 'Document ID array'), options);
     }
 
-    async listBitmaps(prefix = '', { includeData = false } = {}) {
-        const keys = await this.#getActiveDb().bitmapIndex.listBitmaps(prefix);
+    async listBitmaps(prefix = '', { includeData = false, includeInternal = false } = {}) {
+        const keys = await this.#getActiveDb().bitmapIndex.listBitmaps(prefix, { includeInternal });
         const bitmaps = await Promise.all(keys.map(async (key) => this.getBitmap(key, { includeData })));
         return bitmaps.filter(Boolean);
     }
@@ -716,6 +716,11 @@ class Workspace extends EventEmitter {
         const normalized = key.replace(/^\/+|\/+$/g, '');
         if (normalized.startsWith('data/') || normalized === 'data') {
             throw new Error(`Refusing to delete bitmap "${key}": data/* bitmaps are protected (managed by document lifecycle).`);
+        }
+        // internal/* are engine-managed (gc, timeline, lance/fts, lance/vectors).
+        // Dropping them corrupts state or forces silent re-index — never via API.
+        if (normalized.startsWith('internal/') || normalized === 'internal') {
+            throw new Error(`Refusing to delete bitmap "${key}": internal/* bitmaps are protected (engine-managed).`);
         }
         const db = this.#getActiveDb();
         const existing = await db.bitmapIndex.getBitmap(normalized, false);

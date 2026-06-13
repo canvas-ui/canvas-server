@@ -49,7 +49,8 @@ export default async function workspaceBitmapRoutes(fastify, options) {
         type: 'object',
         properties: {
           includeData: { type: 'boolean', default: false },
-          includeRaw: { type: 'boolean', default: false }
+          includeRaw: { type: 'boolean', default: false },
+          includeInternal: { type: 'boolean', default: false }
         }
       }
     }
@@ -64,7 +65,8 @@ export default async function workspaceBitmapRoutes(fastify, options) {
       }
 
       const bitmaps = await workspace.listBitmaps('', {
-        includeData: request.query.includeData === true
+        includeData: request.query.includeData === true,
+        includeInternal: parseBool(request.query.includeInternal)
       });
       const responseObject = new ResponseObject().found(bitmaps, 'Bitmaps retrieved successfully', 200, bitmaps.length, bitmaps.length);
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());

@@ -40,6 +40,11 @@ MVP deployment has to happen before **30.06.2026**!
 
 ## Tasks
 
+Workspace ACL with optional IP filter
+> Agents are dangerous, if a acl token for an agent leaks we can at least minimize the risk
+OR we can tell agents to use canvas-cli/canvas-edge connector and never show it any ACL tokens..
+easier - 
+
 Workspace > Settings > Devices
 Editable table with existing registered devices
 

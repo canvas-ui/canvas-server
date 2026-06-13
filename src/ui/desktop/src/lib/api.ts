@@ -4,9 +4,16 @@ import type { Context, TreeNode } from './types'
 
 export class ApiError extends Error {}
 
+const FETCH_TIMEOUT_MS = 45_000
+
 function base(serverUrl: string): string {
   const trimmed = serverUrl.replace(/\/+$/, '')
   return trimmed.endsWith('/rest/v2') ? trimmed : `${trimmed}/rest/v2`
+}
+
+function withTimeout(init: RequestInit = {}): RequestInit {
+  if (init.signal) return init
+  return { ...init, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) }
 }
 
 export async function apiFetch<T>(
@@ -15,14 +22,22 @@ export async function apiFetch<T>(
   path: string,
   init: RequestInit = {},
 ): Promise<T> {
-  const res = await fetch(`${base(serverUrl)}${path}`, {
-    ...init,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(init.headers || {}),
-    },
-  })
+  let res: Response
+  try {
+    res = await fetch(`${base(serverUrl)}${path}`, withTimeout({
+      ...init,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(init.headers || {}),
+      },
+    }))
+  } catch (e) {
+    if (e instanceof DOMException && e.name === 'TimeoutError') {
+      throw new ApiError(`Request timed out after ${FETCH_TIMEOUT_MS / 1000}s (${path})`)
+    }
+    throw e
+  }
   const json = await res.json().catch(() => null)
   if (!res.ok) throw new ApiError(json?.message || `HTTP ${res.status}`)
   return (json?.payload ?? json) as T
@@ -36,20 +51,33 @@ export async function ping(serverUrl: string): Promise<string> {
 
 // ── Auth ─────────────────────────────────────────────────────────────────────
 
+function extractToken(data: unknown): string | undefined {
+  if (!data || typeof data !== 'object') return undefined
+  const o = data as Record<string, unknown>
+  if (typeof o.token === 'string') return o.token
+  const nested = o.payload
+  if (nested && typeof nested === 'object' && typeof (nested as Record<string, unknown>).token === 'string') {
+    return (nested as Record<string, unknown>).token as string
+  }
+  return undefined
+}
+
 export async function login(serverUrl: string, email: string, password: string): Promise<string> {
-  const payload = await apiFetch<{ token?: string; payload?: { token: string } }>(
+  const data = await apiFetch<unknown>(
     serverUrl, undefined, '/auth/login',
     { method: 'POST', body: JSON.stringify({ email, password, strategy: 'auto' }) },
   )
-  const token = payload.token ?? payload.payload?.token
+  const token = extractToken(data)
   if (!token) throw new ApiError('Login response missing token')
   return token
 }
 
-// Validates a token (password- or app-token) by hitting /auth/me.
-export async function verifyToken(serverUrl: string, token: string): Promise<boolean> {
+// Validates a token (password- or app-token) by hitting /auth/me. Runs on the
+// startup splash, so it gets a short timeout — a dead server shouldn't block the
+// UI for the full 45s fetch budget.
+export async function verifyToken(serverUrl: string, token: string, timeoutMs = 6000): Promise<boolean> {
   try {
-    await apiFetch(serverUrl, token, '/auth/me')
+    await apiFetch(serverUrl, token, '/auth/me', { signal: AbortSignal.timeout(timeoutMs) })
     return true
   } catch {
     return false

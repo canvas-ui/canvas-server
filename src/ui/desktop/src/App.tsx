@@ -5,6 +5,7 @@ import { Menu } from './components/Menu'
 import { DEFAULT_SHORTCUT, loadConfig, saveConfig, type DesktopConfig } from './lib/config'
 import { login, ping, verifyToken } from './lib/api'
 import { registerActivation } from './lib/shortcuts'
+import { hideToTray, resizeAuthWindow } from './lib/window'
 
 type Phase = 'loading' | 'auth' | 'ready'
 
@@ -26,6 +27,17 @@ export default function App() {
     })()
   }, [])
 
+  // Login needs a full window; the overlay menu shrinks itself once authenticated.
+  useEffect(() => {
+    if (phase === 'loading' || phase === 'auth') resizeAuthWindow().catch(() => {})
+  }, [phase])
+
+  // Authenticated app lives in the tray; summon with the activation shortcut.
+  useEffect(() => {
+    if (phase !== 'ready') return
+    hideToTray().catch(() => {})
+  }, [phase])
+
   // (Re)register the global activation accelerator while authenticated.
   useEffect(() => {
     if (phase !== 'ready') return
@@ -35,9 +47,9 @@ export default function App() {
     return () => cleanup?.()
   }, [phase, config.shortcut])
 
-  const persist = useCallback(async (next: DesktopConfig) => {
-    setConfig(next)
-    await saveConfig(next)
+  const persist = useCallback(async (patch: Partial<DesktopConfig>) => {
+    setConfig((prev) => ({ ...prev, ...patch }))
+    await saveConfig(patch)
   }, [])
 
   const handleTestConnection = useCallback(async (data: AuthFormData) => {
@@ -48,25 +60,36 @@ export default function App() {
   }, [])
 
   const handleLogin = useCallback(async (data: AuthFormData) => {
-    setBusy(true); setError(null); setStatus(null)
+    setBusy(true); setError(null); setStatus('Signing in…')
     try {
       let token = data.token?.trim()
-      if (data.mode === 'password') token = await login(data.serverUrl, data.email ?? '', data.password ?? '')
-      if (!token) throw new Error('Provide a token or credentials')
-      if (!(await verifyToken(data.serverUrl, token))) throw new Error('Server rejected the credentials')
-      await persist({ ...config, serverUrl: data.serverUrl, token, email: data.email })
+      if (data.mode === 'password') {
+        token = await login(data.serverUrl, data.email ?? '', data.password ?? '')
+      } else {
+        if (!token) throw new Error('Provide an application token')
+        if (!(await verifyToken(data.serverUrl, token))) throw new Error('Server rejected the token')
+      }
+      setStatus('Saving session…')
+      await persist({ serverUrl: data.serverUrl, token, email: data.email })
       setPhase('ready')
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
+      setStatus(null)
     } finally {
       setBusy(false)
     }
-  }, [config, persist])
+  }, [persist])
+
+  const updateConfig = useCallback(async (patch: Partial<DesktopConfig>) => {
+    setConfig((prev) => ({ ...prev, ...patch }))
+    saveConfig(patch).catch(() => {})
+  }, [])
 
   const handleLogout = useCallback(async () => {
-    await persist({ ...config, token: undefined, boundContextId: undefined })
+    setConfig((prev) => ({ ...prev, token: undefined, boundContextId: undefined }))
+    await saveConfig({ token: null, boundContextId: null })
     setPhase('auth')
-  }, [config, persist])
+  }, [])
 
   if (phase === 'loading') {
     return <div className="flex h-full items-center justify-center text-sm text-muted-foreground">Loading…</div>
@@ -90,7 +113,7 @@ export default function App() {
     <Menu
       config={config}
       activateSignal={activateSignal}
-      onUpdateConfig={(patch) => persist({ ...config, ...patch })}
+      onUpdateConfig={updateConfig}
       onLogout={handleLogout}
     />
   )

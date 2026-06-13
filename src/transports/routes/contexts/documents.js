@@ -88,11 +88,7 @@ export default async function documentRoutes(fastify, options) {
       return reply.code(response.statusCode).send(response.getResponse());
     } catch (error) {
       fastify.log.error(error);
-      if (error.message.startsWith('Access denied')) {
-        const response = new ResponseObject().forbidden(error.message);
-        return reply.code(response.statusCode).send(response.getResponse());
-      }
-      const response = new ResponseObject().error(`Failed to ${request.query.q || request.query.search ? 'search' : 'list'} documents`);
+      const response = ResponseObject.fromError(error, `Failed to ${request.query.q || request.query.search ? 'search' : 'list'} documents`);
       return reply.code(response.statusCode).send(response.getResponse());
     }
   });
@@ -160,11 +156,7 @@ export default async function documentRoutes(fastify, options) {
       return reply.code(response.statusCode).send(response.getResponse());
     } catch (error) {
       fastify.log.error(error);
-      if (error.message.startsWith('Access denied')) {
-        const response = new ResponseObject().forbidden(error.message);
-        return reply.code(response.statusCode).send(response.getResponse());
-      }
-      const response = new ResponseObject().error('Failed to insert documents');
+      const response = ResponseObject.fromError(error, 'Failed to insert documents');
       return reply.code(response.statusCode).send(response.getResponse());
     }
   });
@@ -219,11 +211,7 @@ export default async function documentRoutes(fastify, options) {
       return reply.code(response.statusCode).send(response.getResponse());
     } catch (error) {
       fastify.log.error(error);
-      if (error.message.startsWith('Access denied')) {
-        const response = new ResponseObject().forbidden(error.message);
-        return reply.code(response.statusCode).send(response.getResponse());
-      }
-      const response = new ResponseObject().error('Failed to update documents');
+      const response = ResponseObject.fromError(error, 'Failed to update documents');
       return reply.code(response.statusCode).send(response.getResponse());
     }
   });
@@ -257,11 +245,7 @@ export default async function documentRoutes(fastify, options) {
       return reply.code(response.statusCode).send(response.getResponse());
     } catch (error) {
       fastify.log.error(error);
-      if (error.message.startsWith('Access denied')) {
-        const response = new ResponseObject().forbidden(error.message);
-        return reply.code(response.statusCode).send(response.getResponse());
-      }
-      const response = new ResponseObject().error('Failed to delete documents from database');
+      const response = ResponseObject.fromError(error, 'Failed to delete documents from database');
       return reply.code(response.statusCode).send(response.getResponse());
     }
   });
@@ -313,11 +297,7 @@ export default async function documentRoutes(fastify, options) {
       return reply.code(response.statusCode).send(response.getResponse());
     } catch (error) {
       fastify.log.error(error);
-      if (error.message.startsWith('Access denied')) {
-        const response = new ResponseObject().forbidden(error.message);
-        return reply.code(response.statusCode).send(response.getResponse());
-      }
-      const response = new ResponseObject().error('Failed to remove documents from context');
+      const response = ResponseObject.fromError(error, 'Failed to remove documents from context');
       return reply.code(response.statusCode).send(response.getResponse());
     }
   });
@@ -373,11 +353,7 @@ export default async function documentRoutes(fastify, options) {
       return reply.code(response.statusCode).send(response.getResponse());
     } catch (error) {
       fastify.log.error(error);
-      if (error.message.startsWith('Access denied')) {
-        const response = new ResponseObject().forbidden(error.message);
-        return reply.code(response.statusCode).send(response.getResponse());
-      }
-      const response = new ResponseObject().error('Failed to get documents by abstraction');
+      const response = ResponseObject.fromError(error, 'Failed to get documents by abstraction');
       return reply.code(response.statusCode).send(response.getResponse());
     }
   });
@@ -407,11 +383,7 @@ export default async function documentRoutes(fastify, options) {
       return reply.code(response.statusCode).send(response.getResponse());
     } catch (error) {
       fastify.log.error(error);
-      if (error.message.startsWith('Access denied')) {
-        const response = new ResponseObject().forbidden(error.message);
-        return reply.code(response.statusCode).send(response.getResponse());
-      }
-      const response = new ResponseObject().error('Failed to get document by ID');
+      const response = ResponseObject.fromError(error, 'Failed to get document by ID');
       return reply.code(response.statusCode).send(response.getResponse());
     }
   });
@@ -444,11 +416,7 @@ export default async function documentRoutes(fastify, options) {
       return reply.code(response.statusCode).send(response.getResponse());
     } catch (error) {
       fastify.log.error(error);
-      if (error.message.startsWith('Access denied')) {
-        const response = new ResponseObject().forbidden(error.message);
-        return reply.code(response.statusCode).send(response.getResponse());
-      }
-      const response = new ResponseObject().error('Failed to delete document from database');
+      const response = ResponseObject.fromError(error, 'Failed to delete document from database');
       return reply.code(response.statusCode).send(response.getResponse());
     }
   });
@@ -480,11 +448,7 @@ export default async function documentRoutes(fastify, options) {
       return reply.code(response.statusCode).send(response.getResponse());
     } catch (error) {
       fastify.log.error(error);
-      if (error.message.startsWith('Access denied')) {
-        const response = new ResponseObject().forbidden(error.message);
-        return reply.code(response.statusCode).send(response.getResponse());
-      }
-      const response = new ResponseObject().error('Failed to get document by hash');
+      const response = ResponseObject.fromError(error, 'Failed to get document by hash');
       return reply.code(response.statusCode).send(response.getResponse());
     }
   });

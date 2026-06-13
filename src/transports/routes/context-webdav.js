@@ -85,8 +85,12 @@ export default async function contextWebdavRoutes(fastify) {
             }
             request.contextInstance = ctx;
         } catch (err) {
-            if (err.message.includes('Access denied')) {
+            if (err.code === 'ACCESS_DENIED') {
                 return reply.code(403).send(new ResponseObject().forbidden('Access denied').getResponse());
+            }
+            // WORKSPACE_NOT_READY (workspace starting) is retryable, not a 404.
+            if (err.code === 'WORKSPACE_NOT_READY') {
+                return reply.code(503).send(new ResponseObject().error(err.message, { retryable: true }, 503).getResponse());
             }
             return reply.code(404).send(new ResponseObject().notFound('Context not found').getResponse());
         }

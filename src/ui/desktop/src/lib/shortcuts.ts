@@ -1,5 +1,6 @@
 import { register, unregister } from '@tauri-apps/plugin-global-shortcut'
 import { getCurrentWindow } from '@tauri-apps/api/window'
+import { showMenuOverlay } from './window'
 
 // Registers the global activation accelerator. Pressing it toggles the overlay;
 // on show it fires onActivate so the menu can jump to the right panel.
@@ -12,8 +13,7 @@ export async function registerActivation(accel: string, onActivate: () => void):
     if (await win.isVisible()) {
       await win.hide()
     } else {
-      await win.show()
-      await win.setFocus()
+      await showMenuOverlay()
       onActivate()
     }
   })

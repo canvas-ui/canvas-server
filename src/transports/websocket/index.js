@@ -211,10 +211,20 @@ export default function setupWebSocketHandlers(fastify) {
         if (channel.startsWith('context:')) {
           const contextId = channel.split(':')[1];
           try {
-            // Throws if user has no access
+            // Throws ACCESS_DENIED / CONTEXT_NOT_FOUND (permanent) or
+            // WORKSPACE_NOT_READY (transient — workspace still starting).
             await fastify.contextManager.getContext(user.id, contextId);
           } catch (err) {
-            socket.emit('error', { message: `Access denied to context ${contextId}` });
+            const retryable = err.retryable === true || err.code === 'WORKSPACE_NOT_READY';
+            const message = retryable
+              ? `Context ${contextId} not ready: ${err.message}`
+              : `Access denied to context ${contextId}`;
+            socket.emit('error', {
+              channel,
+              code: err.code || 'ACCESS_DENIED',
+              retryable,
+              message,
+            });
             return;
           }
         } else if (channel.startsWith('workspace:')) {

@@ -23,9 +23,9 @@ export default {
         sm: 'calc(var(--radius) - 4px)',
       },
       boxShadow: {
-        'elevation-2': '0 3px 6px 0 rgba(0,0,0,0.15), 0 2px 4px 0 rgba(0,0,0,0.12)',
-        'elevation-3': '0 10px 20px 0 rgba(0,0,0,0.15), 0 3px 6px 0 rgba(0,0,0,0.10)',
-        'elevation-4': '0 15px 25px 0 rgba(0,0,0,0.15), 0 5px 10px 0 rgba(0,0,0,0.05)',
+        'overlay': '0 1px 3px 0 rgba(0,0,0,0.08)',
+        'elevation-2': '0 2px 4px 0 rgba(0,0,0,0.08)',
+        'elevation-3': '0 4px 8px 0 rgba(0,0,0,0.08)',
       },
     },
   },

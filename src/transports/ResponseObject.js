@@ -25,6 +25,21 @@ export default class ResponseObject {
     static serverError(message, payload, statusCode) { return new ResponseObject().serverError(message, payload, statusCode); }
     static tooManyRequests(message, payload, statusCode) { return new ResponseObject().tooManyRequests(message, payload, statusCode); }
 
+    /**
+     * Map a thrown error to a response by its `statusCode` (set on coded errors
+     * like the context errors). Lets routes drop message string-matching:
+     *   403 → forbidden, 404 → notFound, 503 → retryable error,
+     *   anything else → generic 500 with `fallbackMessage`.
+     */
+    static fromError(error, fallbackMessage = 'Request failed') {
+        switch (error?.statusCode) {
+            case 403: return new ResponseObject().forbidden(error.message);
+            case 404: return new ResponseObject().notFound(error.message);
+            case 503: return new ResponseObject().error(error.message, { retryable: true }, 503);
+            default:  return new ResponseObject().error(fallbackMessage);
+        }
+    }
+
     // Success: Generic success
     success(payload, message = 'Request successful', statusCode = 200, count = null, totalCount = null) {
         this.status = 'success';

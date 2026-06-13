@@ -11,6 +11,7 @@ const logger = createLogger('context-manager:context');
 // Includes
 import Url from './Url.js';
 import { parseDocumentId, parseDocumentIdArray } from '../../../utils/documentId.js';
+import { accessDenied } from './errors.js';
 
 // Constants
 const DEFAULT_BASE_URL = '/';
@@ -988,7 +989,7 @@ class Context extends EventEmitter {
 
     async put(accessingUserId, document, features = [], options = {}) {
         if (!this.checkPermission(accessingUserId, 'documentWrite')) {
-            throw new Error('Access denied: User requires documentWrite permission.');
+            throw accessDenied('Access denied: User requires documentWrite permission.');
         }
         const workspace = this.#requireWorkspace();
         if (!document) {
@@ -1023,7 +1024,7 @@ class Context extends EventEmitter {
 
     async putMany(accessingUserId, documentArray, features = [], options = {}) {
         if (!this.checkPermission(accessingUserId, 'documentWrite')) {
-            throw new Error('Access denied: User requires documentWrite permission.');
+            throw accessDenied('Access denied: User requires documentWrite permission.');
         }
         const workspace = this.#requireWorkspace();
         if (!Array.isArray(documentArray)) {
@@ -1060,7 +1061,7 @@ class Context extends EventEmitter {
 
     async getByChecksumString(accessingUserId, checksumString) {
         if (!this.checkPermission(accessingUserId, 'documentRead')) {
-            throw new Error('Access denied: User requires documentRead permission.');
+            throw accessDenied('Access denied: User requires documentRead permission.');
         }
         const workspace = this.#requireWorkspace();
         if (!checksumString || typeof checksumString !== 'string') {
@@ -1071,7 +1072,7 @@ class Context extends EventEmitter {
 
     async hasByChecksumString(accessingUserId, checksum, features = []) {
         if (!this.checkPermission(accessingUserId, 'documentRead')) {
-            throw new Error('Access denied: User requires documentRead permission.');
+            throw accessDenied('Access denied: User requires documentRead permission.');
         }
         const workspace = this.#requireWorkspace();
 
@@ -1084,7 +1085,7 @@ class Context extends EventEmitter {
 
     async unlink(accessingUserId, documentId, features, options = {}) {
         if (!this.checkPermission(accessingUserId, 'documentReadWrite')) {
-            throw new Error('Access denied: User requires documentReadWrite permission.');
+            throw accessDenied('Access denied: User requires documentReadWrite permission.');
         }
         const workspace = this.#requireWorkspace();
 
@@ -1113,7 +1114,7 @@ class Context extends EventEmitter {
      */
     async linkMany(accessingUserId, documentIdArray, features = [], options = {}) {
         if (!this.checkPermission(accessingUserId, 'documentWrite')) {
-            throw new Error('Access denied: User requires documentWrite permission.');
+            throw accessDenied('Access denied: User requires documentWrite permission.');
         }
         const workspace = this.#requireWorkspace();
         if (!Array.isArray(documentIdArray)) {
@@ -1147,7 +1148,7 @@ class Context extends EventEmitter {
 
     async unlinkMany(accessingUserId, documentIdArray, features, options = {}) {
         if (!this.checkPermission(accessingUserId, 'documentReadWrite')) {
-            throw new Error('Access denied: User requires documentReadWrite permission.');
+            throw accessDenied('Access denied: User requires documentReadWrite permission.');
         }
         const workspace = this.#requireWorkspace();
         if (!Array.isArray(documentIdArray)) {
@@ -1175,10 +1176,10 @@ class Context extends EventEmitter {
 
     async deleteMany(accessingUserId, documentIdArray, options = {}) {
         if (accessingUserId !== this.#userId) {
-            throw new Error('Access denied: Only the context owner can delete documents directly from the database.');
+            throw accessDenied('Access denied: Only the context owner can delete documents directly from the database.');
         }
         if (!this.checkPermission(accessingUserId, 'documentReadWrite')) {
-            throw new Error('Access denied: User requires documentReadWrite permission for direct DB deletion.');
+            throw accessDenied('Access denied: User requires documentReadWrite permission for direct DB deletion.');
         }
         const workspace = this.#requireWorkspace();
         if (!Array.isArray(documentIdArray)) {
@@ -1202,21 +1203,21 @@ class Context extends EventEmitter {
     async getDocumentById(accessingUserId, id, options = { parse: true }) {
         // This is a direct DB access method, only context owner should call it.
         if (accessingUserId !== this.#userId) {
-            throw new Error('Access denied: This operation is only available to the context owner.');
+            throw accessDenied('Access denied: This operation is only available to the context owner.');
         }
         return await this.#requireWorkspace().get(id, options);
     }
 
     async getDocumentsByIdArray(accessingUserId, idArray, options = { parse: true, limit: null }) {
         if (accessingUserId !== this.#userId) {
-            throw new Error('Access denied: This operation is only available to the context owner.');
+            throw accessDenied('Access denied: This operation is only available to the context owner.');
         }
         return await this.#requireWorkspace().getDocumentsByIdArray(idArray, options);
     }
 
     async hasDocument(accessingUserId, id, featureArray = []) {
         if (!this.checkPermission(accessingUserId, 'documentRead')) {
-            throw new Error('Access denied: User requires documentRead permission.');
+            throw accessDenied('Access denied: User requires documentRead permission.');
         }
         const workspace = this.#requireWorkspace();
 
@@ -1229,7 +1230,7 @@ class Context extends EventEmitter {
 
     async list(accessingUserId, spec = {}) {
         if (!this.checkPermission(accessingUserId, 'documentRead')) {
-            throw new Error('Access denied: User requires documentRead permission.');
+            throw accessDenied('Access denied: User requires documentRead permission.');
         }
         const workspace = this.#requireWorkspace();
 
@@ -1250,7 +1251,7 @@ class Context extends EventEmitter {
 
     async search(accessingUserId, spec = {}) {
         if (!this.checkPermission(accessingUserId, 'documentRead')) {
-            throw new Error('Access denied: User requires documentRead permission.');
+            throw accessDenied('Access denied: User requires documentRead permission.');
         }
         const workspace = this.#requireWorkspace();
 
@@ -1307,7 +1308,7 @@ class Context extends EventEmitter {
 
     async getDocumentByChecksum(accessingUserId, checksumString, featureArray = []) {
         if (!this.checkPermission(accessingUserId, 'documentRead')) {
-            throw new Error('Access denied: User requires documentRead permission.');
+            throw accessDenied('Access denied: User requires documentRead permission.');
         }
         const workspace = this.#requireWorkspace();
         if (!checksumString || typeof checksumString !== 'string') {

@@ -35,12 +35,28 @@ pub fn load_config() -> serde_json::Value {
     }
 }
 
+// Merge a partial patch into the existing config. Callers (React state +
+// window-bounds persistence) write disjoint keys, so a shallow merge keeps
+// them from clobbering each other. A null value deletes the key.
 #[tauri::command]
 pub fn save_config(config: serde_json::Value) -> Result<(), String> {
     let path = config_file();
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    let json = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
+    let mut current = load_config();
+    match (current.as_object_mut(), config.as_object()) {
+        (Some(cur), Some(patch)) => {
+            for (k, v) in patch {
+                if v.is_null() {
+                    cur.remove(k);
+                } else {
+                    cur.insert(k.clone(), v.clone());
+                }
+            }
+        }
+        _ => current = config,
+    }
+    let json = serde_json::to_string_pretty(&current).map_err(|e| e.to_string())?;
     fs::write(&path, json).map_err(|e| e.to_string())
 }

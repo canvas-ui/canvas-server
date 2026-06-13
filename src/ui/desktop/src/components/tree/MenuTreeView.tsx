@@ -4,7 +4,7 @@
  * rename, remove, copy/cut/paste, lock/unlock layer, show layer content,
  * merge/subtract layers. Ctrl/⌘-click to multi-select source + targets.
  */
-import { useState, useCallback, useRef, useEffect } from 'react'
+import { useState, useCallback, useRef, useEffect, memo } from 'react'
 import { createPortal } from 'react-dom'
 import {
   ChevronRight, ChevronDown,
@@ -27,6 +27,7 @@ export interface MenuTreeViewProps {
   treeName?: string
   selectedPath: string
   pendingPath?: string | null
+  highlightPath?: string | null
   onSelect: (path: string) => void
   isLoading?: boolean
   readOnly?: boolean
@@ -348,7 +349,7 @@ interface CardNodeProps {
   onDrop: (path: string, e: React.DragEvent) => void
 }
 
-function CardNode({
+const CardNode = memo(function CardNode({
   node, parentPath, depth, isLast, selectedPath, pendingPath, contentPath, readOnly,
   sourceLayer, targetLayers, clipboard, searchQuery,
   inlineCreateParent, inlineCreateIsCanvas,
@@ -372,6 +373,7 @@ function CardNode({
   const hasChildren = node.children && node.children.length > 0
   const isSelected = selectedPath === path
   const isPending = pendingPath === path
+  const cardShadow = readOnly ? 'border border-border/60 shadow-overlay' : 'shadow-lg hover:shadow-xl'
 
   const isSource = sourceLayer?.path === path
   const isTarget = targetLayers.has(path)
@@ -400,9 +402,10 @@ function CardNode({
       />
 
       <div
+        data-tree-path={path}
         className={cn(
-          'group relative flex min-h-10 items-center gap-2 rounded-md px-3 py-2 cursor-pointer transition-all select-none overflow-hidden',
-          'shadow-lg hover:shadow-xl text-sm',
+          'group relative flex min-h-10 items-center gap-2 rounded-md px-3 py-2 cursor-pointer transition-colors select-none overflow-hidden text-sm',
+          cardShadow,
           'before:absolute before:left-0 before:top-0 before:bottom-0 before:w-1.5 before:transition-colors',
           isSource && 'ring-1 ring-blue-500/40 bg-blue-500/10 before:bg-blue-500',
           isTarget && !isSource && 'ring-1 ring-amber-500/40 bg-amber-500/10 before:bg-amber-500',
@@ -521,11 +524,11 @@ function CardNode({
       )}
     </div>
   )
-}
+})
 // ─── Root ─────────────────────────────────────────────────────────────────────
 
 export function MenuTreeView({
-  root, treeName = 'context', selectedPath, pendingPath, onSelect, isLoading = false, readOnly = false,
+  root, treeName = 'context', selectedPath, pendingPath, highlightPath, onSelect, isLoading = false, readOnly = false,
   rootLabel, contentPath, onShowContent, onOpenToSide,
   onInsertPath, onCreateCanvas, onShareCanvas, onRemovePath, onRenamePath, onMovePath, onCopyPath,
   pastedDocumentIds, onPasteDocuments,
@@ -544,6 +547,21 @@ export function MenuTreeView({
   const [styleOverrides, setStyleOverrides] = useState<Map<string, LayerStyle>>(new Map())
   const [prevRoot, setPrevRoot] = useState(root)
   const persistTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  // Apply the keyboard highlight imperatively via the data-tree-path attribute.
+  // Threading highlightPath through every node would re-render (and re-mount the
+  // Iconify <Icon>s on) the whole tree on each arrow key — the source of the lag.
+  useEffect(() => {
+    const host = containerRef.current
+    if (!host) return
+    host.querySelector('.tree-row-active')?.classList.remove('tree-row-active')
+    if (highlightPath) {
+      const el = host.querySelector(`[data-tree-path="${CSS.escape(highlightPath)}"]`)
+      el?.classList.add('tree-row-active')
+      el?.scrollIntoView({ block: 'nearest' })
+    }
+  }, [highlightPath, root, searchQuery])
 
   // Drop optimistic style overrides once fresh server data arrives (root
   // identity changes on refetch). Reset-on-prop-change happens during render.
@@ -819,7 +837,7 @@ export function MenuTreeView({
   }
 
   return (
-    <div className="px-3 py-2 space-y-1.5">
+    <div ref={containerRef} className="px-3 py-2 space-y-1.5">
       {!readOnly && (
         <div className="flex items-center justify-end px-1 pb-0.5 text-[10px]">
           <button
@@ -856,9 +874,11 @@ export function MenuTreeView({
 
       {/* Root "/" node — always shown, children indented below */}
       <div
+        data-tree-path="/"
         className={cn(
-          'group relative flex min-h-10 items-center gap-2 rounded-md px-3 py-2 cursor-pointer transition-all select-none',
-          'shadow-lg hover:shadow-xl text-sm',
+          'group relative flex min-h-10 items-center gap-2 rounded-md px-3 py-2 cursor-pointer transition-colors select-none',
+          readOnly ? 'border border-border/60 shadow-overlay' : 'shadow-lg hover:shadow-xl',
+          'text-sm',
           selectedPath === '/' && !contentPath ? 'bg-primary/[0.06]' : 'bg-card hover:bg-primary/[0.04]',
           dragOverPath === '/' && !readOnly && !isCopyDrag && 'ring-2 ring-blue-400 bg-blue-50/50',
           dragOverPath === '/' && !readOnly && isCopyDrag && 'ring-2 ring-emerald-500 bg-emerald-50/50',

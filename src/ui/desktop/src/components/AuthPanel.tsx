@@ -103,7 +103,7 @@ export function AuthPanel({
 
         <div className="flex gap-3 pt-2">
           <Button type="button" variant="outline" disabled={busy} onClick={() => onTestConnection(formData)} className="flex-1">Test connection</Button>
-          <Button type="submit" disabled={busy} className="flex-1">Login</Button>
+          <Button type="submit" disabled={busy} className="flex-1">{busy ? 'Signing in…' : 'Login'}</Button>
         </div>
 
         {status && <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{status}</div>}

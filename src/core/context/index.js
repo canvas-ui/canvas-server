@@ -10,6 +10,7 @@ const logger = createLogger('context-manager:index');
 
 // Includes
 import Context from './lib/Context.js';
+import { accessDenied, contextNotFound, workspaceNotReady } from './lib/errors.js';
 
 // Constants
 const DEFAULT_WORKSPACE_ID = 'universe';
@@ -271,7 +272,7 @@ class ContextManager extends EventEmitter {
                 const storedContextData = this.#indexStore.get(contextKey);
                 if (storedContextData) {
                     if (storedContextData.userId !== ownerUserId) {
-                        throw new Error(`Owner mismatch: expected ${ownerUserId}, found ${storedContextData.userId}`);
+                        throw accessDenied(`Owner mismatch: expected ${ownerUserId}, found ${storedContextData.userId}`);
                     }
 
                     let workspaceId = storedContextData.workspaceId;
@@ -282,12 +283,12 @@ class ContextManager extends EventEmitter {
 
                     const workspace = await this.#workspaceManager.getWorkspace(workspaceId, ownerUserId);
                     if (!workspace) {
-                        throw new Error(`Failed to load workspace ${storedContextData.workspaceId} for context ${contextKey}`);
+                        throw workspaceNotReady(`Failed to load workspace ${storedContextData.workspaceId} for context ${contextKey}`);
                     }
 
                     // Workspace must be active to create context (Context constructor accesses workspace.db and a bound context tree)
                     if (!workspace.isActive) {
-                        throw new Error(`Workspace ${workspace.name} is not active. Start the workspace before accessing contexts.`);
+                        throw workspaceNotReady(`Workspace ${workspace.name} is not active. Start the workspace before accessing contexts.`);
                     }
 
                     const contextOptions = {
@@ -311,7 +312,7 @@ class ContextManager extends EventEmitter {
             if (contextInstance) {
                 if (userId !== contextInstance.userId) {
                     if (!contextInstance.checkPermission(userId, 'documentRead')) {
-                        throw new Error(`Access denied: user ${userId} lacks permission for context ${contextKey}`);
+                        throw accessDenied(`Access denied: user ${userId} lacks permission for context ${contextKey}`);
                     }
                 }
                 return contextInstance;
@@ -322,7 +323,7 @@ class ContextManager extends EventEmitter {
                 return this.createContext(userId, options.url || '/', createOptions);
             }
 
-            throw new Error(`Context not found: ${contextKey}`);
+            throw contextNotFound(`Context not found: ${contextKey}`);
         } catch (error) {
             throw error;
         }

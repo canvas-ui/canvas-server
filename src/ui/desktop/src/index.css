@@ -49,11 +49,11 @@
 
   * { border-color: hsl(var(--border)); }
 
-  /* Transparent page so the overlay window's translucency shows the desktop. */
+  /* Opaque window — transparent surfaces resize at single-digit fps on Linux. */
   html, body, #root {
     height: 100%;
     margin: 0;
-    background: transparent;
+    background: hsl(var(--background));
     color: hsl(var(--foreground));
     font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
     -webkit-font-smoothing: antialiased;
@@ -62,4 +62,8 @@
 
   ::-webkit-scrollbar { width: 8px; height: 8px; }
   ::-webkit-scrollbar-thumb { background: hsl(var(--muted-foreground) / 0.3); border-radius: 4px; }
+
+  /* Keyboard-nav highlight, toggled imperatively (see MenuTreeView). outline
+     avoids the layout/repaint cost of re-rendering the tree per keystroke. */
+  .tree-row-active { outline: 2px solid hsl(var(--ring)); outline-offset: 1px; }
 }

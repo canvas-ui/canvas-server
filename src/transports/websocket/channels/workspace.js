@@ -71,7 +71,7 @@ export default function registerWorkspaceWebSocket(fastify, socket) {
       // Verify access (cached positives skip revalidation on the hot path).
       let hasAccess = workspaceIdentifiers.some((identifier) => accessCache.has(identifier));
       if (!hasAccess) {
-        hasAccess = await validateWorkspaceAccess(socket, workspaceIdentifiers);
+        hasAccess = await validateWorkspaceAccess(socket, workspaceIdentifiers, workspaceManager);
         if (hasAccess) {
           for (const identifier of workspaceIdentifiers) accessCache.add(identifier);
         }
@@ -107,7 +107,7 @@ export default function registerWorkspaceWebSocket(fastify, socket) {
  * @param {string|string[]} workspaceIdentifierInput - Workspace ID or name to validate access for
  * @returns {Promise<boolean>} True if access is granted, false otherwise
  */
-async function validateWorkspaceAccess(socket, workspaceIdentifierInput) {
+async function validateWorkspaceAccess(socket, workspaceIdentifierInput, workspaceManager) {
   try {
     const userId = socket.user?.id;
     if (!userId) {
@@ -119,8 +119,9 @@ async function validateWorkspaceAccess(socket, workspaceIdentifierInput) {
     // Owner access should work for JWT-authenticated sockets as well.
     const token = socket.handshake?.auth?.token;
 
-    // Try owner access first (fastest path)
-    const workspaceManager = socket.server?.workspaceManager;
+    // Try owner access first (fastest path). The manager is passed in from the
+    // channel closure (fastify.workspaceManager) — it is NOT available via
+    // socket.server, which previously made every owner check fail.
     if (!workspaceManager) {
       logger.debug(`WorkspaceManager not available for access validation`);
       return false;

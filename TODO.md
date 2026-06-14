@@ -1,5 +1,14 @@
 # TODO List
 
+dotManager -> gitManager(path, opts)
+Fine-tune .cursor/prompts/20260613-hooks+agents.md
+
+## Stored
+
+Implement a local blob store "workspace:data" in {WORKSPACE_ROOT}/data based on cacache
+? Content-Defined Chunking (CDC) > block-level dedup on top (Rabin Fingerprints / Buzhash chunking algo)
+
+
 ## MVP Scope
 
 MVP deployment has to happen before **30.06.2026**!
@@ -40,32 +49,38 @@ MVP deployment has to happen before **30.06.2026**!
 
 ## Tasks
 
-Workspace ACL with optional IP filter
-> Agents are dangerous, if a acl token for an agent leaks we can at least minimize the risk
-OR we can tell agents to use canvas-cli/canvas-edge connector and never show it any ACL tokens..
-easier - 
-
-Workspace > Settings > Devices
-Editable table with existing registered devices
-
-Migration path (minimal)
-Extract git HTTP from DotfileManager → generic GitRepoService targeting {workspace}/git.git.
-Move dotfiles.git → git.git; existing content becomes repo root or dotfiles/ (pick one, migrate once).
-Alias /dotfiles/git/* → /git/* for a while; update canvas dot URL.
-Add hooks/ template on init; HookService loads from that path post-push.
-
 {WORKSPACE_ROOT}
   /.stored
   /config
   /db
   /home                # Roaming profile exported via SMB and Webdav
+  /data                # Intarnal data/blob store
   /git
     bare.git/          # canonical bare remote (HTTP git targets this)
     hooks/             # deployed files only — HookService reads here
     # no dotfiles/ on server unless you add a server-side apply feature later
   /workspace.json
 
-## Rename dotfiles.git to git
+
+## Storage API schema
+
+/rest/v2/contexts/:context_id/documents or
+/rest/v2/workspaces/:workspace_id/documents 
+both return a list
+
+/rest/v2/workspaces/:workspace_id/documents/:docId or /documents/by-id/docId 
+/rest/v2/workspaces/:workspace_id/documents/by-hash/algo/hash 
+return a specific document
+
+Now if a document is stored on multiple backends - lets say a file is stored in s3, some internal cifs share and localy on a file://deviceId/path
+Retrieving of the raw document could be done by appending /content?backend=s3
+
+or as ../documents/by-id/docId/content?backend=foo&token=bar
+GET /documents/by-id/:id                     # metadata (locations[] w/ ids + backends)
+GET /documents/by-hash/:algo/:hash           # same, hash-addressed
+GET /documents/by-id/:id/content?location=<id>&token=<jwt>   # raw bytes / 302 to device
+GET /documents/by-id/:id/content?prefer=s3,cifs,file
+
 
 ### Add support for hooks
 

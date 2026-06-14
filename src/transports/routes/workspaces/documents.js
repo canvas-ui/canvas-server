@@ -608,10 +608,18 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       }
 
       const attributes = buildAttributes(request.query);
-      const result = await workspace.unlinkMany(documentIds, {
-        context: contextSelector,
-        attributes,
-      });
+      // unlinkMany takes context/directory selectors under distinct keys.
+      // resolveContextSelector already returns the right selector for the tree
+      // type; route it to the matching key so a directory selector isn't
+      // normalized as a context tree (which throws → 500).
+      let isDirectory = request.query.treeType === 'directory';
+      if (!request.query.treeType && request.query.treeNameOrTreeId) {
+        try { isDirectory = workspace.getTree(request.query.treeNameOrTreeId)?.type === 'directory'; }
+        catch (_) { isDirectory = false; }
+      }
+      const result = await workspace.unlinkMany(documentIds, isDirectory
+        ? { directory: contextSelector, attributes }
+        : { context: contextSelector, attributes });
 
       if (result?.failed?.length) {
         fastify.log.warn({

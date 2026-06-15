@@ -1,0 +1,62 @@
+import { readFile, rm } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
+
+// Example: files dropped into the workspace land in the `.incoming` directory
+// tree. If a file has a sidecar `.<name>.metadata.json` (hidden, so it is not
+// auto-indexed) listing target paths, link the file to those virtual paths and
+// remove the sidecar. Pairs with youtube.js / any downloader that writes the
+// sidecar.
+
+function locationFilePath(doc) {
+    for (const loc of doc?.locations || []) {
+        const url = typeof loc === 'string' ? loc : loc?.url;
+        if (url && url.startsWith('file://')) {
+            try { return fileURLToPath(url); } catch { /* ignore */ }
+        }
+    }
+    return null;
+}
+
+function incomingPaths(payload) {
+    const dir = payload?.directory;
+    if (!dir) { return []; }
+    if (Array.isArray(dir.paths)) { return dir.paths; }
+    if (dir.path) { return [dir.path]; }
+    return [];
+}
+
+export default async function run({ payload, workspace, get, logger }) {
+    const landedInIncoming = incomingPaths(payload).some((p) => String(p).includes('/.incoming'));
+    if (!landedInIncoming) { return; }
+
+    const ids = payload?.ids || (payload?.id != null ? [payload.id] : []);
+    for (const id of ids) {
+        try {
+            const doc = await get(id, { parse: true });
+            const realPath = locationFilePath(doc);
+            if (!realPath) { continue; }
+
+            const metaPath = path.join(path.dirname(realPath), `.${path.basename(realPath)}.metadata.json`);
+            let meta;
+            try {
+                meta = JSON.parse(await readFile(metaPath, 'utf8'));
+            } catch {
+                continue; // no sidecar for this file
+            }
+
+            const targetPaths = Array.isArray(meta?.paths) ? meta.paths.filter(Boolean) : [];
+            for (const targetPath of targetPaths) {
+                await workspace.link(id, {
+                    context: workspace.getContextTreeSelector(targetPath),
+                    emitEvent: true,
+                });
+            }
+
+            await rm(metaPath, { force: true });
+            logger.debug(`incoming-metadata-linker: linked doc ${id} to ${targetPaths.length} path(s)`);
+        } catch (err) {
+            logger.debug(`incoming-metadata-linker: ${err.message}`);
+        }
+    }
+}

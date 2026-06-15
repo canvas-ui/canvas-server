@@ -90,6 +90,22 @@ function parseAgentIndexKey(indexKey) {
     return parts.length === 2 ? { userId: parts[0], agentId: parts[1] } : null;
 }
 
+// Flattens pi assistant messages into plain text for non-streaming callers.
+function extractAssistantText(messages = []) {
+    const parts = [];
+    for (const message of messages) {
+        const content = message?.content;
+        if (typeof content === 'string') { parts.push(content); continue; }
+        if (Array.isArray(content)) {
+            for (const block of content) {
+                if (typeof block === 'string') parts.push(block);
+                else if (block?.type === 'text' && block.text) parts.push(block.text);
+            }
+        }
+    }
+    return parts.join('\n').trim();
+}
+
 function normalizeAgentName(name) {
     return String(name || '')
         .trim()
@@ -370,6 +386,19 @@ class Agents extends EventEmitter {
         const stopped = await this.stop(userId, agentIdentifier, requestingUserId);
         if (!stopped) return null;
         return this.start(userId, agentIdentifier, requestingUserId);
+    }
+
+    /**
+     * Prompt an agent and return its assistant text reply, starting it if
+     * needed. Convenience for in-process callers (hooks); the raw message array
+     * form lives on the Agent instance.
+     */
+    async prompt(userId, agentIdentifier, message, options = {}, requestingUserId) {
+        if (!this.#initialized) throw new Error('Agents service not initialized');
+        const agent = await this.start(userId, agentIdentifier, requestingUserId || userId);
+        if (!agent) throw new Error(`Agent not found or not startable: ${agentIdentifier}`);
+        const messages = await agent.prompt(message, options);
+        return extractAssistantText(messages);
     }
 
     async listSessions(userId, agentIdentifier, requestingUserId) {

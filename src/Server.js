@@ -228,6 +228,9 @@ class Server extends EventEmitter {
         await this.#roles.initialize();
         await this.#agents.initialize();
 
+        // Let workspace hooks call the agent() helper.
+        this.#workspaceManager.hookService?.setAgents(this.#agents);
+
         // Note: authService will be injected after initialization in the main initialize method
     }
 

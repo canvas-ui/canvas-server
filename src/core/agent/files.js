@@ -192,5 +192,6 @@ export async function materializeAgentRuntimeFiles(rootPath, config) {
     await syncOptionalFile(path.join(runtimePath, AGENT_RUNTIME_FILES.appendSystem), prompts.append);
     await syncOptionalFile(path.join(runtimePath, AGENT_RUNTIME_FILES.context), prompts.context);
     await syncOptionalFile(path.join(runtimePath, AGENT_RUNTIME_FILES.memory), agentConfig.memory);
-    await syncSkills(rootPath, agentConfig.skills);
+
+    await syncSkills(rootPath, agentConfig.skills || []);
 }

@@ -155,8 +155,7 @@ class WorkspaceManager extends EventEmitter {
 
         // Initialize Hook Service
         this.hookService = new HookService({
-            workspaceManager: this,
-            contextManager: this.#contextManager
+            workspaceManager: this
         });
         await this.hookService.initialize();
 

@@ -1,7 +1,7 @@
 'use strict';
 
 import path from 'path';
-import { writeFile, readFile, access, unlink } from 'fs/promises';
+import { writeFile, readFile, access } from 'fs/promises';
 import EventEmitter from 'eventemitter2';
 import {
     createAgentSession,

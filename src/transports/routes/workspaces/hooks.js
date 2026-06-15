@@ -18,52 +18,62 @@ function validateHookPath(inputPath) {
     return { error: 'Hook path is required' };
   }
 
-  const normalized = segments.join('/');
-  const isLibFile = normalized.startsWith('lib/');
-  const isRootFile = !normalized.includes('/');
+  if (segments.includes('..')) {
+    return { error: 'Invalid hook path' };
+  }
 
+  const normalized = segments.join('/');
   if (!normalized.endsWith('.js')) {
     return { error: 'Only .js hook files are allowed' };
   }
 
-  if (!isRootFile && !isLibFile) {
-    return { error: 'Hooks must be root-level event files or files under lib/' };
+  // Allowed shapes: `{event}.js` (single handler), `{event}/{name}.js`
+  // (one of several handlers for an event), or shared modules under `lib/`.
+  const isLibFile = normalized.startsWith('lib/');
+  if (!isLibFile && segments.length > 2) {
+    return { error: 'Hooks must be {event}.js, {event}/{name}.js, or files under lib/' };
   }
 
   return { path: normalized };
 }
 
-async function listHookFiles(basePath, relativeDir = '') {
-  const absoluteDir = path.join(basePath, relativeDir);
-  const dirents = await fs.readdir(absoluteDir, { withFileTypes: true });
+async function statEntry(basePath, relativePath) {
+  const stat = await fs.stat(path.join(basePath, relativePath));
+  return { path: relativePath, size: stat.size, modifiedAt: stat.mtime.toISOString() };
+}
+
+// Lists root `{event}.js` files plus one level of subdirectory handlers
+// (`{event}/*.js` and `lib/*.js`). Handlers for an event are grouped under its
+// directory; clients render them grouped by event name.
+async function listHookFiles(basePath) {
+  const dirents = await fs.readdir(basePath, { withFileTypes: true });
   const entries = [];
 
   for (const dirent of dirents) {
-    const relativePath = relativeDir ? `${relativeDir}/${dirent.name}` : dirent.name;
-    if (dirent.isDirectory()) {
-      if (relativePath === 'lib' || relativePath.startsWith('lib/')) {
-        entries.push(...await listHookFiles(basePath, relativePath));
+    if (dirent.isFile() && dirent.name.endsWith('.js')) {
+      entries.push(await statEntry(basePath, dirent.name));
+      continue;
+    }
+    if (!dirent.isDirectory()) { continue; }
+
+    const subDirents = await fs.readdir(path.join(basePath, dirent.name), { withFileTypes: true });
+    for (const sub of subDirents) {
+      if (sub.isFile() && sub.name.endsWith('.js')) {
+        entries.push(await statEntry(basePath, `${dirent.name}/${sub.name}`));
       }
-      continue;
     }
-
-    if (!dirent.isFile() || !relativePath.endsWith('.js')) {
-      continue;
-    }
-
-    if (relativePath.includes('/') && !relativePath.startsWith('lib/')) {
-      continue;
-    }
-
-    const stat = await fs.stat(path.join(basePath, relativePath));
-    entries.push({
-      path: relativePath,
-      size: stat.size,
-      modifiedAt: stat.mtime.toISOString(),
-    });
   }
 
   return entries.sort((a, b) => a.path.localeCompare(b.path));
+}
+
+async function commitHooks(fastify, request, message) {
+  if (!fastify.dotfileManager?.commitHooks) { return; }
+  try {
+    await fastify.dotfileManager.commitHooks(request.workspace, message, request.user?.id);
+  } catch (error) {
+    request.log.debug(`Hook git commit skipped: ${error.message}`);
+  }
 }
 
 export default async function workspaceHooksRoutes(fastify) {
@@ -127,6 +137,7 @@ export default async function workspaceHooksRoutes(fastify) {
       const filePath = path.join(request.workspace.hooksPath, result.path);
       await fs.mkdir(path.dirname(filePath), { recursive: true });
       await fs.writeFile(filePath, request.body?.content || '', 'utf-8');
+      await commitHooks(fastify, request, `Update hook ${result.path}`);
 
       const response = new ResponseObject().success({ path: result.path }, 'Workspace hook saved successfully');
       return reply.code(response.statusCode).send(response.getResponse());
@@ -148,6 +159,7 @@ export default async function workspaceHooksRoutes(fastify) {
       }
 
       await fs.unlink(path.join(request.workspace.hooksPath, result.path));
+      await commitHooks(fastify, request, `Delete hook ${result.path}`);
       const response = new ResponseObject().deleted({ path: result.path }, 'Workspace hook deleted successfully');
       return reply.code(response.statusCode).send(response.getResponse());
     } catch (error) {

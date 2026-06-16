@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
+import crypto from 'crypto';
 import fs from 'fs-extra';
 import os from 'os';
 import path from 'path';
@@ -20,10 +21,12 @@ describe('WorkspaceMailIndex', () => {
     let rootPath;
     let mail;
     let puts;
+    let blobs;
 
     beforeEach(async () => {
         rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'workspace-mail-'));
         puts = [];
+        blobs = [];
     });
 
     afterEach(async () => {
@@ -35,7 +38,6 @@ describe('WorkspaceMailIndex', () => {
     function createMail() {
         return new WorkspaceMailIndex({
             rootPath,
-            dataPath: path.join(rootPath, 'data'),
             workspaceId: 'test-workspace',
             logger: { warn() {}, debug() {} },
             getIncomingTreeSelector: (spec) => spec,
@@ -45,10 +47,16 @@ describe('WorkspaceMailIndex', () => {
                 puts.push({ record: { ...record, id }, options });
                 return id;
             },
+            // Stand-in for the blob indexer's persistBlob (content-addressable).
+            persistBlob: async (buffer) => {
+                const checksum = crypto.createHash('sha256').update(buffer).digest('hex');
+                blobs.push({ checksum, size: buffer.length });
+                return { url: `stored://workspace:data/${checksum.slice(0, 2)}/${checksum.slice(2, 4)}/${checksum}`, key: checksum, checksum, size: buffer.length };
+            },
         });
     }
 
-    test('ingestMessage builds one Email doc with stored:// + imap:// locations', async () => {
+    test('ingestMessage builds one Email doc with workspace:data + imap:// locations', async () => {
         mail = createMail();
         await mail.start();
 
@@ -62,14 +70,13 @@ describe('WorkspaceMailIndex', () => {
         assert.equal(record.id, docId);
         assert.equal(record.schema, 'data/abstraction/email');
         const urls = record.locations.map((l) => l.url);
-        assert.ok(urls.some((u) => u.startsWith('stored://fs:data:email/')), `expected stored:// location, got ${urls}`);
+        assert.ok(urls.some((u) => u.startsWith('stored://workspace:data/')), `expected stored://workspace:data location, got ${urls}`);
         assert.ok(urls.some((u) => u.startsWith('imap://alice@example.com/INBOX;UID=5')), `expected imap:// location, got ${urls}`);
         assert.equal(record.checksumArray.length, 1);
         assert.match(String(options.directory), /imap\/alice/);
-        // raw blob written to data/email/...
-        const rawUrl = urls.find((u) => u.startsWith('stored://fs:data:email/'));
-        const key = rawUrl.replace('stored://fs:data:email/', '');
-        assert.ok(await fs.pathExists(path.join(rootPath, 'data', 'email', key)));
+        // raw blob persisted into the content-addressable store
+        assert.equal(blobs.length, 1);
+        assert.equal(record.checksumArray[0], `sha256/${blobs[0].checksum}`);
         // uniform service event contract
         assert.equal(emitted.length, 1);
         assert.equal(emitted[0].kind, 'message');

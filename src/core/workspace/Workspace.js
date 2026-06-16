@@ -898,12 +898,14 @@ class Workspace extends EventEmitter {
     #buildMailIndex() {
         return new WorkspaceMailIndex({
             rootPath: this.#rootPath,
-            dataPath: this.dataPath,
             workspaceId: this.id,
             logger: this.#logger,
             put: (record, options = {}) => this.put(record, { ...options, allowIncomingWrite: true }),
             getIncomingTreeSelector: this.getIncomingTreeSelector.bind(this),
             getDb: () => this.#db,
+            // Persist email/attachment blobs into the local content-addressable
+            // data store (workspace:data) via the blob indexer.
+            persistBlob: (buffer) => this.#storedIndex.persistBlob(buffer),
         });
     }
 

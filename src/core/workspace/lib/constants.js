@@ -38,24 +38,15 @@ const WORKSPACE_DATA_BACKENDS = {
         indexIncoming: true,
         incomingPathMode: 'sourceDirectories',
     },
-    'fs:data': {
+    // Local content-addressable blob store (cacache). The default managed data
+    // target for users without an external object store: dump blobs, care only
+    // about the synapsd virtual tree. Bytes are checksum-keyed + deduped +
+    // integrity-checked; locations written as stored://workspace:data/<key>.
+    'workspace:data': {
         enabled: true,
         supported: true,
-        driver: 'file',
-        root: '{WORKSPACE_ROOT}/data',
-        managed: true,
-        watch: false,
-        resync: false,
-        indexIncoming: false,
-    },
-    // Content-addressable blob store (cacache). Optional, opt-in alternative
-    // managed data target — bytes deduped + integrity-checked. Disabled by
-    // default; locations written as stored://workspace:data/<key>.
-    'workspace:data': {
-        enabled: false,
-        supported: true,
         driver: 'cacache',
-        root: '{WORKSPACE_ROOT}/data/blobs',
+        root: '{WORKSPACE_ROOT}/data',
         managed: true,
         watch: false,
         resync: false,
@@ -66,14 +57,10 @@ const WORKSPACE_DATA_BACKENDS = {
         supported: true,
         root: '{WORKSPACE_ROOT}/cache',
     },
+    // Future external object store (opt-in alternative to workspace:data).
     s3: {
         enabled: false,
         supported: false,
-    },
-    imap: {
-        enabled: false,
-        supported: true,
-        indexIncoming: true,
     },
 };
 

@@ -20,8 +20,10 @@ import { getIncomingEmailContext } from '../../../../utils/incoming-documents.js
  *
  * Fully self-owned: it instantiates and owns its ImapBackend instances directly
  * (its own registry + event wiring + lifecycle) — it does NOT ride the stored
- * blob store. Email blobs are written to the workspace fs and addressed by
- * `stored://fs:data:email/...`; the blob indexer resolves them lazily on read.
+ * blob store. Email raw .eml + attachment blobs are persisted into the local
+ * content-addressable data store via the injected persistBlob seam and addressed
+ * by `stored://workspace:data/<checksum>` (deduped; opaque on-disk layout — the
+ * synapsd tree is the navigation).
  *
  * Emits the uniform workspace-service event contract for the Workspace to
  * forward (see services event convention):
@@ -35,16 +37,8 @@ const IMAP_DEFAULT_FOLDER = 'INBOX';
 const IMAP_DEFAULT_POLL_INTERVAL = 60000;
 const IMAP_DEFAULT_INITIAL_SYNC_DAYS = 180;
 
-// Email blobs live in an RFC-aligned layout under data/email/<account>/<folder>/…
-// and are addressed by this stored backend (registered lazily by the blob
-// indexer on read).
-const EMAIL_BACKEND = 'fs:data:email';
-
 export class WorkspaceMailIndex extends EventEmitter {
-    static EMAIL_BACKEND = EMAIL_BACKEND;
-
     #rootPath;
-    #dataPath;
     #workspaceId;
     #logger;
 
@@ -52,24 +46,25 @@ export class WorkspaceMailIndex extends EventEmitter {
     #put;
     #getIncomingTreeSelector;
     #getDb;
+    #persistBlob;
 
     #started = false;
     #backends = new Map(); // name -> ImapBackend
     #backendStatus = new Map();
 
-    constructor({ rootPath, dataPath, workspaceId, logger, put, getIncomingTreeSelector, getDb }) {
+    constructor({ rootPath, workspaceId, logger, put, getIncomingTreeSelector, getDb, persistBlob }) {
         super({ wildcard: true, delimiter: '.', maxListeners: 100 });
-        if (!dataPath) throw new Error('dataPath is required');
-        if (!put || !getIncomingTreeSelector || !getDb) {
-            throw new Error('put, getIncomingTreeSelector, getDb are required');
+        if (!rootPath) throw new Error('rootPath is required');
+        if (!put || !getIncomingTreeSelector || !getDb || !persistBlob) {
+            throw new Error('put, getIncomingTreeSelector, getDb, persistBlob are required');
         }
-        this.#rootPath = rootPath || path.dirname(dataPath);
-        this.#dataPath = dataPath;
+        this.#rootPath = rootPath;
         this.#workspaceId = workspaceId;
         this.#logger = logger || console;
         this.#put = put;
         this.#getIncomingTreeSelector = getIncomingTreeSelector;
         this.#getDb = getDb;
+        this.#persistBlob = persistBlob;
     }
 
     get isRunning() { return this.#started; }
@@ -194,40 +189,27 @@ export class WorkspaceMailIndex extends EventEmitter {
         return String(value || 'INBOX').split('/').map(encodeURIComponent).join('/') || 'INBOX';
     }
 
-    #emailRoot() { return path.join(this.#dataPath, 'email'); }
-
-    async #persistEmailBlob(key, buffer) {
-        const filePath = path.join(this.#emailRoot(), key);
-        await fs.mkdir(path.dirname(filePath), { recursive: true });
-        await fs.writeFile(filePath, buffer);
-        return key;
-    }
-
     async #buildEmailDocument(parsed, rawBuffer, imapMetadata = {}) {
-        const backendName = EMAIL_BACKEND; // fs:data:email
-        const rawChecksum = this.#createChecksum(rawBuffer);
         const account = this.#safeAccount(imapMetadata.accountId);
         const folder = this.#encodeFolder(imapMetadata.folderPath || imapMetadata.folderName);
 
-        const rawKey = path.posix.join(account, folder, `${rawChecksum}.eml`);
-        await this.#persistEmailBlob(rawKey, rawBuffer);
-        const rawUrl = `stored://${backendName}/${rawKey}`;
+        // Persist the raw .eml into the content-addressable data store (deduped).
+        const raw = await this.#persistBlob(rawBuffer);
+        const rawChecksum = raw.checksum || this.#createChecksum(rawBuffer);
 
         const attachments = [];
         for (const attachment of parsed.attachments || []) {
             const content = Buffer.isBuffer(attachment.content) ? attachment.content : Buffer.from(attachment.content || '');
-            const checksum = this.#createChecksum(content);
-            const fileName = this.#safeFileName(attachment.filename, `${checksum}.bin`);
-            const attachmentKey = path.posix.join(account, folder, rawChecksum, fileName);
-            await this.#persistEmailBlob(attachmentKey, content);
+            const blob = await this.#persistBlob(content);
+            const checksum = blob.checksum || this.#createChecksum(content);
             attachments.push({
-                filename: attachment.filename || fileName,
+                filename: attachment.filename || this.#safeFileName(attachment.filename, `${checksum}.bin`),
                 contentType: attachment.contentType,
                 size: attachment.size,
                 contentId: attachment.contentId,
                 isInline: attachment.contentDisposition === 'inline',
                 checksum: `sha256/${checksum}`,
-                url: `stored://${backendName}/${attachmentKey}`,
+                url: blob.url,
             });
         }
 
@@ -242,7 +224,7 @@ export class WorkspaceMailIndex extends EventEmitter {
         const uid = Number(imapMetadata.uid) || null;
         const provenanceUrl = `imap://${account}/${folder}${uid ? `;UID=${uid}` : ''}`;
         emailDoc.locations = [
-            { url: rawUrl, metadata: { backend: backendName, size: rawBuffer.length, synced: true } },
+            { url: raw.url, metadata: { size: rawBuffer.length, synced: true } },
             { url: provenanceUrl, metadata: { provenance: true } },
         ];
         emailDoc.checksumArray = [`sha256/${rawChecksum}`];

@@ -24,7 +24,10 @@ import { INCOMING_ROOT_CONTEXT } from '../../../utils/incoming-documents.js';
 const HOME_STORED_BACKEND = 'workspace:home';
 const HOME_BACKEND_FEATURE = 'data/backend/home';
 const CACHE_BACKEND = 'stored.cache';
-const DATA_STORED_BACKEND_PREFIX = 'fs:data';
+// The default local content-addressable blob store. Connectors persist blobs
+// here (persistBlob) and address them by stored://workspace:data/<key>.
+const DATA_BLOB_BACKEND = 'workspace:data';
+const DATA_BLOB_FEATURE = 'data/backend/data';
 // Local drivers whose bytes are written in-process (no remote SyncQueue): they
 // are registered eagerly and toggled live by config.
 const LOCAL_DRIVERS = new Set(['file', 'cacache']);
@@ -34,22 +37,7 @@ export class WorkspaceStoredIndex {
     static HOME_STORED_BACKEND = HOME_STORED_BACKEND;
     static HOME_BACKEND_FEATURE = HOME_BACKEND_FEATURE;
     static CACHE_BACKEND = CACHE_BACKEND;
-    static DATA_STORED_BACKEND_PREFIX = DATA_STORED_BACKEND_PREFIX;
-
-    static dataBackendName(abstraction) {
-        return `${DATA_STORED_BACKEND_PREFIX}:${abstraction}`;
-    }
-
-    static dataBackendRoot(dataPath, abstraction) {
-        // Email uses an RFC-aligned layout rooted directly at data/email/<account>/<folder>/…
-        // (RFC 5322 bodies) instead of the generic data/abstraction/<x> tree.
-        if (abstraction === 'email') return path.join(dataPath, 'email');
-        return path.join(dataPath, 'abstraction', abstraction);
-    }
-
-    static dataBackendFeature(abstraction) {
-        return `data/backend/data:${abstraction}`;
-    }
+    static DATA_BLOB_BACKEND = DATA_BLOB_BACKEND;
 
     #rootPath;
     #cachePath;
@@ -71,7 +59,6 @@ export class WorkspaceStoredIndex {
 
     #stored = null;
     #listeners = [];
-    #registeredDataBackends = new Set();
     #backendStatus = new Map();
     #resyncing = new Set();
 
@@ -149,7 +136,6 @@ export class WorkspaceStoredIndex {
             this.#logger.warn({ workspaceId: this.#workspaceId, error: error.message }, 'Failed to stop stored home indexing');
         } finally {
             this.#stored = null;
-            this.#registeredDataBackends.clear();
             this.#backendStatus.clear();
         }
     }
@@ -218,30 +204,25 @@ export class WorkspaceStoredIndex {
     }
 
     /**
-     * Ensure a per-abstraction data backend is registered and its root directory exists.
-     * Returns the backend name (e.g. 'fs:data:file').
-     * Upstream is responsible for writing files and calling the DB indexing APIs.
+     * Persist a blob into the local content-addressable data store
+     * (workspace:data). The connector seam for non-file sources (mail, future
+     * offline-website download, …): dump bytes, get back a resolvable
+     * stored://workspace:data/<key> URL — keys are checksum-derived and deduped;
+     * on-disk layout is opaque (the synapsd tree is the navigation).
+     *
+     * @param {Buffer|string} blob
+     * @returns {Promise<{ url: string, key: string, checksum: string|null, size: number }>}
      */
-    async ensureDataBackend(abstraction) {
+    async persistBlob(blob) {
         if (!this.#stored) throw new Error('WorkspaceStoredIndex is not running');
-
-        const backendName = WorkspaceStoredIndex.dataBackendName(abstraction);
-        if (this.#registeredDataBackends.has(backendName)) return backendName;
-
-        const root = WorkspaceStoredIndex.dataBackendRoot(this.#dataPath, abstraction);
-        await fs.mkdir(root, { recursive: true });
-
-        this.#stored.addBackend(backendName, {
-            driver: 'file',
-            root,
-            watch: false,
-            provider: 'fs',
-            account: 'workspace',
-            container: abstraction,
-        });
-
-        this.#registeredDataBackends.add(backendName);
-        return backendName;
+        const res = await this.#stored.put(blob, { backends: [DATA_BLOB_BACKEND] });
+        if (!res?.ok) throw new Error(`Blob persist failed: ${res?.reason || 'unknown'}`);
+        return {
+            url: `stored://${DATA_BLOB_BACKEND}/${res.key}`,
+            key: res.key,
+            checksum: res.checksums?.sha256 || null,
+            size: res.size,
+        };
     }
 
     /**
@@ -505,9 +486,6 @@ export class WorkspaceStoredIndex {
 
         if (scheme === 'stored') {
             if (!this.#stored) throw new Error('WorkspaceStoredIndex is not running');
-            // A data backend (e.g. fs:data:email) may not be registered yet —
-            // register it lazily so reads work after a fresh start.
-            await this.#ensureBackendForUrl(backend);
             return options.stream ? this.#stored.getStreamByUrl(url) : this.#stored.getByUrl(url);
         }
 
@@ -520,15 +498,6 @@ export class WorkspaceStoredIndex {
         }
 
         throw new Error(`No resolver for scheme: ${scheme}`);
-    }
-
-    // Lazily register a data backend (e.g. fs:data:email) so its locations resolve/delete.
-    async #ensureBackendForUrl(backend) {
-        if (!this.#stored.getBackend(backend) && this.#isDataBackend(backend)) {
-            const abstraction = backend.slice(`${DATA_STORED_BACKEND_PREFIX}:`.length);
-            if (abstraction) await this.ensureDataBackend(abstraction);
-        }
-        return this.#stored.getBackend(backend);
     }
 
     /**
@@ -544,7 +513,7 @@ export class WorkspaceStoredIndex {
             let kind = p?.scheme || 'unknown';
             let deletable = false;
             if (p?.scheme === 'stored') {
-                const be = this.#stored ? await this.#ensureBackendForUrl(p.backend) : null;
+                const be = this.#stored ? this.#stored.getBackend(p.backend) : null;
                 kind = 'stored';
                 deletable = !!be && be.canDelete;
             } else if (p?.scheme === 'file' && p.backend === '{WORKSPACE_ROOT}') {
@@ -593,7 +562,7 @@ export class WorkspaceStoredIndex {
             const p = parseLocationUrl(loc.url);
             try {
                 if (p?.scheme === 'stored') {
-                    const be = await this.#ensureBackendForUrl(p.backend);
+                    const be = this.#stored.getBackend(p.backend);
                     if (be && be.canDelete) {
                         const res = await this.#stored.deleteByUrl(loc.url);
                         if (res.ok) result.deleted.push(loc.url);
@@ -685,9 +654,8 @@ export class WorkspaceStoredIndex {
         for (const backend of backends) {
             if (backend.backend === HOME_STORED_BACKEND) {
                 features.push(HOME_BACKEND_FEATURE);
-            } else if (this.#isDataBackend(backend.backend)) {
-                const abstraction = backend.backend.slice(`${DATA_STORED_BACKEND_PREFIX}:`.length);
-                features.push(abstraction ? WorkspaceStoredIndex.dataBackendFeature(abstraction) : 'data/backend/data');
+            } else if (backend.backend === DATA_BLOB_BACKEND) {
+                features.push(DATA_BLOB_FEATURE);
             }
             if (backend?.source?.provider) features.push(`data/source/${backend.source.provider}`);
         }
@@ -732,17 +700,13 @@ export class WorkspaceStoredIndex {
         return locations;
     }
 
-    #isDataBackend(backendName) {
-        return backendName === DATA_STORED_BACKEND_PREFIX || (typeof backendName === 'string' && backendName.startsWith(`${DATA_STORED_BACKEND_PREFIX}:`));
-    }
-
     #resolveBackendRoot(backendName, config = {}) {
         const configuredRoot = config.root || '';
         if (configuredRoot.includes('{WORKSPACE_ROOT}')) {
             return configuredRoot.replaceAll('{WORKSPACE_ROOT}', this.#rootPath);
         }
         if (backendName === HOME_STORED_BACKEND) return this.#homePath;
-        if (backendName === DATA_STORED_BACKEND_PREFIX) return this.#dataPath;
+        if (backendName === DATA_BLOB_BACKEND) return this.#dataPath;
         return configuredRoot || this.#dataPath;
     }
 

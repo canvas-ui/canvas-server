@@ -124,4 +124,23 @@ describe('WorkspaceStoredIndex', () => {
             { url: 'stored://workspace:home/renamed/a.txt' },
         ]);
     });
+
+    test('persistBlob stores into workspace:data and resolves back', async () => {
+        index = createIndex();
+        await index.start();
+
+        const payload = Buffer.from('hello blob store');
+        const res = await index.persistBlob(payload);
+
+        assert.match(res.url, /^stored:\/\/workspace:data\//);
+        assert.equal(res.size, payload.length);
+        assert.ok(res.checksum);
+
+        const back = await index.resolve(res.url);
+        assert.deepEqual(back, payload);
+
+        // dedup: same bytes → same key
+        const again = await index.persistBlob(payload);
+        assert.equal(again.key, res.key);
+    });
 });

@@ -1,12 +1,16 @@
-Hello good people
+Hello good people,
+
+I'm open-sourcing a toy project I've been working on for ..lets say a long time, originally called "Workspaces", now "canvas-ui"
+
+First, the obligatory problems it tries to solve
+
+#1 Switching context is painful
 
 
-
-I'm open-sourcing a toy project I've been working on for ..lets say a long time
-
+#2 Working on multiple devices is painful
 
 
+#3 Data duplication, data indexing
 
-The so-called lousy management tax is paid by seath and tears of your core employees and almost inavoidibly also by your customer
 
 

@@ -1,0 +1,597 @@
+'use strict';
+
+import EventEmitter from 'eventemitter2';
+import path from 'path';
+import fs from 'fs/promises';
+import crypto from 'crypto';
+import { simpleParser } from 'mailparser';
+import ImapBackend from './ImapBackend.js';
+import Email from '../../../../services/synapsd/src/schemas/abstractions/Email.js';
+import { parseLocationUrl } from '../../../../services/synapsd/src/utils/path-helpers.js';
+import { getIncomingEmailContext } from '../../../../utils/incoming-documents.js';
+
+/*
+ * WorkspaceMailIndex (ImapService)
+ *
+ * Per-workspace IMAP connector: manages mailbox accounts (config/stored.json),
+ * runs incremental sync + poll, and ingests messages as Email documents (raw
+ * .eml + attachment blobs persisted under data/email/, indexed into the
+ * incoming tree).
+ *
+ * Fully self-owned: it instantiates and owns its ImapBackend instances directly
+ * (its own registry + event wiring + lifecycle) — it does NOT ride the stored
+ * blob store. Email blobs are written to the workspace fs and addressed by
+ * `stored://fs:data:email/...`; the blob indexer resolves them lazily on read.
+ *
+ * Emits the uniform workspace-service event contract for the Workspace to
+ * forward (see services event convention):
+ *   object:add | object:change | object:unlink   { kind, docId?, payload }
+ *   source:state                                  { source, ... }
+ *   error                                         { error, ... }
+ */
+
+const IMAP_BACKEND_PREFIX = 'imap';
+const IMAP_DEFAULT_FOLDER = 'INBOX';
+const IMAP_DEFAULT_POLL_INTERVAL = 60000;
+const IMAP_DEFAULT_INITIAL_SYNC_DAYS = 180;
+
+// Email blobs live in an RFC-aligned layout under data/email/<account>/<folder>/…
+// and are addressed by this stored backend (registered lazily by the blob
+// indexer on read).
+const EMAIL_BACKEND = 'fs:data:email';
+
+export class WorkspaceMailIndex extends EventEmitter {
+    static EMAIL_BACKEND = EMAIL_BACKEND;
+
+    #rootPath;
+    #dataPath;
+    #workspaceId;
+    #logger;
+
+    // Injected dependencies
+    #put;
+    #getIncomingTreeSelector;
+    #getDb;
+
+    #started = false;
+    #backends = new Map(); // name -> ImapBackend
+    #backendStatus = new Map();
+
+    constructor({ rootPath, dataPath, workspaceId, logger, put, getIncomingTreeSelector, getDb }) {
+        super({ wildcard: true, delimiter: '.', maxListeners: 100 });
+        if (!dataPath) throw new Error('dataPath is required');
+        if (!put || !getIncomingTreeSelector || !getDb) {
+            throw new Error('put, getIncomingTreeSelector, getDb are required');
+        }
+        this.#rootPath = rootPath || path.dirname(dataPath);
+        this.#dataPath = dataPath;
+        this.#workspaceId = workspaceId;
+        this.#logger = logger || console;
+        this.#put = put;
+        this.#getIncomingTreeSelector = getIncomingTreeSelector;
+        this.#getDb = getDb;
+    }
+
+    get isRunning() { return this.#started; }
+
+    async start() {
+        if (this.#started) return;
+        this.#started = true;
+        try {
+            await this.#registerStoredConfigBackends();
+            await this.#startStoredConfigSources();
+        } catch (error) {
+            this.#logger.warn({ workspaceId: this.#workspaceId, error: error.message }, 'IMAP service unavailable');
+            await this.stop();
+        }
+    }
+
+    async stop() {
+        for (const backend of this.#backends.values()) {
+            await backend.stop().catch(() => {});
+        }
+        this.#backends.clear();
+        this.#backendStatus.clear();
+        this.#started = false;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Owned ImapBackend registry — instances + their event wiring live here, not
+    // in stored. Each backend emits object:add (kind:message) / backend:state /
+    // error directly to this service.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #registerBackend(name, config) {
+        let backend = this.#backends.get(name);
+        if (backend) return backend;
+        backend = new ImapBackend(name, config);
+
+        backend.on('object:add', (payload) => this.#onObject(payload));
+        backend.on('object:change', (payload) => this.#onObject(payload));
+        backend.on('backend:state', (payload) => this.#persistBackendState(payload));
+        backend.on('error', (error) => {
+            this.#setBackendError(name, error);
+            this.emit('error', { source: name, error: error?.message || String(error) });
+        });
+
+        this.#backends.set(name, backend);
+        this.#backendStatus.set(name, { lastScanAt: null, lastError: null });
+        return backend;
+    }
+
+    #getBackend(name) { return this.#backends.get(name); }
+
+    async #removeBackend(name) {
+        const backend = this.#backends.get(name);
+        if (!backend) return;
+        await backend.stop().catch(() => {});
+        this.#backends.delete(name);
+    }
+
+    async #onObject(payload = {}) {
+        if (payload?.kind !== 'message') return;
+        try {
+            await this.ingestMessage(payload);
+        } catch (error) {
+            this.#logger.warn({ workspaceId: this.#workspaceId, error: error.message }, 'IMAP message indexing failed');
+            this.emit('error', { source: 'imap', error: error.message });
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Email indexing
+    // ─────────────────────────────────────────────────────────────────────────
+
+    async #persistBackendState(payload = {}) {
+        if (!payload.backend) return;
+        await this.patchStoredBackend(payload.backend, {
+            lastUid: payload.lastUid,
+            lastSyncAt: new Date().toISOString(),
+        }).catch((error) => this.#logger.warn({ workspaceId: this.#workspaceId, backend: payload.backend, error: error.message }, 'Failed to persist backend state'));
+        this.emit('source:state', { source: payload.backend, lastUid: payload.lastUid });
+    }
+
+    // Ingest one fetched message into an Email document. Normally driven by an
+    // owned ImapBackend's object:add event (#onObject); also the entry point for
+    // any connector that pushes raw messages.
+    async ingestMessage(payload = {}) {
+        const { raw, uid, seqno, flags, folder, account } = payload;
+        if (!Buffer.isBuffer(raw)) return null;
+
+        const parsed = await simpleParser(raw);
+        const emailDoc = await this.#buildEmailDocument(parsed, raw, {
+            uid, seqno, flags,
+            provider: 'imap',
+            accountId: account,
+            folderName: folder,
+            folderPath: folder,
+        });
+
+        const incomingContext = getIncomingEmailContext('imap', account, folder || 'inbox');
+        const directory = this.#getIncomingTreeSelector(incomingContext);
+        const features = Email.getFeatureBitmapArray(emailDoc, { mailboxPath: folder });
+        const docId = await this.#put(emailDoc, { directory, features, emitEvent: true });
+        emailDoc.id = docId;
+        this.emit('object:add', { kind: 'message', docId, source: account, payload: { folder, account, uid } });
+        return docId;
+    }
+
+    #createChecksum(buffer) {
+        return crypto.createHash('sha256').update(buffer).digest('hex');
+    }
+
+    #safeFileName(name, fallback = 'attachment.bin') {
+        const value = String(name || fallback).trim()
+            .replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+        return value || fallback;
+    }
+
+    #safeAccount(value) {
+        return String(value || 'unknown').replace(/[/\\]+/g, '_').trim() || 'unknown';
+    }
+
+    #encodeFolder(value) {
+        return String(value || 'INBOX').split('/').map(encodeURIComponent).join('/') || 'INBOX';
+    }
+
+    #emailRoot() { return path.join(this.#dataPath, 'email'); }
+
+    async #persistEmailBlob(key, buffer) {
+        const filePath = path.join(this.#emailRoot(), key);
+        await fs.mkdir(path.dirname(filePath), { recursive: true });
+        await fs.writeFile(filePath, buffer);
+        return key;
+    }
+
+    async #buildEmailDocument(parsed, rawBuffer, imapMetadata = {}) {
+        const backendName = EMAIL_BACKEND; // fs:data:email
+        const rawChecksum = this.#createChecksum(rawBuffer);
+        const account = this.#safeAccount(imapMetadata.accountId);
+        const folder = this.#encodeFolder(imapMetadata.folderPath || imapMetadata.folderName);
+
+        const rawKey = path.posix.join(account, folder, `${rawChecksum}.eml`);
+        await this.#persistEmailBlob(rawKey, rawBuffer);
+        const rawUrl = `stored://${backendName}/${rawKey}`;
+
+        const attachments = [];
+        for (const attachment of parsed.attachments || []) {
+            const content = Buffer.isBuffer(attachment.content) ? attachment.content : Buffer.from(attachment.content || '');
+            const checksum = this.#createChecksum(content);
+            const fileName = this.#safeFileName(attachment.filename, `${checksum}.bin`);
+            const attachmentKey = path.posix.join(account, folder, rawChecksum, fileName);
+            await this.#persistEmailBlob(attachmentKey, content);
+            attachments.push({
+                filename: attachment.filename || fileName,
+                contentType: attachment.contentType,
+                size: attachment.size,
+                contentId: attachment.contentId,
+                isInline: attachment.contentDisposition === 'inline',
+                checksum: `sha256/${checksum}`,
+                url: `stored://${backendName}/${attachmentKey}`,
+            });
+        }
+
+        const emailDoc = Email.fromIMAP(parsed, imapMetadata);
+        emailDoc.data.attachments = attachments.length ? attachments : emailDoc.data.attachments;
+        emailDoc.data.folder = {
+            ...(emailDoc.data.folder || {}),
+            path: imapMetadata.folderPath || emailDoc.data.folder?.path,
+            name: imapMetadata.folderName || emailDoc.data.folder?.name,
+        };
+
+        const uid = Number(imapMetadata.uid) || null;
+        const provenanceUrl = `imap://${account}/${folder}${uid ? `;UID=${uid}` : ''}`;
+        emailDoc.locations = [
+            { url: rawUrl, metadata: { backend: backendName, size: rawBuffer.length, synced: true } },
+            { url: provenanceUrl, metadata: { provenance: true } },
+        ];
+        emailDoc.checksumArray = [`sha256/${rawChecksum}`];
+        emailDoc.metadata = {
+            ...(emailDoc.metadata || {}),
+            source: 'imap',
+            workspaceId: this.#workspaceId,
+        };
+        return emailDoc;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // imap:// location ops — backs the Workspace Destroy/describe path for imap
+    // provenance locations (the blob indexer delegates these here).
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // Resolve creds for an account from stored.json and return an ImapBackend
+    // able to EXPUNGE (registered mailbox if one matches, else a transient one).
+    async #ensureImapBackend(account) {
+        if (!account) return null;
+        for (const backend of this.#backends.values()) {
+            if ((backend.config.account || backend.config.user) === account) return backend;
+        }
+        const cfg = await this.#findImapConfig(account);
+        if (!cfg) return null;
+        return new ImapBackend(`${IMAP_BACKEND_PREFIX}:${account}`, { account, ...cfg });
+    }
+
+    async #findImapConfig(account) {
+        const { backends } = await this.readStoredConfig();
+        const entry = Object.values(backends).find(
+            (b) => b?.driver === 'imap' && (b.account === account || b.user === account),
+        );
+        if (!entry) return null;
+        return {
+            user: entry.user,
+            password: entry.password,
+            host: entry.host,
+            port: entry.port || 993,
+            tls: entry.tls !== false,
+            allowSelfSigned: entry.allowSelfSigned === true,
+            folder: entry.folder,
+        };
+    }
+
+    async describeImapLocation(url) {
+        const p = parseLocationUrl(url);
+        const backend = await this.#ensureImapBackend(p?.backend);
+        return { url, scheme: 'imap', backend: p?.backend, kind: 'imap', deletable: !!backend && backend.canDelete };
+    }
+
+    // EXPUNGE the message behind an imap:// url. Returns { ok } — ok:false means
+    // no credentials wired (caller reference-drops only).
+    async destroyImapLocation(url) {
+        const p = parseLocationUrl(url);
+        const backend = await this.#ensureImapBackend(p?.backend);
+        if (!backend || !backend.canDelete) return { ok: false };
+        await backend.delete(p.key); // STORE \Deleted + EXPUNGE by UID
+        return { ok: true };
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // config/stored.json — user-configurable imap accounts.
+    // Shape: { backends: { "<name>": { driver: 'imap', ... } } }
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #storedConfigPath() {
+        return path.join(this.#rootPath, 'config', 'stored.json');
+    }
+
+    async readStoredConfig() {
+        try {
+            const raw = await fs.readFile(this.#storedConfigPath(), 'utf8');
+            const parsed = JSON.parse(raw || '{}');
+            return { backends: parsed.backends || {} };
+        } catch {
+            return { backends: {} };
+        }
+    }
+
+    async writeStoredConfig(config) {
+        const target = this.#storedConfigPath();
+        await fs.mkdir(path.dirname(target), { recursive: true });
+        await fs.writeFile(target, JSON.stringify({ backends: config.backends || {} }, null, 2), 'utf8');
+    }
+
+    async patchStoredBackend(name, patch = {}) {
+        const config = await this.readStoredConfig();
+        config.backends[name] = { ...(config.backends[name] || {}), ...patch };
+        await this.writeStoredConfig(config);
+        return config.backends[name];
+    }
+
+    // Register every enabled imap backend from stored.json. Does not start
+    // sources — that happens in #startStoredConfigSources.
+    async #registerStoredConfigBackends() {
+        const config = await this.readStoredConfig();
+        for (const [name, backendConfig] of Object.entries(config.backends || {})) {
+            if (backendConfig?.enabled === false) continue;
+            if (backendConfig?.driver !== 'imap') continue;
+            if (this.#backends.has(name)) continue;
+            try {
+                this.#registerBackend(name, backendConfig);
+            } catch (error) {
+                this.#logger.warn({ workspaceId: this.#workspaceId, backend: name, error: error.message }, 'Failed to register imap backend');
+            }
+        }
+    }
+
+    // Initial incremental sync, then start the poll loop, for each imap account.
+    async #startStoredConfigSources() {
+        for (const [name, backend] of this.#backends) {
+            try {
+                await this.#syncImapBackend(name, backend);
+            } catch (error) {
+                this.#setBackendError(name, error);
+                this.#logger.warn({ workspaceId: this.#workspaceId, backend: name, error: error.message }, 'IMAP initial sync failed');
+            }
+            backend.watch?.();
+        }
+    }
+
+    async #syncImapBackend(name, backend) {
+        const result = await backend.scan();
+        await this.patchStoredBackend(name, {
+            lastUid: result.lastUid,
+            lastSyncAt: new Date().toISOString(),
+            lastError: null,
+        });
+        this.#backendStatus.set(name, { ...(this.#backendStatus.get(name) || {}), lastScanAt: new Date().toISOString(), lastError: null });
+        return result;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Mailbox management — a "mailbox" is an imap backend entry in stored.json
+    // (name `imap:<id>`). Protocol is delegated to ImapBackend.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #mailboxName(id) { return `${IMAP_BACKEND_PREFIX}:${id}`; }
+    #mailboxIdFromName(name) {
+        return name.startsWith(`${IMAP_BACKEND_PREFIX}:`) ? name.slice(IMAP_BACKEND_PREFIX.length + 1) : name;
+    }
+
+    #generateMailboxId(input = {}) {
+        const base = [input.user, input.host, input.folder || IMAP_DEFAULT_FOLDER]
+            .filter(Boolean).join('-').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+        return base || `mailbox-${Date.now()}`;
+    }
+
+    #normalizeMailbox(input = {}, fallbackId = 'mailbox') {
+        const id = String(input.id || fallbackId).trim();
+        if (!id) throw new Error('Mailbox id is required');
+        const host = String(input.host || '').trim();
+        const user = String(input.user || '').trim();
+        const password = String(input.password || '');
+        if (!host) throw new Error(`Mailbox "${id}" is missing host`);
+        if (!user) throw new Error(`Mailbox "${id}" is missing user`);
+        if (!password) throw new Error(`Mailbox "${id}" is missing password`);
+        const port = Number(input.port || 993);
+        if (!Number.isInteger(port) || port <= 0) throw new Error(`Mailbox "${id}" has invalid port`);
+        const pollInterval = Number(input.pollInterval || IMAP_DEFAULT_POLL_INTERVAL);
+        if (!Number.isInteger(pollInterval) || pollInterval <= 0) throw new Error(`Mailbox "${id}" has invalid poll interval`);
+        const initialSyncDays = Number(input.initialSyncDays ?? IMAP_DEFAULT_INITIAL_SYNC_DAYS);
+        if (!Number.isInteger(initialSyncDays) || initialSyncDays < 0) throw new Error(`Mailbox "${id}" has invalid initial sync window`);
+        return {
+            driver: 'imap',
+            enabled: input.enabled !== false,
+            host, port,
+            tls: input.tls !== false,
+            allowSelfSigned: input.allowSelfSigned !== false,
+            user, password,
+            account: user,
+            folder: String(input.folder || IMAP_DEFAULT_FOLDER).trim() || IMAP_DEFAULT_FOLDER,
+            mode: 'poll',
+            pollInterval, initialSyncDays,
+            lastUid: Math.max(0, Number(input.lastUid || 0)),
+            lastSyncAt: input.lastSyncAt || null,
+            lastError: input.lastError || null,
+        };
+    }
+
+    #serializeMailbox(id, config) {
+        const backend = this.#getBackend(this.#mailboxName(id));
+        return {
+            id,
+            enabled: config.enabled !== false,
+            host: config.host, port: config.port, tls: config.tls, allowSelfSigned: config.allowSelfSigned,
+            user: config.user, folder: config.folder, mode: config.mode || 'poll',
+            pollInterval: config.pollInterval, initialSyncDays: config.initialSyncDays,
+            lastUid: config.lastUid || 0, lastSyncAt: config.lastSyncAt || null, lastError: config.lastError || null,
+            passwordConfigured: Boolean(config.password),
+            runtime: {
+                active: !!backend,
+                watching: backend?.watching === true,
+                status: backend ? (backend.watching ? 'running' : 'idle') : 'stopped',
+            },
+        };
+    }
+
+    async #imapEntries() {
+        const config = await this.readStoredConfig();
+        return Object.entries(config.backends || {})
+            .filter(([, c]) => c?.driver === 'imap')
+            .map(([name, c]) => ({ id: this.#mailboxIdFromName(name), name, config: c }));
+    }
+
+    async listMailboxes() {
+        const entries = await this.#imapEntries();
+        return entries.map(({ id, config }) => this.#serializeMailbox(id, config));
+    }
+
+    async getMailbox(id) {
+        const config = await this.readStoredConfig();
+        const entry = config.backends[this.#mailboxName(id)];
+        return entry && entry.driver === 'imap' ? this.#serializeMailbox(id, entry) : null;
+    }
+
+    async saveMailbox(input = {}) {
+        const stored = await this.readStoredConfig();
+        const id = String(input.id || '').trim() || this.#generateMailboxId(input);
+        const name = this.#mailboxName(id);
+        const current = stored.backends[name] || null;
+        const merged = { ...(current || {}), ...input, id };
+        if (current && typeof input.password === 'string' && input.password.length === 0) merged.password = current.password;
+        const mailbox = this.#normalizeMailbox(merged, id);
+        stored.backends[name] = mailbox;
+        await this.writeStoredConfig(stored);
+        await this.#refreshMailboxBackend(id, mailbox);
+        return this.#serializeMailbox(id, mailbox);
+    }
+
+    async removeMailbox(id) {
+        const stored = await this.readStoredConfig();
+        const name = this.#mailboxName(id);
+        const removed = stored.backends[name];
+        if (!removed) return false;
+        await this.#removeBackend(name);
+        delete stored.backends[name];
+        await this.writeStoredConfig(stored);
+        return this.#serializeMailbox(id, removed);
+    }
+
+    async testMailbox(id) {
+        const config = await this.readStoredConfig();
+        const entry = config.backends[this.#mailboxName(id)];
+        if (!entry) throw new Error(`Mailbox "${id}" not found`);
+        const result = await new ImapBackend(this.#mailboxName(id), entry).verify();
+        await this.patchStoredBackend(this.#mailboxName(id), { lastError: null });
+        return { mailbox: this.#serializeMailbox(id, entry), result };
+    }
+
+    async listMailboxFolders(id) {
+        const config = await this.readStoredConfig();
+        const entry = config.backends[this.#mailboxName(id)];
+        if (!entry) throw new Error(`Mailbox "${id}" not found`);
+        return new ImapBackend(this.#mailboxName(id), entry).listFolders();
+    }
+
+    async discoverFolders(input = {}) {
+        const mailbox = this.#normalizeMailbox({ ...input, id: input.id || 'folder-discovery' }, 'folder-discovery');
+        return new ImapBackend('imap:folder-discovery', mailbox).listFolders();
+    }
+
+    async subscribeFolders(id, folderPaths = []) {
+        const stored = await this.readStoredConfig();
+        const source = stored.backends[this.#mailboxName(id)];
+        if (!source) throw new Error(`Mailbox "${id}" not found`);
+        const folders = Array.from(new Set((folderPaths || []).map((f) => String(f || '').trim()).filter(Boolean)));
+        const result = [];
+        for (const folder of folders) {
+            const childId = this.#generateMailboxId({ ...source, folder });
+            const name = this.#mailboxName(childId);
+            if (!stored.backends[name]) {
+                stored.backends[name] = this.#normalizeMailbox({ ...source, folder, id: childId, lastUid: 0, lastSyncAt: null, lastError: null }, childId);
+            }
+            result.push({ id: childId, config: stored.backends[name] });
+        }
+        await this.writeStoredConfig(stored);
+        for (const { id: childId, config } of result) {
+            if (config.enabled !== false) await this.#refreshMailboxBackend(childId, config);
+        }
+        return result.map(({ id: childId, config }) => this.#serializeMailbox(childId, config));
+    }
+
+    async syncMailbox(id) {
+        const name = this.#mailboxName(id);
+        let backend = this.#getBackend(name);
+        if (!backend) {
+            const config = await this.readStoredConfig();
+            const entry = config.backends[name];
+            if (!entry) throw new Error(`Mailbox "${id}" not found`);
+            backend = this.#registerBackend(name, entry);
+        }
+        const result = await this.#syncImapBackend(name, backend);
+        const config = await this.readStoredConfig();
+        return { mailbox: this.#serializeMailbox(id, config.backends[name]), inserted: result.inserted, lastUid: result.lastUid };
+    }
+
+    async startMailbox(id) {
+        const stored = await this.readStoredConfig();
+        const name = this.#mailboxName(id);
+        const entry = stored.backends[name];
+        if (!entry) throw new Error(`Mailbox "${id}" not found`);
+        if (entry.enabled === false) { entry.enabled = true; stored.backends[name] = entry; await this.writeStoredConfig(stored); }
+        await this.#refreshMailboxBackend(id, entry);
+        return this.#serializeMailbox(id, entry);
+    }
+
+    async stopMailbox(id) {
+        const stored = await this.readStoredConfig();
+        const name = this.#mailboxName(id);
+        const entry = stored.backends[name];
+        if (!entry) throw new Error(`Mailbox "${id}" not found`);
+        await this.#removeBackend(name);
+        entry.enabled = false; stored.backends[name] = entry; await this.writeStoredConfig(stored);
+        return this.#serializeMailbox(id, entry);
+    }
+
+    // Register (if needed) + start/stop a mailbox backend to match its enabled flag.
+    async #refreshMailboxBackend(id, config) {
+        const name = this.#mailboxName(id);
+        if (config.enabled === false) { await this.#removeBackend(name); return; }
+        const backend = this.#registerBackend(name, config);
+        try { await this.#syncImapBackend(name, backend); }
+        catch (error) { this.#setBackendError(name, error); }
+        backend.watch?.();
+    }
+
+    // Workspace 'imap' service hooks.
+    async getImapStatus() {
+        const mailboxes = await this.listMailboxes();
+        return {
+            initialized: this.isRunning,
+            mailboxCount: mailboxes.length,
+            activeMailboxCount: mailboxes.filter((m) => m.runtime.active).length,
+            mailboxes,
+        };
+    }
+
+    async disableImap() {
+        for (const name of [...this.#backends.keys()]) await this.#removeBackend(name);
+    }
+
+    #setBackendError(backendName, error) {
+        this.#backendStatus.set(backendName, {
+            ...(this.#backendStatus.get(backendName) || {}),
+            lastError: error?.message || String(error),
+        });
+    }
+}
+
+export default WorkspaceMailIndex;

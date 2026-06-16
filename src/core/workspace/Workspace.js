@@ -17,6 +17,7 @@ import { isIncomingContextSpec, normalizeIncomingTreePath } from '../../utils/in
 // Sub-modules
 import { WorkspaceTokens } from './lib/WorkspaceTokens.js';
 import { WorkspaceStoredIndex } from './lib/WorkspaceStoredIndex.js';
+import { WorkspaceMailIndex } from './services/imap/index.js';
 
 // Constants
 import {
@@ -48,6 +49,8 @@ class Workspace extends EventEmitter {
 
     #db = null;
     #storedIndex = null;
+    #mailIndex = null;
+    #mailRuntimeBinding = null;
     #tokens = null;
     #status = WORKSPACE_STATUS_CODES.INACTIVE;
     #runtimeListeners = [];
@@ -722,6 +725,11 @@ class Workspace extends EventEmitter {
         if (normalized.startsWith('internal/') || normalized === 'internal') {
             throw new Error(`Refusing to delete bitmap "${key}": internal/* bitmaps are protected (engine-managed).`);
         }
+        // rel/* are typed doc<->doc relation edges (managed by the document
+        // lifecycle / relations index). Dropping them silently breaks links.
+        if (normalized.startsWith('rel/') || normalized === 'rel') {
+            throw new Error(`Refusing to delete bitmap "${key}": rel/* bitmaps are protected (relation edges).`);
+        }
         const db = this.#getActiveDb();
         const existing = await db.bitmapIndex.getBitmap(normalized, false);
         if (!existing) return false;
@@ -848,32 +856,6 @@ class Workspace extends EventEmitter {
         return this.#storedIndex.destroy(doc, options);
     }
 
-    /**
-     * Resolve IMAP connection credentials for an account from config/stored.json
-     * (matched by account/user), shaped for the stored ImapBackend. Returns null
-     * if not found — Destroy then treats imap:// locations as reference-drop only.
-     */
-    async #getImapConfig(account) {
-        try {
-            const raw = await fsPromises.readFile(path.join(this.#rootPath, 'config', 'stored.json'), 'utf8');
-            const cfg = JSON.parse(raw);
-            const entry = Object.values(cfg.backends || {}).find(
-                (b) => b?.driver === 'imap' && (b.account === account || b.user === account),
-            );
-            if (!entry) return null;
-            return {
-                user: entry.user,
-                password: entry.password,
-                host: entry.host,
-                port: entry.port || 993,
-                tls: entry.tls !== false,
-                allowSelfSigned: entry.allowSelfSigned === true,
-            };
-        } catch {
-            return null;
-        }
-    }
-
     #buildStoredIndex() {
         return new WorkspaceStoredIndex({
             rootPath: this.#rootPath,
@@ -887,7 +869,9 @@ class Workspace extends EventEmitter {
             unlink: (id, options = {}, unlinkOptions = {}) => this.unlink(id, options, { ...unlinkOptions, allowIncomingWrite: true }),
             getIncomingTreeSelector: this.getIncomingTreeSelector.bind(this),
             getDb: () => this.#db,
-            getImapConfig: (account) => this.#getImapConfig(account),
+            // imap:// byte-ops are delegated to the mail service.
+            describeImapLocation: (url) => this.#mailIndex?.describeImapLocation(url) ?? null,
+            destroyImapLocation: (url) => this.#mailIndex?.destroyImapLocation(url) ?? null,
         });
     }
 
@@ -895,45 +879,81 @@ class Workspace extends EventEmitter {
         if (this.#storedIndex?.isRunning) return;
         this.#storedIndex = this.#buildStoredIndex();
         await this.#storedIndex.start();
+        await this.#startMailIndex();
     }
 
     async #stopStoredIndex() {
+        await this.#stopMailIndex();
         if (!this.#storedIndex) return;
         await this.#storedIndex.stop();
         this.#storedIndex = null;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // IMAP mailboxes — delegated to WorkspaceStoredIndex (config in
-    // config/stored.json, protocol in the stored imap backend).
+    // IMAP mailboxes — delegated to the per-workspace mail service
+    // (WorkspaceMailIndex). Config in config/stored.json; the mail service
+    // shares the blob indexer's Stored instance to run imap backends.
     // ─────────────────────────────────────────────────────────────────────────
 
-    async #imap() {
-        if (!this.#storedIndex?.isRunning) await this.#startStoredIndex();
-        return this.#storedIndex;
+    #buildMailIndex() {
+        return new WorkspaceMailIndex({
+            rootPath: this.#rootPath,
+            dataPath: this.dataPath,
+            workspaceId: this.id,
+            logger: this.#logger,
+            put: (record, options = {}) => this.put(record, { ...options, allowIncomingWrite: true }),
+            getIncomingTreeSelector: this.getIncomingTreeSelector.bind(this),
+            getDb: () => this.#db,
+        });
+    }
+
+    // Started alongside the blob indexer (and stopped before it). The mail
+    // service is otherwise self-owned — it manages its own ImapBackend instances.
+    async #startMailIndex() {
+        if (this.#mailIndex?.isRunning) return;
+        this.#mailIndex = this.#buildMailIndex();
+        // Forward the mail service's object:* / source:state / error events with
+        // workspaceId + source stamped (same envelope as the db runtime events).
+        this.#mailRuntimeBinding = this.#createRuntimeListener(this.#mailIndex, 'imap');
+        await this.#mailIndex.start();
+    }
+
+    async #stopMailIndex() {
+        if (this.#mailRuntimeBinding) {
+            this.#mailRuntimeBinding.emitter.off('**', this.#mailRuntimeBinding.listener);
+            this.#mailRuntimeBinding = null;
+        }
+        if (!this.#mailIndex) return;
+        await this.#mailIndex.stop();
+        this.#mailIndex = null;
+    }
+
+    async #mail() {
+        if (!this.#mailIndex?.isRunning) await this.#startStoredIndex();
+        return this.#mailIndex;
     }
 
     // Read-only view that does NOT boot sources (safe for status polls).
-    #imapReadonly() {
-        return this.#storedIndex?.isRunning ? this.#storedIndex : this.#buildStoredIndex();
+    #mailReadonly() {
+        return this.#mailIndex?.isRunning ? this.#mailIndex : this.#buildMailIndex();
     }
 
-    async listImapMailboxes() { return this.#imapReadonly().listMailboxes(); }
-    async getImapMailbox(id) { return this.#imapReadonly().getMailbox(id); }
-    async getImapStatus() { return this.#imapReadonly().getImapStatus(); }
-    async saveImapMailbox(input) { return (await this.#imap()).saveMailbox(input); }
-    async removeImapMailbox(id) { return (await this.#imap()).removeMailbox(id); }
-    async testImapMailbox(id) { return (await this.#imap()).testMailbox(id); }
-    async listImapMailboxFolders(id) { return (await this.#imap()).listMailboxFolders(id); }
-    async discoverImapFolders(input) { return (await this.#imap()).discoverFolders(input); }
-    async subscribeImapFolders(id, folders) { return (await this.#imap()).subscribeFolders(id, folders); }
-    async syncImapMailbox(id) { return (await this.#imap()).syncMailbox(id); }
-    async startImapMailbox(id) { return (await this.#imap()).startMailbox(id); }
-    async stopImapMailbox(id) { return (await this.#imap()).stopMailbox(id); }
+    async listImapMailboxes() { return this.#mailReadonly().listMailboxes(); }
+    async getImapMailbox(id) { return this.#mailReadonly().getMailbox(id); }
+    async getImapStatus() { return this.#mailReadonly().getImapStatus(); }
+    async saveImapMailbox(input) { return (await this.#mail()).saveMailbox(input); }
+    async removeImapMailbox(id) { return (await this.#mail()).removeMailbox(id); }
+    async testImapMailbox(id) { return (await this.#mail()).testMailbox(id); }
+    async listImapMailboxFolders(id) { return (await this.#mail()).listMailboxFolders(id); }
+    async discoverImapFolders(input) { return (await this.#mail()).discoverFolders(input); }
+    async subscribeImapFolders(id, folders) { return (await this.#mail()).subscribeFolders(id, folders); }
+    async syncImapMailbox(id) { return (await this.#mail()).syncMailbox(id); }
+    async startImapMailbox(id) { return (await this.#mail()).startMailbox(id); }
+    async stopImapMailbox(id) { return (await this.#mail()).stopMailbox(id); }
 
     // Service-level enable/disable for 'imap'.
     async enableImap() { await this.#startStoredIndex(); return this.getImapStatus(); }
-    async disableImap() { if (this.#storedIndex?.isRunning) await this.#storedIndex.disableImap(); return true; }
+    async disableImap() { if (this.#mailIndex?.isRunning) await this.#mailIndex.disableImap(); return true; }
 
     // ─────────────────────────────────────────────────────────────────────────
     // Tree setup

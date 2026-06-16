@@ -73,6 +73,8 @@ describe('WorkspaceMailIndex', () => {
         assert.ok(urls.some((u) => u.startsWith('stored://workspace:data/')), `expected stored://workspace:data location, got ${urls}`);
         assert.ok(urls.some((u) => u.startsWith('imap://alice@example.com/INBOX;UID=5')), `expected imap:// location, got ${urls}`);
         assert.equal(record.checksumArray.length, 1);
+        // filed into the directory .incoming path, NOT the context root
+        assert.equal(options.context, null);
         assert.match(String(options.directory), /imap\/alice/);
         // raw blob persisted into the content-addressable store
         assert.equal(blobs.length, 1);

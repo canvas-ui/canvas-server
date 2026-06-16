@@ -165,7 +165,10 @@ export class WorkspaceMailIndex extends EventEmitter {
         const incomingContext = getIncomingEmailContext('imap', account, folder || 'inbox');
         const directory = this.#getIncomingTreeSelector(incomingContext);
         const features = Email.getFeatureBitmapArray(emailDoc, { mailboxPath: folder });
-        const docId = await this.#put(emailDoc, { directory, features, emitEvent: true });
+        // Incoming email is filed ONLY under the directory tree's
+        // /.incoming/imap/<account>/<folder> — context:null keeps it out of the
+        // context root (no "all emails dumped into /").
+        const docId = await this.#put(emailDoc, { context: null, directory, features, emitEvent: true });
         emailDoc.id = docId;
         this.emit('object:add', { kind: 'message', docId, source: account, payload: { folder, account, uid } });
         return docId;

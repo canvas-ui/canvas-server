@@ -486,9 +486,10 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return;
-      const contextSelector = resolveContextSelector(workspace, request.query, '/');
-      if (rejectIncomingWrite(reply, workspace, contextSelector)) return;
-
+      // Note: NO rejectIncomingWrite here. Deleting a document from the index is
+      // removal, not a write INTO the incoming tree — and we allow purging
+      // backend-ingested incoming docs (it's the lightweight sibling of Destroy,
+      // which is likewise unguarded). Insert/update stay guarded; delete is by id.
       const rawIds = Array.isArray(request.body) ? request.body : [request.body];
       let documentIds;
       try {

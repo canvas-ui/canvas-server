@@ -429,6 +429,13 @@ export default async function workspaceTreeRoutes(fastify) {
         type: 'object',
         properties: {
           recursive: { type: 'boolean', default: false },
+          // Opt-in cascade-purge. Only honored for the /.incoming subtree of a
+          // directory tree: drops the folder AND deletes the documents under it
+          // from the index ("Remove and purge"). Default (false) is plain
+          // "Remove" — folder/membership dropped, documents kept (an agent/user
+          // may have already filed the keepers elsewhere; backends re-sync the
+          // rest if re-enabled). Ignored elsewhere.
+          purge: { type: 'boolean', default: false },
         },
       },
     },
@@ -437,10 +444,18 @@ export default async function workspaceTreeRoutes(fastify) {
       const resolved = await getTreeInstance(request, reply);
       if (!resolved) return;
       const path = pathFromSplat(request);
-      const result = await resolved.tree.removePath(path, request.query.recursive);
+      const purge = request.query.purge === true
+        && resolved.tree.type === 'directory'
+        && isIncomingContextSpec(path);
+      const result = purge
+        ? await resolved.workspace.removeIncomingTreePath(path, { recursive: request.query.recursive })
+        : await resolved.tree.removePath(path, request.query.recursive);
+      const message = purge && !result?.error
+        ? `Tree path removed and ${result.purged || 0} document(s) purged`
+        : 'Tree path removed successfully';
       const responseObject = result?.error
         ? new ResponseObject().badRequest(result.error)
-        : new ResponseObject().success(result, 'Tree path removed successfully');
+        : new ResponseObject().success(result, message);
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
     } catch (error) {
       fastify.log.error(`Remove workspace path error for ID ${request.params.id}: ${error.message}`);

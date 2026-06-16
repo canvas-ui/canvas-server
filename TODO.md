@@ -1,5 +1,32 @@
 # TODO List
 
+## synapsd: restore document-ID GC / reuse (regressed)
+
+Freed IDs are currently never reused. `generateDocumentID`/`generateDocumentIDs` (`src/services/synapsd/src/utils/document.js:78,95`) only increment `internal/document-id-counter`. The `internal/gc/deleted` bitmap is ticked on delete (`index.js:2020`) but never unticked and never consulted by the allocator (read only for the `deletedDocumentsCount` stat, `index.js:200`). IDs grow monotonically forever; roaring bitmaps lose density.
+
+Refined safe-reuse design (agreed):
+- [ ] **Make `internal/gc/deleted` a strict free-id pool, not a tombstone.** Move `deletedDocumentsBitmap.tick(docId)` OUT of the delete txn (currently inside, `index.js:2020`) to AFTER lance fts + vector cleanup succeeds. If lance cleanup throws, the id is simply NOT admitted to the pool → it leaks (stays allocated) but never corrupts a reused doc. Audit/tombstone need is already served by the `crud:deleted` timeline.
+- [ ] **Allocator pops from the pool first.** `deletedDocumentsBitmap.minimum()` (densest-first → best roaring compression), untick it, return; else `counter+1`. Batch variant: pop k from pool, top up the remainder from the counter.
+- [ ] **Do allocation within a single LMDB tx** (per the decision). Counter lives in LMDB (`transactionSync`); the free pool is a roaring bitmap in `bitmapIndex`. Pool-pop + counter bump + the put must be consistent so concurrent writers can't grab the same freed id — drive it through one LMDB tx / allocation lock.
+
+Do NOT use `bitmapIndex.untickAll` (`bitmaps/index.js:415`) — it lists ALL bitmaps (600+/workspace) and unticks each: O(all-bitmaps) per delete, that's why it's dead. The bitmap side is ALREADY cleaned precisely + cheaply by `clearSynapses` (`Synapses.js:144`) via the reverse index (complete because every tick flows through `#addDocumentMembership`). Leave untickAll dead.
+
+Only residue surface is the two lance bitmaps, treated separately (always have been):
+- `internal/lance/fts` — ALWAYS ticked on put → every deleted doc has an entry to clear.
+- `internal/lance/vectors` — conditional (only if embedded).
+Both unticked best-effort, outside the txn, errors swallowed (`lance/index.js:154`, `VectorIndex.js:137`). Lance cleanup needs a closer look — gating pool-admission on its success (point 1) is the safety net, but confirm the untick reliably runs when lance is enabled vs disabled.
+
+## .incoming backend layers + active-backend delete guard
+
+Land these two together — (3)'s clean form depends on (4)'s single per-backend node.
+
+- [ ] **(4) Normalize the .incoming tree to `.incoming/<driver>/<backend>`.** One stable node per backend (e.g. `.incoming/imap/user@domain.com`, `.incoming/s3/<host>/<bucket>`). Update the context builders in `src/utils/incoming-documents.js` (currently variable-depth: `.incoming/<provider>/<account>/<folder>`, `.incoming/file/<provider>/<account>/…`) + migrate existing trees. Backend layer maps to the `data/backend/<backend>` feature bitmap (already tagged at ingest).
+- [ ] **(3) Lock the backend layer tracking enable/disable state (active-backend delete guard).** Lock the `<driver>`/`<backend>` node while the backend is enabled → can't delete/purge an active backend's folder (stop/remove the backend first); unlock on disable/remove. Hook the lifecycle (`setDataBackendConfig`, `enableImap`/`disableImap`, `saveMailbox`/`removeMailbox`). Needs (4)'s single node — with non-cascading `system:*` locks, locking a variable-depth path only protects one node and leaves its folders deletable (half-guarantee). Brittle standalone, hence coupled to (4).
+
+Context: `system:incoming` now locks only the `.incoming` root (non-cascading); subfolders are remove/purge-able. Remove vs Remove-and-purge wired server-side (`?purge=true`, path-scoped). Source-backend tag `data/backend/<backend>` added at ingest (observability/selection, NOT a purge driver). See memory `project_incoming_lock_semantics`.
+
+- [ ] **webui "Purge All" ignores treeType.** `purgeWorkspaceDocuments` (`src/ui/web/src/services/workspace.ts:675`) calls `appendWorkspaceContext(params, contextSpec)` with no `treeName`/`treeType` → always queries the CONTEXT tree. On any directory-tree path it targets the wrong tree and no-ops (or worse, purges the wrong scope). Already hidden in `/.incoming` (button gated off via `isIncomingPath` in `pages/workspaces/[workspaceName]/index.tsx`), but still wrong for other directory-tree paths where the button shows. Fix: thread `treeName`/`treeType` through `purgeWorkspaceDocuments` + `handlePurgeDocuments` like `deleteWorkspaceDocuments` already does (server `/documents/purge` accepts `treeType=directory`).
+
 Fine-tune .cursor/prompts/20260613-hooks+agents.md
 
 ## Stored

@@ -253,11 +253,14 @@ class Workspace extends EventEmitter {
             await this.#ensureContextTree();
             await this.#ensureDirectoryTree();
             this.#bindRuntimeEvents();
+            // Mark ACTIVE before booting stored/mail indices: their initial sync
+            // (IMAP scan → ingestMessage → #put → #getActiveDb) needs isActive,
+            // otherwise every fetched message rejects with "Workspace not active".
+            this.#setStatus(WORKSPACE_STATUS_CODES.ACTIVE);
             if (this.isServiceEnabled('home') || this.isDataBackendEnabled(WorkspaceStoredIndex.HOME_STORED_BACKEND)) {
                 await this.#startStoredIndex();
             }
 
-            this.#setStatus(WORKSPACE_STATUS_CODES.ACTIVE);
             this.emit('started', { id: this.id });
             return this;
         } catch (err) {
@@ -671,6 +674,38 @@ class Workspace extends EventEmitter {
         return this.getDirectoryTree(Workspace.DIRECTORY_TREE_NAME);
     }
 
+    /**
+     * Remove a folder from the /.incoming directory subtree AND cascade-purge the
+     * documents that lived under it from the index. Backend-ingested docs are
+     * re-synced if the user re-enables the backend, so this lets a user discard
+     * the leftovers of a backend they removed without orphaning index entries.
+     *
+     * Only valid for /.incoming/* paths (the incoming root itself is protected).
+     * Doc ids are snapshotted BEFORE removePath — once the folder (and its
+     * membership bitmaps) are gone the subtree can no longer be resolved.
+     */
+    async removeIncomingTreePath(path, { recursive = false } = {}) {
+        const tree = this.getIncomingTree();
+        const normalizedPath = normalizeIncomingTreePath(path);
+        if (normalizedPath === Workspace.INCOMING_PATH) {
+            throw new Error('Cannot remove the incoming root directory');
+        }
+
+        const bitmap = recursive
+            ? await tree.findRecursive(normalizedPath)
+            : await tree.find(normalizedPath);
+        const documentIds = bitmap ? bitmap.toArray() : [];
+
+        const result = await tree.removePath(normalizedPath, recursive);
+        if (result?.error) { return { ...result, purged: 0 }; }
+
+        let purgeResult = null;
+        if (documentIds.length > 0) {
+            purgeResult = await this.deleteMany(documentIds, { emitEvent: false });
+        }
+        return { ...result, purged: purgeResult?.successful?.length || 0, purgeResult };
+    }
+
     getContextTreeSelector(path = '/', treeNameOrId = null) {
         return this.#normalizeTreeSelector(Workspace.CONTEXT_TYPE, { tree: treeNameOrId, path }, '/');
     }
@@ -1011,9 +1046,19 @@ class Workspace extends EventEmitter {
 
     async #ensureIncomingTreeLock(tree) {
         await tree.insertPath(Workspace.INCOMING_PATH, { ignoreLocks: true });
-        if (typeof tree.lockPath === 'function') {
-            await tree.lockPath(Workspace.INCOMING_PATH, Workspace.INCOMING_LOCK_ID, { recursive: true });
+        if (typeof tree.lockPath !== 'function') return;
+        // Protect ONLY the /.incoming root from structural ops (remove/rename/move).
+        // Earlier builds locked the whole subtree recursively, which froze every
+        // backend-ingested subfolder so users could never delete the leftovers of a
+        // backend they removed. Migrate those cascaded locks away, then lock the root
+        // alone. system:* locks no longer cascade to children (DirectoryTree), so
+        // freshly ingested subfolders stay deletable; the data backend re-syncs them
+        // if the user re-enables it.
+        if (typeof tree.unlockPath === 'function') {
+            await tree.unlockPath(Workspace.INCOMING_PATH, Workspace.INCOMING_LOCK_ID, { recursive: true, system: true })
+                .catch((err) => this.#logger.warn({ workspaceId: this.id, error: err.message }, 'Failed to migrate incoming tree lock'));
         }
+        await tree.lockPath(Workspace.INCOMING_PATH, Workspace.INCOMING_LOCK_ID);
     }
 
     // ─────────────────────────────────────────────────────────────────────────

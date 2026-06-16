@@ -101,8 +101,9 @@ export class WorkspaceMailIndex extends EventEmitter {
         if (backend) return backend;
         backend = new ImapBackend(name, config);
 
-        backend.on('object:add', (payload) => this.#onObject(payload));
-        backend.on('object:change', (payload) => this.#onObject(payload));
+        // Awaited ingest — the backend advances its UID cursor only after this
+        // resolves, so a failed index never silently skips a message.
+        backend.onMessage = (payload) => this.#onObject(payload);
         backend.on('backend:state', (payload) => this.#persistBackendState(payload));
         backend.on('error', (error) => {
             this.#setBackendError(name, error);
@@ -123,14 +124,11 @@ export class WorkspaceMailIndex extends EventEmitter {
         this.#backends.delete(name);
     }
 
+    // Awaited by ImapBackend.#fetchBatch. Errors propagate so the backend leaves
+    // its UID cursor unadvanced and refetches the message on the next pass.
     async #onObject(payload = {}) {
         if (payload?.kind !== 'message') return;
-        try {
-            await this.ingestMessage(payload);
-        } catch (error) {
-            this.#logger.warn({ workspaceId: this.#workspaceId, error: error.message }, 'IMAP message indexing failed');
-            this.emit('error', { source: 'imap', error: error.message });
-        }
+        await this.ingestMessage(payload);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -165,6 +163,9 @@ export class WorkspaceMailIndex extends EventEmitter {
         const incomingContext = getIncomingEmailContext('imap', account, folder || 'inbox');
         const directory = this.#getIncomingTreeSelector(incomingContext);
         const features = Email.getFeatureBitmapArray(emailDoc, { mailboxPath: folder });
+        // Canonical source-backend tag (observability/selection, not a purge driver).
+        // Mirrors WorkspaceStoredIndex#buildFeatures: data/backend/imap/<account>.
+        if (account) features.push(`data/backend/imap/${account}`);
         // Incoming email is filed ONLY under the directory tree's
         // /.incoming/imap/<account>/<folder> — context:null keeps it out of the
         // context root (no "all emails dumped into /").
@@ -452,7 +453,17 @@ export class WorkspaceMailIndex extends EventEmitter {
         const current = stored.backends[name] || null;
         const merged = { ...(current || {}), ...input, id };
         if (current && typeof input.password === 'string' && input.password.length === 0) merged.password = current.password;
+        // initialSyncDays only governs the first sync (lastUid==0); see
+        // ImapBackend#searchCriteria. If it changed, reset the cursor so the new
+        // window is honored on the next sync (re-ingest dedups).
+        if (current && input.initialSyncDays != null && Number(input.initialSyncDays) !== Number(current.initialSyncDays)) {
+            merged.lastUid = 0;
+            merged.lastSyncAt = null;
+        }
         const mailbox = this.#normalizeMailbox(merged, id);
+        // Drop any running instance first so its in-memory cursor can't re-persist
+        // stale state, and so the rebuilt backend picks up the new config/cursor.
+        await this.#removeBackend(name);
         stored.backends[name] = mailbox;
         await this.writeStoredConfig(stored);
         await this.#refreshMailboxBackend(id, mailbox);

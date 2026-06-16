@@ -657,6 +657,11 @@ export class WorkspaceStoredIndex {
             } else if (backend.backend === DATA_BLOB_BACKEND) {
                 features.push(DATA_BLOB_FEATURE);
             }
+            // Canonical source-backend tag on every ingested doc. Lets the UI
+            // count/select "everything from backend X" independent of where the
+            // doc now lives in the tree. Observability/selection only — purge stays
+            // scoped to the incoming subtree path, never this bitmap.
+            if (backend.backend) features.push(`data/backend/${backend.backend}`);
             if (backend?.source?.provider) features.push(`data/source/${backend.source.provider}`);
         }
         return Array.from(new Set(features));

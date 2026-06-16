@@ -26,6 +26,11 @@ export default class ImapBackend extends StorageBackend {
     #lastUid = 0;
     #syncing = false;
 
+    // Awaited ingest handler injected by the owning service. scan() only advances
+    // the UID cursor after this resolves, so a failed ingest never silently skips
+    // a message (at-least-once; the service dedups on re-ingest).
+    onMessage = null;
+
     constructor(name, config = {}) {
         super(name, config);
         this.type = 'remote';
@@ -69,7 +74,8 @@ export default class ImapBackend extends StorageBackend {
                 err ? reject(err) : resolve(val);
             };
             imap.once('ready', () => {
-                Promise.resolve().then(() => fn(imap, done)).catch((e) => done(e));
+                Promise.resolve().then(() => fn(imap, done))
+                    .then((val) => done(null, val), (e) => done(e));
             });
             imap.once('error', (e) => done(e));
             imap.connect();
@@ -199,19 +205,19 @@ export default class ImapBackend extends StorageBackend {
         return new Promise((resolve, reject) => {
             const fetch = imap.fetch(source, { bodies: '' });
             const pending = [];
+            // Advance the persisted cursor only to the highest UID that actually
+            // ingested. On any failure the batch rejects and #lastUid is left
+            // untouched, so the whole batch is refetched next pass (no skip).
+            let maxUid = this.#lastUid;
             fetch.on('message', (msg, seqno) => {
                 const chunks = [];
                 let attrs = {};
-                let resolveMsg;
-                pending.push(new Promise((r) => { resolveMsg = r; }));
                 msg.on('body', (stream) => stream.on('data', (c) => chunks.push(Buffer.from(c))));
                 msg.once('attributes', (a) => { attrs = a || {}; });
                 msg.once('end', () => {
                     const uid = Number(attrs.uid) || 0;
-                    if (uid > this.#lastUid) this.#lastUid = uid;
                     const folderKey = this.#encodeFolder(this.#folder);
-                    // Generic change event consumed by the workspace indexer.
-                    this.emit('object:add', {
+                    const payload = {
                         backend: this.name,
                         kind: 'message',
                         key: `${folderKey};UID=${uid}`,
@@ -221,12 +227,18 @@ export default class ImapBackend extends StorageBackend {
                         flags: attrs.flags || [],
                         folder: this.#folder,
                         account: this.#account,
-                    });
-                    resolveMsg();
+                    };
+                    // Await ingest before crediting the UID; fall back to a plain
+                    // emit only if no handler is wired (cursor still advances).
+                    pending.push(Promise.resolve()
+                        .then(() => (this.onMessage ? this.onMessage(payload) : this.emit('object:add', payload)))
+                        .then(() => { if (uid > maxUid) maxUid = uid; }));
                 });
             });
             fetch.once('error', reject);
-            fetch.once('end', () => Promise.all(pending).then(() => resolve()).catch(reject));
+            fetch.once('end', () => Promise.all(pending)
+                .then(() => { this.#lastUid = maxUid; resolve(); })
+                .catch(reject));
         });
     }
 

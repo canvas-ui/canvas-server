@@ -55,7 +55,7 @@ export default async function workspaceServicesRoutes(fastify, options) {
             for (const [backendName, config] of Object.entries(updates)) {
                 if (!config || typeof config !== 'object' || Array.isArray(config)) continue;
                 await workspace.setDataBackendConfig(backendName, config);
-                if (backendName === 'fs:home' && typeof config.enabled === 'boolean') {
+                if (backendName === 'workspace:home' && typeof config.enabled === 'boolean') {
                     if (config.enabled) {
                         await workspace.startHomeService();
                     } else {

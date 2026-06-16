@@ -10,7 +10,7 @@ describe('workspace data backend routes', () => {
     beforeEach(async () => {
         workspace = {
             getDataBackendStatus() {
-                return { 'fs:home': { enabled: true, root: '/tmp/workspace/home', resync: true } };
+                return { 'workspace:home': { enabled: true, root: '/tmp/workspace/home', resync: true } };
             },
             setDataBackendConfig(backendName, config) {
                 this.lastBackendUpdate = { backendName, config };
@@ -45,7 +45,7 @@ describe('workspace data backend routes', () => {
     test('lists backend status', async () => {
         const response = await app.inject({ method: 'GET', url: '/workspaces/universe/data-backends', headers: { authorization: 'Bearer jwt' } });
         assert.equal(response.statusCode, 200);
-        assert.equal(response.json().payload['fs:home'].root, '/tmp/workspace/home');
+        assert.equal(response.json().payload['workspace:home'].root, '/tmp/workspace/home');
     });
 
     test('patches backend config', async () => {
@@ -53,15 +53,15 @@ describe('workspace data backend routes', () => {
             method: 'PATCH',
             url: '/workspaces/universe/data-backends',
             headers: { authorization: 'Bearer jwt' },
-            payload: { dataBackends: { 'fs:home': { enabled: false } } },
+            payload: { dataBackends: { 'workspace:home': { enabled: false } } },
         });
         assert.equal(response.statusCode, 200);
-        assert.deepEqual(workspace.lastBackendUpdate, { backendName: 'fs:home', config: { enabled: false } });
+        assert.deepEqual(workspace.lastBackendUpdate, { backendName: 'workspace:home', config: { enabled: false } });
     });
 
     test('resyncs backend', async () => {
-        const response = await app.inject({ method: 'POST', url: '/workspaces/universe/data-backends/fs%3Ahome/resync', headers: { authorization: 'Bearer jwt' } });
+        const response = await app.inject({ method: 'POST', url: '/workspaces/universe/data-backends/workspace%3Ahome/resync', headers: { authorization: 'Bearer jwt' } });
         assert.equal(response.statusCode, 200);
-        assert.deepEqual(response.json().payload, { backend: 'fs:home', count: 3 });
+        assert.deepEqual(response.json().payload, { backend: 'workspace:home', count: 3 });
     });
 });

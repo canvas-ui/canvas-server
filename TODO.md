@@ -1,6 +1,5 @@
 # TODO List
 
-dotManager -> gitManager(path, opts)
 Fine-tune .cursor/prompts/20260613-hooks+agents.md
 
 ## Stored

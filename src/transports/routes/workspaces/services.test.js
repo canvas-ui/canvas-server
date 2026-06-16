@@ -12,7 +12,7 @@ describe('workspace data backend service routes', () => {
             id: 'workspace-id',
             getDataBackendStatus() {
                 return {
-                    'fs:home': {
+                    'workspace:home': {
                         enabled: true,
                         supported: true,
                         root: '/tmp/workspace/home',
@@ -58,7 +58,7 @@ describe('workspace data backend service routes', () => {
         });
 
         assert.equal(response.statusCode, 200);
-        assert.equal(response.json().payload['fs:home'].root, '/tmp/workspace/home');
+        assert.equal(response.json().payload['workspace:home'].root, '/tmp/workspace/home');
     });
 
     test('PATCH /data-backends stores backend updates', async () => {
@@ -66,12 +66,12 @@ describe('workspace data backend service routes', () => {
             method: 'PATCH',
             url: '/test/services/data-backends',
             headers: { authorization: 'Bearer jwt' },
-            payload: { dataBackends: { 'fs:home': { enabled: false } } },
+            payload: { dataBackends: { 'workspace:home': { enabled: false } } },
         });
 
         assert.equal(response.statusCode, 200);
         assert.deepEqual(workspace.lastBackendUpdate, {
-            backendName: 'fs:home',
+            backendName: 'workspace:home',
             config: { enabled: false },
         });
     });
@@ -79,11 +79,11 @@ describe('workspace data backend service routes', () => {
     test('POST /data-backends/:backendId/resync runs resync', async () => {
         const response = await app.inject({
             method: 'POST',
-            url: '/test/services/data-backends/fs%3Ahome/resync',
+            url: '/test/services/data-backends/workspace%3Ahome/resync',
             headers: { authorization: 'Bearer jwt' },
         });
 
         assert.equal(response.statusCode, 200);
-        assert.deepEqual(response.json().payload, { backend: 'fs:home', count: 2 });
+        assert.deepEqual(response.json().payload, { backend: 'workspace:home', count: 2 });
     });
 });

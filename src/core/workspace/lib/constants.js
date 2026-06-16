@@ -28,7 +28,7 @@ const WORKSPACE_DIRECTORIES = {
 const WORKSPACE_GIT_BARE_DIR = 'bare.git';
 
 const WORKSPACE_DATA_BACKENDS = {
-    'fs:home': {
+    'workspace:home': {
         enabled: true,
         supported: true,
         driver: 'file',
@@ -43,6 +43,19 @@ const WORKSPACE_DATA_BACKENDS = {
         supported: true,
         driver: 'file',
         root: '{WORKSPACE_ROOT}/data',
+        managed: true,
+        watch: false,
+        resync: false,
+        indexIncoming: false,
+    },
+    // Content-addressable blob store (cacache). Optional, opt-in alternative
+    // managed data target — bytes deduped + integrity-checked. Disabled by
+    // default; locations written as stored://workspace:data/<key>.
+    'workspace:data': {
+        enabled: false,
+        supported: true,
+        driver: 'cacache',
+        root: '{WORKSPACE_ROOT}/data/blobs',
         managed: true,
         watch: false,
         resync: false,
@@ -84,7 +97,7 @@ const WORKSPACE_SERVICES = {
     },
     webdav: {
         enabled: true,
-        backend: 'fs:home',
+        backend: 'workspace:home',
     },
 };
 

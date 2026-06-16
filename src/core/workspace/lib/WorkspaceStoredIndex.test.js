@@ -11,8 +11,8 @@ describe('Workspace data backend defaults', () => {
         assert.equal(WORKSPACE_DIRECTORIES.home, 'home');
         assert.equal(WORKSPACE_DIRECTORIES.data, 'data');
         assert.equal(WORKSPACE_DIRECTORIES.cache, 'cache');
-        assert.equal(WORKSPACE_DATA_BACKENDS['fs:home'].enabled, true);
-        assert.equal(WORKSPACE_DATA_BACKENDS['fs:home'].watch, true);
+        assert.equal(WORKSPACE_DATA_BACKENDS['workspace:home'].enabled, true);
+        assert.equal(WORKSPACE_DATA_BACKENDS['workspace:home'].watch, true);
         assert.equal(WORKSPACE_DATA_BACKENDS['stored.cache'].enabled, true);
         assert.equal(WORKSPACE_DATA_BACKENDS['stored.cache'].root, '{WORKSPACE_ROOT}/cache');
     });
@@ -84,25 +84,25 @@ describe('WorkspaceStoredIndex', () => {
         await index.start();
 
         // start() no longer scans; reconciliation is an explicit operation.
-        await index.resync('fs:home');
+        await index.resync('workspace:home');
 
         assert.equal(documents.size, 1);
         const [doc] = documents.values();
         assert.deepEqual(doc.data, {});
-        assert.deepEqual(doc.locations, [{ url: 'stored://fs:home/nested/a.txt' }]);
-        assert.deepEqual(documentPaths.get(doc.id), ['/.incoming/fs/home/nested']);
-        assert.equal(index.getBackendStatus('fs:home').running, true);
-        assert.ok(index.getBackendStatus('fs:home').lastScanAt);
+        assert.deepEqual(doc.locations, [{ url: 'stored://workspace:home/nested/a.txt' }]);
+        assert.deepEqual(documentPaths.get(doc.id), ['/.incoming/workspace/home/nested']);
+        assert.equal(index.getBackendStatus('workspace:home').running, true);
+        assert.ok(index.getBackendStatus('workspace:home').lastScanAt);
     });
 
     test('resync purges docs whose only location was deleted', async () => {
         index = createIndex();
         await index.start();
-        await index.resync('fs:home');
+        await index.resync('workspace:home');
         const [doc] = documents.values();
 
         await fs.remove(path.join(rootPath, 'home', 'nested', 'a.txt'));
-        await index.resync('fs:home');
+        await index.resync('workspace:home');
 
         assert.equal(documents.size, 0);
         assert.equal(documentPaths.get(doc.id), undefined);
@@ -111,17 +111,17 @@ describe('WorkspaceStoredIndex', () => {
     test('resync updates incoming paths when a home file moves', async () => {
         index = createIndex();
         await index.start();
-        await index.resync('fs:home');
+        await index.resync('workspace:home');
         const [doc] = documents.values();
 
         await fs.ensureDir(path.join(rootPath, 'home', 'renamed'));
         await fs.move(path.join(rootPath, 'home', 'nested', 'a.txt'), path.join(rootPath, 'home', 'renamed', 'a.txt'));
-        await index.resync('fs:home');
+        await index.resync('workspace:home');
 
         assert.equal(documents.size, 1);
-        assert.deepEqual(documentPaths.get(doc.id), ['/.incoming/fs/home/renamed']);
+        assert.deepEqual(documentPaths.get(doc.id), ['/.incoming/workspace/home/renamed']);
         assert.deepEqual([...documents.values()][0].locations, [
-            { url: 'stored://fs:home/renamed/a.txt' },
+            { url: 'stored://workspace:home/renamed/a.txt' },
         ]);
     });
 });

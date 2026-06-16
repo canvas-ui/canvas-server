@@ -19,10 +19,13 @@ import { INCOMING_ROOT_CONTEXT, getIncomingEmailContext } from '../../../utils/i
  * instantiated standalone in any bun/node runtime.
  */
 
-const HOME_STORED_BACKEND = 'fs:home';
+const HOME_STORED_BACKEND = 'workspace:home';
 const HOME_BACKEND_FEATURE = 'data/backend/home';
 const CACHE_BACKEND = 'stored.cache';
 const DATA_STORED_BACKEND_PREFIX = 'fs:data';
+// Local drivers whose bytes are written in-process (no remote SyncQueue): they
+// are registered eagerly and toggled live by config.
+const LOCAL_DRIVERS = new Set(['file', 'cacache']);
 const IMAP_BACKEND_PREFIX = 'imap';
 const IMAP_DEFAULT_FOLDER = 'INBOX';
 const IMAP_DEFAULT_POLL_INTERVAL = 60000;
@@ -250,11 +253,11 @@ export class WorkspaceStoredIndex {
 
         if (name === CACHE_BACKEND) return;
 
-        const isFile = fullConfig.driver === 'file' && fullConfig.supported !== false;
+        const isLocal = LOCAL_DRIVERS.has(fullConfig.driver) && fullConfig.supported !== false;
 
         if ('enabled' in patch) {
             const live = this.#stored.getBackend(name);
-            if (patch.enabled && !live && isFile) {
+            if (patch.enabled && !live && isLocal) {
                 this.#stored.addBackend(name, {
                     ...fullConfig,
                     root: this.#resolveBackendRoot(name, fullConfig),
@@ -291,7 +294,7 @@ export class WorkspaceStoredIndex {
 
     async #registerConfiguredBackends() {
         for (const [backendName, config] of Object.entries(this.#dataBackends || {})) {
-            if (!config?.enabled || config.supported === false || config.driver !== 'file') continue;
+            if (!config?.enabled || config.supported === false || !LOCAL_DRIVERS.has(config.driver)) continue;
             if (backendName === CACHE_BACKEND) continue;
 
             this.#stored.addBackend(backendName, {
@@ -1177,7 +1180,7 @@ export class WorkspaceStoredIndex {
     #getIncomingRootForBackend(backendName) {
         const config = this.#dataBackends[backendName];
         if (!config?.indexIncoming) return null;
-        if (backendName === HOME_STORED_BACKEND) return `${INCOMING_ROOT_CONTEXT}/fs/home`;
+        if (backendName === HOME_STORED_BACKEND) return `${INCOMING_ROOT_CONTEXT}/workspace/home`;
         const source = String(backendName || '').replace(/[^a-z0-9._:-]+/gi, '-').toLowerCase();
         return `${INCOMING_ROOT_CONTEXT}/${source}`;
     }

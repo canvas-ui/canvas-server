@@ -24,3 +24,6 @@
 [submodule "src/ui/fuse"]
 	path = src/ui/fuse
 	url = git@github.com:canvas-ui/canvas-fuse.git
+[submodule "src/ui/desktop"]
+	path = src/ui/desktop
+	url = git@github.com:canvas-ui/canvas-desktop.git

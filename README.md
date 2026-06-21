@@ -2,7 +2,7 @@
 
 Server runtime for the Canvas project.
 
-Data from all sources is indexed and abstracted away from its physical location. Users construct virtual context or directory trees on top of that data. Storage backends (local, NAS, S3) are managed transparently — writes hit local cache first, then sync to backends based on rules.
+Data from all sources is indexed and abstracted away from its physical location. Users construct virtual context or directory trees on top of that data. Storage backends (local, NAS, S3) are managed transparently - writes hit local cache first, then sync to backends based on rules.
 
 ## Install & Run
 
@@ -90,9 +90,9 @@ Workspace data is exposed via WebDAV with three virtual root directories:
 └── Directories/   → DirectoryTree (traditional VFS paths, read-only)
 ```
 
-- **Home/** — the workspace's local home directory, full read/write. Files dropped here are auto-indexed into SynapsD.
-- **Context/** — the virtual context tree. Documents appear as files at their context intersections. Read-only.
-- **Directories/** — traditional directory-based VFS. Documents organized by path. Read-only.
+- **Home/** - the workspace's local home directory, full read/write. Files dropped here are auto-indexed into SynapsD.
+- **Context/** - the virtual context tree. Documents appear as files at their context intersections. Read-only.
+- **Directories/** - traditional directory-based VFS. Documents organized by path. Read-only.
 
 ### Mounting
 
@@ -197,18 +197,18 @@ Full configuration, examples, and troubleshooting: **[Authentication Guide](docs
 
 Token types:
 
-- **JWT tokens** — web UI sessions
-- **API tokens** (`canvas-*` prefix) — CLI, Electron, browser extensions, programmatic access
-- **Workspace tokens** (`canvas-workspace-*`) — scoped to a single workspace
+- **JWT tokens** - web UI sessions
+- **API tokens** (`canvas-*` prefix) - CLI, Electron, browser extensions, programmatic access
+- **Workspace tokens** (`canvas-workspace-*`) - scoped to a single workspace
 
-LDAP/AD is available today via `strategies.ldap` in `server/config/auth.json` (uses the bundled `ldapjs` package). Active Directory is LDAP under the hood — point at your DC with `ldaps://` and an AD-specific search filter. See [LDAP / Active Directory](docs/auth.md#ldap--active-directory-authentication) in the auth guide.
+LDAP/AD is available today via `strategies.ldap` in `server/config/auth.json` (uses the bundled `ldapjs` package). Active Directory is LDAP under the hood - point at your DC with `ldaps://` and an AD-specific search filter. See [LDAP / Active Directory](docs/auth.md#ldap--active-directory-authentication) in the auth guide.
 
 ## Roles
 
 Dockerized services extending Canvas functionality:
 
-- **Global roles** — server-wide (SSH daemon, MinIO S3, etc.)
-- **Workspace roles** — user-scoped (dev environments, AI agents)
+- **Global roles** - server-wide (SSH daemon, MinIO S3, etc.)
+- **Workspace roles** - user-scoped (dev environments, AI agents)
 
 Configure in `./server/config/roles.json` or via REST API / Web UI.
 

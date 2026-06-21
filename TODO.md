@@ -1,21 +1,5 @@
 # TODO List
 
-## synapsd: restore document-ID GC / reuse (regressed)
-
-Freed IDs are currently never reused. `generateDocumentID`/`generateDocumentIDs` (`src/services/synapsd/src/utils/document.js:78,95`) only increment `internal/document-id-counter`. The `internal/gc/deleted` bitmap is ticked on delete (`index.js:2020`) but never unticked and never consulted by the allocator (read only for the `deletedDocumentsCount` stat, `index.js:200`). IDs grow monotonically forever; roaring bitmaps lose density.
-
-Refined safe-reuse design (agreed):
-- [ ] **Make `internal/gc/deleted` a strict free-id pool, not a tombstone.** Move `deletedDocumentsBitmap.tick(docId)` OUT of the delete txn (currently inside, `index.js:2020`) to AFTER lance fts + vector cleanup succeeds. If lance cleanup throws, the id is simply NOT admitted to the pool → it leaks (stays allocated) but never corrupts a reused doc. Audit/tombstone need is already served by the `crud:deleted` timeline.
-- [ ] **Allocator pops from the pool first.** `deletedDocumentsBitmap.minimum()` (densest-first → best roaring compression), untick it, return; else `counter+1`. Batch variant: pop k from pool, top up the remainder from the counter.
-- [ ] **Do allocation within a single LMDB tx** (per the decision). Counter lives in LMDB (`transactionSync`); the free pool is a roaring bitmap in `bitmapIndex`. Pool-pop + counter bump + the put must be consistent so concurrent writers can't grab the same freed id — drive it through one LMDB tx / allocation lock.
-
-Do NOT use `bitmapIndex.untickAll` (`bitmaps/index.js:415`) — it lists ALL bitmaps (600+/workspace) and unticks each: O(all-bitmaps) per delete, that's why it's dead. The bitmap side is ALREADY cleaned precisely + cheaply by `clearSynapses` (`Synapses.js:144`) via the reverse index (complete because every tick flows through `#addDocumentMembership`). Leave untickAll dead.
-
-Only residue surface is the two lance bitmaps, treated separately (always have been):
-- `internal/lance/fts` — ALWAYS ticked on put → every deleted doc has an entry to clear.
-- `internal/lance/vectors` — conditional (only if embedded).
-Both unticked best-effort, outside the txn, errors swallowed (`lance/index.js:154`, `VectorIndex.js:137`). Lance cleanup needs a closer look — gating pool-admission on its success (point 1) is the safety net, but confirm the untick reliably runs when lance is enabled vs disabled.
-
 ## .incoming backend layers + active-backend delete guard
 
 Land these two together — (3)'s clean form depends on (4)'s single per-backend node.

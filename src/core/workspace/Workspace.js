@@ -304,59 +304,70 @@ class Workspace extends EventEmitter {
         return features.length > 0 ? features : (attributes?.allOf ?? attributes ?? []);
     }
 
+    // Extract raw path strings from a context/directory input (string | string[] |
+    // { tree?, path }). The tree qualifier is dropped on purpose: a workspace has
+    // exactly one context tree and one directory tree, so the db's ctx:/dir:
+    // default-tree resolution always lands on them.
+    static #extractPaths(value) {
+        if (value == null) { return []; }
+        let paths = value;
+        if (typeof value === 'object' && !Array.isArray(value)) {
+            paths = value.path ?? value.context ?? value.directory ?? '/';
+        }
+        return (Array.isArray(paths) ? paths : [paths]).filter((p) => typeof p === 'string');
+    }
+
+    static #buildPaths(context, directory) {
+        return [
+            ...Workspace.#extractPaths(context).map((p) => `ctx:${p}`),
+            ...Workspace.#extractPaths(directory).map((p) => `dir:${p}`),
+        ];
+    }
+
     #normalizeQuerySpec(spec = {}) {
-        const { attributes, features = null, limit = 200, ...rest } = spec;
+        const { attributes, features = null, context, directory, limit = 200, ...rest } = spec;
+        const paths = Workspace.#buildPaths(context, directory);
         return {
             limit,
             ...rest,
+            ...(paths.length ? { paths } : {}),
             ...(features != null ? { features } : {}),
             ...(features == null && attributes != null ? { features: attributes } : {}),
         };
     }
 
     #assertIncomingWriteAllowed(directory, allowIncomingWrite = false) {
-        if (allowIncomingWrite || !directory) return;
-        const paths = Array.isArray(directory.path) ? directory.path : [directory.path];
-        if (paths.some((path) => isIncomingContextSpec(path))) {
+        if (allowIncomingWrite || directory == null) { return; }
+        if (Workspace.#extractPaths(directory).some((path) => isIncomingContextSpec(path))) {
             throw new Error('Incoming directory tree is read-only');
         }
     }
 
     async put(record, { context = '/', directory = null, features = [], attributes, emitEvent = true, allowIncomingWrite = false } = {}) {
-        const db = this.#getActiveDb();
-        const contextSelector = this.#normalizeTreeSelector(Workspace.CONTEXT_TYPE, context, '/');
-        const directorySelector = directory == null ? null : this.#normalizeTreeSelector(Workspace.DIRECTORY_TYPE, directory, '/');
-        this.#assertIncomingWriteAllowed(directorySelector, allowIncomingWrite);
-        return await db.put(record, {
-            context: contextSelector,
-            directory: directorySelector,
+        this.#assertIncomingWriteAllowed(directory, allowIncomingWrite);
+        return await this.#getActiveDb().put(record, {
+            paths: Workspace.#buildPaths(context, directory),
             features: this.#normalizeFeatureInput(features, attributes),
             emitEvent,
         });
     }
 
     async link(id, { context = '/', directory = null, features = [], attributes, emitEvent = true, allowIncomingWrite = false } = {}) {
-        const db = this.#getActiveDb();
-        const contextSelector = this.#normalizeTreeSelector(Workspace.CONTEXT_TYPE, context, '/');
-        const directorySelector = directory == null ? null : this.#normalizeTreeSelector(Workspace.DIRECTORY_TYPE, directory, '/');
-        this.#assertIncomingWriteAllowed(directorySelector, allowIncomingWrite);
-        return await db.link(id, {
-            context: contextSelector,
-            directory: directorySelector,
+        this.#assertIncomingWriteAllowed(directory, allowIncomingWrite);
+        return await this.#getActiveDb().link(id, {
+            paths: Workspace.#buildPaths(context, directory),
             features: this.#normalizeFeatureInput(features, attributes),
             emitEvent,
         });
     }
 
     async unlink(id, { context = null, directory = null, features = [], attributes } = {}, options = {}) {
-        const db = this.#getActiveDb();
-        const directorySelector = directory == null ? null : this.#normalizeTreeSelector(Workspace.DIRECTORY_TYPE, directory, '/');
-        this.#assertIncomingWriteAllowed(directorySelector, options.allowIncomingWrite === true);
-        return await db.unlink(id, {
-            context: context == null ? null : this.#normalizeTreeSelector(Workspace.CONTEXT_TYPE, context, '/'),
-            directory: directorySelector,
+        this.#assertIncomingWriteAllowed(directory, options.allowIncomingWrite === true);
+        return await this.#getActiveDb().unlink(id, {
+            paths: Workspace.#buildPaths(context, directory),
             features: this.#normalizeFeatureInput(features, attributes),
-        }, options);
+            ...options,
+        });
     }
 
     async delete(id) {
@@ -368,48 +379,36 @@ class Workspace extends EventEmitter {
     }
 
     async has(id, { context = null, directory = null, features = [], attributes } = {}) {
-        const db = this.#getActiveDb();
-        return await db.has(parseDocumentId(id, 'Document ID'), {
-            context: context == null ? null : this.#normalizeTreeSelector(Workspace.CONTEXT_TYPE, context, '/'),
-            directory: directory == null ? null : this.#normalizeTreeSelector(Workspace.DIRECTORY_TYPE, directory, '/'),
+        return await this.#getActiveDb().has(parseDocumentId(id, 'Document ID'), {
+            paths: Workspace.#buildPaths(context, directory),
             features: this.#normalizeFeatureInput(features, attributes),
         });
     }
 
     async putMany(records, { context = '/', directory = null, features = [], attributes, allowIncomingWrite = false } = {}) {
-        const db = this.#getActiveDb();
-        const contextSelector = this.#normalizeTreeSelector(Workspace.CONTEXT_TYPE, context, '/');
-        const directorySelector = directory == null ? null : this.#normalizeTreeSelector(Workspace.DIRECTORY_TYPE, directory, '/');
-        this.#assertIncomingWriteAllowed(directorySelector, allowIncomingWrite);
-        return await db.putMany(records, {
-            context: contextSelector,
-            directory: directorySelector,
+        this.#assertIncomingWriteAllowed(directory, allowIncomingWrite);
+        return await this.#getActiveDb().putMany(records, {
+            paths: Workspace.#buildPaths(context, directory),
             features: this.#normalizeFeatureInput(features, attributes),
         });
     }
 
     async linkMany(ids, { context = '/', directory = null, features = [], attributes, emitEvent = true, allowIncomingWrite = false } = {}) {
-        const db = this.#getActiveDb();
-        const contextSelector = this.#normalizeTreeSelector(Workspace.CONTEXT_TYPE, context, '/');
-        const directorySelector = directory == null ? null : this.#normalizeTreeSelector(Workspace.DIRECTORY_TYPE, directory, '/');
-        this.#assertIncomingWriteAllowed(directorySelector, allowIncomingWrite);
-        return await db.linkMany(parseDocumentIdArray(ids, 'Document ID array'), {
-            context: contextSelector,
-            directory: directorySelector,
+        this.#assertIncomingWriteAllowed(directory, allowIncomingWrite);
+        return await this.#getActiveDb().linkMany(parseDocumentIdArray(ids, 'Document ID array'), {
+            paths: Workspace.#buildPaths(context, directory),
             features: this.#normalizeFeatureInput(features, attributes),
             emitEvent,
         });
     }
 
     async unlinkMany(ids, { context = null, directory = null, features = [], attributes } = {}, options = {}) {
-        const db = this.#getActiveDb();
-        const directorySelector = directory == null ? null : this.#normalizeTreeSelector(Workspace.DIRECTORY_TYPE, directory, '/');
-        this.#assertIncomingWriteAllowed(directorySelector, options.allowIncomingWrite === true);
-        return await db.unlinkMany(parseDocumentIdArray(ids, 'Document ID array'), {
-            context: context == null ? null : this.#normalizeTreeSelector(Workspace.CONTEXT_TYPE, context, '/'),
-            directory: directorySelector,
+        this.#assertIncomingWriteAllowed(directory, options.allowIncomingWrite === true);
+        return await this.#getActiveDb().unlinkMany(parseDocumentIdArray(ids, 'Document ID array'), {
+            paths: Workspace.#buildPaths(context, directory),
             features: this.#normalizeFeatureInput(features, attributes),
-        }, options);
+            ...options,
+        });
     }
 
     async deleteMany(ids, options = {}) {
@@ -482,9 +481,8 @@ class Workspace extends EventEmitter {
     }
 
     async hasByChecksumString(checksumString, { context = '/', features = [], attributes } = {}) {
-        const db = this.#getActiveDb();
-        return await db.hasByChecksumString(checksumString, {
-            context: this.#normalizeTreeSelector(Workspace.CONTEXT_TYPE, context, '/'),
+        return await this.#getActiveDb().hasByChecksumString(checksumString, {
+            paths: Workspace.#buildPaths(context, null),
             features: this.#normalizeFeatureInput(features, attributes),
         });
     }

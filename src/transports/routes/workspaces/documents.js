@@ -196,6 +196,9 @@ export default async function workspaceDocumentRoutes(fastify, options) {
           search: { type: 'string' },
           mode: { type: 'string', enum: ['fts', 'vector', 'hybrid'] },
           includeIncoming: { type: 'boolean', default: false },
+          // 'workspace' drops the path bucket entirely → list every document in
+          // the DB (synapsd default). 'path' (default) scopes to context/tree.
+          scope: { type: 'string', enum: ['path', 'workspace'], default: 'path' },
         },
       },
     },
@@ -204,7 +207,11 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return;
 
-      const contextSelector = resolveContextSelector(workspace, request.query, '/');
+      // Whole-workspace scope = no path selector. Null selector still excludes
+      // the /.incoming staging tree by default (buildReadOptions), opt in via includeIncoming.
+      const contextSelector = request.query.scope === 'workspace'
+        ? null
+        : resolveContextSelector(workspace, request.query, '/');
       const searchQuery = request.query.q || request.query.search;
 
       const spec = {

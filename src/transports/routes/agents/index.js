@@ -299,7 +299,7 @@ export default async function agentRoutes(fastify, _options) {
                 const r = new ResponseObject().notFound('Agent not found');
                 return reply.code(r.statusCode).send(r.getResponse());
             }
-            const r = new ResponseObject().found(sessions, 'Sessions retrieved');
+            const r = new ResponseObject().found(sessions, 'Sessions retrieved', 200, Array.isArray(sessions) ? sessions.length : null, Array.isArray(sessions) ? sessions.length : null);
             return reply.code(r.statusCode).send(r.getResponse());
         } catch (err) {
             fastify.log.error(err);

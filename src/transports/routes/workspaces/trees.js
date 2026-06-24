@@ -28,7 +28,8 @@ export default async function workspaceTreesRoutes(fastify) {
     const workspace = await getWorkspaceInstance(request, reply);
     if (!workspace) return;
     const trees = await workspace.listTrees(request.query?.type || null);
-    const responseObject = new ResponseObject().found(trees, 'Trees retrieved successfully');
+    const count = Array.isArray(trees) ? trees.length : 0;
+    const responseObject = new ResponseObject().found(trees, 'Trees retrieved successfully', 200, count, count);
     return reply.code(responseObject.statusCode).send(responseObject.getResponse());
   });
 

@@ -129,7 +129,7 @@ export default async function contextShareRoutes(fastify, options) {
         ...shareData
       }));
 
-      const response = new ResponseObject().found(shareList, 'Context shares retrieved successfully');
+      const response = new ResponseObject().found(shareList, 'Context shares retrieved successfully', 200, shareList.length, shareList.length);
       return reply.code(response.statusCode).send(response.getResponse());
 
     } catch (error) {

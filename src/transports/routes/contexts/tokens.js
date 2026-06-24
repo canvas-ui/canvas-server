@@ -150,7 +150,7 @@ export default async function contextTokenRoutes(fastify, options) {
         token: undefined
       }));
 
-      const response = new ResponseObject().found(tokenList, 'Context sharing tokens retrieved successfully');
+      const response = new ResponseObject().found(tokenList, 'Context sharing tokens retrieved successfully', 200, tokenList.length, tokenList.length);
       return reply.code(response.statusCode).send(response.getResponse());
 
     } catch (error) {

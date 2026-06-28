@@ -57,6 +57,29 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     return workspace.getContextTreeSelector(path, treeNameOrId);
   }
 
+  // Read scoping mirrors write scoping: a directory tree must land in spec.directory
+  // (→ dir: path grammar), NOT spec.context (→ ctx:), otherwise list/search query
+  // the wrong tree and return nothing. Returns { context, directory } with exactly
+  // one populated. Defaults to context.
+  function resolveScopeSelectors(workspace, source = {}, fallbackPath = '/') {
+    const path = source?.context ?? fallbackPath;
+    const treeNameOrId = source?.treeNameOrTreeId ?? null;
+    const treeType = source?.treeType ?? null;
+
+    let isDirectory = treeType === 'directory';
+    if (!treeType && treeNameOrId) {
+      try {
+        isDirectory = workspace.getTree(treeNameOrId)?.type === 'directory';
+      } catch (err) {
+        if (!/not found/i.test(err?.message || '')) throw err;
+      }
+    }
+
+    return isDirectory
+      ? { context: null, directory: workspace.getDirectoryTreeSelector(path, treeNameOrId) }
+      : { context: workspace.getContextTreeSelector(path, treeNameOrId), directory: null };
+  }
+
   function buildReadOptions(contextSelector, includeIncoming, options = {}) {
     if (!shouldExcludeIncoming(contextSelector?.path, includeIncoming)) {
       return options;
@@ -219,16 +242,18 @@ export default async function workspaceDocumentRoutes(fastify, options) {
 
       // Whole-workspace scope = no path selector. Null selector still excludes
       // the /.incoming staging tree by default (buildReadOptions), opt in via includeIncoming.
-      const contextSelector = request.query.scope === 'workspace'
-        ? null
-        : resolveContextSelector(workspace, request.query, '/');
+      const { context: ctxSelector, directory: dirSelector } = request.query.scope === 'workspace'
+        ? { context: null, directory: null }
+        : resolveScopeSelectors(workspace, request.query, '/');
+      const activeSelector = dirSelector || ctxSelector;
       const searchQuery = request.query.q || request.query.search;
 
       const spec = {
-        context: contextSelector,
+        context: ctxSelector,
+        directory: dirSelector,
         attributes: buildAttributes(request.query),
         filters: request.query.filters,
-        ...buildReadOptions(contextSelector, request.query.includeIncoming, {
+        ...buildReadOptions(activeSelector, request.query.includeIncoming, {
           limit: request.query.limit,
           offset: request.query.offset,
           page: request.query.page,
@@ -348,7 +373,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return;
-      const contextSelector = resolveContextSelector(workspace, request.query, '/');
+      const { context: ctxSel, directory: dirSel } = resolveScopeSelectors(workspace, request.query, '/');
 
       const document = await workspace.get(request.params.docId);
       if (!document) {
@@ -357,7 +382,8 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       }
 
       const matchesScope = await workspace.has(document.id, {
-        context: contextSelector,
+        context: ctxSel,
+        directory: dirSel,
         attributes: buildAttributes(request.query),
       });
       if (!matchesScope) {
@@ -395,15 +421,17 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return;
-      const contextSelector = resolveContextSelector(workspace, request.query, '/');
+      const { context: ctxSel, directory: dirSel } = resolveScopeSelectors(workspace, request.query, '/');
+      const activeSelector = dirSel || ctxSel;
       const attrs = buildAttributes(request.query) || {};
       const allOf = [`data/abstraction/${request.params.abstraction}`, ...(attrs.allOf || [])];
 
       const documents = await workspace.list({
-        context: contextSelector,
+        context: ctxSel,
+        directory: dirSel,
         attributes: { ...attrs, allOf },
         filters: request.query.filters,
-        ...buildReadOptions(contextSelector, request.query.includeIncoming, {
+        ...buildReadOptions(activeSelector, request.query.includeIncoming, {
           limit: request.query.limit,
           offset: request.query.offset,
           page: request.query.page,
@@ -563,14 +591,16 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return;
-      const contextSelector = resolveContextSelector(workspace, request.query, '/');
+      const { context: ctxSel, directory: dirSel } = resolveScopeSelectors(workspace, request.query, '/');
+      const activeSelector = dirSel || ctxSel;
 
       const attributes = buildAttributes(request.query);
       const matches = await workspace.list({
-        context: contextSelector,
+        context: ctxSel,
+        directory: dirSel,
         attributes,
         filters: request.query.filters,
-        ...buildReadOptions(contextSelector, request.query.includeIncoming, { parse: false, limit: 0 }),
+        ...buildReadOptions(activeSelector, request.query.includeIncoming, { parse: false, limit: 0 }),
       });
 
       if (matches.error) {
@@ -842,7 +872,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return;
-      const contextSelector = resolveContextSelector(workspace, request.query, '/');
+      const { context: ctxSel, directory: dirSel } = resolveScopeSelectors(workspace, request.query, '/');
 
       const checksumString = `${request.params.algo}/${request.params.hash}`;
       const document = await workspace.getByChecksumString(checksumString);
@@ -852,7 +882,8 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       }
 
       const matchesScope = await workspace.hasByChecksumString(checksumString, {
-        context: contextSelector,
+        context: ctxSel,
+        directory: dirSel,
         attributes: buildAttributes(request.query),
       });
       if (!matchesScope) {

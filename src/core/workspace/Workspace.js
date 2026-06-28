@@ -480,9 +480,9 @@ class Workspace extends EventEmitter {
         return await this.#getActiveDb().timeline.remove(timelineName, parseDocumentId(id, 'Document ID'));
     }
 
-    async hasByChecksumString(checksumString, { context = '/', features = [], attributes } = {}) {
+    async hasByChecksumString(checksumString, { context = null, directory = null, features = [], attributes } = {}) {
         return await this.#getActiveDb().hasByChecksumString(checksumString, {
-            paths: Workspace.#buildPaths(context, null),
+            paths: Workspace.#buildPaths(context, directory),
             features: this.#normalizeFeatureInput(features, attributes),
         });
     }

@@ -41,13 +41,18 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       return workspace.getDirectoryTreeSelector(path, treeNameOrId);
     }
     if (!treeType && treeNameOrId) {
-      // Fallback: detect type from the tree itself to avoid hard errors
+      // Fallback: detect type from the tree itself. Only swallow "not found" so
+      // an unknown tree still produces a clean error from getContextTreeSelector;
+      // any other error (and the directory selector build itself) must propagate.
+      let detectedType = null;
       try {
-        const tree = workspace.getTree(treeNameOrId);
-        if (tree.type === 'directory') {
-          return workspace.getDirectoryTreeSelector(path, treeNameOrId);
-        }
-      } catch (_) { /* unknown tree — let getContextTreeSelector handle the error */ }
+        detectedType = workspace.getTree(treeNameOrId)?.type ?? null;
+      } catch (err) {
+        if (!/not found/i.test(err?.message || '')) throw err;
+      }
+      if (detectedType === 'directory') {
+        return workspace.getDirectoryTreeSelector(path, treeNameOrId);
+      }
     }
     return workspace.getContextTreeSelector(path, treeNameOrId);
   }
@@ -102,12 +107,17 @@ export default async function workspaceDocumentRoutes(fastify, options) {
         return { treeType: 'directory', selector: workspace.getDirectoryTreeSelector(path, treeNameOrId) };
       }
       if (!treeType && treeNameOrId) {
+        // Only swallow "not found" (let the context path emit a clean error for
+        // unknown trees); rethrow anything else instead of masking it.
+        let detectedType = null;
         try {
-          const tree = workspace.getTree(treeNameOrId);
-          if (tree.type === 'directory') {
-            return { treeType: 'directory', selector: workspace.getDirectoryTreeSelector(path, treeNameOrId) };
-          }
-        } catch (_) { /* unknown tree — fall through to context */ }
+          detectedType = workspace.getTree(treeNameOrId)?.type ?? null;
+        } catch (err) {
+          if (!/not found/i.test(err?.message || '')) throw err;
+        }
+        if (detectedType === 'directory') {
+          return { treeType: 'directory', selector: workspace.getDirectoryTreeSelector(path, treeNameOrId) };
+        }
       }
       return { treeType: 'context', selector: workspace.getContextTreeSelector(path, treeNameOrId) };
     }

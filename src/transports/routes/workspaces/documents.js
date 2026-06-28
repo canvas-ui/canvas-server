@@ -616,7 +616,18 @@ export default async function workspaceDocumentRoutes(fastify, options) {
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());
       }
 
+      // Purge is scoped (we listed ids at this tree+path), so emit ONE tree-scoped
+      // batch event instead of N db-level per-doc events — drives cross-client
+      // auto-close + UI refresh without an event storm. deleteMany stays silent.
       const result = await workspace.deleteMany(documentIds, { emitEvent: false });
+      const purgedIds = (result?.successful || []).map((entry) => entry.id).filter((id) => Number.isInteger(id));
+      if (purgedIds.length > 0) {
+        workspace.emitTreeDocumentEvent('tree.document.deleted.batch', {
+          context: ctxSel,
+          directory: dirSel,
+          documentIds: purgedIds,
+        });
+      }
 
       const responseObject = new ResponseObject().deleted({ requested: documentIds.length, deleted: result?.successful?.length || 0, result }, 'Documents purged successfully', 200, result?.successful?.length || 0);
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());

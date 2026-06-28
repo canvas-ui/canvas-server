@@ -487,6 +487,14 @@ class Workspace extends EventEmitter {
         });
     }
 
+    // Emit a tree-scoped document event for a known selection (e.g. after a
+    // scoped purge) so cross-client consumers (browser extension auto-close, web
+    // UI) refresh. Selectors are { tree, path } as returned by
+    // get{Context,Directory}TreeSelector; pass whichever applies.
+    emitTreeDocumentEvent(eventName, { context = null, directory = null, documentIds = [] } = {}) {
+        this.#getActiveDb().emitTreeDocumentEvent(eventName, { context, directory, documentIds });
+    }
+
     async list(spec = {}) {
         const querySpec = this.#normalizeQuerySpec(this.#composeCanvasQuerySpec(spec));
         const searchQuery = querySpec.query ?? querySpec.search ?? querySpec.q;

@@ -105,8 +105,11 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     return reply.code(responseObject.statusCode).send(responseObject.getResponse());
   }
 
+  // selector.path may be a single path or an array of paths (multi-path insert).
+  const anyIncoming = (path) => Array.isArray(path) ? path.some(isIncomingContextSpec) : isIncomingContextSpec(path);
+
   function rejectIncomingWrite(reply, workspace, selector) {
-    if (!selector || !isIncomingContextSpec(selector.path)) return false;
+    if (!selector || !anyIncoming(selector.path)) return false;
     try {
       if (selector.tree && workspace.getTree(selector.tree)?.type !== 'directory') return false;
     } catch (_) {
@@ -292,7 +295,11 @@ export default async function workspaceDocumentRoutes(fastify, options) {
             properties: {
               treeNameOrTreeId: { type: 'string' },
               treeType: { type: 'string', enum: ['context', 'directory'] },
-              context: { type: 'string' },
+              // A single path, or an array of paths to insert the same docs into
+              // multiple tree paths in ONE op (one embed, all memberships). Use a
+              // type union (not oneOf) — Fastify array-coercion makes a string
+              // satisfy both oneOf branches → ambiguous → 400.
+              context: { type: ['string', 'array'], items: { type: 'string' } },
               features: { type: 'array', items: { type: 'string' } },
               documents: { oneOf: [{ type: 'object' }, { type: 'array' }] },
               documentIds: {
@@ -326,7 +333,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
 
       const treeSpec = {
         context: insertTreeType === 'directory'
-          ? (isIncomingContextSpec(insertSelector?.path) ? null : workspace.getContextTreeSelector('/'))
+          ? (anyIncoming(insertSelector?.path) ? null : workspace.getContextTreeSelector('/'))
           : insertSelector,
         directory: insertTreeType === 'directory' ? insertSelector : null,
         features: enforcedFeatures,

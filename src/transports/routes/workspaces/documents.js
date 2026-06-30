@@ -597,6 +597,27 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     }
   });
 
+  // ── Reindex FTS (maintenance) ───────────────────────────────────────────
+  // Backfill the full-text index for documents indexed before FTS existed, or
+  // left in start()'s un-indexed tail. FTS-only, idempotent. Runs in-process so
+  // there is no LMDB lock conflict with the live server.
+  fastify.post('/reindex-search', {
+    onRequest: [fastify.authenticate],
+    schema: { params: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } } },
+  }, async (request, reply) => {
+    try {
+      const workspace = await getWorkspaceInstance(request, reply);
+      if (!workspace) return;
+      const result = await workspace.reindexSearchIndex();
+      const responseObject = new ResponseObject().success(result, `FTS reindex complete: ${result.indexed} newly indexed (${result.alreadyIndexed}/${result.totalDocs} total)`);
+      return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+    } catch (error) {
+      fastify.log.error(error);
+      const responseObject = new ResponseObject().serverError(error.message || 'Failed to reindex FTS');
+      return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+    }
+  });
+
   // ── Purge documents ─────────────────────────────────────────────────────
 
   fastify.delete('/purge', {

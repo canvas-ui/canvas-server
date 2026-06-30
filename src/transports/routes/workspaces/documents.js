@@ -233,6 +233,10 @@ export default async function workspaceDocumentRoutes(fastify, options) {
           q: { type: ['string', 'array'], items: { type: 'string' } },
           search: { type: 'string' },
           mode: { type: 'string', enum: ['fts', 'vector', 'hybrid'] },
+          // Optional cosine-distance floor for the dense side of vector/hybrid
+          // search — drops weak (far) kNN hits before fusion. 0..2 (0 = identical).
+          minDistance: { type: 'number' },
+          maxDistance: { type: 'number' },
           includeIncoming: { type: 'boolean', default: false },
           // 'workspace' drops the path bucket entirely → list every document in
           // the DB (synapsd default). 'path' (default) scopes to context/tree.
@@ -272,6 +276,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
         }),
       };
 
+      const { minDistance, maxDistance } = request.query;
       let documents;
       if (queries.length > 1) {
         // Stacked queries → stateless multi-query refinement (AND-narrow, last ranks).
@@ -279,9 +284,11 @@ export default async function workspaceDocumentRoutes(fastify, options) {
           limit: request.query.limit,
           offset: request.query.offset,
           mode: request.query.mode,
+          minDistance,
+          maxDistance,
         });
       } else if (queries.length === 1) {
-        documents = await workspace.search({ query: queries[0], mode: request.query.mode, ...spec });
+        documents = await workspace.search({ query: queries[0], mode: request.query.mode, minDistance, maxDistance, ...spec });
       } else {
         documents = await workspace.list(spec);
       }

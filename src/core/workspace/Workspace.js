@@ -518,12 +518,6 @@ class Workspace extends EventEmitter {
         return await this.#getActiveDb().searchRefined(queries, baseSpec, options);
     }
 
-    // Backfill the FTS index for documents indexed before FTS existed (or left in
-    // the un-indexed tail by start()'s bounded backfill). FTS-only; idempotent.
-    async reindexSearchIndex(options = {}) {
-        return await this.#getActiveDb().reindexSearchIndex(options);
-    }
-
     /**
      * If the read targets a path whose leaf is a canvas layer, AND-compose the
      * canvas's stored querySpec (features + filters) into the spec before

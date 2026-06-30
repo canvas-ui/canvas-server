@@ -358,6 +358,60 @@ export default async function adminRoutes(fastify, options) {
     }
   });
 
+  // Full-text (Lance/BM25) reindex: backfill every document not yet in the FTS
+  // index — needed for corpora indexed before FTS existed or left in start()'s
+  // un-indexed tail. Idempotent (skips already-indexed). Runs in-process, so no
+  // LMDB lock conflict with the live server. FTS-only; dense vectors are separate.
+  fastify.post('/workspaces/:workspaceId/reindex-search', {
+    onRequest: [fastify.authenticate, requireAdmin],
+    schema: { params: { type: 'object', required: ['workspaceId'], properties: { workspaceId: { type: 'string' } } } }
+  }, async (request, reply) => {
+    try {
+      const identifier = request.params.workspaceId;
+      const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(identifier);
+      const workspaceId = isUUID ? identifier : fastify.workspaceManager.resolveWorkspaceId(request.user.id, identifier);
+      const ws = workspaceId ? await fastify.workspaceManager.getWorkspace(workspaceId, request.user.id) : null;
+      if (!ws?.isActive) {
+        const response = new ResponseObject().badRequest('Workspace not found or not active');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+      const result = await ws.db.reindexSearchIndex();
+      const response = new ResponseObject().success(result, `FTS reindex complete: ${result.indexed} newly indexed (${result.alreadyIndexed}/${result.totalDocs} total)`);
+      return reply.code(response.statusCode).send(response.getResponse());
+    } catch (error) {
+      fastify.log.error(error);
+      const response = new ResponseObject().serverError(error.message || 'Failed to reindex FTS');
+      return reply.code(response.statusCode).send(response.getResponse());
+    }
+  });
+
+  // Dense-vector (embedding) reindex: enqueue every embeddable document missing a
+  // vector. ASYNC — returns immediately after enqueuing; the embedding queue drains
+  // off-thread (model inference per doc). Idempotent. Only schemas in
+  // semantic.embeddableSchemas are embedded (default notes; tabs/files are not).
+  fastify.post('/workspaces/:workspaceId/reindex-embeddings', {
+    onRequest: [fastify.authenticate, requireAdmin],
+    schema: { params: { type: 'object', required: ['workspaceId'], properties: { workspaceId: { type: 'string' } } } }
+  }, async (request, reply) => {
+    try {
+      const identifier = request.params.workspaceId;
+      const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(identifier);
+      const workspaceId = isUUID ? identifier : fastify.workspaceManager.resolveWorkspaceId(request.user.id, identifier);
+      const ws = workspaceId ? await fastify.workspaceManager.getWorkspace(workspaceId, request.user.id) : null;
+      if (!ws?.isActive) {
+        const response = new ResponseObject().badRequest('Workspace not found or not active');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+      const result = await ws.db.reindexEmbeddings();
+      const response = new ResponseObject().success(result, `Embedding reindex enqueued: ${result.enqueued} docs (draining in background; ${result.queued} queued)`);
+      return reply.code(response.statusCode).send(response.getResponse());
+    } catch (error) {
+      fastify.log.error(error);
+      const response = new ResponseObject().serverError(error.message || 'Failed to reindex embeddings');
+      return reply.code(response.statusCode).send(response.getResponse());
+    }
+  });
+
   // Workspace Management Routes
 
   // List all workspaces (admin only)

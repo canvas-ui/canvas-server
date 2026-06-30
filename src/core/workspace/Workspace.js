@@ -508,6 +508,16 @@ class Workspace extends EventEmitter {
         return await this.#getActiveDb().search(this.#normalizeQuerySpec(this.#composeCanvasQuerySpec(spec)));
     }
 
+    // Stateless multi-query refinement: `spec` supplies the structured scope
+    // (path/features/filters/canvas), `queries` is the ordered stack of text
+    // queries that AND-narrow it (last ranks). Text is passed separately, so any
+    // single query carried on the spec is dropped from the base scope.
+    async searchRefined(queries = [], spec = {}, options = {}) {
+        const baseSpec = this.#normalizeQuerySpec(this.#composeCanvasQuerySpec(spec));
+        delete baseSpec.query; delete baseSpec.search; delete baseSpec.q;
+        return await this.#getActiveDb().searchRefined(queries, baseSpec, options);
+    }
+
     /**
      * If the read targets a path whose leaf is a canvas layer, AND-compose the
      * canvas's stored querySpec (features + filters) into the spec before

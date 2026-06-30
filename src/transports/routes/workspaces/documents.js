@@ -228,7 +228,9 @@ export default async function workspaceDocumentRoutes(fastify, options) {
           ...attributesQueryProps,
           ...filtersQueryProps,
           ...paginationQueryProps,
-          q: { type: 'string' },
+          // q may repeat (?q=car&q=red): a stack of text queries that AND-narrow
+          // each other (stateless refinement). Single q == ordinary search.
+          q: { type: ['string', 'array'], items: { type: 'string' } },
           search: { type: 'string' },
           mode: { type: 'string', enum: ['fts', 'vector', 'hybrid'] },
           includeIncoming: { type: 'boolean', default: false },
@@ -249,7 +251,14 @@ export default async function workspaceDocumentRoutes(fastify, options) {
         ? { context: null, directory: null }
         : resolveScopeSelectors(workspace, request.query, '/');
       const activeSelector = dirSelector || ctxSelector;
-      const searchQuery = request.query.q || request.query.search;
+
+      // Collect the (possibly stacked) text queries. `q` may be a string or an
+      // array (repeated param); `search` is a legacy single alias.
+      const rawQ = request.query.q;
+      const queries = (Array.isArray(rawQ) ? rawQ : (rawQ ? [rawQ] : []))
+        .concat(request.query.search ? [request.query.search] : [])
+        .filter((s) => typeof s === 'string' && s.trim().length > 0);
+      const isSearch = queries.length > 0;
 
       const spec = {
         context: ctxSelector,
@@ -263,17 +272,27 @@ export default async function workspaceDocumentRoutes(fastify, options) {
         }),
       };
 
-      const documents = searchQuery
-        ? await workspace.search({ query: searchQuery, mode: request.query.mode, ...spec })
-        : await workspace.list(spec);
+      let documents;
+      if (queries.length > 1) {
+        // Stacked queries → stateless multi-query refinement (AND-narrow, last ranks).
+        documents = await workspace.searchRefined(queries, spec, {
+          limit: request.query.limit,
+          offset: request.query.offset,
+          mode: request.query.mode,
+        });
+      } else if (queries.length === 1) {
+        documents = await workspace.search({ query: queries[0], mode: request.query.mode, ...spec });
+      } else {
+        documents = await workspace.list(spec);
+      }
 
       if (documents.error) {
         fastify.log.error(`SynapsD error: ${documents.error}`);
-        const responseObject = new ResponseObject().error(`Failed to ${searchQuery ? 'search' : 'list'} documents due to a database error.`, documents.error);
+        const responseObject = new ResponseObject().error(`Failed to ${isSearch ? 'search' : 'list'} documents due to a database error.`, documents.error);
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());
       }
 
-      const responseObject = new ResponseObject().found(documents, searchQuery ? 'Search results retrieved successfully' : 'Documents retrieved successfully', 200, documents.count, documents.totalCount);
+      const responseObject = new ResponseObject().found(documents, isSearch ? 'Search results retrieved successfully' : 'Documents retrieved successfully', 200, documents.count, documents.totalCount);
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
     } catch (error) {
       fastify.log.error(error);

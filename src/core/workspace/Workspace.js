@@ -41,6 +41,13 @@ class Workspace extends EventEmitter {
     static DIRECTORY_TYPE = 'directory';
     // Incoming documents path within directory tree
     static INCOMING_PATH = '/.incoming';
+    // Default cosine-distance floor for the dense side of vector/hybrid search.
+    // synapsd applies no floor by default (pure mechanism); Workspace sets the
+    // product policy: drop kNN neighbours past this cosine distance so a small/
+    // loose embedded corpus can't pollute results with "nearest but irrelevant"
+    // hits. Tuned for bge-small (normalized): related ≲0.5, clearly-unrelated ≳0.7.
+    // Callers may override via an explicit maxDistance (pass 2 to disable).
+    static DEFAULT_MAX_COSINE_DISTANCE = 0.65;
     static INCOMING_LOCK_ID = 'system:incoming';
 
     #rootPath = null;
@@ -505,7 +512,9 @@ class Workspace extends EventEmitter {
     }
 
     async search(spec = {}) {
-        return await this.#getActiveDb().search(this.#normalizeQuerySpec(this.#composeCanvasQuerySpec(spec)));
+        const querySpec = this.#normalizeQuerySpec(this.#composeCanvasQuerySpec(spec));
+        if (querySpec.maxDistance === undefined) { querySpec.maxDistance = Workspace.DEFAULT_MAX_COSINE_DISTANCE; }
+        return await this.#getActiveDb().search(querySpec);
     }
 
     // Stateless multi-query refinement: `spec` supplies the structured scope
@@ -515,7 +524,9 @@ class Workspace extends EventEmitter {
     async searchRefined(queries = [], spec = {}, options = {}) {
         const baseSpec = this.#normalizeQuerySpec(this.#composeCanvasQuerySpec(spec));
         delete baseSpec.query; delete baseSpec.search; delete baseSpec.q;
-        return await this.#getActiveDb().searchRefined(queries, baseSpec, options);
+        const opts = { ...options };
+        if (opts.maxDistance === undefined) { opts.maxDistance = Workspace.DEFAULT_MAX_COSINE_DISTANCE; }
+        return await this.#getActiveDb().searchRefined(queries, baseSpec, opts);
     }
 
     /**

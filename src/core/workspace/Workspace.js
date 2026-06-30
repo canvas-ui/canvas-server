@@ -43,11 +43,14 @@ class Workspace extends EventEmitter {
     static INCOMING_PATH = '/.incoming';
     // Default cosine-distance floor for the dense side of vector/hybrid search.
     // synapsd applies no floor by default (pure mechanism); Workspace sets the
-    // product policy: drop kNN neighbours past this cosine distance so a small/
-    // loose embedded corpus can't pollute results with "nearest but irrelevant"
-    // hits. Tuned for bge-small (normalized): related ≲0.5, clearly-unrelated ≳0.7.
-    // Callers may override via an explicit maxDistance (pass 2 to disable).
-    static DEFAULT_MAX_COSINE_DISTANCE = 0.65;
+    // product policy: drop kNN neighbours past this cosine distance so the dense
+    // side can't pollute results with "nearest but irrelevant" hits (kNN always
+    // returns its top-K regardless of absolute similarity). 0.35 distance = 0.65
+    // cosine similarity — a solid relevance bar for bge-small (normalized).
+    // Empirically separates genuinely-related notes (~0.27) from degenerate
+    // near-centroid embeddings of empty/trivial content (~0.40+), which match any
+    // query. Callers may override via an explicit maxDistance (pass 2 to disable).
+    static DEFAULT_MAX_COSINE_DISTANCE = 0.35;
     static INCOMING_LOCK_ID = 'system:incoming';
 
     #rootPath = null;

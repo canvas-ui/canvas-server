@@ -364,7 +364,12 @@ export default async function adminRoutes(fastify, options) {
   // LMDB lock conflict with the live server. FTS-only; dense vectors are separate.
   fastify.post('/workspaces/:workspaceId/reindex-search', {
     onRequest: [fastify.authenticate, requireAdmin],
-    schema: { params: { type: 'object', required: ['workspaceId'], properties: { workspaceId: { type: 'string' } } } }
+    schema: {
+      params: { type: 'object', required: ['workspaceId'], properties: { workspaceId: { type: 'string' } } },
+      // ?rebuild=true wipes the FTS table + coverage bitmap first — use when the
+      // index drifted (bitmap claims docs indexed but rows are missing).
+      querystring: { type: 'object', properties: { rebuild: { type: 'boolean', default: false } } },
+    }
   }, async (request, reply) => {
     try {
       const identifier = request.params.workspaceId;
@@ -375,7 +380,7 @@ export default async function adminRoutes(fastify, options) {
         const response = new ResponseObject().badRequest('Workspace not found or not active');
         return reply.code(response.statusCode).send(response.getResponse());
       }
-      const result = await ws.db.reindexSearchIndex();
+      const result = await ws.db.reindexSearchIndex({ rebuild: request.query.rebuild === true });
       const response = new ResponseObject().success(result, `FTS reindex complete: ${result.indexed} newly indexed (${result.alreadyIndexed}/${result.totalDocs} total)`);
       return reply.code(response.statusCode).send(response.getResponse());
     } catch (error) {

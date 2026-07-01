@@ -86,17 +86,33 @@ export default class Embedd {
         if (!ws) { return; }
 
         const input = await ws.resolveInput(job.docId);
-        if (!input) { return; }
+        if (!input) { return; }   // doc gone → do not record as seen
 
-        const rule = this.#router.route(input);
-        if (!rule) { debug(`no route for doc ${job.docId} (schema=${input.schema}, ct=${input.contentType})`); return; }
+        const { schema, updatedAt } = input;
+        // The doc appears in the gap of EVERY space that lists its schema as a
+        // candidate (files are candidates for both text+image). It resolves to at
+        // most one; the rest must still be marked seen so reconcile converges.
+        const candidateSpaces = this.#router.candidateSpaces(schema);
+        const rule = input.skip ? null : this.#router.route(input);
 
-        const provider = this.#providers.get(rule.provider);
-        if (!provider) { throw new Error(`unknown provider '${rule.provider}'`); }
+        let resolvedSpace = null;
+        if (rule) {
+            const provider = this.#providers.get(rule.provider);
+            if (!provider) { throw new Error(`unknown provider '${rule.provider}'`); }
+            const rows = await this.#embedInput(provider, rule, input);
+            await ws.storeVectors(job.docId, schema, updatedAt, rows, { space: rule.space });
+            resolvedSpace = rule.space;
+            debug(`embedded ${job.wsId}:${job.docId} → ${rows.length} chunk(s) in '${rule.space}'`);
+        } else {
+            debug(`skip ${job.wsId}:${job.docId} (schema=${schema}, ct=${input.contentType})`);
+        }
 
-        const rows = await this.#embedInput(provider, rule, input);
-        await ws.storeVectors(job.docId, input.schema, input.updatedAt, rows, { space: rule.space });
-        debug(`embedded doc ${job.wsId}:${job.docId} -> ${rows.length} chunk(s) in space '${rule.space}'`);
+        // Mark seen (no vectors) in every other candidate space so the doc leaves
+        // all gaps. storeVectors with [] ticks the seen bitmap without presence.
+        for (const sp of candidateSpaces) {
+            if (sp === resolvedSpace) { continue; }
+            await ws.storeVectors(job.docId, schema, updatedAt, [], { space: sp });
+        }
     }
 
     // Turn a resolved input into chunk rows { chunkId, text?, vector }.

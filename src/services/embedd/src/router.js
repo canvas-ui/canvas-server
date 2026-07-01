@@ -98,6 +98,16 @@ export default class Router {
         return [...set];
     }
 
+    /**
+     * Spaces whose candidate schemas include `schema`. A doc must be marked
+     * "seen" in ALL of these once processed — otherwise it lingers in the gap of
+     * a space it didn't resolve into (files are candidates for both text+image
+     * but resolve to exactly one), causing reconcile to re-fetch it forever.
+     */
+    candidateSpaces(schema) {
+        return this.spaces.filter(sp => this.candidateSchemas(sp).includes(schema));
+    }
+
     get spaces() { return [...this.#bySpace.keys()]; }
     get rules() { return this.#rules; }
 }

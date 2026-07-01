@@ -71,6 +71,29 @@ test('embedd.reconcile: pulls ledger gap and enqueues (deduped), reindex clears 
     await e.stop();
 });
 
+test('router: candidateSpaces(schema)', () => {
+    const r = new Router();
+    assert.deepEqual(r.candidateSpaces('data/abstraction/note'), ['text']);
+    assert.deepEqual(r.candidateSpaces('data/abstraction/file').sort(), ['image', 'text']);
+    assert.deepEqual(r.candidateSpaces('data/abstraction/tab'), []);
+});
+
+test('embedd: skipped file is marked seen in ALL candidate spaces (converges)', async () => {
+    const e = new Embedd();
+    const stored = [];
+    e.registerWorkspace('ws1', {
+        // A file with a non-embeddable contentType → skip marker.
+        resolveInput: async () => ({ skip: true, schema: 'data/abstraction/file', updatedAt: 't', contentType: 'application/pdf' }),
+        storeVectors: async (docId, schema, updatedAt, chunks, opts) => { stored.push({ space: opts.space, n: chunks.length }); },
+    });
+    e.enqueue('ws1', 7);
+    await e.drained();
+    // seen-only writes (0 chunks) in both candidate spaces of a file.
+    assert.deepEqual(stored.map(s => s.space).sort(), ['image', 'text']);
+    assert.ok(stored.every(s => s.n === 0));
+    await e.stop();
+});
+
 test('embedd.reconcile: unknown workspace → error', async () => {
     const e = new Embedd();
     const res = await e.reconcile('nope', {});

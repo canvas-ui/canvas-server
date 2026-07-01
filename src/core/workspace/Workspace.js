@@ -474,12 +474,15 @@ class Workspace extends EventEmitter {
     };
 
     /**
-     * Input source for embedding one document. Returns the raw material the
-     * embedd router needs, or null to skip (doc gone, or bytes not server-side).
-     *   - image/* blob        -> { modality:'image', bytes }
-     *   - text/* stored blob   -> { modality:'text', text } (resolved bytes as utf8)
-     *   - JSON abstraction     -> { modality:'text', text } (generateEmbeddingsData)
-     * @returns {Promise<null|{modality,schema,updatedAt,text?,bytes?,contentType?,chunkOpts?}>}
+     * Input source for embedding one document. Return shapes:
+     *   - null                          → doc gone (do NOT record as seen)
+     *   - { skip:true, schema, ... }    → exists but not embeddable (record as seen)
+     *   - { modality, schema, ... }     → embeddable (text|image + text|bytes)
+     *
+     * A `data/abstraction/file` is a byte blob: embed it from its *content*
+     * (text/* → utf8, image/* → bytes), never from generateEmbeddingsData (which
+     * for File yields the location URL string — garbage to embed). Only JSON
+     * abstractions (note, …) use generateEmbeddingsData.
      */
     async resolveEmbeddingInput(docId) {
         const doc = await this.#getActiveDb().getDocument(parseDocumentId(docId, 'Document ID')).catch(() => null);
@@ -490,25 +493,30 @@ class Workspace extends EventEmitter {
         const contentType = doc.metadata?.contentType || null;
         const chunkOpts = doc.indexOptions?.embeddingOptions?.chunking || {};
         const hasBlob = Array.isArray(doc.locations) && doc.locations.length > 0;
+        const isFile = schema === 'data/abstraction/file';
 
-        // Image blob → raw bytes (server-resident only; device file:// throws → skip).
-        if (contentType && /^image\//.test(contentType) && hasBlob) {
-            const resolved = await this.resolveDocument(doc).catch(() => null);
-            if (!resolved?.buffer) { return null; }
-            return { modality: 'image', schema, updatedAt, bytes: resolved.buffer, contentType };
-        }
-
-        // Text blob (a real file with content) → decode bytes as utf8.
-        if (contentType && /^text\//.test(contentType) && hasBlob) {
-            const resolved = await this.resolveDocument(doc).catch(() => null);
-            if (!resolved?.buffer) { return null; }
-            return { modality: 'text', schema, updatedAt, text: resolved.buffer.toString('utf8'), contentType, chunkOpts };
+        if (isFile) {
+            // Byte blob: only text/image content is embeddable; everything else
+            // (pdf, octet-stream, …) is a deliberate skip until a decoder/CLIP
+            // model exists. Bytes must be server-resident (device file:// throws).
+            if (!hasBlob || !contentType) { return { skip: true, schema, updatedAt, contentType }; }
+            if (/^image\//.test(contentType)) {
+                const resolved = await this.resolveDocument(doc).catch(() => null);
+                if (!resolved?.buffer) { return { skip: true, schema, updatedAt, contentType }; }
+                return { modality: 'image', schema, updatedAt, bytes: resolved.buffer, contentType };
+            }
+            if (/^text\//.test(contentType)) {
+                const resolved = await this.resolveDocument(doc).catch(() => null);
+                if (!resolved?.buffer) { return { skip: true, schema, updatedAt, contentType }; }
+                return { modality: 'text', schema, updatedAt, text: resolved.buffer.toString('utf8'), contentType, chunkOpts };
+            }
+            return { skip: true, schema, updatedAt, contentType };
         }
 
         // JSON abstraction (note, etc.) → the text the doc exposes for embedding.
         const data = typeof doc.generateEmbeddingsData === 'function' ? doc.generateEmbeddingsData() : null;
         const text = Array.isArray(data) ? data.join('\n').trim() : (typeof data === 'string' ? data.trim() : '');
-        if (!text) { return null; }
+        if (!text) { return { skip: true, schema, updatedAt, contentType }; }
         return { modality: 'text', schema, updatedAt, text, contentType, chunkOpts };
     }
 
@@ -557,6 +565,19 @@ class Workspace extends EventEmitter {
         }
         if (lastError) throw lastError;
         return null;
+    }
+
+    /**
+     * Upload raw bytes into the workspace blob store (workspace:data). Returns a
+     * `stored://workspace:data/<key>` location (content-addressed, deduped) that a
+     * File document can then reference — making the bytes server-resident and
+     * embeddable. This is the byte half of `canvas ws insert`.
+     * @param {Buffer} blob
+     * @returns {Promise<{url:string, key:string, checksum:string|null, size:number}>}
+     */
+    async persistBlob(blob) {
+        if (!this.#storedIndex?.isRunning) { await this.#startStoredIndex(); }
+        return await this.#storedIndex.persistBlob(blob);
     }
 
     async getByChecksumString(checksumString, options = { parse: true }) {

@@ -15,38 +15,21 @@ So, short list of what functionality we need:
 
 Now with all of that, lets start to craft a usable webui
 - Our home page (the current "Control Center" place-holder) should be just the menu left and a round button near the bottom right that would toggle a separate card-like toolbox
-- Obove the main toolbox button, there should be smaller buttons 
+- Obove the main floating toolbox button, there should be smaller floating buttons for: 
   - Add Note
   - Add Link
-  - Upload file
+  - Upload file (stored in the default dataset workspace:data)
   - Take a photo/video (if available)
-- All of those should open a B5 formatted canvas
+- All of those should open a B5 formatted empty canvas
+  - Canvas should have a Save/"Link To" button that would show a tree menu with a search bar where to link that note/link etc into, Maximize, Close
 
 Layout
-- Canvas
+- (single-purpose) Canvas
   - Material-design v2 card-like design
   - B5 format
     - Landscape or Portrait orientation
     - Full-screen mode (fills viewport)
-    - Full-screen mode - separate website for that particular canvas
-- New content B5 format vertically scrollable canvases 
-
-
-- Update manifest to allow native PWA features on Android
-  - Share Link
-  - Share Text snippet
-  - Share Photo/Video/File
-- 
-  - Send to Canvas
-    - Opens the 
-
-Optional 
- - OS based speach-to-text for writing notes/chats with agents
- - OS based text-to-speach for reading out loud
- - Record audio/video and send it to an agent real-time
- - 
-  
-- 
+- Canvas(our canvas element) same view, opens when selected from the menu (shows in the tree), we allow opening of multiple canvases next to each other
 
 Create Canvas #1
  - Aligned in the middle
@@ -55,6 +38,10 @@ Add a new canvas #2
 Add a new canvas #3
  - Gets added to the right, enable vertical scroll
 
+Optional 
+ - OS based speach-to-text for writing notes/chats with agents
+ - OS based text-to-speach for reading out loud
+ - Record audio/video and send it to an agent real-time
 
 
 

@@ -68,6 +68,8 @@ class Workspace extends EventEmitter {
     // Managers (injected)
     #storageManager = null;
     #roleManager = null;
+    #embedd = null;            // shared embedding service (optional; server-managed)
+    #embeddRegistered = false;
 
     constructor(options) {
         super({
@@ -87,6 +89,7 @@ class Workspace extends EventEmitter {
         this.#logger = options.logger || createLogger('workspace');
         this.#storageManager = options.storageManager;
         this.#roleManager = options.roleManager;
+        this.#embedd = options.embedd || null;
 
         this.#tokens = new WorkspaceTokens({ configStore: this.#configStore, workspaceId: this.id });
 
@@ -258,11 +261,19 @@ class Workspace extends EventEmitter {
             ]);
 
             const dbPath = path.join(this.#rootPath, WORKSPACE_DIRECTORIES.db || 'Db');
-            this.#db = new Db({ path: dbPath });
+            this.#db = new Db({
+                path: dbPath,
+                // synapsd owns no model; if the embedd service is present, hand it
+                // the query embedder so dense/hybrid search works. Absent → FTS.
+                semantic: this.#embedd
+                    ? { embedQuery: (text, space) => this.#embedd.embedQuery(text, space) }
+                    : undefined,
+            });
             await this.#db.start();
             await this.#ensureContextTree();
             await this.#ensureDirectoryTree();
             this.#bindRuntimeEvents();
+            this.#registerEmbedd();
             // Mark ACTIVE before booting stored/mail indices: their initial sync
             // (IMAP scan → ingestMessage → #put → #getActiveDb) needs isActive,
             // otherwise every fetched message rejects with "Workspace not active".
@@ -285,6 +296,7 @@ class Workspace extends EventEmitter {
 
         this.#logger.debug({ workspaceId: this.id }, 'Stopping workspace');
         try {
+            this.#unregisterEmbedd();
             await this.#stopStoredIndex();
             if (this.#db) {
                 this.#unbindRuntimeEvents();
@@ -401,6 +413,103 @@ class Workspace extends EventEmitter {
             paths: Workspace.#buildPaths(context, directory),
             features: this.#normalizeFeatureInput(features, attributes),
         });
+    }
+
+    // ── Embedding (embedd service seam) ───────────────────────────────────────
+    // synapsd owns no embedding model; the embedd service computes vectors and
+    // pushes them back here. These two methods are the workspace-level adapter
+    // the embedd service registers with (storeVectors + resolveInput).
+
+    /** Vector sink: persist embedd-computed chunk vectors into a synapsd space. */
+    async storeDocumentEmbeddings(docId, schema, updatedAt, chunks, opts = {}) {
+        return await this.#getActiveDb().storeDocumentEmbeddings(
+            parseDocumentId(docId, 'Document ID'), schema, updatedAt, chunks, opts,
+        );
+    }
+
+    /** Ledger read: docIds that match `schemas` but have no embedding for `space`. */
+    async getUnembeddedDocIds(space = 'text', schemas = null) {
+        return await this.#getActiveDb().getUnembeddedDocIds(space, schemas);
+    }
+
+    /** Wipe an embedding space (vectors + presence + seen) for a full re-embed. */
+    async clearSpace(space = 'text') {
+        return await this.#getActiveDb().clearSpace(space);
+    }
+
+    // ── embedd registration + live enqueue ────────────────────────────────────
+
+    /** Register this workspace with the shared embedd service + subscribe events. */
+    #registerEmbedd() {
+        if (!this.#embedd || this.#embeddRegistered) { return; }
+        this.#embedd.registerWorkspace(this.id, {
+            resolveInput: (docId) => this.resolveEmbeddingInput(docId),
+            storeVectors: (docId, schema, updatedAt, chunks, opts) =>
+                this.storeDocumentEmbeddings(docId, schema, updatedAt, chunks, opts),
+            getUnembedded: (space, schemas) => this.getUnembeddedDocIds(space, schemas),
+            clearSpace: (space) => this.clearSpace(space),
+        });
+        // Live enqueue: new + content-updated docs. Blob ingestion also lands as
+        // document.inserted (WorkspaceStoredIndex creates docs), so this covers
+        // stored files too — no separate object:add subscription needed.
+        this.on('document.inserted', this.#onDocEventForEmbed);
+        this.on('document.updated', this.#onDocEventForEmbed);
+        this.#embeddRegistered = true;
+    }
+
+    #unregisterEmbedd() {
+        if (!this.#embedd || !this.#embeddRegistered) { return; }
+        this.off('document.inserted', this.#onDocEventForEmbed);
+        this.off('document.updated', this.#onDocEventForEmbed);
+        this.#embedd.unregisterWorkspace(this.id);
+        this.#embeddRegistered = false;
+    }
+
+    #onDocEventForEmbed = (payload) => {
+        if (!this.#embedd) { return; }
+        const ids = Array.isArray(payload?.ids)
+            ? payload.ids
+            : (payload?.id != null ? [payload.id] : []);
+        for (const id of ids) { this.#embedd.enqueue(this.id, id); }
+    };
+
+    /**
+     * Input source for embedding one document. Returns the raw material the
+     * embedd router needs, or null to skip (doc gone, or bytes not server-side).
+     *   - image/* blob        -> { modality:'image', bytes }
+     *   - text/* stored blob   -> { modality:'text', text } (resolved bytes as utf8)
+     *   - JSON abstraction     -> { modality:'text', text } (generateEmbeddingsData)
+     * @returns {Promise<null|{modality,schema,updatedAt,text?,bytes?,contentType?,chunkOpts?}>}
+     */
+    async resolveEmbeddingInput(docId) {
+        const doc = await this.#getActiveDb().getDocument(parseDocumentId(docId, 'Document ID')).catch(() => null);
+        if (!doc) { return null; }
+
+        const schema = doc.schema;
+        const updatedAt = doc.updatedAt || new Date().toISOString();
+        const contentType = doc.metadata?.contentType || null;
+        const chunkOpts = doc.indexOptions?.embeddingOptions?.chunking || {};
+        const hasBlob = Array.isArray(doc.locations) && doc.locations.length > 0;
+
+        // Image blob → raw bytes (server-resident only; device file:// throws → skip).
+        if (contentType && /^image\//.test(contentType) && hasBlob) {
+            const resolved = await this.resolveDocument(doc).catch(() => null);
+            if (!resolved?.buffer) { return null; }
+            return { modality: 'image', schema, updatedAt, bytes: resolved.buffer, contentType };
+        }
+
+        // Text blob (a real file with content) → decode bytes as utf8.
+        if (contentType && /^text\//.test(contentType) && hasBlob) {
+            const resolved = await this.resolveDocument(doc).catch(() => null);
+            if (!resolved?.buffer) { return null; }
+            return { modality: 'text', schema, updatedAt, text: resolved.buffer.toString('utf8'), contentType, chunkOpts };
+        }
+
+        // JSON abstraction (note, etc.) → the text the doc exposes for embedding.
+        const data = typeof doc.generateEmbeddingsData === 'function' ? doc.generateEmbeddingsData() : null;
+        const text = Array.isArray(data) ? data.join('\n').trim() : (typeof data === 'string' ? data.trim() : '');
+        if (!text) { return null; }
+        return { modality: 'text', schema, updatedAt, text, contentType, chunkOpts };
     }
 
     async linkMany(ids, { context = '/', directory = null, features = [], attributes, emitEvent = true, allowIncomingWrite = false } = {}) {

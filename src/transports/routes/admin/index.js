@@ -390,13 +390,21 @@ export default async function adminRoutes(fastify, options) {
     }
   });
 
-  // Dense-vector (embedding) reindex: enqueue every embeddable document missing a
-  // vector. ASYNC — returns immediately after enqueuing; the embedding queue drains
-  // off-thread (model inference per doc). Idempotent. Only schemas in
-  // semantic.embeddableSchemas are embedded (default notes; tabs/files are not).
+  // Embedding reconcile/reindex: ask the embedd service to drain this workspace's
+  // unembedded gap (docs matching a space's candidate schemas but with no vectors
+  // yet — a durable synapsd bitmap ledger). ASYNC + idempotent. `reindex:true`
+  // wipes each space first for a full re-embed. Embedding runs off-thread in the
+  // embedd service; this only enqueues.
   fastify.post('/workspaces/:workspaceId/reindex-embeddings', {
     onRequest: [fastify.authenticate, requireAdmin],
-    schema: { params: { type: 'object', required: ['workspaceId'], properties: { workspaceId: { type: 'string' } } } }
+    schema: {
+      params: { type: 'object', required: ['workspaceId'], properties: { workspaceId: { type: 'string' } } },
+      body: {
+        type: 'object',
+        properties: { space: { type: 'string' }, reindex: { type: 'boolean' } },
+        additionalProperties: false,
+      },
+    }
   }, async (request, reply) => {
     try {
       const identifier = request.params.workspaceId;
@@ -407,12 +415,22 @@ export default async function adminRoutes(fastify, options) {
         const response = new ResponseObject().badRequest('Workspace not found or not active');
         return reply.code(response.statusCode).send(response.getResponse());
       }
-      const result = await ws.db.reindexEmbeddings();
-      const response = new ResponseObject().success(result, `Embedding reindex enqueued: ${result.enqueued} docs (draining in background; ${result.queued} queued)`);
+      const embedd = fastify.workspaceManager.embedd;
+      if (!embedd) {
+        const response = new ResponseObject().badRequest('Embedding service is disabled (CANVAS_EMBEDD_ENABLED=false)');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+      const { space = null, reindex = false } = request.body || {};
+      const result = await embedd.reconcile(workspaceId, { space, reindex });
+      if (result?.error) {
+        const response = new ResponseObject().badRequest(result.error);
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+      const response = new ResponseObject().success(result, `Embedding reconcile: ${result.enqueued} doc(s) enqueued (draining off-thread)`);
       return reply.code(response.statusCode).send(response.getResponse());
     } catch (error) {
       fastify.log.error(error);
-      const response = new ResponseObject().serverError(error.message || 'Failed to reindex embeddings');
+      const response = new ResponseObject().serverError(error.message || 'Failed to reconcile embeddings');
       return reply.code(response.statusCode).send(response.getResponse());
     }
   });

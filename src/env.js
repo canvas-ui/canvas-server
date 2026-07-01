@@ -41,6 +41,15 @@ export const env = {
     user: {
         home: USER_HOME
     },
+    embedd: {
+        // Server-managed embedding service (shared singleton). Disabled → workspaces
+        // run store-only: existing vectors stay searchable, no new embeddings, dense
+        // search degrades to FTS.
+        enabled: process.env.CANVAS_EMBEDD_ENABLED !== 'false',
+        ollamaHost: process.env.OLLAMA_HOST || null,
+        // One shared fastembed model store for all workspaces (not per-workspace).
+        cacheDir: process.env.CANVAS_EMBEDD_CACHE_DIR || path.join(SERVER_HOME, 'embedd', 'models'),
+    },
     auth: {
         // TODO: Use SERVER_HOME/config/auth.json for jwtSecret and tokenExpiry
         jwtSecret: process.env.CANVAS_JWT_SECRET || 'canvas-jwt-secret-change-in-production', //generateJwtSecret(),

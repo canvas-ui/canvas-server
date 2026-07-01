@@ -1,0 +1,193 @@
+'use strict';
+
+import debugInstance from 'debug';
+const debug = debugInstance('canvas:embedd');
+
+import Router from './router.js';
+import Queue from './queue.js';
+import OnnxProvider from './providers/onnx.js';
+import OllamaProvider from './providers/ollama.js';
+import { chunkText } from './chunking.js';
+
+/**
+ * Embedd — the canvas embedding service.
+ *
+ * Singleton (one model runtime shared across all workspaces — no per-workspace
+ * model footprint). Owns pluggable providers (ONNX local, Ollama remote) and a
+ * content router. Workspaces register a small adapter and enqueue doc ids; the
+ * queue resolves the doc's embeddable input, routes it to a provider/space,
+ * embeds, and pushes chunk vectors back through the workspace's storeVectors.
+ *
+ * synapsd owns no model — it only stores + searches vectors. For search, the
+ * synapsd Db is handed this service's `embedQuery` as a callback.
+ *
+ * Workspace adapter contract (per registerWorkspace):
+ *   resolveInput(docId) -> {
+ *     modality: 'text' | 'image',
+ *     schema: string,
+ *     updatedAt: string,
+ *     text?: string,            // modality 'text'
+ *     bytes?: Buffer,           // modality 'image'
+ *     contentType?: string,
+ *     chunkOpts?: object,       // embeddingOptions.chunking
+ *   } | null                    // null => skip (doc gone / not embeddable)
+ *   storeVectors(docId, schema, updatedAt, chunks, { space }) -> Promise<void>
+ *     chunks: { chunkId, text?, vector }[]
+ */
+export default class Embedd {
+
+    #router;
+    #providers = new Map();
+    #workspaces = new Map();   // wsId -> { resolveInput, storeVectors }
+    #queue;
+    #stopped = false;
+
+    constructor(options = {}) {
+        this.#router = new Router({ rules: options.rules });
+        this.#providers.set('onnx', new OnnxProvider({ cacheDir: options.onnxCacheDir || null }));
+        this.#providers.set('ollama', new OllamaProvider({ host: options.ollamaHost }));
+        this.#queue = new Queue((job) => this.#handle(job));
+        this.#queue.on('error', (e) => debug(`queue error: ${e.key}: ${e.error}`));
+    }
+
+    get router() { return this.#router; }
+
+    // ── Workspace registration ────────────────────────────────────────────────
+
+    registerWorkspace(wsId, adapter) {
+        if (!wsId || !adapter?.resolveInput || !adapter?.storeVectors) {
+            throw new Error('registerWorkspace requires { resolveInput, storeVectors }');
+        }
+        this.#workspaces.set(wsId, adapter);
+        debug(`workspace registered: ${wsId}`);
+    }
+
+    unregisterWorkspace(wsId) {
+        this.#workspaces.delete(wsId);
+        debug(`workspace unregistered: ${wsId}`);
+    }
+
+    // ── Ingestion ─────────────────────────────────────────────────────────────
+
+    enqueue(wsId, docId) {
+        if (this.#stopped || !this.#workspaces.has(wsId)) { return; }
+        const id = Number(docId);
+        if (!Number.isInteger(id) || id <= 0) { return; }
+        this.#queue.enqueue(`${wsId}:${id}`, { wsId, docId: id });
+    }
+
+    enqueueMany(wsId, docIds) {
+        if (!Array.isArray(docIds)) { return; }
+        for (const id of docIds) { this.enqueue(wsId, id); }
+    }
+
+    async #handle(job) {
+        const ws = this.#workspaces.get(job.wsId);
+        if (!ws) { return; }
+
+        const input = await ws.resolveInput(job.docId);
+        if (!input) { return; }
+
+        const rule = this.#router.route(input);
+        if (!rule) { debug(`no route for doc ${job.docId} (schema=${input.schema}, ct=${input.contentType})`); return; }
+
+        const provider = this.#providers.get(rule.provider);
+        if (!provider) { throw new Error(`unknown provider '${rule.provider}'`); }
+
+        const rows = await this.#embedInput(provider, rule, input);
+        await ws.storeVectors(job.docId, input.schema, input.updatedAt, rows, { space: rule.space });
+        debug(`embedded doc ${job.wsId}:${job.docId} -> ${rows.length} chunk(s) in space '${rule.space}'`);
+    }
+
+    // Turn a resolved input into chunk rows { chunkId, text?, vector }.
+    async #embedInput(provider, rule, input) {
+        if (input.modality === 'image') {
+            if (!input.bytes) { return []; }
+            const { vectors } = await provider.embedImage([input.bytes], rule);
+            const vec = vectors?.[0];
+            return Array.isArray(vec) ? [{ chunkId: 0, vector: vec }] : [];
+        }
+
+        // text
+        const text = typeof input.text === 'string' ? input.text.trim() : '';
+        if (!text) { return []; }
+
+        const chunks = rule.chunk === false
+            ? [{ chunkId: 0, text }]
+            : chunkText(text, input.chunkOpts || {});
+        if (chunks.length === 0) { return []; }
+
+        const { vectors } = await provider.embedText(chunks.map(c => c.text), rule);
+        return chunks
+            .map((c, i) => ({ chunkId: c.chunkId, text: c.text, vector: vectors[i] }))
+            .filter(r => Array.isArray(r.vector));
+    }
+
+    // ── Reconcile / reindex (durable bitmap ledger) ───────────────────────────
+
+    /**
+     * Drain a workspace's unembedded gap. Pulls docIds that match each space's
+     * candidate schemas but have no embedding yet (from the workspace's synapsd
+     * bitmap ledger) and enqueues them. Idempotent — safe to call any time.
+     * @param {string} wsId
+     * @param {{space?:string, reindex?:boolean}} [opts] reindex clears the space first
+     * @returns {Promise<{enqueued:number, spaces:Record<string,number>}|{error:string}>}
+     */
+    async reconcile(wsId, { space = null, reindex = false } = {}) {
+        const ws = this.#workspaces.get(wsId);
+        if (!ws) { return { error: 'workspace not registered' }; }
+        if (!ws.getUnembedded) { return { error: 'workspace has no ledger adapter' }; }
+
+        const spaces = space ? [space] : this.#router.spaces;
+        const per = {};
+        let enqueued = 0;
+        for (const sp of spaces) {
+            if (reindex && ws.clearSpace) { await ws.clearSpace(sp); }
+            const schemas = this.#router.candidateSchemas(sp);
+            if (schemas.length === 0) { per[sp] = 0; continue; }
+            let ids = [];
+            try { ids = await ws.getUnembedded(sp, schemas); } catch (e) { debug(`reconcile ${wsId}/${sp}: ${e.message}`); }
+            for (const id of ids) { this.enqueue(wsId, id); }
+            per[sp] = ids.length;
+            enqueued += ids.length;
+        }
+        debug(`reconcile ${wsId}: enqueued ${enqueued} across ${Object.keys(per).length} space(s)`);
+        return { enqueued, spaces: per };
+    }
+
+    // ── Query (search side) ───────────────────────────────────────────────────
+
+    /** Embed a query string into a space's vector, for synapsd search. */
+    async embedQuery(text, space = 'text') {
+        if (typeof text !== 'string' || text.length === 0) { return null; }
+        const rule = this.#router.spaceRule(space);
+        if (!rule) { return null; }
+        const provider = this.#providers.get(rule.provider);
+        if (!provider) { return null; }
+        const { vector } = await provider.embedQuery(text, rule);
+        return vector || null;
+    }
+
+    // ── Lifecycle ─────────────────────────────────────────────────────────────
+
+    async drained() { await this.#queue.drained(); }
+
+    async status() {
+        const providers = {};
+        for (const [id, p] of this.#providers) {
+            try { providers[id] = await p.status(); } catch (e) { providers[id] = { id, error: e.message }; }
+        }
+        return {
+            workspaces: this.#workspaces.size,
+            spaces: this.#router.spaces,
+            queue: { pending: this.#queue.size, draining: this.#queue.isDraining },
+            providers,
+        };
+    }
+
+    async stop() {
+        this.#stopped = true;
+        this.#queue.stop();
+        await Promise.all([...this.#providers.values()].map(p => p.stop().catch(() => {})));
+    }
+}

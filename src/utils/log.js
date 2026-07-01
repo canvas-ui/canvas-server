@@ -9,6 +9,7 @@ import { EventEmitter } from 'events';
 import { Writable } from 'stream';
 import pino from 'pino';
 import pretty from 'pino-pretty';
+import debugModule from 'debug';
 import { env } from '../env.js';
 
 const isDev = process.env.NODE_ENV !== 'production';
@@ -31,6 +32,7 @@ logEvents.setMaxListeners(0);
  * Config
  */
 
+const DEFAULT_DEBUG_NAMESPACES = 'canvas:*,stored:*,neurald:*';
 const DEFAULT_LOGGING_CONFIG = {
     level: 'info',
     file: 'log/canvas-server.log',
@@ -41,6 +43,8 @@ const DEFAULT_LOGGING_CONFIG = {
         pretty: null,
     },
     captureConsole: true,
+    captureDebug: true,
+    debugNamespaces: DEFAULT_DEBUG_NAMESPACES,
 };
 
 function normalizeLevel(level, fallback = 'info') {
@@ -95,6 +99,28 @@ const CONSOLE_PRETTY = loggingConfig.console?.pretty ?? isDev;
 /**
  * Level helpers
  */
+
+function stripAnsi(value) {
+    return String(value).replace(/\u001b\[[0-9;]*m/g, '');
+}
+
+function resolveDebugNamespaces() {
+    if (process.env.DEBUG) {
+        return process.env.DEBUG;
+    }
+
+    if (loggingConfig.captureDebug === false) {
+        return null;
+    }
+
+    if (!['trace', 'debug'].includes(LOG_LEVEL)) {
+        return null;
+    }
+
+    return loggingConfig.debugNamespaces ?? DEFAULT_DEBUG_NAMESPACES;
+}
+
+const DEBUG_NAMESPACES = resolveDebugNamespaces();
 
 function getLevelValue(level) {
     if (typeof level === 'number') {
@@ -393,6 +419,43 @@ function patchConsole() {
 }
 
 patchConsole();
+patchDebug();
+
+/**
+ * debug module capture
+ */
+
+function patchDebug() {
+    if (loggingConfig.captureDebug === false || !DEBUG_NAMESPACES) {
+        return;
+    }
+
+    if (!process.env.DEBUG) {
+        debugModule.enable(DEBUG_NAMESPACES);
+    }
+
+    if (!process.env.DEBUG_COLORS) {
+        process.env.DEBUG_COLORS = 'no';
+    }
+
+    debugModule.formatArgs = function (args) {
+        // pino adds timestamp + module; keep the raw debug message only
+    };
+
+    debugModule.log = function (...args) {
+        const namespace = this?.namespace || 'debug';
+        const msg = args.map((arg) => stripAnsi(arg)).join(' ').trim();
+        const debugLogger = logger.child({ module: namespace });
+        const writer = debugLogger.debug.bind(debugLogger);
+
+        if (this?.diff != null) {
+            writer({ ms: this.diff }, msg);
+            return;
+        }
+
+        writer(msg);
+    };
+}
 
 /**
  * Public API
@@ -421,6 +484,8 @@ export function getLoggingConfig() {
             pretty: CONSOLE_PRETTY,
         },
         captureConsole: loggingConfig.captureConsole !== false,
+        captureDebug: loggingConfig.captureDebug !== false,
+        debugNamespaces: DEBUG_NAMESPACES,
     };
 }
 

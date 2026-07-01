@@ -26,6 +26,7 @@ import ContextManager from './core/context/index.js';
 import DeviceRegistry from './core/device/Registry.js';
 import Roles from './core/role/index.js';
 import Agents from './core/agent/index.js';
+import Embedd from './services/embedd/src/index.js';
 
 // Services
 import { authService } from './transports/auth/service.js';
@@ -47,6 +48,7 @@ class Server extends EventEmitter {
     #contextManager;
     #roles;
     #agents;
+    #embedd;   // shared embedding service (server-managed singleton; optional)
 
     // Global services
     #authService;
@@ -185,10 +187,21 @@ class Server extends EventEmitter {
             logger: createLogger('users'),
         });
 
+        // Shared embedding service — one model runtime for all workspaces (avoids
+        // the per-workspace model footprint). Optional: when disabled, workspaces
+        // run store-only and dense search degrades to FTS.
+        if (env.embedd.enabled) {
+            this.#embedd = new Embedd({
+                onnxCacheDir: env.embedd.cacheDir,
+                ollamaHost: env.embedd.ollamaHost,
+            });
+        }
+
         this.#workspaceManager = new WorkspaceManager({
             defaultRootPath: env.user.home,
             indexStore: jim.createIndex('workspaces'),
             users: this.#users,
+            embedd: this.#embedd,
             logger: createLogger('workspace-manager'),
         });
 
@@ -345,8 +358,13 @@ class Server extends EventEmitter {
             await this.#apiServer.close();
             this.#apiServer = null;
         }
+        if (this.#embedd) {
+            try { await this.#embedd.stop(); } catch (err) { logger.warn({ err }, 'embedd stop failed'); }
+        }
         return this;
     }
+
+    get embedd() { return this.#embedd; }
 
     async #closeRealtimeConnections() {
         const io = this.#apiServer?.io;

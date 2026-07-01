@@ -10,11 +10,17 @@ I was postponing a real UX-focused refactor for a long time becacuse the integra
 So, short list of what functionality we need:
 - Send a link, text selection, photo/video or a file to canvas
   - We should re-use OS native features and register our PWA as a endpoint for all of those
-- Record video or sound and wire it through our PWA to our agent runtime
-- Talk to a selected agent directly - iow make a webrtc call through our PWA to the agent runtime
+- Record video or sound and wire it through our PWA to our agent runtime(take into account, deffer for now, backend not implemented yet)
+- Talk to a selected agent directly - iow make a webrtc call through our PWA to the agent runtime(deffered for now)
 
 Now with all of that, lets start to craft a usable webui
-- Our home page (the current "Control Center" place-holder) should be just the menu left and a round toolbox button near the bottom right
+- Our home page (the current "Control Center" place-holder) should be just the menu left and a round button near the bottom right that would toggle a separate card-like toolbox
+- Obove the main toolbox button, there should be smaller buttons 
+  - Add Note
+  - Add Link
+  - Upload file
+  - Take a photo/video (if available)
+- All of those should open a B5 formatted canvas
 
 Layout
 - Canvas

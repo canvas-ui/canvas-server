@@ -1,0 +1,19 @@
+{
+  "name": "canvas-embedd",
+  "version": "1.0.0",
+  "description": "Unified embedding service: pluggable ONNX + Ollama providers, content-routed, pushes vectors into synapsd",
+  "main": "./src/index.js",
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
+  "author": "me@idnc.sk",
+  "license": "ISC",
+  "dependencies": {
+    "debug": "^4.4.3",
+    "fastembed": "^2.1.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

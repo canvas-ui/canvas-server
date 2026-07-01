@@ -29,7 +29,47 @@ Layout
   - B5 format
     - Landscape or Portrait orientation
     - Full-screen mode (fills viewport)
+- Canvas(our canvas element) same view, opens when selected from the menu (shows in the tree), we allow opening of multiple canvases next to each otherOur webUI has one important issue, it is useless. 
+It was never meant as a product, it started and continued its life as an adhoc LLM and canvas-server feature testing bed. 
+There are some usable configuration features but one simple question that points out the uselessness of the current implementation - would a user want to have canvas open as his home-page? Answer is no, not even I would and I'm the one who put the whole thing together. Added to that, the whole UI was never meant to look as it does now, I did some sketches, copy-pasted them to older models and everything they came up with was exactly a standard boring react website regardless of how many times I repeated the exercise and refined my sketches.
+
+I was postponing a real UX-focused refactor for a long time becacuse the integrations (browser extensions, cli, now canvas-fuse)  - for me - were more imporant, but I need to move to mobile and noticed that one can install a website - our website - as a PWA and even found some nice mdn docs that claim one can use native android features to "send a link" to canvas or copy some text and save it as a note in canvas or take a photo and upload it etc - over a PWA!
+
+So, short list of what functionality we need:
+- Send a link, text selection, photo/video or a file to canvas
+  - We should re-use OS native features and register our PWA as a endpoint for all of those
+- Record video or sound and wire it through our PWA to our agent runtime(take into account, deffer for now, backend not implemented yet)
+- Talk to a selected agent directly - iow make a webrtc call through our PWA to the agent runtime(deffered for now)
+
+Now with all of that, lets start to craft a usable webui
+- Our home page (the current "Control Center" place-holder) should be just the menu left and a round button near the bottom right that would toggle a separate card-like toolbox
+- Obove the main floating toolbox button, there should be smaller floating buttons for: 
+  - Add Note
+  - Add Link
+  - Upload file (stored in the default dataset workspace:data)
+  - Take a photo/video (if available)
+- All of those should open a B5 formatted empty canvas
+  - Canvas should have a Save/"Link To" button that would show a tree menu with a search bar where to link that note/link etc into, Maximize, Close
+
+Layout
+- (single-purpose) Canvas
+  - Material-design v2 card-like design
+  - B5 format
+    - Landscape or Portrait orientation
+    - Full-screen mode (fills viewport)
 - Canvas(our canvas element) same view, opens when selected from the menu (shows in the tree), we allow opening of multiple canvases next to each other
+
+Create Canvas #1
+ - Aligned in the middle
+Add a new canvas #2
+ - Gets added to the right, first canvas moves left
+Add a new canvas #3
+ - Gets added to the right, enable vertical scroll
+
+WebUI lives in @src/ui/web/ and this will be a tough one, if you
+  want me to isntall any tools or skills that may be usefull let me know. We just introduced
+  @src/transports/routes/workspaces/blobs.js, PWAs already installed on adroid devices should
+  be updateable (I guess some special consideration is needed for the manifest.json file)
 
 Create Canvas #1
  - Aligned in the middle
@@ -58,12 +98,6 @@ Context: `system:incoming` now locks only the `.incoming` root (non-cascading); 
 - [ ] **webui "Purge All" ignores treeType.** `purgeWorkspaceDocuments` (`src/ui/web/src/services/workspace.ts:675`) calls `appendWorkspaceContext(params, contextSpec)` with no `treeName`/`treeType` → always queries the CONTEXT tree. On any directory-tree path it targets the wrong tree and no-ops (or worse, purges the wrong scope). Already hidden in `/.incoming` (button gated off via `isIncomingPath` in `pages/workspaces/[workspaceName]/index.tsx`), but still wrong for other directory-tree paths where the button shows. Fix: thread `treeName`/`treeType` through `purgeWorkspaceDocuments` + `handlePurgeDocuments` like `deleteWorkspaceDocuments` already does (server `/documents/purge` accepts `treeType=directory`).
 
 Fine-tune .cursor/prompts/20260613-hooks+agents.md
-
-## Stored
-
-Implement a local blob store "workspace:data" in {WORKSPACE_ROOT}/data based on cacache
-? Content-Defined Chunking (CDC) > block-level dedup on top (Rabin Fingerprints / Buzhash chunking algo)
-
 
 ## MVP Scope
 
@@ -151,18 +185,6 @@ Review and refine(if required) all websocket events and their integration across
 - all document events
 Make sure all active connections are properly shut down on server restart, active ws connections currently prevent a clean server restart (a bug that resurfaced recently)
 
-
-## MVP Scope (deadline EO 06/26)
-
-### 
-
-### Storage backend (stored)
-
-- Rename fs:home and fs:data to workspace:home and workspace:data
-- Ensure 
-
-
-
 ## WebUI cosmetics
 
 Lets update our current webui @src/ui/web as follows:
@@ -203,11 +225,6 @@ In general, we need to design a backend removal dialog with tick boxes for each 
 - Removing a object from all its backens will also wipe it from the DB
 - .incoming tree should show a "Sync" button for each backend or directory, so that users can trigger a refresh (and sync all newly coppied or renamed files for example)
 - .icoming tree should not have a import option nor 
-
-
-
-
-
 
 View
 /workspaces

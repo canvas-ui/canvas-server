@@ -572,7 +572,8 @@ class Workspace extends EventEmitter {
      * `stored://workspace:data/<key>` location (content-addressed, deduped) that a
      * File document can then reference — making the bytes server-resident and
      * embeddable. This is the byte half of `canvas ws insert`.
-     * @param {Buffer} blob
+     * @param {Buffer|import('stream').Readable} blob buffered or streamed (stored
+     *   hashes a stream on the fly to a temp file — large blobs never buffer in RAM)
      * @returns {Promise<{url:string, key:string, checksum:string|null, size:number}>}
      */
     async persistBlob(blob) {

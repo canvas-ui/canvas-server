@@ -8,15 +8,17 @@ import ResponseObject from '../../ResponseObject.js';
 // bytes become server-resident and therefore embeddable (unlike `ws add`, which
 // only records a device file:// pointer).
 
-const BLOB_BODY_LIMIT = 1073741824; // 1 GiB (matches server bodyLimit)
+const BLOB_BODY_LIMIT = 21474836480; // 20 GiB — streamed to disk, never buffered in RAM
 
 export default async function blobRoutes(fastify) {
-  // Scoped to this plugin: parse binary bodies as a Buffer. Does not touch the
-  // JSON parser used by sibling routes (application/json is unaffected).
+  // Scoped to this plugin: hand the RAW request stream to the handler (no
+  // buffering) so large blobs stream straight through stored → cacache/temp file
+  // without ever materializing in memory. Mirrors the webdav upload parser.
+  // application/json on sibling routes is unaffected.
   fastify.addContentTypeParser(
     'application/octet-stream',
-    { parseAs: 'buffer', bodyLimit: BLOB_BODY_LIMIT },
-    (_req, body, done) => done(null, body),
+    { bodyLimit: BLOB_BODY_LIMIT },
+    (_req, payload, done) => done(null, payload),
   );
 
   async function getWorkspaceInstance(request, reply) {
@@ -46,13 +48,16 @@ export default async function blobRoutes(fastify) {
     const workspace = await getWorkspaceInstance(request, reply);
     if (!workspace) { return; }
 
+    // request.body is the raw Readable stream (or a Buffer for tiny bodies).
     const body = request.body;
-    if (!Buffer.isBuffer(body) || body.length === 0) {
-      const r = new ResponseObject().badRequest('Empty or non-binary body. Send bytes as application/octet-stream.');
+    if (!body) {
+      const r = new ResponseObject().badRequest('Empty body. Send bytes as application/octet-stream.');
       return reply.code(r.statusCode).send(r.getResponse());
     }
 
     try {
+      // stored streams a Readable to a temp file + cacache (hash-on-the-fly);
+      // a Buffer is hashed in memory. Either way persistBlob returns the location.
       const result = await workspace.persistBlob(body);
       const r = new ResponseObject().created(result, 'Blob stored');
       return reply.code(r.statusCode).send(r.getResponse());

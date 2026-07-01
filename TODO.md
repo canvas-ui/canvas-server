@@ -1,5 +1,58 @@
 # TODO List
 
+
+Our webUI has one important issue, it is useless. 
+It was never meant as a product, it started and continued its life as an adhoc LLM and canvas-server feature testing bed. 
+There are some usable configuration features but one simple question that points out the uselessness of the current implementation - would a user want to have canvas open as his home-page? Answer is no, not even I would and I'm the one who put the whole thing together. Added to that, the whole UI was never meant to look as it does now, I did some sketches, copy-pasted them to older models and everything they came up with was exactly a standard boring react website regardless of how many times I repeated the exercise and refined my sketches.
+
+I was postponing a real UX-focused refactor for a long time becacuse the integrations (browser extensions, cli, now canvas-fuse)  - for me - were more imporant, but I need to move to mobile and noticed that one can install a website - our website - as a PWA and even found some nice mdn docs that claim one can use native android features to "send a link" to canvas or copy some text and save it as a note in canvas or take a photo and upload it etc - over a PWA!
+
+So, short list of what functionality we need:
+- Send a link, text selection, photo/video or a file to canvas
+  - We should re-use OS native features and register our PWA as a endpoint for all of those
+- Record video or sound and wire it through our PWA to our agent runtime
+- Talk to a selected agent directly - iow make a webrtc call through our PWA to the agent runtime
+
+Now with all of that, lets start to craft a usable webui
+- Our home page (the current "Control Center" place-holder) should be just the menu left and a round toolbox button near the bottom right
+
+Layout
+- Canvas
+  - Material-design v2 card-like design
+  - B5 format
+    - Landscape or Portrait orientation
+    - Full-screen mode (fills viewport)
+    - Full-screen mode - separate website for that particular canvas
+- New content B5 format vertically scrollable canvases 
+
+
+- Update manifest to allow native PWA features on Android
+  - Share Link
+  - Share Text snippet
+  - Share Photo/Video/File
+- 
+  - Send to Canvas
+    - Opens the 
+
+Optional 
+ - OS based speach-to-text for writing notes/chats with agents
+ - OS based text-to-speach for reading out loud
+ - Record audio/video and send it to an agent real-time
+ - 
+  
+- 
+
+Create Canvas #1
+ - Aligned in the middle
+Add a new canvas #2
+ - Gets added to the right, first canvas moves left
+Add a new canvas #3
+ - Gets added to the right, enable vertical scroll
+
+
+
+
+
 ## .incoming backend layers + active-backend delete guard
 
 Land these two together — (3)'s clean form depends on (4)'s single per-backend node.

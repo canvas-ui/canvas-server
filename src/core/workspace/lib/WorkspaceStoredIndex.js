@@ -4,6 +4,7 @@ import path from 'path';
 import fs from 'fs/promises';
 import { createReadStream } from 'fs';
 import Stored from '../../../services/stored/src/index.js';
+import { extract as extractBlobMetadata } from '../../../services/stored/src/extractors/index.js';
 import { parseLocationUrl } from '../../../services/synapsd/src/utils/path-helpers.js';
 import { INCOMING_ROOT_CONTEXT } from '../../../utils/incoming-documents.js';
 
@@ -109,6 +110,10 @@ export class WorkspaceStoredIndex {
                 root: path.join(this.#rootPath, '.stored'),
                 checksums: ['sha256'],
                 primaryChecksum: 'sha256',
+                // Inline metadata extraction at ingest (EXIF/GPS/dimensions/media).
+                // Graceful + optional: no-ops if parser deps are absent. Disable
+                // with CANVAS_EXTRACT_DISABLED=true.
+                extract: process.env.CANVAS_EXTRACT_DISABLED === 'true' ? null : extractBlobMetadata,
             });
 
             await this.#registerConfiguredBackends();
@@ -222,6 +227,10 @@ export class WorkspaceStoredIndex {
             key: res.key,
             checksum: res.checksums?.sha256 || null,
             size: res.size,
+            mimeType: res.mimeType || null,
+            // Inline-extracted EXIF/GPS/dimensions/media (may be {}). The caller
+            // (blob-upload route → CLI) merges this onto the File document.
+            metadata: res.custom && Object.keys(res.custom).length ? res.custom : undefined,
         };
     }
 
@@ -386,7 +395,7 @@ export class WorkspaceStoredIndex {
         const db = this.#getDb();
         const primaryChecksum = checksumArray[0];
         const existingDocument = await db.getByChecksumString(primaryChecksum).catch(() => null);
-        const documentData = this.#buildDocument(storedFile, checksumArray, backends, existingDocument);
+        const documentData = this.#buildDocument(storedFile, checksumArray, backends, existingDocument, meta);
         const features = this.#buildFeatures(backends);
         const currentIncomingPaths = existingDocument?.id
             ? await db.listDocumentTreePaths(existingDocument.id, 'incoming').catch(() => [])
@@ -671,7 +680,7 @@ export class WorkspaceStoredIndex {
     // `stored` (referenced by canonical stored:// URLs), and size/mime are
     // doc-level invariants. No inline `data`, no duplicated backend descriptors —
     // anything else is derivable from the URL via `stored`.
-    #buildDocument(storedFile = {}, checksumArray = [], backends = [], existingDocument = null) {
+    #buildDocument(storedFile = {}, checksumArray = [], backends = [], existingDocument = null, meta = null) {
         const size = Number.isFinite(storedFile.size) ? storedFile.size : existingDocument?.metadata?.size;
         const mime = storedFile.mimeType || existingDocument?.metadata?.contentType;
 
@@ -679,13 +688,36 @@ export class WorkspaceStoredIndex {
         if (Number.isFinite(size)) metadata.size = size; else delete metadata.size;
         if (typeof mime === 'string' && mime.length > 0) metadata.contentType = mime;
 
-        return {
+        // Inline-extracted metadata (EXIF/GPS/dimensions/media) lives on the stored
+        // index entry's `custom` (surfaced via stat → meta). Merge the known keys
+        // onto the doc (metadata is .catchall(z.any()) so nested objects are fine).
+        const extracted = meta?.custom && typeof meta.custom === 'object' ? meta.custom : null;
+        if (extracted) {
+            for (const k of ['geo', 'exif', 'dimensions', 'media']) {
+                if (extracted[k] && typeof extracted[k] === 'object') { metadata[k] = extracted[k]; }
+            }
+        }
+
+        const doc = {
             schema: 'data/abstraction/file',
             checksumArray: checksumArray.length > 0 ? checksumArray : (existingDocument?.checksumArray || []),
             data: {},
             locations: this.#buildDocumentLocations(backends),
             metadata,
         };
+
+        // Content-derived date (EXIF capture time) → the default 'content' timeline
+        // (distinct from crud lifecycle). Preserve any existing timelines.
+        const capturedAt = extracted?.exif?.capturedAt;
+        if (capturedAt) {
+            const prior = Array.isArray(existingDocument?.timelines) ? existingDocument.timelines : [];
+            const hasContent = prior.some(t => (t.timeline || t.name) === 'content');
+            doc.timelines = hasContent ? prior : [...prior, { timeline: 'content', start: capturedAt }];
+        } else if (Array.isArray(existingDocument?.timelines) && existingDocument.timelines.length) {
+            doc.timelines = existingDocument.timelines;
+        }
+
+        return doc;
     }
 
     #buildDocumentLocations(backends = []) {

@@ -1,6 +1,50 @@
 # TODO List
 
 
+Canvas - single-purpose view
+
+Task - 
+- Add contacts
+- Add data sources
+    - File/Folder
+    - DB Source
+- Add context paths?
+  - /reports
+  - /infra/migration
+  - /
+- Add Metadata
+ - Deadline
+ - ACL
+
+ 
+ 
+Local ollama has
+- qwen3-embedding:0.6b
+- nomic-embed-text
+
+
+Agent runtime
+- Onnx 
+- Ollama/openAI compatible API
+- Anthropic
+
+
+Lets build a agent pipeline, we could (continue to) use pi-mono because of the somehow well-tested ecosystem 
+
+
+We now have 2 default timelines
+- crud: Document CRUD ops, internal document lifetime index
+- content: Content-derived events(EXIF extracted timestamps, logs, extracted time periods etc)
+
+There can be any number of additional timelimnes like
+- wikipedia
+- historian-foo
+- personal
+
+Spatial GeoIndex, --backend + named-tree support 
+--
+
+
 Our webUI has one important issue, it is useless. 
 It was never meant as a product, it started and continued its life as an adhoc LLM and canvas-server feature testing bed. 
 There are some usable configuration features but one simple question that points out the uselessness of the current implementation - would a user want to have canvas open as his home-page? Answer is no, not even I would and I'm the one who put the whole thing together. Added to that, the whole UI was never meant to look as it does now, I did some sketches, copy-pasted them to older models and everything they came up with was exactly a standard boring react website regardless of how many times I repeated the exercise and refined my sketches.

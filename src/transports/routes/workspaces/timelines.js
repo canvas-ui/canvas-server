@@ -111,7 +111,7 @@ export default async function workspaceTimelineRoutes(fastify, options) {
 
       const { name } = request.params;
 
-      if (name.startsWith('crud:')) {
+      if (name.startsWith('crud:') || name === 'content') {
         const ro = new ResponseObject().forbidden(`System timeline "${name}" cannot be deleted`);
         return reply.code(ro.statusCode).send(ro.getResponse());
       }

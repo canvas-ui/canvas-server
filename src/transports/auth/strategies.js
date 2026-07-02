@@ -327,6 +327,31 @@ export async function verifyApiToken(request, reply) {
     }
   }
 
+  // Agent tokens: resolved via the Agents service token index. The principal
+  // carries the agent's binding (workspace + base path) which downstream
+  // middleware enforces; request.user becomes the agent's owner (constrained).
+  if (!tokenResult && token.startsWith('canvas-agent-')) {
+    try {
+      const principal = await request.server.agents?.verifyAgentToken(token);
+      if (principal) {
+        tokenResult = {
+          userId: principal.owner,
+          tokenType: 'agent',
+          agentId: principal.agentId,
+          agentName: principal.agentName,
+          workspaceId: principal.workspaceId,
+          workspaceName: principal.workspaceName,
+          basePath: principal.basePath,
+          permissions: principal.permissions,
+        };
+        isResourceToken = true;
+        request.log.debug({ agentId: principal.agentId }, 'Agent token verified');
+      }
+    } catch (agentError) {
+      request.log.warn({ err: agentError }, 'Agent token verification failed');
+    }
+  }
+
   if (!tokenResult) {
     request.log.warn('API token verification returned no match');
     const error = new Error('Invalid API token');
@@ -408,7 +433,12 @@ export async function verifyApiToken(request, reply) {
       type: tokenResult.tokenType,
       workspaceId: tokenResult.workspaceId,
       workspaceName: tokenResult.workspaceName,
-      permissions: tokenResult.permissions
+      permissions: tokenResult.permissions,
+      ...(tokenResult.tokenType === 'agent' ? {
+        agentId: tokenResult.agentId,
+        agentName: tokenResult.agentName,
+        basePath: tokenResult.basePath,
+      } : {})
     };
     request.log.debug({ tokenType: tokenResult.tokenType }, 'Resource token authenticated');
   }

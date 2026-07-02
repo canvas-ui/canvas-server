@@ -2,6 +2,7 @@
 
 import ResponseObject from '../../ResponseObject.js';
 import { requireWorkspaceRead, requireWorkspaceWrite, requireWorkspaceAdmin } from '../../middleware/workspace-acl.js';
+import { enforceAgentBinding } from '../../middleware/agent-acl.js';
 import { validateUser } from '../../auth/strategies.js';
 import { resolveWorkspaceAddress } from '../../middleware/address-resolver.js';
 
@@ -48,6 +49,10 @@ export default async function workspaceRoutes(fastify, options) {
 
     return fastify.workspaceManager.getWorkspace(workspaceId, userId);
   }
+
+  // Agent-token binding clamp — applies to every workspace subroute (documents,
+  // tree, blobs, ...): workspace lock, method permission, base-path clamp.
+  fastify.addHook('preHandler', enforceAgentBinding);
 
   fastify.addHook('preHandler', async (request) => {
     const client = request.client;

@@ -1,35 +1,48 @@
 # TODO List
 
+As (virtual) trees are meant to be primaryly(but not exclusively) task or goal-oriented, creating a new "folder" in a context or directory type tree is essentially equivalent of creating a new task:
 
-Canvas - single-purpose view
+`universe://projects/augmentd-labs/website`
 
-Task - 
-- Add contacts
-- Add data sources
-    - File/Folder
-    - DB Source
-- Add context paths?
-  - /reports
-  - /infra/migration
-  - /
-- Add Metadata
- - Deadline
- - ACL
+or
 
- 
- 
-Local ollama has
-- qwen3-embedding:0.6b
-- nomic-embed-text
+`work://customer-a/devops/jira-1234`
+
+or
+
+`huge-project-a://mvp/releases/customer-foo `
 
 
-Agent runtime
-- Onnx 
-- Ollama/openAI compatible API
-- Anthropic
+After such an empty "folder" is created, we should show its content(empty) in a B5 like canvas element and preemtptively another B5 element next to it showing what data we want to associate with that task.
+
+Example use-case:
+A user creates `../devpos/jira-1234` related to a issue with nvidia jetson boards, he associates a list of contacts with that task(list of channels and lets say email subject headers which will automatically associated all incoming messages/emails with that path), he may add a real or virtual folder, notes, browser tabs etc) - canvas filters all his incoming data and indexes + surfaces context-relevant information for that path to whatever application has that path open (or whatever shareable boundable context has that path selected)
+
+This means that we need to slightly amend our controlls
+- Lets remove our current toolbox and replace it with a toolbox button
+  - Biggest button at the bottom toggles toolbox sidebar - sidebar is a card element on the same level as the rest of the cards on the main content area. 
+  - Opening toolbox shifts all existing elements to left if needed
+- On top there should be a Link To
 
 
-Lets build a agent pipeline, we could (continue to) use pi-mono because of the somehow well-tested ecosystem 
+
+
+Lets extend our pi-mono based agent pipeline, we could (continue to) use pi-mono because of the somehow well-tested ecosystem but I'm open to suggestions given the requirements
+- Agents should be self-contained, they will eventually run in their own containers
+- Eventually we'll create a canvas-edge runtime that will be used for docker based (service) roles, agents and workspaces, with injected tokens/configuration and maybe autoregistration to configured canvas-server instances
+- Agents should be assignable to context and workspaces, we should reuse/extend our current ACL model and allow it to lock a agent to a specific workspace or workspace path or context
+- Maybe they can re-use our existing canvas-cli, workspace module(with its git capabilities) and our transports but this is a canvas-edge topic, lets aim for the simplest MVP implementation with the current runtime which runs directly from canvas-server
+- Agent runtime support
+  - Onnx 
+  - Ollama/openAI compatible API
+  - Anthropic
+- WebRTC/speech support, there are many pi-mono speech modules ready to be used (or servers like kokoro or piper), I'd like to be able to send photos and files or talk to an agent directly
+- Whatsapp and slack support, the work here was already done (openclaw and all its 1000+ derivates), lets say I have a agent bound to my work workspace, I should be able to call him and ask whether we had any new emails, agent should be able to use canvas-cli or direct api calls wrapped in SKILLS/tools to query latest ingested emails from canvas. Canvas should be the main interface how agents interract with user data, all user data will be indexed in canvas, user defines what parts an agent should manage(or sets up hooks that trigger agent actions), agent should be able to send a whatsapp notification to a user in a example scenario - user configures a hook in his workspace to watch for emails with email.subject.contains(MSFT-TICKET-1234) - on hit trigger an agent action with "Given the context information in work://projects/foo/bar, check whether we finally got that ticket resolved and notify me if yes"
+
+
+There are many gaps in the above, we need to start anyway because time IS the most precious resource in the universe and I need to divide mine to something else now
+Let me know if you have any questions
+
 
 
 We now have 2 default timelines
@@ -40,6 +53,8 @@ There can be any number of additional timelimnes like
 - wikipedia
 - historian-foo
 - personal
+
+Can you make sure our webui properly handles them - especially the soon to be refactored toolbox
 
 Spatial GeoIndex, --backend + named-tree support 
 --

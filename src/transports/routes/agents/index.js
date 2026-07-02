@@ -2,12 +2,17 @@
 
 import ResponseObject from '../../ResponseObject.js';
 import { validateUser } from '../../auth/strategies.js';
+import { rejectAgentTokens } from '../../middleware/agent-acl.js';
 
 /**
  * Agent routes handler
  * @param {FastifyInstance} fastify
  */
 export default async function agentRoutes(fastify, _options) {
+
+    // Agent tokens are data-plane only — an agent may not manage agents
+    // (including itself).
+    fastify.addHook('preHandler', rejectAgentTokens);
 
     const normalizePromptImages = (images) => {
         if (!Array.isArray(images)) return [];
@@ -461,6 +466,103 @@ export default async function agentRoutes(fastify, _options) {
                 : err.message?.includes('required')
                     ? new ResponseObject().badRequest(err.message)
                     : new ResponseObject().serverError(err.message || 'Failed to remove skill');
+            return reply.code(r.statusCode).send(r.getResponse());
+        }
+    });
+
+    /**
+     * Access binding — lock the agent to a workspace / workspace path / context
+     * and mint its canvas-agent-* token. The token value is returned exactly
+     * once (only the hash is stored server-side).
+     */
+    fastify.get('/:agentIdentifier/access', { onRequest: [fastify.authenticate] }, async (request, reply) => {
+        if (!requireUser(request, reply)) return;
+        try {
+            const access = await fastify.agents.getAccess(
+                request.user.id, request.params.agentIdentifier, request.user.id
+            );
+            const r = new ResponseObject().found(access, access ? 'Agent access retrieved' : 'Agent is unbound');
+            return reply.code(r.statusCode).send(r.getResponse());
+        } catch (err) {
+            fastify.log.error(err);
+            const r = err.message?.startsWith('Agent not found')
+                ? new ResponseObject().notFound(err.message)
+                : new ResponseObject().serverError(err.message || 'Failed to get agent access');
+            return reply.code(r.statusCode).send(r.getResponse());
+        }
+    });
+
+    fastify.put('/:agentIdentifier/access', {
+        onRequest: [fastify.authenticate],
+        schema: {
+            body: {
+                type: 'object',
+                required: ['binding'],
+                properties: {
+                    binding: {
+                        type: 'object',
+                        required: ['type'],
+                        properties: {
+                            type: { type: 'string', enum: ['workspace', 'path', 'context'] },
+                            workspace: { type: 'string' },
+                            path: { type: 'string' },
+                            context: { type: 'string' },
+                        },
+                    },
+                    permissions: { type: 'array', items: { type: 'string', enum: ['read', 'write'] } },
+                },
+            },
+        },
+    }, async (request, reply) => {
+        if (!requireUser(request, reply)) return;
+        try {
+            const result = await fastify.agents.setAccess(
+                request.user.id, request.params.agentIdentifier, request.body, request.user.id
+            );
+            const r = new ResponseObject().created(result, 'Agent access bound — store the token now, it is not shown again');
+            return reply.code(r.statusCode).send(r.getResponse());
+        } catch (err) {
+            fastify.log.error(err);
+            const r = err.message?.includes('not found') || err.message?.includes('Invalid')
+                || err.message?.includes('required')
+                ? new ResponseObject().badRequest(err.message)
+                : new ResponseObject().serverError(err.message || 'Failed to set agent access');
+            return reply.code(r.statusCode).send(r.getResponse());
+        }
+    });
+
+    fastify.post('/:agentIdentifier/access/token', { onRequest: [fastify.authenticate] }, async (request, reply) => {
+        if (!requireUser(request, reply)) return;
+        try {
+            const result = await fastify.agents.rotateAgentToken(
+                request.user.id, request.params.agentIdentifier, request.user.id
+            );
+            const r = new ResponseObject().created(result, 'Agent token rotated — store the token now, it is not shown again');
+            return reply.code(r.statusCode).send(r.getResponse());
+        } catch (err) {
+            fastify.log.error(err);
+            const r = err.message?.includes('no access binding') || err.message?.startsWith('Agent not found')
+                ? new ResponseObject().badRequest(err.message)
+                : new ResponseObject().serverError(err.message || 'Failed to rotate agent token');
+            return reply.code(r.statusCode).send(r.getResponse());
+        }
+    });
+
+    fastify.delete('/:agentIdentifier/access', { onRequest: [fastify.authenticate] }, async (request, reply) => {
+        if (!requireUser(request, reply)) return;
+        try {
+            const revoked = await fastify.agents.revokeAccess(
+                request.user.id, request.params.agentIdentifier, request.user.id
+            );
+            const r = revoked
+                ? new ResponseObject().success(null, 'Agent access revoked')
+                : new ResponseObject().notFound('Agent has no access binding');
+            return reply.code(r.statusCode).send(r.getResponse());
+        } catch (err) {
+            fastify.log.error(err);
+            const r = err.message?.startsWith('Agent not found')
+                ? new ResponseObject().notFound(err.message)
+                : new ResponseObject().serverError(err.message || 'Failed to revoke agent access');
             return reply.code(r.statusCode).send(r.getResponse());
         }
     });

@@ -46,6 +46,40 @@ export function createWorkspaceACLMiddleware(requiredPermission = 'read') {
         throw new Error('Workspace ID required in route parameters');
       }
 
+      // 1b. Agent principals: already resolved and scoped at auth time. They
+      // must NOT fall through to owner access (request.user is the agent's
+      // owner) — enforce the binding here and stop.
+      if (request.resourceToken?.type === 'agent') {
+        const binding = request.resourceToken;
+        const matchesBinding = workspaceId === binding.workspaceId
+          || workspaceId === binding.workspaceName
+          || request.server.workspaceManager?.resolveWorkspaceId(request.user?.id, workspaceId) === binding.workspaceId;
+
+        if (!matchesBinding) {
+          const response = new ResponseObject().forbidden('Agent token is not bound to this workspace');
+          return reply.code(response.statusCode).send(response.getResponse());
+        }
+        if (!binding.permissions?.includes(requiredPermission)) {
+          const response = new ResponseObject().forbidden(`Agent token lacks required permission: ${requiredPermission}`);
+          return reply.code(response.statusCode).send(response.getResponse());
+        }
+
+        const workspace = await request.server.workspaceManager.getWorkspace(binding.workspaceId, request.user.id);
+        if (!workspace) {
+          const response = new ResponseObject().notFound(`Workspace not found: ${workspaceId}`);
+          return reply.code(response.statusCode).send(response.getResponse());
+        }
+
+        request.workspace = workspace;
+        request.workspaceAccess = {
+          permissions: binding.permissions,
+          isOwner: false,
+          isAgent: true,
+          description: `Agent ${binding.agentName || binding.agentId}`,
+        };
+        return; // Continue to route handler
+      }
+
       // 2. Extract token from request (should already be validated by fastify.authenticate)
       const authHeader = request.headers.authorization;
       if (!authHeader?.startsWith('Bearer ')) {

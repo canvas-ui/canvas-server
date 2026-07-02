@@ -50,6 +50,23 @@ export const env = {
         // One shared fastembed model store for all workspaces (not per-workspace).
         cacheDir: process.env.CANVAS_EMBEDD_CACHE_DIR || path.join(SERVER_HOME, 'embedd', 'models'),
     },
+    messaging: {
+        // User notification/chat channels (Slack, WhatsApp Cloud API). The
+        // console adapter is always available as a dev fallback; real adapters
+        // activate only when their tokens are configured.
+        enabled: process.env.CANVAS_MESSAGING_ENABLED !== 'false',
+        slack: {
+            botToken: process.env.SLACK_BOT_TOKEN || null,
+            // App-level token (xapp-*) enables inbound chat via Socket Mode.
+            appToken: process.env.SLACK_APP_TOKEN || null,
+        },
+        whatsapp: {
+            accessToken: process.env.WHATSAPP_TOKEN || null,
+            phoneNumberId: process.env.WHATSAPP_PHONE_ID || null,
+            // Shared secret for Cloud API webhook subscription verification.
+            verifyToken: process.env.WHATSAPP_VERIFY_TOKEN || null,
+        },
+    },
     auth: {
         // TODO: Use SERVER_HOME/config/auth.json for jwtSecret and tokenExpiry
         jwtSecret: process.env.CANVAS_JWT_SECRET || 'canvas-jwt-secret-change-in-production', //generateJwtSecret(),

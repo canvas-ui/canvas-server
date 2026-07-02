@@ -27,6 +27,7 @@ import DeviceRegistry from './core/device/Registry.js';
 import Roles from './core/role/index.js';
 import Agents from './core/agent/index.js';
 import Embedd from './services/embedd/src/index.js';
+import Voice from './services/voice/src/index.js';
 import Messaging from './services/messaging/src/index.js';
 import ChatRouter from './services/messaging/src/router.js';
 import ConsoleAdapter from './services/messaging/src/adapters/console.js';
@@ -56,6 +57,7 @@ class Server extends EventEmitter {
     #embedd;    // shared embedding service (server-managed singleton; optional)
     #messaging; // user notification/chat channels (server-managed singleton; optional)
     #chatRouter; // inbound chat → agent routing (requires #messaging)
+    #voice;     // STT/TTS service (server-managed singleton; optional)
 
     // Global services
     #authService;
@@ -182,6 +184,7 @@ class Server extends EventEmitter {
                 deviceRegistry: this.#deviceRegistry,
                 messaging: this.#messaging,
                 chatRouter: this.#chatRouter,
+                voice: this.#voice,
             });
         }
 
@@ -266,6 +269,16 @@ class Server extends EventEmitter {
 
         // Let workspace hooks call the agent() helper.
         this.#workspaceManager.hookService?.setAgents(this.#agents);
+
+        // Voice (STT/TTS via OpenAI-compatible local servers) — enabled per
+        // side by configured base URLs; status endpoint reports availability.
+        if (env.voice.stt.baseUrl || env.voice.tts.baseUrl) {
+            this.#voice = new Voice({
+                stt: env.voice.stt.baseUrl ? env.voice.stt : null,
+                tts: env.voice.tts.baseUrl ? env.voice.tts : null,
+                logger: createLogger('voice'),
+            });
+        }
 
         // Messaging (Slack/WhatsApp/console) — env→config translation happens
         // here; the service itself is pure DI (embedd pattern). Real adapters
@@ -430,6 +443,7 @@ class Server extends EventEmitter {
 
     get embedd() { return this.#embedd; }
     get messaging() { return this.#messaging; }
+    get voice() { return this.#voice; }
 
     async #closeRealtimeConnections() {
         const io = this.#apiServer?.io;

@@ -67,6 +67,24 @@ export const env = {
             verifyToken: process.env.WHATSAPP_VERIFY_TOKEN || null,
         },
     },
+    voice: {
+        // Speech-to-text / text-to-speech via OpenAI-compatible local servers
+        // (speaches/faster-whisper for STT, kokoro-fastapi/openedai-speech for
+        // TTS). Each side activates only when its base URL is configured.
+        stt: {
+            baseUrl: process.env.CANVAS_VOICE_STT_URL || null,
+            apiKey: process.env.CANVAS_VOICE_STT_API_KEY || null,
+            model: process.env.CANVAS_VOICE_STT_MODEL || 'whisper-1',
+            language: process.env.CANVAS_VOICE_STT_LANGUAGE || null,
+        },
+        tts: {
+            baseUrl: process.env.CANVAS_VOICE_TTS_URL || null,
+            apiKey: process.env.CANVAS_VOICE_TTS_API_KEY || null,
+            model: process.env.CANVAS_VOICE_TTS_MODEL || 'kokoro',
+            voice: process.env.CANVAS_VOICE_TTS_VOICE || 'af_heart',
+            format: process.env.CANVAS_VOICE_TTS_FORMAT || 'mp3',
+        },
+    },
     auth: {
         // TODO: Use SERVER_HOME/config/auth.json for jwtSecret and tokenExpiry
         jwtSecret: process.env.CANVAS_JWT_SECRET || 'canvas-jwt-secret-change-in-production', //generateJwtSecret(),

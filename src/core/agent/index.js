@@ -11,6 +11,8 @@ import { createLogger } from '../../utils/log.js';
 import Agent, { AGENT_STATUS_CODES, LOCAL_PROVIDER_DEFAULTS, sanitizeAgentData, AGENT_SESSION_MODES } from './Agent.js';
 import { loadAgentRuntimeConfig, materializeAgentRuntimeFiles, parseSkillMarkdown, sanitizeSkillName } from './files.js';
 import { validateAgentProvider } from './validation.js';
+import { mintAgentToken, hashToken, normalizeAgentPermissions, verifyAgentTokenValue } from './lib/AgentTokens.js';
+import { buildAgentRuntimeEnv, persistAgentRuntimeEnv, loadAgentRuntimeEnv, removeAgentRuntimeEnv } from './runtime-env.js';
 
 const logger = createLogger('agents');
 
@@ -37,12 +39,34 @@ const DEFAULT_AGENT_CONFIG = {
     model: 'claude-sonnet-4-20250514',
     created: null,
     updated: null,
+    // Binding of the agent principal to a workspace / workspace path / context.
+    // null = unbound (legacy behavior: owner-driven only, no canvas tools).
+    access: null,
     config: {
         prompts: {},
         tools: {},
         mcp: { servers: [] },
     },
 };
+
+const AGENT_BINDING_TYPES = ['workspace', 'path', 'context'];
+
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Normalize a binding base path: absolute, posix-normalized, no traversal, no
+// trailing slash (except root). Throws on escape attempts.
+export function normalizeBindingPath(value) {
+    const raw = String(value ?? '/').trim() || '/';
+    const withRoot = raw.startsWith('/') ? raw : `/${raw}`;
+    const normalized = path.posix.normalize(withRoot);
+    if (normalized.startsWith('/..') || normalized === '..' || normalized.includes('/../')) {
+        throw new Error(`Invalid binding path: ${value}`);
+    }
+    if (normalized !== '/' && normalized.endsWith('/')) {
+        return normalized.slice(0, -1);
+    }
+    return normalized;
+}
 
 function mergeNestedObjects(currentValue = {}, nextValue = {}) {
     return { ...currentValue, ...nextValue };
@@ -126,7 +150,11 @@ class Agents extends EventEmitter {
     #indexStore;
     #nameIndex = new Map();
     #referenceIndex = new Map();
+    #tokenIndex = new Map();      // tokenHash -> indexKey (agent principal lookup)
     #users;
+    #workspaceManager = null;
+    #contextManager = null;
+    #apiBaseUrl = null;           // loopback REST base for agent tools (canvas-edge: public URL)
     #agents = new Map();
     #initialized = false;
 
@@ -153,6 +181,13 @@ class Agents extends EventEmitter {
      */
     get users() { return this.#users; }
 
+    /**
+     * Late injection (mirrors users.setWorkspaceManager pattern in Server.js)
+     */
+    setWorkspaceManager(workspaceManager) { this.#workspaceManager = workspaceManager; }
+    setContextManager(contextManager) { this.#contextManager = contextManager; }
+    setApiBaseUrl(apiBaseUrl) { this.#apiBaseUrl = apiBaseUrl; }
+
     parseAgentReference(ref) { return parseAgentReference(ref); }
     constructAgentReference(userIdentifier, agentSlug, host = DEFAULT_HOST, agentPath = '') {
         return constructAgentReference(userIdentifier, agentSlug, host, agentPath);
@@ -165,6 +200,7 @@ class Agents extends EventEmitter {
     async initialize() {
         if (this.#initialized) return this;
         await this.#rebuildIndexes();
+        this.#rebuildTokenIndex();
         await this.#scanIndexedAgents();
         this.#initialized = true;
         logger.debug(`Agents initialized: ${this.#indexStore.size} agent(s)`);
@@ -326,7 +362,8 @@ class Agents extends EventEmitter {
                 model: agent.model,
                 config: agent.agentConfig,
             });
-            await agent.start();
+            const canvasEnv = await this.#resolveCanvasEnvForStart(this.#indexStore.get(indexKey));
+            await agent.start({ canvasEnv });
             this.#updateIndex(indexKey, { status: AGENT_STATUS_CODES.ACTIVE, lastAccessed: new Date().toISOString() });
             this.emit('agent.started', { agentId, userId: owner, agent: agent.toJSON() });
             return agent;
@@ -399,6 +436,111 @@ class Agents extends EventEmitter {
         if (!agent) throw new Error(`Agent not found or not startable: ${agentIdentifier}`);
         const messages = await agent.prompt(message, options);
         return extractAssistantText(messages);
+    }
+
+    /**
+     * Access / binding management
+     *
+     * An agent binding locks the agent principal to a workspace, workspace
+     * path, or context. The enforced scope always resolves to
+     * { workspaceId, basePath }; context bindings are re-resolved live at
+     * token-verification time so they follow the context when it moves.
+     */
+
+    async setAccess(userId, agentIdentifier, accessSpec = {}, requestingUserId) {
+        const { owner, entry, agent, indexKey } = await this.#requireOwnedAgent(userId, agentIdentifier, requestingUserId);
+
+        const binding = await this.#normalizeBindingSpec(owner, accessSpec.binding);
+        const permissions = normalizeAgentPermissions(accessSpec.permissions);
+        const token = mintAgentToken({ permissions });
+
+        const access = {
+            binding,
+            permissions,
+            tokenId: token.id,
+            tokenHash: token.hash,
+            boundAt: new Date().toISOString(),
+        };
+
+        await this.#persistAccess(owner, entry, agent, access);
+        await this.#writeCanvasEnv(entry, access, token.value);
+
+        if (agent.isActive) await agent.restart();
+        this.emit('agent.access.changed', { agentId: entry.id, userId: owner, access: { ...access } });
+        logger.debug(`Agent access set: ${entry.id} -> ${binding.type}:${binding.workspace || binding.context}${binding.path || ''}`);
+
+        // Token value is returned exactly once; only the hash is stored server-side.
+        return { access, token: token.value };
+    }
+
+    async getAccess(userId, agentIdentifier, requestingUserId) {
+        const { entry } = await this.#requireOwnedAgent(userId, agentIdentifier, requestingUserId);
+        return entry.access || null;
+    }
+
+    async rotateAgentToken(userId, agentIdentifier, requestingUserId) {
+        const { owner, entry, agent } = await this.#requireOwnedAgent(userId, agentIdentifier, requestingUserId);
+        if (!entry.access?.tokenHash) throw new Error(`Agent ${entry.id} has no access binding`);
+
+        const token = mintAgentToken({ permissions: entry.access.permissions });
+        const access = {
+            ...entry.access,
+            tokenId: token.id,
+            tokenHash: token.hash,
+            rotatedAt: new Date().toISOString(),
+        };
+
+        await this.#persistAccess(owner, entry, agent, access);
+        await this.#writeCanvasEnv(entry, access, token.value);
+
+        if (agent.isActive) await agent.restart();
+        this.emit('agent.access.changed', { agentId: entry.id, userId: owner, access: { ...access } });
+        return { access, token: token.value };
+    }
+
+    async revokeAccess(userId, agentIdentifier, requestingUserId) {
+        const { owner, entry, agent } = await this.#requireOwnedAgent(userId, agentIdentifier, requestingUserId);
+        if (!entry.access) return false;
+
+        if (entry.access.tokenHash) this.#tokenIndex.delete(entry.access.tokenHash);
+        await this.#persistAccess(owner, entry, agent, null);
+        await removeAgentRuntimeEnv(entry.rootPath);
+
+        if (agent.isActive) await agent.restart();
+        this.emit('agent.access.changed', { agentId: entry.id, userId: owner, access: null });
+        return true;
+    }
+
+    /**
+     * Resolve an agent token value to a request principal, or null.
+     * Called from the API-token auth strategy for canvas-agent-* tokens.
+     * @param {string} tokenValue
+     * @returns {Promise<Object|null>} { agentId, agentName, owner, workspaceId, workspaceName, basePath, permissions }
+     */
+    async verifyAgentToken(tokenValue) {
+        if (!this.#initialized) return null;
+
+        const indexKey = this.#tokenIndex.get(hashToken(tokenValue));
+        if (!indexKey) return null;
+
+        const entry = this.#indexStore.get(indexKey);
+        if (!entry?.access || !verifyAgentTokenValue(tokenValue, entry.access)) return null;
+
+        const scope = await this.#resolveBindingScope(entry.owner, entry.access.binding);
+        if (!scope) {
+            logger.warn(`Agent token scope resolution failed for agent ${entry.id}`);
+            return null;
+        }
+
+        return {
+            agentId: entry.id,
+            agentName: entry.name,
+            owner: entry.owner,
+            workspaceId: scope.workspaceId,
+            workspaceName: scope.workspaceName,
+            basePath: scope.basePath,
+            permissions: entry.access.permissions,
+        };
     }
 
     async listSessions(userId, agentIdentifier, requestingUserId) {
@@ -615,6 +757,7 @@ class Agents extends EventEmitter {
             const agent = this.#agents.get(agentId);
             if (agent?.isActive) await agent.stop();
             this.#agents.delete(agentId);
+            if (entry.access?.tokenHash) this.#tokenIndex.delete(entry.access.tokenHash);
             this.#indexStore.delete(indexKey);
 
             const host = entry.host || DEFAULT_HOST;
@@ -803,6 +946,164 @@ class Agents extends EventEmitter {
     /**
      * Private helpers
      */
+
+    // Shared owner-checked lookup for access management. Returns loaded agent
+    // instance + index entry, throws on missing/foreign agents.
+    async #requireOwnedAgent(userId, agentIdentifier, requestingUserId) {
+        const owner = await this.#users.resolveId(userId);
+        if (!owner) throw new Error(`Cannot resolve user: ${userId}`);
+        requestingUserId = requestingUserId === userId ? owner : (requestingUserId || owner);
+
+        const agentId = await this.#resolveAgentId(owner, agentIdentifier);
+        if (!agentId) throw new Error(`Agent not found: ${agentIdentifier}`);
+
+        const indexKey = constructAgentIndexKey(owner, agentId);
+        const entry = this.#indexStore.get(indexKey);
+        if (!entry) throw new Error(`Agent not found: ${agentIdentifier}`);
+        if (entry.owner !== requestingUserId) throw new Error(`Permission denied for agent ${agentId}`);
+
+        const agent = this.#agents.get(agentId) || await this.open(userId, agentIdentifier, requestingUserId);
+        if (!agent) throw new Error(`Agent could not be opened: ${agentIdentifier}`);
+
+        return { owner, agentId, indexKey, entry, agent };
+    }
+
+    // Validate + normalize a binding spec against live managers. Workspace
+    // references are resolved to ids at bind time; context bindings stay by
+    // id and re-resolve at verification time.
+    async #normalizeBindingSpec(owner, bindingSpec = {}) {
+        const type = String(bindingSpec.type || '').toLowerCase();
+        if (!AGENT_BINDING_TYPES.includes(type)) {
+            throw new Error(`Invalid binding type "${bindingSpec.type}" (allowed: ${AGENT_BINDING_TYPES.join(', ')})`);
+        }
+
+        if (type === 'context') {
+            if (!this.#contextManager) throw new Error('Context manager not available');
+            if (!bindingSpec.context) throw new Error('binding.context (context id) is required');
+            const context = await this.#contextManager.getContext(owner, bindingSpec.context);
+            if (!context) throw new Error(`Context not found: ${bindingSpec.context}`);
+            return { type, context: context.id };
+        }
+
+        if (!this.#workspaceManager) throw new Error('Workspace manager not available');
+        if (!bindingSpec.workspace) throw new Error('binding.workspace is required');
+
+        const workspaceId = UUID_REGEX.test(bindingSpec.workspace)
+            ? bindingSpec.workspace
+            : this.#workspaceManager.resolveWorkspaceId(owner, bindingSpec.workspace);
+        if (!workspaceId || !(await this.#workspaceManager.hasWorkspace(workspaceId, owner))) {
+            throw new Error(`Workspace not found: ${bindingSpec.workspace}`);
+        }
+
+        const basePath = type === 'path' ? normalizeBindingPath(bindingSpec.path) : '/';
+        return {
+            type,
+            workspace: workspaceId,
+            // Original name kept for display only; enforcement uses the id.
+            ...(bindingSpec.workspace !== workspaceId ? { workspaceName: bindingSpec.workspace } : {}),
+            path: basePath,
+        };
+    }
+
+    // Live binding -> { workspaceId, workspaceName, basePath } or null.
+    async #resolveBindingScope(owner, binding) {
+        try {
+            if (!binding?.type) return null;
+
+            if (binding.type === 'context') {
+                if (!this.#contextManager) return null;
+                const context = await this.#contextManager.getContext(owner, binding.context);
+                if (!context) return null;
+                return {
+                    workspaceId: context.workspaceId,
+                    workspaceName: context.workspaceName,
+                    basePath: normalizeBindingPath(context.path),
+                };
+            }
+
+            if (!this.#workspaceManager) return null;
+            if (!(await this.#workspaceManager.hasWorkspace(binding.workspace, owner))) return null;
+            return {
+                workspaceId: binding.workspace,
+                workspaceName: binding.workspaceName || binding.workspace,
+                basePath: normalizeBindingPath(binding.path),
+            };
+        } catch (err) {
+            logger.debug(`Binding scope resolution failed: ${err.message}`);
+            return null;
+        }
+    }
+
+    // Persist access to agent.json + index + in-memory agent, maintain token index.
+    async #persistAccess(owner, entry, agent, access) {
+        const config = await this.#loadConfig(entry.configPath);
+        const updated = { ...config, access, updatedAt: new Date().toISOString() };
+        await fsPromises.writeFile(entry.configPath, JSON.stringify(updated, null, 2));
+        await materializeAgentRuntimeFiles(entry.rootPath, updated);
+
+        agent.setConfigKey('access', access);
+
+        const indexKey = constructAgentIndexKey(owner, entry.id);
+        if (entry.access?.tokenHash && entry.access.tokenHash !== access?.tokenHash) {
+            this.#tokenIndex.delete(entry.access.tokenHash);
+        }
+        if (access?.tokenHash) {
+            this.#tokenIndex.set(access.tokenHash, indexKey);
+        }
+        this.#updateIndex(indexKey, { access });
+        entry.access = access;
+    }
+
+    // Materialize {rootPath}/runtime/canvas.env for the current binding.
+    async #writeCanvasEnv(entry, access, tokenValue) {
+        if (!this.#apiBaseUrl) {
+            logger.warn(`apiBaseUrl not set; agent ${entry.id} canvas.env not written`);
+            return;
+        }
+        const scope = await this.#resolveBindingScope(entry.owner, access.binding);
+        if (!scope) throw new Error(`Cannot resolve binding scope for agent ${entry.id}`);
+
+        const env = buildAgentRuntimeEnv({
+            agentId: entry.id,
+            tokenValue,
+            workspaceId: scope.workspaceId,
+            basePath: scope.basePath,
+            apiBaseUrl: this.#apiBaseUrl,
+        });
+        if (env) await persistAgentRuntimeEnv(entry.rootPath, env);
+    }
+
+    // Build the canvasEnv passed into Agent.start(). Refreshes canvas.env with
+    // the live-resolved scope (context bindings can move between workspaces).
+    async #resolveCanvasEnvForStart(entry) {
+        if (!entry?.access?.tokenHash || !this.#apiBaseUrl) return null;
+
+        const stored = await loadAgentRuntimeEnv(entry.rootPath);
+        if (!stored?.CANVAS_TOKEN || hashToken(stored.CANVAS_TOKEN) !== entry.access.tokenHash) {
+            logger.warn(`Agent ${entry.id} has a binding but no matching canvas.env token; rotate the token to restore canvas tools`);
+            return null;
+        }
+
+        const scope = await this.#resolveBindingScope(entry.owner, entry.access.binding);
+        if (!scope) return null;
+
+        const env = buildAgentRuntimeEnv({
+            agentId: entry.id,
+            tokenValue: stored.CANVAS_TOKEN,
+            workspaceId: scope.workspaceId,
+            basePath: scope.basePath,
+            apiBaseUrl: this.#apiBaseUrl,
+        });
+        if (env) await persistAgentRuntimeEnv(entry.rootPath, env);
+        return env;
+    }
+
+    #rebuildTokenIndex() {
+        this.#tokenIndex.clear();
+        for (const [key, entry] of Object.entries(this.#indexStore.store)) {
+            if (entry?.access?.tokenHash) this.#tokenIndex.set(entry.access.tokenHash, key);
+        }
+    }
 
     async #resolveAgentId(ownerId, identifier) {
         if (!identifier) return null;

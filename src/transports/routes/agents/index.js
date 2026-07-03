@@ -2,12 +2,17 @@
 
 import ResponseObject from '../../ResponseObject.js';
 import { validateUser } from '../../auth/strategies.js';
+import { rejectAgentTokens } from '../../middleware/agent-acl.js';
 
 /**
  * Agent routes handler
  * @param {FastifyInstance} fastify
  */
 export default async function agentRoutes(fastify, _options) {
+
+    // Agent tokens are data-plane only — an agent may not manage agents
+    // (including itself).
+    fastify.addHook('preHandler', rejectAgentTokens);
 
     const normalizePromptImages = (images) => {
         if (!Array.isArray(images)) return [];
@@ -466,6 +471,103 @@ export default async function agentRoutes(fastify, _options) {
     });
 
     /**
+     * Access binding — lock the agent to a workspace / workspace path / context
+     * and mint its canvas-agent-* token. The token value is returned exactly
+     * once (only the hash is stored server-side).
+     */
+    fastify.get('/:agentIdentifier/access', { onRequest: [fastify.authenticate] }, async (request, reply) => {
+        if (!requireUser(request, reply)) return;
+        try {
+            const access = await fastify.agents.getAccess(
+                request.user.id, request.params.agentIdentifier, request.user.id
+            );
+            const r = new ResponseObject().found(access, access ? 'Agent access retrieved' : 'Agent is unbound');
+            return reply.code(r.statusCode).send(r.getResponse());
+        } catch (err) {
+            fastify.log.error(err);
+            const r = err.message?.startsWith('Agent not found')
+                ? new ResponseObject().notFound(err.message)
+                : new ResponseObject().serverError(err.message || 'Failed to get agent access');
+            return reply.code(r.statusCode).send(r.getResponse());
+        }
+    });
+
+    fastify.put('/:agentIdentifier/access', {
+        onRequest: [fastify.authenticate],
+        schema: {
+            body: {
+                type: 'object',
+                required: ['binding'],
+                properties: {
+                    binding: {
+                        type: 'object',
+                        required: ['type'],
+                        properties: {
+                            type: { type: 'string', enum: ['workspace', 'path', 'context'] },
+                            workspace: { type: 'string' },
+                            path: { type: 'string' },
+                            context: { type: 'string' },
+                        },
+                    },
+                    permissions: { type: 'array', items: { type: 'string', enum: ['read', 'write'] } },
+                },
+            },
+        },
+    }, async (request, reply) => {
+        if (!requireUser(request, reply)) return;
+        try {
+            const result = await fastify.agents.setAccess(
+                request.user.id, request.params.agentIdentifier, request.body, request.user.id
+            );
+            const r = new ResponseObject().created(result, 'Agent access bound — store the token now, it is not shown again');
+            return reply.code(r.statusCode).send(r.getResponse());
+        } catch (err) {
+            fastify.log.error(err);
+            const r = err.message?.includes('not found') || err.message?.includes('Invalid')
+                || err.message?.includes('required')
+                ? new ResponseObject().badRequest(err.message)
+                : new ResponseObject().serverError(err.message || 'Failed to set agent access');
+            return reply.code(r.statusCode).send(r.getResponse());
+        }
+    });
+
+    fastify.post('/:agentIdentifier/access/token', { onRequest: [fastify.authenticate] }, async (request, reply) => {
+        if (!requireUser(request, reply)) return;
+        try {
+            const result = await fastify.agents.rotateAgentToken(
+                request.user.id, request.params.agentIdentifier, request.user.id
+            );
+            const r = new ResponseObject().created(result, 'Agent token rotated — store the token now, it is not shown again');
+            return reply.code(r.statusCode).send(r.getResponse());
+        } catch (err) {
+            fastify.log.error(err);
+            const r = err.message?.includes('no access binding') || err.message?.startsWith('Agent not found')
+                ? new ResponseObject().badRequest(err.message)
+                : new ResponseObject().serverError(err.message || 'Failed to rotate agent token');
+            return reply.code(r.statusCode).send(r.getResponse());
+        }
+    });
+
+    fastify.delete('/:agentIdentifier/access', { onRequest: [fastify.authenticate] }, async (request, reply) => {
+        if (!requireUser(request, reply)) return;
+        try {
+            const revoked = await fastify.agents.revokeAccess(
+                request.user.id, request.params.agentIdentifier, request.user.id
+            );
+            const r = revoked
+                ? new ResponseObject().success(null, 'Agent access revoked')
+                : new ResponseObject().notFound('Agent has no access binding');
+            return reply.code(r.statusCode).send(r.getResponse());
+        } catch (err) {
+            fastify.log.error(err);
+            const r = err.message?.startsWith('Agent not found')
+                ? new ResponseObject().notFound(err.message)
+                : new ResponseObject().serverError(err.message || 'Failed to revoke agent access');
+            return reply.code(r.statusCode).send(r.getResponse());
+        }
+    });
+
+    /**
      * Update agent config
      */
     fastify.put('/:agentIdentifier', { onRequest: [fastify.authenticate] }, async (request, reply) => {
@@ -607,6 +709,98 @@ export default async function agentRoutes(fastify, _options) {
     /**
      * Prompt (non-streaming) — waits for completion, returns messages.
      */
+    /**
+     * Voice round-trip: audio in -> transcript -> agent prompt -> reply text
+     * (+ synthesized audio when TTS is configured).
+     *
+     * Request: multipart with an audio file part, OR JSON { audio: <base64>, mimeType }.
+     * Query/body options: tts=false to skip synthesis, voice, format, language.
+     * Response payload: { transcript, reply, audio: <base64>|null, audioMimeType, voice }
+     */
+    fastify.post('/:agentIdentifier/voice', { onRequest: [fastify.authenticate] }, async (request, reply) => {
+        if (!requireUser(request, reply)) return;
+        if (!fastify.voice?.sttEnabled) {
+            const r = new ResponseObject().badRequest(
+                'Speech-to-text not configured (set CANVAS_VOICE_STT_URL)',
+            );
+            return reply.code(r.statusCode).send(r.getResponse());
+        }
+
+        try {
+            // 1. Extract audio (multipart file part or JSON base64)
+            let audio = null;
+            let mimeType = 'audio/webm';
+            let options = { ...request.query };
+
+            if (request.isMultipart?.()) {
+                const file = await request.file();
+                if (file) {
+                    audio = await file.toBuffer();
+                    mimeType = file.mimetype || mimeType;
+                }
+            } else if (request.body && typeof request.body === 'object' && request.body.audio) {
+                audio = Buffer.from(String(request.body.audio), 'base64');
+                mimeType = request.body.mimeType || mimeType;
+                options = { ...options, ...request.body };
+            }
+
+            if (!audio?.length) {
+                const r = new ResponseObject().badRequest('Audio is required (multipart file or JSON base64 "audio")');
+                return reply.code(r.statusCode).send(r.getResponse());
+            }
+
+            // 2. Transcribe
+            const { text: transcript } = await fastify.voice.transcribe(audio, {
+                mimeType,
+                language: options.language,
+            });
+            if (!transcript) {
+                const r = new ResponseObject().badRequest('Could not transcribe audio (empty transcript)');
+                return reply.code(r.statusCode).send(r.getResponse());
+            }
+
+            // 3. Prompt the agent (starts it if needed, returns flattened text)
+            const replyText = await fastify.agents.prompt(
+                request.user.id, request.params.agentIdentifier, transcript, {}, request.user.id
+            );
+
+            // 4. Synthesize the reply (optional)
+            let audioOut = null;
+            let audioMimeType = null;
+            let voiceUsed = null;
+            const wantTts = String(options.tts ?? 'true') !== 'false';
+            if (wantTts && fastify.voice.ttsEnabled && replyText) {
+                try {
+                    const spoken = await fastify.voice.speak(replyText, {
+                        voice: options.voice,
+                        format: options.format,
+                    });
+                    audioOut = spoken.audio.toString('base64');
+                    audioMimeType = spoken.mimeType;
+                    voiceUsed = spoken.voice;
+                } catch (ttsErr) {
+                    // Reply text still useful without audio — degrade, don't fail.
+                    fastify.log.warn({ err: ttsErr }, 'voice: TTS failed, returning text only');
+                }
+            }
+
+            const r = new ResponseObject().success({
+                transcript,
+                reply: replyText,
+                audio: audioOut,
+                audioMimeType,
+                voice: voiceUsed,
+            }, 'Voice prompt completed');
+            return reply.code(r.statusCode).send(r.getResponse());
+        } catch (err) {
+            fastify.log.error(err);
+            const r = err.message?.includes('not found') || err.message?.includes('not configured')
+                ? new ResponseObject().badRequest(err.message)
+                : new ResponseObject().serverError(err.message || 'Voice prompt failed');
+            return reply.code(r.statusCode).send(r.getResponse());
+        }
+    });
+
     fastify.post('/:agentIdentifier', { onRequest: [fastify.authenticate] }, handlePromptRequest);
     fastify.post('/:agentIdentifier/prompt', { onRequest: [fastify.authenticate] }, handlePromptRequest);
 

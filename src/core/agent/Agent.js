@@ -13,6 +13,7 @@ import {
 import { getModel } from '@mariozechner/pi-ai';
 
 import { createLogger } from '../../utils/log.js';
+import { createCanvasTools } from './tools/index.js';
 
 export const AGENT_STATUS_CODES = {
     AVAILABLE: 'available',
@@ -180,6 +181,7 @@ class Agent extends EventEmitter {
     get createdAt()   { return this.#config.createdAt; }
     get updatedAt()   { return this.#config.updatedAt; }
     get metadata()    { return this.#config.metadata || {}; }
+    get access()      { return this.#config.access || null; }
     get agentConfig() { return this.#config.config || {}; }
     get systemPrompt(){ return this.agentConfig?.prompts?.system || ''; }
     get rootPath()    { return this.#rootPath; }
@@ -216,7 +218,13 @@ class Agent extends EventEmitter {
     /**
      * Lifecycle
      */
-    async start() {
+    /**
+     * @param {Object} [options]
+     * @param {Object|null} [options.canvasEnv] - Runtime env for canvas tools
+     *   ({ CANVAS_URL, CANVAS_TOKEN, CANVAS_WORKSPACE, CANVAS_BASE_PATH, ... });
+     *   null/absent = unbound agent, no canvas tools.
+     */
+    async start(options = {}) {
         if (this.isActive) return this;
 
         try {
@@ -261,6 +269,13 @@ class Agent extends EventEmitter {
                 );
             }
 
+            // Canvas tools only for bound agents with an explicit runtime env;
+            // gated off via config.tools.canvas.enabled = false.
+            const canvasToolsEnabled = this.agentConfig?.tools?.canvas?.enabled !== false;
+            const canvasTools = options.canvasEnv && canvasToolsEnabled
+                ? createCanvasTools(options.canvasEnv)
+                : [];
+
             const sessionOptions = {
                 cwd: this.#homePath(),
                 agentDir: runtimePath,
@@ -268,7 +283,7 @@ class Agent extends EventEmitter {
                 authStorage,
                 modelRegistry,
                 sessionManager: this.#sessionManager(),
-                tools: createCodingTools(this.#homePath()),
+                tools: [...createCodingTools(this.#homePath()), ...canvasTools],
             };
 
             const { session } = await createAgentSession(sessionOptions);
@@ -410,7 +425,7 @@ class Agent extends EventEmitter {
      * @param {*} value
      */
     setConfigKey(key, value) {
-        const allowed = ['name', 'label', 'description', 'color', 'llmProvider', 'model', 'metadata', 'config'];
+        const allowed = ['name', 'label', 'description', 'color', 'llmProvider', 'model', 'metadata', 'config', 'access'];
         if (!allowed.includes(key)) throw new Error(`Config key "${key}" is not allowed`);
         this.#config[key] = value;
     }
@@ -590,6 +605,7 @@ class Agent extends EventEmitter {
             createdAt: this.createdAt,
             updatedAt: this.updatedAt,
             metadata: this.metadata,
+            access: this.access,
             config: this.agentConfig,
             rootPath: this.#rootPath,
             status: this.#status,

@@ -34,6 +34,10 @@ import contextWebdavRoutes from './routes/context-webdav.js';
 import menuRoutes from './routes/menu.js';
 import roleRoutes from './routes/roles/index.js';
 import roleTemplateRoutes from './routes/role-templates/index.js';
+import messagingRoutes from './routes/messaging/index.js';
+import messagingWebhookRoutes from './routes/messaging/webhooks.js';
+import voiceRoutes from './routes/voice/index.js';
+import { rejectAgentTokens } from './middleware/agent-acl.js';
 
 // WebSocket handlers
 import setupWebSocketHandlers from './websocket/index.js';
@@ -179,6 +183,9 @@ export async function createServer(options = {}) {
   if (options.agents) server.decorate('agents', options.agents);
   if (options.authService) server.decorate('authService', options.authService);
   if (options.deviceRegistry) server.decorate('deviceRegistry', options.deviceRegistry);
+  if (options.messaging) server.decorate('messaging', options.messaging);
+  if (options.chatRouter) server.decorate('chatRouter', options.chatRouter);
+  if (options.voice) server.decorate('voice', options.voice);
 
   // Handle WebDAV OPTIONS before CORS plugin intercepts them
   const davUrlPattern = /^\/workspaces\/[^/]+\/dav(\/|$)/;
@@ -305,18 +312,29 @@ export async function createServer(options = {}) {
 
   await authService.initialize();
 
+  // Agent tokens (canvas-agent-*) are data-plane only: they may reach the
+  // workspace routes (clamped by enforceAgentBinding) but not control-plane
+  // route groups. agentRoutes carries its own in-file guard.
+  const withoutAgentTokens = (routes) => async (instance) => {
+    instance.addHook('preHandler', rejectAgentTokens);
+    await instance.register(routes);
+  };
+
   // Register routes
   server.register(pingRoute);
   server.register(authRoutes, { prefix: '/rest/v2/auth' });
   server.register(menuRoutes, { prefix: '/rest/v2', onRequest: [server.authenticate] });
   server.register(workspaceRoutes, { prefix: '/rest/v2/workspaces' });
-  server.register(contextRoutes, { prefix: '/rest/v2/contexts' });
+  server.register(withoutAgentTokens(contextRoutes), { prefix: '/rest/v2/contexts' });
   server.register(agentRoutes, { prefix: '/rest/v2/agents' });
   server.register(pubRoutes, { prefix: '/rest/v2/pub' });
   server.register(schemaRoutes, { prefix: '/rest/v2/schemas' });
-  server.register(adminRoutes, { prefix: '/rest/v2/admin' });
-  server.register(roleRoutes, { prefix: '/rest/v2/roles' });
-  server.register(roleTemplateRoutes, { prefix: '/rest/v2/role-templates' });
+  server.register(messagingRoutes, { prefix: '/rest/v2/messaging' });
+  server.register(messagingWebhookRoutes, { prefix: '/rest/v2/messaging/webhooks' });
+  server.register(voiceRoutes, { prefix: '/rest/v2/voice' });
+  server.register(withoutAgentTokens(adminRoutes), { prefix: '/rest/v2/admin' });
+  server.register(withoutAgentTokens(roleRoutes), { prefix: '/rest/v2/roles' });
+  server.register(withoutAgentTokens(roleTemplateRoutes), { prefix: '/rest/v2/role-templates' });
 
   // Global 404 handler
   server.setNotFoundHandler((request, reply) => {

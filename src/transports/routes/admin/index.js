@@ -358,6 +358,83 @@ export default async function adminRoutes(fastify, options) {
     }
   });
 
+  // Full-text (Lance/BM25) reindex: backfill every document not yet in the FTS
+  // index — needed for corpora indexed before FTS existed or left in start()'s
+  // un-indexed tail. Idempotent (skips already-indexed). Runs in-process, so no
+  // LMDB lock conflict with the live server. FTS-only; dense vectors are separate.
+  fastify.post('/workspaces/:workspaceId/reindex-search', {
+    onRequest: [fastify.authenticate, requireAdmin],
+    schema: {
+      params: { type: 'object', required: ['workspaceId'], properties: { workspaceId: { type: 'string' } } },
+      // ?rebuild=true wipes the FTS table + coverage bitmap first — use when the
+      // index drifted (bitmap claims docs indexed but rows are missing).
+      querystring: { type: 'object', properties: { rebuild: { type: 'boolean', default: false } } },
+    }
+  }, async (request, reply) => {
+    try {
+      const identifier = request.params.workspaceId;
+      const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(identifier);
+      const workspaceId = isUUID ? identifier : fastify.workspaceManager.resolveWorkspaceId(request.user.id, identifier);
+      const ws = workspaceId ? await fastify.workspaceManager.getWorkspace(workspaceId, request.user.id) : null;
+      if (!ws?.isActive) {
+        const response = new ResponseObject().badRequest('Workspace not found or not active');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+      const result = await ws.db.reindexSearchIndex({ rebuild: request.query.rebuild === true });
+      const response = new ResponseObject().success(result, `FTS reindex complete: ${result.indexed} newly indexed (${result.alreadyIndexed}/${result.totalDocs} total)`);
+      return reply.code(response.statusCode).send(response.getResponse());
+    } catch (error) {
+      fastify.log.error(error);
+      const response = new ResponseObject().serverError(error.message || 'Failed to reindex FTS');
+      return reply.code(response.statusCode).send(response.getResponse());
+    }
+  });
+
+  // Embedding reconcile/reindex: ask the embedd service to drain this workspace's
+  // unembedded gap (docs matching a space's candidate schemas but with no vectors
+  // yet — a durable synapsd bitmap ledger). ASYNC + idempotent. `reindex:true`
+  // wipes each space first for a full re-embed. Embedding runs off-thread in the
+  // embedd service; this only enqueues.
+  fastify.post('/workspaces/:workspaceId/reindex-embeddings', {
+    onRequest: [fastify.authenticate, requireAdmin],
+    schema: {
+      params: { type: 'object', required: ['workspaceId'], properties: { workspaceId: { type: 'string' } } },
+      body: {
+        type: 'object',
+        properties: { space: { type: 'string' }, reindex: { type: 'boolean' } },
+        additionalProperties: false,
+      },
+    }
+  }, async (request, reply) => {
+    try {
+      const identifier = request.params.workspaceId;
+      const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(identifier);
+      const workspaceId = isUUID ? identifier : fastify.workspaceManager.resolveWorkspaceId(request.user.id, identifier);
+      const ws = workspaceId ? await fastify.workspaceManager.getWorkspace(workspaceId, request.user.id) : null;
+      if (!ws?.isActive) {
+        const response = new ResponseObject().badRequest('Workspace not found or not active');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+      const embedd = fastify.workspaceManager.embedd;
+      if (!embedd) {
+        const response = new ResponseObject().badRequest('Embedding service is disabled (CANVAS_EMBEDD_ENABLED=false)');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+      const { space = null, reindex = false } = request.body || {};
+      const result = await embedd.reconcile(workspaceId, { space, reindex });
+      if (result?.error) {
+        const response = new ResponseObject().badRequest(result.error);
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+      const response = new ResponseObject().success(result, `Embedding reconcile: ${result.enqueued} doc(s) enqueued (draining off-thread)`);
+      return reply.code(response.statusCode).send(response.getResponse());
+    } catch (error) {
+      fastify.log.error(error);
+      const response = new ResponseObject().serverError(error.message || 'Failed to reconcile embeddings');
+      return reply.code(response.statusCode).send(response.getResponse());
+    }
+  });
+
   // Workspace Management Routes
 
   // List all workspaces (admin only)

@@ -79,6 +79,42 @@ GET /rest/v2/admin/logs/stream?tail=200&level=info&module=auth
 
 Both endpoints require admin authentication.
 
+## Admin maintenance
+
+Index-rebuild endpoints for when a workspace's search/feature indexes drift from
+its documents — e.g. a corpus indexed before a given index existed, or a tail left
+unindexed by the bounded backfill at startup. All require admin authentication and
+run **in-process** (no database-lock conflict with the live server). `:workspace`
+accepts a workspace id (UUID) or name.
+
+```bash
+# Rebuild full-text (Lance/BM25) index — backfills every document not yet indexed.
+# Idempotent (already-indexed docs are skipped). Synchronous; FTS only.
+POST /rest/v2/admin/workspaces/:workspace/reindex-search
+# → { indexed, alreadyIndexed, totalDocs }
+
+# Rebuild dense-vector embeddings — enqueues every embeddable document missing a
+# vector. ASYNC: returns after enqueuing; the embedding queue drains off-thread
+# (model inference per doc). Idempotent. Only schemas in semantic.embeddableSchemas
+# are embedded (default notes; tabs/files are not). Track progress via getStats().
+POST /rest/v2/admin/workspaces/:workspace/reindex-embeddings
+# → { enqueued, totalEmbeddable, queued, embeddableSchemas }
+
+# Rebuild feature/schema bitmaps from stored documents.
+POST /rest/v2/admin/workspaces/:workspace/reindex-features
+# → { indexed }
+```
+
+Example:
+
+```bash
+curl -X POST -H "Authorization: Bearer <admin-token>" \
+  https://<host>:<port>/rest/v2/admin/workspaces/universe/reindex-search
+```
+
+Index rebuilds are deliberately **not** run automatically on server start (to keep
+startup fast and predictable) — trigger them explicitly via these endpoints.
+
 ## WebDAV
 
 Workspace data is exposed via WebDAV with three virtual root directories:

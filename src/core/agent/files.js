@@ -13,6 +13,45 @@ export const AGENT_RUNTIME_FILES = {
     skillFile: 'SKILL.md',
 };
 
+// Server-managed skill materialized for bound agents (see setAccess). Kept out
+// of user config on read-back — it follows the binding, not the skills list.
+export const CANVAS_SKILL_NAME = 'canvas-tools';
+
+const CANVAS_SKILL = {
+    name: CANVAS_SKILL_NAME,
+    description: 'How to query and manage user data in canvas via the canvas_* tools',
+    content: [
+        '# Canvas tools',
+        '',
+        'You are bound to a canvas workspace scope. Canvas indexes the user\'s data',
+        '(emails, notes, browser tabs, files, ...) as documents in a context tree.',
+        'All canvas_* tool paths are RELATIVE to your scope; you cannot access data',
+        'outside it.',
+        '',
+        '## Tools',
+        '- `canvas_find` — search/list documents. `schema` filters by type, `query` is full-text/semantic search, `path` narrows to a subtree.',
+        '- `canvas_get` — fetch one document by id.',
+        '- `canvas_insert` — insert a document `{ schema, data }` at an optional path.',
+        '- `canvas_tree` — show the context tree of your scope.',
+        '- `canvas_notify` — send a notification to your user over their configured channel (WhatsApp/Slack).',
+        '',
+        '## Common schemas',
+        '- `data/abstraction/email` — ingested emails (data.subject, data.from, data.to, data.body)',
+        '- `data/abstraction/note` — notes (data.title, data.content)',
+        '- `data/abstraction/tab` — browser tabs (data.url, data.title)',
+        '- `data/abstraction/file` — indexed files',
+        '- `data/abstraction/todo` — todo items',
+        '',
+        '## Examples',
+        '- "Any new emails?" → `canvas_find { "schema": "data/abstraction/email", "limit": 10 }` (results are newest-first)',
+        '- "Emails about ticket X" → `canvas_find { "schema": "data/abstraction/email", "query": "ticket X" }`',
+        '- "Leave me a note" → `canvas_insert { "document": { "schema": "data/abstraction/note", "data": { "title": "...", "content": "..." } } }`',
+        '',
+        'The same access is available from shell via canvas-cli: the environment',
+        'variables CANVAS_URL and CANVAS_TOKEN in runtime/canvas.env authenticate it.',
+    ].join('\n'),
+};
+
 function getRuntimePath(rootPath) {
     return path.join(rootPath, 'runtime');
 }
@@ -171,13 +210,19 @@ export async function loadAgentRuntimeConfig(rootPath, config) {
     if (appendSystemPrompt !== null) prompts.append = appendSystemPrompt.trim();
     if (contextPrompt !== null) prompts.context = contextPrompt.trim();
 
+    // The canvas skill is server-managed (materialized from the binding); keep
+    // it out of user config so it never duplicates or outlives the binding.
+    const userSkills = skills !== null
+        ? skills.filter((skill) => skill?.name !== CANVAS_SKILL_NAME)
+        : null;
+
     return {
         ...config,
         config: {
             ...baseConfig,
             prompts,
             ...(memory !== null ? { memory: memory.trim() } : {}),
-            ...(skills !== null ? { skills } : {}),
+            ...(userSkills !== null ? { skills: userSkills } : {}),
         },
     };
 }
@@ -193,5 +238,10 @@ export async function materializeAgentRuntimeFiles(rootPath, config) {
     await syncOptionalFile(path.join(runtimePath, AGENT_RUNTIME_FILES.context), prompts.context);
     await syncOptionalFile(path.join(runtimePath, AGENT_RUNTIME_FILES.memory), agentConfig.memory);
 
-    await syncSkills(rootPath, agentConfig.skills || []);
+    // Bound agents get the server-managed canvas skill alongside user skills.
+    const skills = [
+        ...(agentConfig.skills || []).filter((skill) => skill?.name !== CANVAS_SKILL_NAME),
+        ...(config?.access ? [CANVAS_SKILL] : []),
+    ];
+    await syncSkills(rootPath, skills);
 }

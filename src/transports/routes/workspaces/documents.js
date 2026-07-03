@@ -41,15 +41,43 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       return workspace.getDirectoryTreeSelector(path, treeNameOrId);
     }
     if (!treeType && treeNameOrId) {
-      // Fallback: detect type from the tree itself to avoid hard errors
+      // Fallback: detect type from the tree itself. Only swallow "not found" so
+      // an unknown tree still produces a clean error from getContextTreeSelector;
+      // any other error (and the directory selector build itself) must propagate.
+      let detectedType = null;
       try {
-        const tree = workspace.getTree(treeNameOrId);
-        if (tree.type === 'directory') {
-          return workspace.getDirectoryTreeSelector(path, treeNameOrId);
-        }
-      } catch (_) { /* unknown tree — let getContextTreeSelector handle the error */ }
+        detectedType = workspace.getTree(treeNameOrId)?.type ?? null;
+      } catch (err) {
+        if (!/not found/i.test(err?.message || '')) throw err;
+      }
+      if (detectedType === 'directory') {
+        return workspace.getDirectoryTreeSelector(path, treeNameOrId);
+      }
     }
     return workspace.getContextTreeSelector(path, treeNameOrId);
+  }
+
+  // Read scoping mirrors write scoping: a directory tree must land in spec.directory
+  // (→ dir: path grammar), NOT spec.context (→ ctx:), otherwise list/search query
+  // the wrong tree and return nothing. Returns { context, directory } with exactly
+  // one populated. Defaults to context.
+  function resolveScopeSelectors(workspace, source = {}, fallbackPath = '/') {
+    const path = source?.context ?? fallbackPath;
+    const treeNameOrId = source?.treeNameOrTreeId ?? null;
+    const treeType = source?.treeType ?? null;
+
+    let isDirectory = treeType === 'directory';
+    if (!treeType && treeNameOrId) {
+      try {
+        isDirectory = workspace.getTree(treeNameOrId)?.type === 'directory';
+      } catch (err) {
+        if (!/not found/i.test(err?.message || '')) throw err;
+      }
+    }
+
+    return isDirectory
+      ? { context: null, directory: workspace.getDirectoryTreeSelector(path, treeNameOrId) }
+      : { context: workspace.getContextTreeSelector(path, treeNameOrId), directory: null };
   }
 
   function buildReadOptions(contextSelector, includeIncoming, options = {}) {
@@ -77,8 +105,11 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     return reply.code(responseObject.statusCode).send(responseObject.getResponse());
   }
 
+  // selector.path may be a single path or an array of paths (multi-path insert).
+  const anyIncoming = (path) => Array.isArray(path) ? path.some(isIncomingContextSpec) : isIncomingContextSpec(path);
+
   function rejectIncomingWrite(reply, workspace, selector) {
-    if (!selector || !isIncomingContextSpec(selector.path)) return false;
+    if (!selector || !anyIncoming(selector.path)) return false;
     try {
       if (selector.tree && workspace.getTree(selector.tree)?.type !== 'directory') return false;
     } catch (_) {
@@ -102,12 +133,17 @@ export default async function workspaceDocumentRoutes(fastify, options) {
         return { treeType: 'directory', selector: workspace.getDirectoryTreeSelector(path, treeNameOrId) };
       }
       if (!treeType && treeNameOrId) {
+        // Only swallow "not found" (let the context path emit a clean error for
+        // unknown trees); rethrow anything else instead of masking it.
+        let detectedType = null;
         try {
-          const tree = workspace.getTree(treeNameOrId);
-          if (tree.type === 'directory') {
-            return { treeType: 'directory', selector: workspace.getDirectoryTreeSelector(path, treeNameOrId) };
-          }
-        } catch (_) { /* unknown tree — fall through to context */ }
+          detectedType = workspace.getTree(treeNameOrId)?.type ?? null;
+        } catch (err) {
+          if (!/not found/i.test(err?.message || '')) throw err;
+        }
+        if (detectedType === 'directory') {
+          return { treeType: 'directory', selector: workspace.getDirectoryTreeSelector(path, treeNameOrId) };
+        }
       }
       return { treeType: 'context', selector: workspace.getContextTreeSelector(path, treeNameOrId) };
     }
@@ -192,9 +228,15 @@ export default async function workspaceDocumentRoutes(fastify, options) {
           ...attributesQueryProps,
           ...filtersQueryProps,
           ...paginationQueryProps,
-          q: { type: 'string' },
+          // q may repeat (?q=car&q=red): a stack of text queries that AND-narrow
+          // each other (stateless refinement). Single q == ordinary search.
+          q: { type: ['string', 'array'], items: { type: 'string' } },
           search: { type: 'string' },
           mode: { type: 'string', enum: ['fts', 'vector', 'hybrid'] },
+          // Optional cosine-distance floor for the dense side of vector/hybrid
+          // search — drops weak (far) kNN hits before fusion. 0..2 (0 = identical).
+          minDistance: { type: 'number' },
+          maxDistance: { type: 'number' },
           includeIncoming: { type: 'boolean', default: false },
           // 'workspace' drops the path bucket entirely → list every document in
           // the DB (synapsd default). 'path' (default) scopes to context/tree.
@@ -209,33 +251,55 @@ export default async function workspaceDocumentRoutes(fastify, options) {
 
       // Whole-workspace scope = no path selector. Null selector still excludes
       // the /.incoming staging tree by default (buildReadOptions), opt in via includeIncoming.
-      const contextSelector = request.query.scope === 'workspace'
-        ? null
-        : resolveContextSelector(workspace, request.query, '/');
-      const searchQuery = request.query.q || request.query.search;
+      const { context: ctxSelector, directory: dirSelector } = request.query.scope === 'workspace'
+        ? { context: null, directory: null }
+        : resolveScopeSelectors(workspace, request.query, '/');
+      const activeSelector = dirSelector || ctxSelector;
+
+      // Collect the (possibly stacked) text queries. `q` may be a string or an
+      // array (repeated param); `search` is a legacy single alias.
+      const rawQ = request.query.q;
+      const queries = (Array.isArray(rawQ) ? rawQ : (rawQ ? [rawQ] : []))
+        .concat(request.query.search ? [request.query.search] : [])
+        .filter((s) => typeof s === 'string' && s.trim().length > 0);
+      const isSearch = queries.length > 0;
 
       const spec = {
-        context: contextSelector,
+        context: ctxSelector,
+        directory: dirSelector,
         attributes: buildAttributes(request.query),
         filters: request.query.filters,
-        ...buildReadOptions(contextSelector, request.query.includeIncoming, {
+        ...buildReadOptions(activeSelector, request.query.includeIncoming, {
           limit: request.query.limit,
           offset: request.query.offset,
           page: request.query.page,
         }),
       };
 
-      const documents = searchQuery
-        ? await workspace.search({ query: searchQuery, mode: request.query.mode, ...spec })
-        : await workspace.list(spec);
+      const { minDistance, maxDistance } = request.query;
+      let documents;
+      if (queries.length > 1) {
+        // Stacked queries → stateless multi-query refinement (AND-narrow, last ranks).
+        documents = await workspace.searchRefined(queries, spec, {
+          limit: request.query.limit,
+          offset: request.query.offset,
+          mode: request.query.mode,
+          minDistance,
+          maxDistance,
+        });
+      } else if (queries.length === 1) {
+        documents = await workspace.search({ query: queries[0], mode: request.query.mode, minDistance, maxDistance, ...spec });
+      } else {
+        documents = await workspace.list(spec);
+      }
 
       if (documents.error) {
         fastify.log.error(`SynapsD error: ${documents.error}`);
-        const responseObject = new ResponseObject().error(`Failed to ${searchQuery ? 'search' : 'list'} documents due to a database error.`, documents.error);
+        const responseObject = new ResponseObject().error(`Failed to ${isSearch ? 'search' : 'list'} documents due to a database error.`, documents.error);
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());
       }
 
-      const responseObject = new ResponseObject().found(documents, searchQuery ? 'Search results retrieved successfully' : 'Documents retrieved successfully', 200, documents.count, documents.totalCount);
+      const responseObject = new ResponseObject().found(documents, isSearch ? 'Search results retrieved successfully' : 'Documents retrieved successfully', 200, documents.count, documents.totalCount);
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
     } catch (error) {
       fastify.log.error(error);
@@ -257,7 +321,11 @@ export default async function workspaceDocumentRoutes(fastify, options) {
             properties: {
               treeNameOrTreeId: { type: 'string' },
               treeType: { type: 'string', enum: ['context', 'directory'] },
-              context: { type: 'string' },
+              // A single path, or an array of paths to insert the same docs into
+              // multiple tree paths in ONE op (one embed, all memberships). Use a
+              // type union (not oneOf) — Fastify array-coercion makes a string
+              // satisfy both oneOf branches → ambiguous → 400.
+              context: { type: ['string', 'array'], items: { type: 'string' } },
               features: { type: 'array', items: { type: 'string' } },
               documents: { oneOf: [{ type: 'object' }, { type: 'array' }] },
               documentIds: {
@@ -291,7 +359,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
 
       const treeSpec = {
         context: insertTreeType === 'directory'
-          ? (isIncomingContextSpec(insertSelector?.path) ? null : workspace.getContextTreeSelector('/'))
+          ? (anyIncoming(insertSelector?.path) ? null : workspace.getContextTreeSelector('/'))
           : insertSelector,
         directory: insertTreeType === 'directory' ? insertSelector : null,
         features: enforcedFeatures,
@@ -338,7 +406,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return;
-      const contextSelector = resolveContextSelector(workspace, request.query, '/');
+      const { context: ctxSel, directory: dirSel } = resolveScopeSelectors(workspace, request.query, '/');
 
       const document = await workspace.get(request.params.docId);
       if (!document) {
@@ -347,7 +415,8 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       }
 
       const matchesScope = await workspace.has(document.id, {
-        context: contextSelector,
+        context: ctxSel,
+        directory: dirSel,
         attributes: buildAttributes(request.query),
       });
       if (!matchesScope) {
@@ -385,15 +454,17 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return;
-      const contextSelector = resolveContextSelector(workspace, request.query, '/');
+      const { context: ctxSel, directory: dirSel } = resolveScopeSelectors(workspace, request.query, '/');
+      const activeSelector = dirSel || ctxSel;
       const attrs = buildAttributes(request.query) || {};
       const allOf = [`data/abstraction/${request.params.abstraction}`, ...(attrs.allOf || [])];
 
       const documents = await workspace.list({
-        context: contextSelector,
+        context: ctxSel,
+        directory: dirSel,
         attributes: { ...attrs, allOf },
         filters: request.query.filters,
-        ...buildReadOptions(contextSelector, request.query.includeIncoming, {
+        ...buildReadOptions(activeSelector, request.query.includeIncoming, {
           limit: request.query.limit,
           offset: request.query.offset,
           page: request.query.page,
@@ -553,14 +624,16 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return;
-      const contextSelector = resolveContextSelector(workspace, request.query, '/');
+      const { context: ctxSel, directory: dirSel } = resolveScopeSelectors(workspace, request.query, '/');
+      const activeSelector = dirSel || ctxSel;
 
       const attributes = buildAttributes(request.query);
       const matches = await workspace.list({
-        context: contextSelector,
+        context: ctxSel,
+        directory: dirSel,
         attributes,
         filters: request.query.filters,
-        ...buildReadOptions(contextSelector, request.query.includeIncoming, { parse: false, limit: 0 }),
+        ...buildReadOptions(activeSelector, request.query.includeIncoming, { parse: false, limit: 0 }),
       });
 
       if (matches.error) {
@@ -576,7 +649,18 @@ export default async function workspaceDocumentRoutes(fastify, options) {
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());
       }
 
+      // Purge is scoped (we listed ids at this tree+path), so emit ONE tree-scoped
+      // batch event instead of N db-level per-doc events — drives cross-client
+      // auto-close + UI refresh without an event storm. deleteMany stays silent.
       const result = await workspace.deleteMany(documentIds, { emitEvent: false });
+      const purgedIds = (result?.successful || []).map((entry) => entry.id).filter((id) => Number.isInteger(id));
+      if (purgedIds.length > 0) {
+        workspace.emitTreeDocumentEvent('tree.document.deleted.batch', {
+          context: ctxSel,
+          directory: dirSel,
+          documentIds: purgedIds,
+        });
+      }
 
       const responseObject = new ResponseObject().deleted({ requested: documentIds.length, deleted: result?.successful?.length || 0, result }, 'Documents purged successfully', 200, result?.successful?.length || 0);
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
@@ -832,7 +916,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return;
-      const contextSelector = resolveContextSelector(workspace, request.query, '/');
+      const { context: ctxSel, directory: dirSel } = resolveScopeSelectors(workspace, request.query, '/');
 
       const checksumString = `${request.params.algo}/${request.params.hash}`;
       const document = await workspace.getByChecksumString(checksumString);
@@ -842,7 +926,8 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       }
 
       const matchesScope = await workspace.hasByChecksumString(checksumString, {
-        context: contextSelector,
+        context: ctxSel,
+        directory: dirSel,
         attributes: buildAttributes(request.query),
       });
       if (!matchesScope) {

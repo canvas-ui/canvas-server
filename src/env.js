@@ -41,6 +41,50 @@ export const env = {
     user: {
         home: USER_HOME
     },
+    embedd: {
+        // Server-managed embedding service (shared singleton). Disabled → workspaces
+        // run store-only: existing vectors stay searchable, no new embeddings, dense
+        // search degrades to FTS.
+        enabled: process.env.CANVAS_EMBEDD_ENABLED !== 'false',
+        ollamaHost: process.env.OLLAMA_HOST || null,
+        // One shared fastembed model store for all workspaces (not per-workspace).
+        cacheDir: process.env.CANVAS_EMBEDD_CACHE_DIR || path.join(SERVER_HOME, 'embedd', 'models'),
+    },
+    messaging: {
+        // User notification/chat channels (Slack, WhatsApp Cloud API). The
+        // console adapter is always available as a dev fallback; real adapters
+        // activate only when their tokens are configured.
+        enabled: process.env.CANVAS_MESSAGING_ENABLED !== 'false',
+        slack: {
+            botToken: process.env.SLACK_BOT_TOKEN || null,
+            // App-level token (xapp-*) enables inbound chat via Socket Mode.
+            appToken: process.env.SLACK_APP_TOKEN || null,
+        },
+        whatsapp: {
+            accessToken: process.env.WHATSAPP_TOKEN || null,
+            phoneNumberId: process.env.WHATSAPP_PHONE_ID || null,
+            // Shared secret for Cloud API webhook subscription verification.
+            verifyToken: process.env.WHATSAPP_VERIFY_TOKEN || null,
+        },
+    },
+    voice: {
+        // Speech-to-text / text-to-speech via OpenAI-compatible local servers
+        // (speaches/faster-whisper for STT, kokoro-fastapi/openedai-speech for
+        // TTS). Each side activates only when its base URL is configured.
+        stt: {
+            baseUrl: process.env.CANVAS_VOICE_STT_URL || null,
+            apiKey: process.env.CANVAS_VOICE_STT_API_KEY || null,
+            model: process.env.CANVAS_VOICE_STT_MODEL || 'whisper-1',
+            language: process.env.CANVAS_VOICE_STT_LANGUAGE || null,
+        },
+        tts: {
+            baseUrl: process.env.CANVAS_VOICE_TTS_URL || null,
+            apiKey: process.env.CANVAS_VOICE_TTS_API_KEY || null,
+            model: process.env.CANVAS_VOICE_TTS_MODEL || 'kokoro',
+            voice: process.env.CANVAS_VOICE_TTS_VOICE || 'af_heart',
+            format: process.env.CANVAS_VOICE_TTS_FORMAT || 'mp3',
+        },
+    },
     auth: {
         // TODO: Use SERVER_HOME/config/auth.json for jwtSecret and tokenExpiry
         jwtSecret: process.env.CANVAS_JWT_SECRET || 'canvas-jwt-secret-change-in-production', //generateJwtSecret(),

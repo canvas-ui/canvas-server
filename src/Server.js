@@ -26,6 +26,13 @@ import ContextManager from './core/context/index.js';
 import DeviceRegistry from './core/device/Registry.js';
 import Roles from './core/role/index.js';
 import Agents from './core/agent/index.js';
+import Embedd from './services/embedd/src/index.js';
+import Voice from './services/voice/src/index.js';
+import Messaging from './services/messaging/src/index.js';
+import ChatRouter from './services/messaging/src/router.js';
+import ConsoleAdapter from './services/messaging/src/adapters/console.js';
+import SlackAdapter from './services/messaging/src/adapters/slack.js';
+import WhatsAppAdapter from './services/messaging/src/adapters/whatsapp.js';
 
 // Services
 import { authService } from './transports/auth/service.js';
@@ -47,6 +54,10 @@ class Server extends EventEmitter {
     #contextManager;
     #roles;
     #agents;
+    #embedd;    // shared embedding service (server-managed singleton; optional)
+    #messaging; // user notification/chat channels (server-managed singleton; optional)
+    #chatRouter; // inbound chat → agent routing (requires #messaging)
+    #voice;     // STT/TTS service (server-managed singleton; optional)
 
     // Global services
     #authService;
@@ -171,7 +182,17 @@ class Server extends EventEmitter {
                 agents: this.#agents,
                 authService: this.#authService,
                 deviceRegistry: this.#deviceRegistry,
+                messaging: this.#messaging,
+                chatRouter: this.#chatRouter,
+                voice: this.#voice,
             });
+        }
+
+        // Connect inbound chat channels (Slack Socket Mode; WhatsApp arrives
+        // via webhook). After the API server is up so agent prompts can use
+        // loopback canvas tools from the very first message.
+        if (this.#messaging && this.#chatRouter) {
+            await this.#messaging.start((message) => this.#chatRouter.handle(message));
         }
 
         this.#initialized = true;
@@ -185,10 +206,21 @@ class Server extends EventEmitter {
             logger: createLogger('users'),
         });
 
+        // Shared embedding service — one model runtime for all workspaces (avoids
+        // the per-workspace model footprint). Optional: when disabled, workspaces
+        // run store-only and dense search degrades to FTS.
+        if (env.embedd.enabled) {
+            this.#embedd = new Embedd({
+                onnxCacheDir: env.embedd.cacheDir,
+                ollamaHost: env.embedd.ollamaHost,
+            });
+        }
+
         this.#workspaceManager = new WorkspaceManager({
             defaultRootPath: env.user.home,
             indexStore: jim.createIndex('workspaces'),
             users: this.#users,
+            embedd: this.#embedd,
             logger: createLogger('workspace-manager'),
         });
 
@@ -222,6 +254,13 @@ class Server extends EventEmitter {
         this.#users.setContextManager(this.#contextManager);
         this.#workspaceManager.setContextManager(this.#contextManager);
 
+        // Agent bindings resolve against workspaces/contexts; agent canvas
+        // tools call our own REST API over loopback with the agent's token
+        // (canvas-edge later flips this URL to the server's public address).
+        this.#agents.setWorkspaceManager(this.#workspaceManager);
+        this.#agents.setContextManager(this.#contextManager);
+        this.#agents.setApiBaseUrl(`http://127.0.0.1:${env.server.api.port}/rest/v2`);
+
         await this.#users.initialize();
         await this.#workspaceManager.initialize(); // This initializes dotfileService
         await this.#contextManager.initialize();
@@ -230,6 +269,54 @@ class Server extends EventEmitter {
 
         // Let workspace hooks call the agent() helper.
         this.#workspaceManager.hookService?.setAgents(this.#agents);
+
+        // Voice (STT/TTS via OpenAI-compatible local servers) — enabled per
+        // side by configured base URLs; status endpoint reports availability.
+        if (env.voice.stt.baseUrl || env.voice.tts.baseUrl) {
+            this.#voice = new Voice({
+                stt: env.voice.stt.baseUrl ? env.voice.stt : null,
+                tts: env.voice.tts.baseUrl ? env.voice.tts : null,
+                logger: createLogger('voice'),
+            });
+        }
+
+        // Messaging (Slack/WhatsApp/console) — env→config translation happens
+        // here; the service itself is pure DI (embedd pattern). Real adapters
+        // activate only when their tokens are configured.
+        if (env.messaging.enabled) {
+            const messagingLogger = createLogger('messaging');
+            const bindingsStore = jim.createIndex('messaging');
+            const adapters = [new ConsoleAdapter({ logger: messagingLogger })];
+            if (env.messaging.slack.botToken) {
+                adapters.push(new SlackAdapter({
+                    botToken: env.messaging.slack.botToken,
+                    appToken: env.messaging.slack.appToken,
+                    logger: messagingLogger,
+                }));
+            }
+            if (env.messaging.whatsapp.accessToken && env.messaging.whatsapp.phoneNumberId) {
+                adapters.push(new WhatsAppAdapter({
+                    accessToken: env.messaging.whatsapp.accessToken,
+                    phoneNumberId: env.messaging.whatsapp.phoneNumberId,
+                    logger: messagingLogger,
+                }));
+            }
+            this.#messaging = new Messaging({
+                adapters,
+                bindingsStore,
+                logger: messagingLogger,
+            });
+            this.#workspaceManager.hookService?.setMessaging(this.#messaging);
+
+            // Inbound chat: channel peer -> bound agent -> reply.
+            this.#chatRouter = new ChatRouter({
+                store: bindingsStore,
+                messaging: this.#messaging,
+                promptAgent: (userId, agentId, text, options) =>
+                    this.#agents.prompt(userId, agentId, text, options),
+                logger: messagingLogger,
+            });
+        }
 
         // Note: authService will be injected after initialization in the main initialize method
     }
@@ -345,8 +432,18 @@ class Server extends EventEmitter {
             await this.#apiServer.close();
             this.#apiServer = null;
         }
+        if (this.#embedd) {
+            try { await this.#embedd.stop(); } catch (err) { logger.warn({ err }, 'embedd stop failed'); }
+        }
+        if (this.#messaging) {
+            try { await this.#messaging.stop(); } catch (err) { logger.warn({ err }, 'messaging stop failed'); }
+        }
         return this;
     }
+
+    get embedd() { return this.#embedd; }
+    get messaging() { return this.#messaging; }
+    get voice() { return this.#voice; }
 
     async #closeRealtimeConnections() {
         const io = this.#apiServer?.io;

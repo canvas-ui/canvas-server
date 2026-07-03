@@ -3,16 +3,17 @@
  */
 
 import fs from 'fs/promises';
+import fsSync from 'fs';
 import path from 'path';
 import { EventEmitter } from 'events';
 import { Writable } from 'stream';
 import pino from 'pino';
 import pretty from 'pino-pretty';
+import debugModule from 'debug';
 import { env } from '../env.js';
 
 const isDev = process.env.NODE_ENV !== 'production';
-const LOG_FILE_PATH = path.join(env.server.home, 'log', 'canvas-server.log');
-const LOG_LEVEL = process.env.LOG_LEVEL || env.server.logLevel || 'info';
+const VALID_LEVELS = new Set(['trace', 'debug', 'info', 'warn', 'error', 'fatal']);
 const MAX_TAIL_LINES = 500;
 const MAX_TAIL_SCAN_LINES = 5000;
 const LOG_LEVEL_VALUES = {
@@ -26,6 +27,100 @@ const LOG_LEVEL_VALUES = {
 const logEvents = new EventEmitter();
 
 logEvents.setMaxListeners(0);
+
+/**
+ * Config
+ */
+
+const DEFAULT_DEBUG_NAMESPACES = 'canvas:*,stored:*,neurald:*';
+const DEFAULT_LOGGING_CONFIG = {
+    level: 'info',
+    file: 'log/canvas-server.log',
+    fileLevel: 'trace',
+    console: {
+        enabled: true,
+        level: null,
+        pretty: null,
+    },
+    captureConsole: true,
+    captureDebug: true,
+    debugNamespaces: DEFAULT_DEBUG_NAMESPACES,
+};
+
+function normalizeLevel(level, fallback = 'info') {
+    const normalized = String(level || fallback).toLowerCase();
+    return VALID_LEVELS.has(normalized) ? normalized : fallback;
+}
+
+function resolveLogPath(filePath) {
+    if (!filePath) {
+        return path.join(env.server.home, DEFAULT_LOGGING_CONFIG.file);
+    }
+
+    return path.isAbsolute(filePath) ? filePath : path.join(env.server.home, filePath);
+}
+
+function loadLoggingConfig() {
+    const configPath = path.join(env.server.home, 'config', 'logging.json');
+
+    if (!fsSync.existsSync(configPath)) {
+        const configDir = path.dirname(configPath);
+        if (!fsSync.existsSync(configDir)) {
+            fsSync.mkdirSync(configDir, { recursive: true });
+        }
+
+        fsSync.writeFileSync(configPath, `${JSON.stringify(DEFAULT_LOGGING_CONFIG, null, 2)}\n`, 'utf8');
+        return { ...DEFAULT_LOGGING_CONFIG };
+    }
+
+    try {
+        const parsed = JSON.parse(fsSync.readFileSync(configPath, 'utf8'));
+        return {
+            ...DEFAULT_LOGGING_CONFIG,
+            ...parsed,
+            console: {
+                ...DEFAULT_LOGGING_CONFIG.console,
+                ...(parsed.console || {}),
+            },
+        };
+    } catch {
+        return { ...DEFAULT_LOGGING_CONFIG };
+    }
+}
+
+const loggingConfig = loadLoggingConfig();
+const LOG_FILE_PATH = resolveLogPath(loggingConfig.file);
+const LOG_LEVEL = normalizeLevel(process.env.LOG_LEVEL || loggingConfig.level || env.server.logLevel);
+const FILE_LOG_LEVEL = normalizeLevel(loggingConfig.fileLevel, 'trace');
+const CONSOLE_ENABLED = loggingConfig.console?.enabled !== false;
+const CONSOLE_LOG_LEVEL = normalizeLevel(loggingConfig.console?.level || LOG_LEVEL);
+const CONSOLE_PRETTY = loggingConfig.console?.pretty ?? isDev;
+
+/**
+ * Level helpers
+ */
+
+function stripAnsi(value) {
+    return String(value).replace(/\u001b\[[0-9;]*m/g, '');
+}
+
+function resolveDebugNamespaces() {
+    if (process.env.DEBUG) {
+        return process.env.DEBUG;
+    }
+
+    if (loggingConfig.captureDebug === false) {
+        return null;
+    }
+
+    if (!['trace', 'debug'].includes(LOG_LEVEL)) {
+        return null;
+    }
+
+    return loggingConfig.debugNamespaces ?? DEFAULT_DEBUG_NAMESPACES;
+}
+
+const DEBUG_NAMESPACES = resolveDebugNamespaces();
 
 function getLevelValue(level) {
     if (typeof level === 'number') {
@@ -163,6 +258,10 @@ function matchesLogFilter(entry, filters = {}) {
     return true;
 }
 
+/**
+ * Streams
+ */
+
 class BroadcastStream extends Writable {
     #buffer = '';
 
@@ -197,22 +296,28 @@ class BroadcastStream extends Writable {
     }
 }
 
-const broadcastStream = new BroadcastStream();
-const fileStream = pino.destination({ dest: LOG_FILE_PATH, mkdir: true, sync: false });
-const consoleStream = isDev
-    ? pretty({
-        colorize: true,
-        translateTime: 'SYS:standard',
-        ignore: 'pid,hostname,service',
-        sync: false,
-    })
-    : pino.destination({ dest: 1, sync: false });
+function buildStreams() {
+    const streams = [
+        { level: FILE_LOG_LEVEL, stream: new BroadcastStream() },
+        { level: FILE_LOG_LEVEL, stream: pino.destination({ dest: LOG_FILE_PATH, mkdir: true, sync: false }) },
+    ];
 
-const streams = [
-    { level: 'trace', stream: broadcastStream },
-    { level: 'trace', stream: fileStream },
-    { level: isDev ? 'trace' : 'info', stream: consoleStream },
-];
+    if (CONSOLE_ENABLED) {
+        streams.push({
+            level: CONSOLE_LOG_LEVEL,
+            stream: CONSOLE_PRETTY
+                ? pretty({
+                    colorize: true,
+                    translateTime: 'SYS:standard',
+                    ignore: 'pid,hostname,service',
+                    sync: false,
+                })
+                : pino.destination({ dest: 1, sync: false }),
+        });
+    }
+
+    return streams;
+}
 
 export const logger = pino({
     name: 'canvas-server',
@@ -244,7 +349,117 @@ export const logger = pino({
         ],
         censor: '[REDACTED]',
     },
-}, pino.multistream(streams));
+}, pino.multistream(buildStreams()));
+
+/**
+ * Console capture
+ */
+
+function serializeConsoleArg(value) {
+    if (value instanceof Error) {
+        return {
+            name: value.name,
+            message: value.message,
+            stack: value.stack,
+        };
+    }
+
+    if (typeof value === 'object' && value !== null) {
+        return value;
+    }
+
+    return String(value);
+}
+
+function writeConsoleLog(level, args) {
+    const consoleLogger = logger.child({ module: 'console' });
+    const writer = (consoleLogger[level] || consoleLogger.info).bind(consoleLogger);
+
+    if (!args.length) {
+        writer('');
+        return;
+    }
+
+    if (typeof args[0] === 'string') {
+        const rest = args.slice(1);
+        if (!rest.length) {
+            writer(args[0]);
+            return;
+        }
+
+        const objects = rest.filter((item) => typeof item === 'object' && item !== null);
+        if (objects.length === rest.length && objects.length === 1) {
+            writer(objects[0], args[0]);
+            return;
+        }
+
+        writer({ detail: rest.map(serializeConsoleArg) }, args[0]);
+        return;
+    }
+
+    writer({ detail: args.map(serializeConsoleArg) }, 'console output');
+}
+
+function patchConsole() {
+    if (loggingConfig.captureConsole === false) {
+        return;
+    }
+
+    const methods = {
+        log: 'info',
+        info: 'info',
+        debug: 'debug',
+        warn: 'warn',
+        error: 'error',
+    };
+
+    for (const [method, level] of Object.entries(methods)) {
+        console[method] = (...args) => writeConsoleLog(level, args);
+    }
+}
+
+patchConsole();
+patchDebug();
+
+/**
+ * debug module capture
+ */
+
+function patchDebug() {
+    if (loggingConfig.captureDebug === false || !DEBUG_NAMESPACES) {
+        return;
+    }
+
+    if (!process.env.DEBUG) {
+        debugModule.enable(DEBUG_NAMESPACES);
+    }
+
+    if (!process.env.DEBUG_COLORS) {
+        process.env.DEBUG_COLORS = 'no';
+    }
+
+    debugModule.formatArgs = function (args) {
+        // pino adds timestamp + module; keep the raw debug message only
+    };
+
+    debugModule.log = function (...args) {
+        const namespace = this?.namespace || 'debug';
+        const msg = args.map((arg) => stripAnsi(arg)).join(' ').trim();
+        const debugLogger = logger.child({ module: namespace });
+        const writer = debugLogger.debug.bind(debugLogger);
+
+        if (this?.diff != null) {
+            writer({ ms: this.diff }, msg);
+            return;
+        }
+
+        writer(msg);
+    };
+}
+
+/**
+ * Public API
+ */
 
 export function createLogger(name) {
     return name ? logger.child({ module: name }) : logger;
@@ -256,6 +471,22 @@ export function getLogFilePath() {
 
 export function getLogLevel() {
     return LOG_LEVEL;
+}
+
+export function getLoggingConfig() {
+    return {
+        level: LOG_LEVEL,
+        file: LOG_FILE_PATH,
+        fileLevel: FILE_LOG_LEVEL,
+        console: {
+            enabled: CONSOLE_ENABLED,
+            level: CONSOLE_LOG_LEVEL,
+            pretty: CONSOLE_PRETTY,
+        },
+        captureConsole: loggingConfig.captureConsole !== false,
+        captureDebug: loggingConfig.captureDebug !== false,
+        debugNamespaces: DEBUG_NAMESPACES,
+    };
 }
 
 export function subscribeToLogs(listener, filters = {}) {
@@ -327,7 +558,6 @@ export async function readRecentLogs(filters = {}) {
         .slice(-tail);
 }
 
-// Backwards compatibility alias for existing code using debug-style imports
 export const createDebug = createLogger;
 
 export default logger;

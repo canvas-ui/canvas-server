@@ -17,6 +17,7 @@ const logger = createLogger('hook-service');
 class HookService extends EventEmitter {
     #workspaceManager;
     #agents = null;
+    #messaging = null;
     #hooks = new Map(); // hookId -> hookInstance
     #workspaceListeners = new Map();
     #recentDispatches = new Map();
@@ -39,6 +40,7 @@ class HookService extends EventEmitter {
     // rather than required up front.
 
     setAgents(agents) { this.#agents = agents; }
+    setMessaging(messaging) { this.#messaging = messaging; }
 
     async initialize() {
         if (this.#initialized) return this;
@@ -288,6 +290,7 @@ class HookService extends EventEmitter {
             list: async (spec = {}) => workspace.list(spec),
             find: async (spec = {}) => workspace.search(spec),
             agent: this.#buildAgentHelper(workspace),
+            notify: this.#buildNotifyHelper(workspace),
             link: async (documentId, contexts = []) => {
                 const targets = Array.isArray(contexts) ? contexts : [contexts];
                 for (const context of targets.filter(Boolean)) {
@@ -309,6 +312,24 @@ class HookService extends EventEmitter {
                 return await this.#agents.prompt(workspace.owner, slugOrId, prompt, options);
             } catch (err) {
                 logger.debug(`Hook agent(${slugOrId}) failed: ${err.message}`);
+                return null;
+            }
+        };
+    }
+
+    // Deliver a message to the workspace owner over a bound channel
+    // (Slack/WhatsApp/console). Returns null instead of throwing so a hook
+    // keeps running when no channel is configured.
+    #buildNotifyHelper(workspace) {
+        return async (message, options = {}) => {
+            if (!this.#messaging) {
+                logger.debug('Hook notify() called but no messaging service is wired');
+                return null;
+            }
+            try {
+                return await this.#messaging.notify(workspace.owner, message, options);
+            } catch (err) {
+                logger.debug(`Hook notify() failed: ${err.message}`);
                 return null;
             }
         };

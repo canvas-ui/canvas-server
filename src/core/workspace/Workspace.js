@@ -41,6 +41,16 @@ class Workspace extends EventEmitter {
     static DIRECTORY_TYPE = 'directory';
     // Incoming documents path within directory tree
     static INCOMING_PATH = '/.incoming';
+    // Default cosine-distance floor for the dense side of vector/hybrid search.
+    // synapsd applies no floor by default (pure mechanism); Workspace sets the
+    // product policy: drop kNN neighbours past this cosine distance so the dense
+    // side can't pollute results with "nearest but irrelevant" hits (kNN always
+    // returns its top-K regardless of absolute similarity). 0.35 distance = 0.65
+    // cosine similarity — a solid relevance bar for bge-small (normalized).
+    // Empirically separates genuinely-related notes (~0.27) from degenerate
+    // near-centroid embeddings of empty/trivial content (~0.40+), which match any
+    // query. Callers may override via an explicit maxDistance (pass 2 to disable).
+    static DEFAULT_MAX_COSINE_DISTANCE = 0.35;
     static INCOMING_LOCK_ID = 'system:incoming';
 
     #rootPath = null;
@@ -58,6 +68,8 @@ class Workspace extends EventEmitter {
     // Managers (injected)
     #storageManager = null;
     #roleManager = null;
+    #embedd = null;            // shared embedding service (optional; server-managed)
+    #embeddRegistered = false;
 
     constructor(options) {
         super({
@@ -77,6 +89,7 @@ class Workspace extends EventEmitter {
         this.#logger = options.logger || createLogger('workspace');
         this.#storageManager = options.storageManager;
         this.#roleManager = options.roleManager;
+        this.#embedd = options.embedd || null;
 
         this.#tokens = new WorkspaceTokens({ configStore: this.#configStore, workspaceId: this.id });
 
@@ -248,11 +261,19 @@ class Workspace extends EventEmitter {
             ]);
 
             const dbPath = path.join(this.#rootPath, WORKSPACE_DIRECTORIES.db || 'Db');
-            this.#db = new Db({ path: dbPath });
+            this.#db = new Db({
+                path: dbPath,
+                // synapsd owns no model; if the embedd service is present, hand it
+                // the query embedder so dense/hybrid search works. Absent → FTS.
+                semantic: this.#embedd
+                    ? { embedQuery: (text, space) => this.#embedd.embedQuery(text, space) }
+                    : undefined,
+            });
             await this.#db.start();
             await this.#ensureContextTree();
             await this.#ensureDirectoryTree();
             this.#bindRuntimeEvents();
+            this.#registerEmbedd();
             // Mark ACTIVE before booting stored/mail indices: their initial sync
             // (IMAP scan → ingestMessage → #put → #getActiveDb) needs isActive,
             // otherwise every fetched message rejects with "Workspace not active".
@@ -275,6 +296,7 @@ class Workspace extends EventEmitter {
 
         this.#logger.debug({ workspaceId: this.id }, 'Stopping workspace');
         try {
+            this.#unregisterEmbedd();
             await this.#stopStoredIndex();
             if (this.#db) {
                 this.#unbindRuntimeEvents();
@@ -393,6 +415,111 @@ class Workspace extends EventEmitter {
         });
     }
 
+    // ── Embedding (embedd service seam) ───────────────────────────────────────
+    // synapsd owns no embedding model; the embedd service computes vectors and
+    // pushes them back here. These two methods are the workspace-level adapter
+    // the embedd service registers with (storeVectors + resolveInput).
+
+    /** Vector sink: persist embedd-computed chunk vectors into a synapsd space. */
+    async storeDocumentEmbeddings(docId, schema, updatedAt, chunks, opts = {}) {
+        return await this.#getActiveDb().storeDocumentEmbeddings(
+            parseDocumentId(docId, 'Document ID'), schema, updatedAt, chunks, opts,
+        );
+    }
+
+    /** Ledger read: docIds that match `schemas` but have no embedding for `space`. */
+    async getUnembeddedDocIds(space = 'text', schemas = null) {
+        return await this.#getActiveDb().getUnembeddedDocIds(space, schemas);
+    }
+
+    /** Wipe an embedding space (vectors + presence + seen) for a full re-embed. */
+    async clearSpace(space = 'text') {
+        return await this.#getActiveDb().clearSpace(space);
+    }
+
+    // ── embedd registration + live enqueue ────────────────────────────────────
+
+    /** Register this workspace with the shared embedd service + subscribe events. */
+    #registerEmbedd() {
+        if (!this.#embedd || this.#embeddRegistered) { return; }
+        this.#embedd.registerWorkspace(this.id, {
+            resolveInput: (docId) => this.resolveEmbeddingInput(docId),
+            storeVectors: (docId, schema, updatedAt, chunks, opts) =>
+                this.storeDocumentEmbeddings(docId, schema, updatedAt, chunks, opts),
+            getUnembedded: (space, schemas) => this.getUnembeddedDocIds(space, schemas),
+            clearSpace: (space) => this.clearSpace(space),
+        });
+        // Live enqueue: new + content-updated docs. Blob ingestion also lands as
+        // document.inserted (WorkspaceStoredIndex creates docs), so this covers
+        // stored files too — no separate object:add subscription needed.
+        this.on('document.inserted', this.#onDocEventForEmbed);
+        this.on('document.updated', this.#onDocEventForEmbed);
+        this.#embeddRegistered = true;
+    }
+
+    #unregisterEmbedd() {
+        if (!this.#embedd || !this.#embeddRegistered) { return; }
+        this.off('document.inserted', this.#onDocEventForEmbed);
+        this.off('document.updated', this.#onDocEventForEmbed);
+        this.#embedd.unregisterWorkspace(this.id);
+        this.#embeddRegistered = false;
+    }
+
+    #onDocEventForEmbed = (payload) => {
+        if (!this.#embedd) { return; }
+        const ids = Array.isArray(payload?.ids)
+            ? payload.ids
+            : (payload?.id != null ? [payload.id] : []);
+        for (const id of ids) { this.#embedd.enqueue(this.id, id); }
+    };
+
+    /**
+     * Input source for embedding one document. Return shapes:
+     *   - null                          → doc gone (do NOT record as seen)
+     *   - { skip:true, schema, ... }    → exists but not embeddable (record as seen)
+     *   - { modality, schema, ... }     → embeddable (text|image + text|bytes)
+     *
+     * A `data/abstraction/file` is a byte blob: embed it from its *content*
+     * (text/* → utf8, image/* → bytes), never from generateEmbeddingsData (which
+     * for File yields the location URL string — garbage to embed). Only JSON
+     * abstractions (note, …) use generateEmbeddingsData.
+     */
+    async resolveEmbeddingInput(docId) {
+        const doc = await this.#getActiveDb().getDocument(parseDocumentId(docId, 'Document ID')).catch(() => null);
+        if (!doc) { return null; }
+
+        const schema = doc.schema;
+        const updatedAt = doc.updatedAt || new Date().toISOString();
+        const contentType = doc.metadata?.contentType || null;
+        const chunkOpts = doc.indexOptions?.embeddingOptions?.chunking || {};
+        const hasBlob = Array.isArray(doc.locations) && doc.locations.length > 0;
+        const isFile = schema === 'data/abstraction/file';
+
+        if (isFile) {
+            // Byte blob: only text/image content is embeddable; everything else
+            // (pdf, octet-stream, …) is a deliberate skip until a decoder/CLIP
+            // model exists. Bytes must be server-resident (device file:// throws).
+            if (!hasBlob || !contentType) { return { skip: true, schema, updatedAt, contentType }; }
+            if (/^image\//.test(contentType)) {
+                const resolved = await this.resolveDocument(doc).catch(() => null);
+                if (!resolved?.buffer) { return { skip: true, schema, updatedAt, contentType }; }
+                return { modality: 'image', schema, updatedAt, bytes: resolved.buffer, contentType };
+            }
+            if (/^text\//.test(contentType)) {
+                const resolved = await this.resolveDocument(doc).catch(() => null);
+                if (!resolved?.buffer) { return { skip: true, schema, updatedAt, contentType }; }
+                return { modality: 'text', schema, updatedAt, text: resolved.buffer.toString('utf8'), contentType, chunkOpts };
+            }
+            return { skip: true, schema, updatedAt, contentType };
+        }
+
+        // JSON abstraction (note, etc.) → the text the doc exposes for embedding.
+        const data = typeof doc.generateEmbeddingsData === 'function' ? doc.generateEmbeddingsData() : null;
+        const text = Array.isArray(data) ? data.join('\n').trim() : (typeof data === 'string' ? data.trim() : '');
+        if (!text) { return { skip: true, schema, updatedAt, contentType }; }
+        return { modality: 'text', schema, updatedAt, text, contentType, chunkOpts };
+    }
+
     async linkMany(ids, { context = '/', directory = null, features = [], attributes, emitEvent = true, allowIncomingWrite = false } = {}) {
         this.#assertIncomingWriteAllowed(directory, allowIncomingWrite);
         return await this.#getActiveDb().linkMany(parseDocumentIdArray(ids, 'Document ID array'), {
@@ -440,6 +567,20 @@ class Workspace extends EventEmitter {
         return null;
     }
 
+    /**
+     * Upload raw bytes into the workspace blob store (workspace:data). Returns a
+     * `stored://workspace:data/<key>` location (content-addressed, deduped) that a
+     * File document can then reference — making the bytes server-resident and
+     * embeddable. This is the byte half of `canvas ws insert`.
+     * @param {Buffer|import('stream').Readable} blob buffered or streamed (stored
+     *   hashes a stream on the fly to a temp file — large blobs never buffer in RAM)
+     * @returns {Promise<{url:string, key:string, checksum:string|null, size:number}>}
+     */
+    async persistBlob(blob) {
+        if (!this.#storedIndex?.isRunning) { await this.#startStoredIndex(); }
+        return await this.#storedIndex.persistBlob(blob);
+    }
+
     async getByChecksumString(checksumString, options = { parse: true }) {
         return await this.#getActiveDb().getByChecksumString(checksumString, options);
     }
@@ -480,11 +621,19 @@ class Workspace extends EventEmitter {
         return await this.#getActiveDb().timeline.remove(timelineName, parseDocumentId(id, 'Document ID'));
     }
 
-    async hasByChecksumString(checksumString, { context = '/', features = [], attributes } = {}) {
+    async hasByChecksumString(checksumString, { context = null, directory = null, features = [], attributes } = {}) {
         return await this.#getActiveDb().hasByChecksumString(checksumString, {
-            paths: Workspace.#buildPaths(context, null),
+            paths: Workspace.#buildPaths(context, directory),
             features: this.#normalizeFeatureInput(features, attributes),
         });
+    }
+
+    // Emit a tree-scoped document event for a known selection (e.g. after a
+    // scoped purge) so cross-client consumers (browser extension auto-close, web
+    // UI) refresh. Selectors are { tree, path } as returned by
+    // get{Context,Directory}TreeSelector; pass whichever applies.
+    emitTreeDocumentEvent(eventName, { context = null, directory = null, documentIds = [] } = {}) {
+        this.#getActiveDb().emitTreeDocumentEvent(eventName, { context, directory, documentIds });
     }
 
     async list(spec = {}) {
@@ -497,7 +646,21 @@ class Workspace extends EventEmitter {
     }
 
     async search(spec = {}) {
-        return await this.#getActiveDb().search(this.#normalizeQuerySpec(this.#composeCanvasQuerySpec(spec)));
+        const querySpec = this.#normalizeQuerySpec(this.#composeCanvasQuerySpec(spec));
+        if (querySpec.maxDistance === undefined) { querySpec.maxDistance = Workspace.DEFAULT_MAX_COSINE_DISTANCE; }
+        return await this.#getActiveDb().search(querySpec);
+    }
+
+    // Stateless multi-query refinement: `spec` supplies the structured scope
+    // (path/features/filters/canvas), `queries` is the ordered stack of text
+    // queries that AND-narrow it (last ranks). Text is passed separately, so any
+    // single query carried on the spec is dropped from the base scope.
+    async searchRefined(queries = [], spec = {}, options = {}) {
+        const baseSpec = this.#normalizeQuerySpec(this.#composeCanvasQuerySpec(spec));
+        delete baseSpec.query; delete baseSpec.search; delete baseSpec.q;
+        const opts = { ...options };
+        if (opts.maxDistance === undefined) { opts.maxDistance = Workspace.DEFAULT_MAX_COSINE_DISTANCE; }
+        return await this.#getActiveDb().searchRefined(queries, baseSpec, opts);
     }
 
     /**

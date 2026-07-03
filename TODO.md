@@ -1,5 +1,150 @@
 # TODO List
 
+As (virtual) trees are meant to be primaryly(but not exclusively) task or goal-oriented, creating a new "folder" in a context or directory type tree is essentially equivalent of creating a new task:
+
+`universe://projects/augmentd-labs/website`
+
+or
+
+`work://customer-a/devops/jira-1234`
+
+or
+
+`huge-project-a://mvp/releases/customer-foo `
+
+
+After such an empty "folder" is created, we should show its content(empty) in a B5 like canvas element and preemtptively another B5 element next to it showing what data we want to associate with that task.
+
+Example use-case:
+A user creates `../devpos/jira-1234` related to a issue with nvidia jetson boards, he associates a list of contacts with that task(list of channels and lets say email subject headers which will automatically associated all incoming messages/emails with that path), he may add a real or virtual folder, notes, browser tabs etc) - canvas filters all his incoming data and indexes + surfaces context-relevant information for that path to whatever application has that path open (or whatever shareable boundable context has that path selected)
+
+This means that we need to slightly amend our controlls
+- Lets remove our current toolbox and replace it with a toolbox button
+  - Biggest button at the bottom toggles toolbox sidebar - sidebar is a card element on the same level as the rest of the cards on the main content area. 
+  - Opening toolbox shifts all existing elements to left if needed
+- On top there should be a Link To
+
+
+
+
+Lets extend our pi-mono based agent pipeline, we could (continue to) use pi-mono because of the somehow well-tested ecosystem but I'm open to suggestions given the requirements
+- Agents should be self-contained, they will eventually run in their own containers
+- Eventually we'll create a canvas-edge runtime that will be used for docker based (service) roles, agents and workspaces, with injected tokens/configuration and maybe autoregistration to configured canvas-server instances
+- Agents should be assignable to context and workspaces, we should reuse/extend our current ACL model and allow it to lock a agent to a specific workspace or workspace path or context
+- Maybe they can re-use our existing canvas-cli, workspace module(with its git capabilities) and our transports but this is a canvas-edge topic, lets aim for the simplest MVP implementation with the current runtime which runs directly from canvas-server
+- Agent runtime support
+  - Onnx 
+  - Ollama/openAI compatible API
+  - Anthropic
+- WebRTC/speech support, there are many pi-mono speech modules ready to be used (or servers like kokoro or piper), I'd like to be able to send photos and files or talk to an agent directly
+- Whatsapp and slack support, the work here was already done (openclaw and all its 1000+ derivates), lets say I have a agent bound to my work workspace, I should be able to call him and ask whether we had any new emails, agent should be able to use canvas-cli or direct api calls wrapped in SKILLS/tools to query latest ingested emails from canvas. Canvas should be the main interface how agents interract with user data, all user data will be indexed in canvas, user defines what parts an agent should manage(or sets up hooks that trigger agent actions), agent should be able to send a whatsapp notification to a user in a example scenario - user configures a hook in his workspace to watch for emails with email.subject.contains(MSFT-TICKET-1234) - on hit trigger an agent action with "Given the context information in work://projects/foo/bar, check whether we finally got that ticket resolved and notify me if yes"
+
+
+There are many gaps in the above, we need to start anyway because time IS the most precious resource in the universe and I need to divide mine to something else now
+Let me know if you have any questions
+
+
+
+We now have 2 default timelines
+- crud: Document CRUD ops, internal document lifetime index
+- content: Content-derived events(EXIF extracted timestamps, logs, extracted time periods etc)
+
+There can be any number of additional timelimnes like
+- wikipedia
+- historian-foo
+- personal
+
+Can you make sure our webui properly handles them - especially the soon to be refactored toolbox
+
+Spatial GeoIndex, --backend + named-tree support 
+--
+
+
+Our webUI has one important issue, it is useless. 
+It was never meant as a product, it started and continued its life as an adhoc LLM and canvas-server feature testing bed. 
+There are some usable configuration features but one simple question that points out the uselessness of the current implementation - would a user want to have canvas open as his home-page? Answer is no, not even I would and I'm the one who put the whole thing together. Added to that, the whole UI was never meant to look as it does now, I did some sketches, copy-pasted them to older models and everything they came up with was exactly a standard boring react website regardless of how many times I repeated the exercise and refined my sketches.
+
+I was postponing a real UX-focused refactor for a long time becacuse the integrations (browser extensions, cli, now canvas-fuse)  - for me - were more imporant, but I need to move to mobile and noticed that one can install a website - our website - as a PWA and even found some nice mdn docs that claim one can use native android features to "send a link" to canvas or copy some text and save it as a note in canvas or take a photo and upload it etc - over a PWA!
+
+So, short list of what functionality we need:
+- Send a link, text selection, photo/video or a file to canvas
+  - We should re-use OS native features and register our PWA as a endpoint for all of those
+- Record video or sound and wire it through our PWA to our agent runtime(take into account, deffer for now, backend not implemented yet)
+- Talk to a selected agent directly - iow make a webrtc call through our PWA to the agent runtime(deffered for now)
+
+Now with all of that, lets start to craft a usable webui
+- Our home page (the current "Control Center" place-holder) should be just the menu left and a round button near the bottom right that would toggle a separate card-like toolbox
+- Obove the main floating toolbox button, there should be smaller floating buttons for: 
+  - Add Note
+  - Add Link
+  - Upload file (stored in the default dataset workspace:data)
+  - Take a photo/video (if available)
+- All of those should open a B5 formatted empty canvas
+  - Canvas should have a Save/"Link To" button that would show a tree menu with a search bar where to link that note/link etc into, Maximize, Close
+
+Layout
+- (single-purpose) Canvas
+  - Material-design v2 card-like design
+  - B5 format
+    - Landscape or Portrait orientation
+    - Full-screen mode (fills viewport)
+- Canvas(our canvas element) same view, opens when selected from the menu (shows in the tree), we allow opening of multiple canvases next to each otherOur webUI has one important issue, it is useless. 
+It was never meant as a product, it started and continued its life as an adhoc LLM and canvas-server feature testing bed. 
+There are some usable configuration features but one simple question that points out the uselessness of the current implementation - would a user want to have canvas open as his home-page? Answer is no, not even I would and I'm the one who put the whole thing together. Added to that, the whole UI was never meant to look as it does now, I did some sketches, copy-pasted them to older models and everything they came up with was exactly a standard boring react website regardless of how many times I repeated the exercise and refined my sketches.
+
+I was postponing a real UX-focused refactor for a long time becacuse the integrations (browser extensions, cli, now canvas-fuse)  - for me - were more imporant, but I need to move to mobile and noticed that one can install a website - our website - as a PWA and even found some nice mdn docs that claim one can use native android features to "send a link" to canvas or copy some text and save it as a note in canvas or take a photo and upload it etc - over a PWA!
+
+So, short list of what functionality we need:
+- Send a link, text selection, photo/video or a file to canvas
+  - We should re-use OS native features and register our PWA as a endpoint for all of those
+- Record video or sound and wire it through our PWA to our agent runtime(take into account, deffer for now, backend not implemented yet)
+- Talk to a selected agent directly - iow make a webrtc call through our PWA to the agent runtime(deffered for now)
+
+Now with all of that, lets start to craft a usable webui
+- Our home page (the current "Control Center" place-holder) should be just the menu left and a round button near the bottom right that would toggle a separate card-like toolbox
+- Obove the main floating toolbox button, there should be smaller floating buttons for: 
+  - Add Note
+  - Add Link
+  - Upload file (stored in the default dataset workspace:data)
+  - Take a photo/video (if available)
+- All of those should open a B5 formatted empty canvas
+  - Canvas should have a Save/"Link To" button that would show a tree menu with a search bar where to link that note/link etc into, Maximize, Close
+
+Layout
+- (single-purpose) Canvas
+  - Material-design v2 card-like design
+  - B5 format
+    - Landscape or Portrait orientation
+    - Full-screen mode (fills viewport)
+- Canvas(our canvas element) same view, opens when selected from the menu (shows in the tree), we allow opening of multiple canvases next to each other
+
+Create Canvas #1
+ - Aligned in the middle
+Add a new canvas #2
+ - Gets added to the right, first canvas moves left
+Add a new canvas #3
+ - Gets added to the right, enable vertical scroll
+
+WebUI lives in @src/ui/web/ and this will be a tough one, if you
+  want me to isntall any tools or skills that may be usefull let me know. We just introduced
+  @src/transports/routes/workspaces/blobs.js, PWAs already installed on adroid devices should
+  be updateable (I guess some special consideration is needed for the manifest.json file)
+
+Create Canvas #1
+ - Aligned in the middle
+Add a new canvas #2
+ - Gets added to the right, first canvas moves left
+Add a new canvas #3
+ - Gets added to the right, enable vertical scroll
+
+Optional 
+ - OS based speach-to-text for writing notes/chats with agents
+ - OS based text-to-speach for reading out loud
+ - Record audio/video and send it to an agent real-time
+
+
+
+
 ## .incoming backend layers + active-backend delete guard
 
 Land these two together — (3)'s clean form depends on (4)'s single per-backend node.
@@ -12,12 +157,6 @@ Context: `system:incoming` now locks only the `.incoming` root (non-cascading); 
 - [ ] **webui "Purge All" ignores treeType.** `purgeWorkspaceDocuments` (`src/ui/web/src/services/workspace.ts:675`) calls `appendWorkspaceContext(params, contextSpec)` with no `treeName`/`treeType` → always queries the CONTEXT tree. On any directory-tree path it targets the wrong tree and no-ops (or worse, purges the wrong scope). Already hidden in `/.incoming` (button gated off via `isIncomingPath` in `pages/workspaces/[workspaceName]/index.tsx`), but still wrong for other directory-tree paths where the button shows. Fix: thread `treeName`/`treeType` through `purgeWorkspaceDocuments` + `handlePurgeDocuments` like `deleteWorkspaceDocuments` already does (server `/documents/purge` accepts `treeType=directory`).
 
 Fine-tune .cursor/prompts/20260613-hooks+agents.md
-
-## Stored
-
-Implement a local blob store "workspace:data" in {WORKSPACE_ROOT}/data based on cacache
-? Content-Defined Chunking (CDC) > block-level dedup on top (Rabin Fingerprints / Buzhash chunking algo)
-
 
 ## MVP Scope
 
@@ -105,18 +244,6 @@ Review and refine(if required) all websocket events and their integration across
 - all document events
 Make sure all active connections are properly shut down on server restart, active ws connections currently prevent a clean server restart (a bug that resurfaced recently)
 
-
-## MVP Scope (deadline EO 06/26)
-
-### 
-
-### Storage backend (stored)
-
-- Rename fs:home and fs:data to workspace:home and workspace:data
-- Ensure 
-
-
-
 ## WebUI cosmetics
 
 Lets update our current webui @src/ui/web as follows:
@@ -157,11 +284,6 @@ In general, we need to design a backend removal dialog with tick boxes for each 
 - Removing a object from all its backens will also wipe it from the DB
 - .incoming tree should show a "Sync" button for each backend or directory, so that users can trigger a refresh (and sync all newly coppied or renamed files for example)
 - .icoming tree should not have a import option nor 
-
-
-
-
-
 
 View
 /workspaces

@@ -22,16 +22,11 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      # .gitmodules points at git@github.com:canvas-ui/... (SSH), so a deploy
-      # key (or org-wide machine-user key) with read access to every
-      # submodule repo must be stored as the SUBMODULES_DEPLOY_KEY secret.
-      - name: Set up SSH for submodules
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.SUBMODULES_DEPLOY_KEY }}
-
-      - name: Trust github.com host key
-        run: mkdir -p ~/.ssh && ssh-keyscan -H github.com >> ~/.ssh/known_hosts
+      # .gitmodules points at git@github.com:canvas-ui/... (SSH); all
+      # submodule repos are public, so rewrite to HTTPS instead of
+      # requiring a deploy key.
+      - name: Rewrite SSH submodule URLs to HTTPS
+        run: git config --global url."https://github.com/".insteadOf "git@github.com:"
 
       - name: Set up Node
         uses: actions/setup-node@v4

@@ -334,8 +334,10 @@ export default async function adminRoutes(fastify, options) {
 
   // Database Maintenance Routes
 
-  // Reindex feature bitmaps for a workspace (admin only)
-  fastify.post('/workspaces/:workspaceId/reindex-features', {
+  // Reindex CRUD timelines (created/updated intervals) for a workspace.
+  // NOTE: the old reindex-features route called a synapsd method removed in the
+  // 2026-04 cleanup (permanent 500) — replaced by this timelines op.
+  fastify.post('/workspaces/:workspaceId/reindex-timelines', {
     onRequest: [fastify.authenticate, requireAdmin],
     schema: { params: { type: 'object', required: ['workspaceId'], properties: { workspaceId: { type: 'string' } } } }
   }, async (request, reply) => {
@@ -348,12 +350,12 @@ export default async function adminRoutes(fastify, options) {
         const response = new ResponseObject().badRequest('Workspace not found or not active');
         return reply.code(response.statusCode).send(response.getResponse());
       }
-      const indexed = await ws.db.reindexFeatures();
-      const response = new ResponseObject().success({ indexed }, `Reindexed ${indexed} documents`);
+      const result = await ws.db.reindexCrudTimelines();
+      const response = new ResponseObject().success(result, `Timelines reindexed: ${result.created} created, ${result.updated} updated (${result.scanned} scanned)`);
       return reply.code(response.statusCode).send(response.getResponse());
     } catch (error) {
       fastify.log.error(error);
-      const response = new ResponseObject().serverError(error.message || 'Failed to reindex features');
+      const response = new ResponseObject().serverError(error.message || 'Failed to reindex timelines');
       return reply.code(response.statusCode).send(response.getResponse());
     }
   });

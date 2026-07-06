@@ -16,6 +16,14 @@ test('router: note schema -> text space, onnx', () => {
     assert.equal(rule.chunk, true);
 });
 
+test('router: email schema -> text space, onnx (subject+body embedding)', () => {
+    const r = new Router();
+    const rule = r.route({ modality: 'text', schema: 'data/abstraction/email' });
+    assert.equal(rule.space, 'text');
+    assert.equal(rule.provider, 'onnx');
+    assert.equal(rule.chunk, true);
+});
+
 test('router: text/* contentType -> text space', () => {
     const r = new Router();
     const rule = r.route({ modality: 'text', schema: 'data/abstraction/file', contentType: 'text/markdown' });
@@ -46,6 +54,7 @@ test('router: candidateSchemas per space (schema + file for contentType rules)',
     const r = new Router();
     const text = r.candidateSchemas('text');
     assert.ok(text.includes('data/abstraction/note'));
+    assert.ok(text.includes('data/abstraction/email')); // email rule → gap ledger covers emails
     assert.ok(text.includes('data/abstraction/file')); // text/* rule → file bytes
     assert.deepEqual(r.candidateSchemas('image'), ['data/abstraction/file']);
 });

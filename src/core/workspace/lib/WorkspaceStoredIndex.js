@@ -551,7 +551,13 @@ export class WorkspaceStoredIndex {
 
         if (scheme === 'file') {
             if (backend === '{WORKSPACE_ROOT}') {
-                const abs = path.join(this.#rootPath, key);
+                const root = path.resolve(this.#rootPath);
+                const abs = path.resolve(root, key);
+                // Keys come from stored URLs; a crafted '..' key must never
+                // escape the workspace root.
+                if (abs !== root && !abs.startsWith(root + path.sep)) {
+                    throw new Error(`Location escapes workspace root: ${url}`);
+                }
                 return options.stream ? createReadStream(abs) : fs.readFile(abs);
             }
             throw new Error(`Device-proxy resolution not implemented for ${url}`);
@@ -659,8 +665,14 @@ export class WorkspaceStoredIndex {
         result.kept = kept.map((l) => l.url);
 
         if (kept.length === 0 && doc?.id != null) {
-            await db.delete(doc.id);
-            result.docDeleted = true;
+            if (options.keepDocument === true) {
+                // Caller chose to keep the index entry with no retrievable bytes
+                // (locations: []) — metadata/checksums stay searchable.
+                await this.#put(doc);
+            } else {
+                await db.delete(doc.id);
+                result.docDeleted = true;
+            }
         } else if (doc?.id != null) {
             await this.#put(doc); // persist trimmed locations (update in place)
         }

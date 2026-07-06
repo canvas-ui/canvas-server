@@ -24,6 +24,14 @@ export const DEFAULT_RULES = [
         chunk: true, maxLength: 512,
         match: { schema: 'data/abstraction/note' },
     },
+    // Email abstraction — subject+body via Email.vectorEmbeddingFields
+    // (generateEmbeddingsData). Without this rule emails were routed null and
+    // permanently marked seen-with-zero-vectors.
+    {
+        space: 'text', provider: 'onnx', model: 'bge-small-en-v1.5', dim: 384,
+        chunk: true, maxLength: 512,
+        match: { schema: 'data/abstraction/email' },
+    },
     // Any server-resident plain-text blob.
     {
         space: 'text', provider: 'onnx', model: 'bge-small-en-v1.5', dim: 384,

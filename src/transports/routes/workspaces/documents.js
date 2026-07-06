@@ -752,9 +752,11 @@ export default async function workspaceDocumentRoutes(fastify, options) {
   // (RW backends only; read-only locations are reference-dropped). When the
   // document has no remaining locations the index entry is cascaded as well.
   //
-  // Body: { documentIds: number[], urls?: string[] }
+  // Body: { documentIds: number[], urls?: string[], keepDocument?: boolean }
   //   urls omitted   → destroy all locations on each doc
   //   urls specified → destroy only those location URLs (must belong to the doc)
+  //   keepDocument   → when the last location is wiped, keep the index entry
+  //                    (locations: []) instead of cascading the doc deletion
 
   fastify.delete('/destroy', {
     onRequest: [fastify.authenticate],
@@ -770,6 +772,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
             minItems: 1,
           },
           urls: { type: 'array', items: { type: 'string' } },
+          keepDocument: { type: 'boolean', default: false },
         },
       },
     },
@@ -778,7 +781,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return;
 
-      const { documentIds: rawIds, urls = null } = request.body;
+      const { documentIds: rawIds, urls = null, keepDocument = false } = request.body;
       let documentIds;
       try {
         documentIds = parseDocumentIdArray(rawIds, 'Document ID array');
@@ -792,7 +795,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
         try {
           const doc = await workspace.get(id);
           if (!doc) { results.failed.push({ id, reason: 'not found' }); continue; }
-          const res = await workspace.destroyDocument(doc, urls ? { urls } : {});
+          const res = await workspace.destroyDocument(doc, { ...(urls ? { urls } : {}), keepDocument });
           results.successful.push({ id, ...res });
         } catch (err) {
           results.failed.push({ id, reason: err.message });
@@ -864,15 +867,32 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       const doc = await workspace.get(documentId);
       if (!doc) { const r = new ResponseObject().notFound('Document not found'); return reply.code(r.statusCode).send(r.getResponse()); }
 
+      // ?url= may only target this document's own bytes: its locations[] or an
+      // embedded attachment (email). Anything else is an arbitrary-blob fetch
+      // primitive across the workspace — reject it.
+      const attachments = Array.isArray(doc.data?.attachments) ? doc.data.attachments : [];
+      let attachment = null;
+      if (request.query.url) {
+        const ownUrls = new Set((doc.locations || []).map((l) => l?.url).filter(Boolean));
+        attachment = attachments.find((a) => a?.url === request.query.url) || null;
+        if (!ownUrls.has(request.query.url) && !attachment) {
+          const r = new ResponseObject().forbidden('URL does not belong to this document');
+          return reply.code(r.statusCode).send(r.getResponse());
+        }
+      }
+
       const resolved = await workspace.resolveDocument(doc, { stream: true, url: request.query.url });
       if (!resolved) { const r = new ResponseObject().notFound('No reachable location'); return reply.code(r.statusCode).send(r.getResponse()); }
 
-      const mime = doc.metadata?.contentType || 'application/octet-stream';
-      const filename = locationFilename(resolved.url) || `document-${documentId}`;
+      // Attachment bytes carry their own contentType/size/filename — the doc's
+      // metadata describes the primary content (e.g. the raw .eml), not them.
+      const mime = attachment?.contentType || (attachment ? 'application/octet-stream' : doc.metadata?.contentType) || 'application/octet-stream';
+      const size = attachment ? attachment.size : doc.metadata?.size;
+      const filename = attachment?.filename || locationFilename(resolved.url) || `document-${documentId}`;
       reply.header('Content-Type', mime);
-      if (Number.isFinite(doc.metadata?.size)) reply.header('Content-Length', doc.metadata.size);
+      if (Number.isFinite(size)) reply.header('Content-Length', size);
       if (request.query.download !== undefined) {
-        reply.header('Content-Disposition', `attachment; filename="${filename}"`);
+        reply.header('Content-Disposition', `attachment; filename="${filename.replace(/"/g, '')}"`);
       }
       return reply.send(resolved.stream || resolved.buffer);
     } catch (error) {
@@ -907,6 +927,47 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     } catch (error) {
       fastify.log.error(error);
       const r = new ResponseObject().serverError('Failed to describe document locations');
+      return reply.code(r.statusCode).send(r.getResponse());
+    }
+  });
+
+  // ── Document tree memberships (Synapses tab) ────────────────────────────
+  // Which paths of which trees hold this document. `?tree=<nameOrId>` scopes to
+  // one tree; default reports every tree in the workspace.
+
+  fastify.get('/:docId/memberships', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      params: { type: 'object', required: ['id', 'docId'], properties: { id: { type: 'string' }, docId: { type: 'string' } } },
+      querystring: { type: 'object', properties: { tree: { type: 'string' } } },
+    },
+  }, async (request, reply) => {
+    try {
+      const workspace = await getWorkspaceInstance(request, reply);
+      if (!workspace) return;
+
+      let documentId;
+      try { documentId = parseDocumentId(request.params.docId, 'Document ID parameter'); }
+      catch (e) { const r = new ResponseObject().badRequest(e.message); return reply.code(r.statusCode).send(r.getResponse()); }
+
+      const doc = await workspace.get(documentId);
+      if (!doc) { const r = new ResponseObject().notFound('Document not found'); return reply.code(r.statusCode).send(r.getResponse()); }
+
+      const trees = request.query.tree
+        ? [workspace.getTree(request.query.tree)]
+        : await workspace.listTrees();
+      const memberships = [];
+      for (const tree of trees) {
+        if (!tree) continue;
+        const paths = await workspace.listDocumentTreeMemberships(documentId, tree.id).catch(() => []);
+        memberships.push({ tree: tree.name, treeId: tree.id, type: tree.type, paths });
+      }
+
+      const r = new ResponseObject().found({ documentId, memberships }, 'Document tree memberships retrieved');
+      return reply.code(r.statusCode).send(r.getResponse());
+    } catch (error) {
+      fastify.log.error(error);
+      const r = new ResponseObject().serverError('Failed to list document tree memberships');
       return reply.code(r.statusCode).send(r.getResponse());
     }
   });

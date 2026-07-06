@@ -76,11 +76,13 @@ describe('WorkspaceStoredIndex', () => {
             unlink: async (id, { directory }) => {
                 documentPaths.set(id, (documentPaths.get(id) || []).filter((p) => p !== directory));
             },
-            put: async (record, { directory }) => {
+            put: async (record, { directory } = {}) => {
                 const id = record.id || `doc-${documents.size + 1}`;
                 const doc = { ...record, id };
                 documents.set(record.checksumArray[0], doc);
-                documentPaths.set(id, Array.isArray(directory) ? directory : [directory]);
+                if (directory !== undefined) {
+                    documentPaths.set(id, Array.isArray(directory) ? directory : [directory]);
+                }
                 return id;
             },
         });
@@ -132,6 +134,38 @@ describe('WorkspaceStoredIndex', () => {
         assert.deepEqual([...documents.values()][0].locations, [
             { url: 'stored://workspace:home/renamed/a.txt' },
         ]);
+    });
+
+    test('destroy of last location deletes the doc unless keepDocument is set', async () => {
+        index = createIndex();
+        await index.start();
+        await index.resync('workspace:home');
+        const [doc] = documents.values();
+
+        // keepDocument: bytes wiped, index entry stays with locations: []
+        const kept = await index.destroy({ ...doc }, { keepDocument: true });
+        assert.deepEqual(kept.deleted, ['stored://workspace:home/nested/a.txt']);
+        assert.equal(kept.docDeleted, false);
+        assert.equal(documents.size, 1);
+        assert.deepEqual([...documents.values()][0].locations, []);
+        assert.equal(await fs.pathExists(path.join(rootPath, 'home', 'nested', 'a.txt')), false);
+
+        // default: last location gone → doc removed from index
+        await fs.writeFile(path.join(rootPath, 'home', 'nested', 'b.txt'), 'again');
+        await index.resync('workspace:home');
+        const doc2 = [...documents.values()].find((d) => d.locations.length > 0);
+        const destroyed = await index.destroy({ ...doc2 }, {});
+        assert.equal(destroyed.docDeleted, true);
+        assert.ok(![...documents.values()].some((d) => d.id === doc2.id));
+    });
+
+    test('resolve rejects file:// keys escaping the workspace root', async () => {
+        index = createIndex();
+        await index.start();
+        await assert.rejects(
+            () => index.resolve('file://{WORKSPACE_ROOT}/../outside.txt'),
+            /escapes workspace root/,
+        );
     });
 
     test('persistBlob stores into workspace:data and resolves back', async () => {

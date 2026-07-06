@@ -1,12 +1,25 @@
 # TODO List
 
-## Workspace DataBackends
+## WebUI cosmetics
 
-We finally need to start working with our data backends.
+Lets update our current webui @src/ui/web as follows:
+
+### Content
+- (deffered) Content area section should support tabs 
+
+### Workspaces
+- Workspace name should pre prepended with the workspace icon, tab should have a bottom border of the color of the workspace or layer
+
+### Contexts
+- Load icon + color from bound path, default to icon + color of a bound workspace
+
+### Workspace DataBackends
+
+We finally need to start working with our data backends. These changes mostly relate to the frontend/webui
 - Storage configuration is per-workspace and should be exposed as a workspace-bound settings section
 - Backends are exposed in the webUI based on the objects locations: [] array as follows:
   - A unified, easily readable, UX-friendly tabbed object propeperties card element appearing next to the object(or slide-in in mobile/small screem view) with the following tabs
-    - Edit 
+    - View/Edit 
       - Tags should list existing cutom/tag/* bitmaps
     - Metadata (Our redefined and streamlined details window)
     - JSON (with a Copy to clipboard button)
@@ -24,6 +37,19 @@ We finally need to start working with our data backends.
           - workspace:data/key?
           - s3/bucket/path
           - <backend-name>/<path> 
+
+We should also create applets/widgets or per-filetype reusable webui components to properly display file content, one place we need to use them besides the content or document details/open-to-the-side area is toolbox and canvases.
+- Plaintext documents
+  - We need to show/render nice(r) markdown files
+  - aand plaintext files in general
+- PDFs (esp the open-to-the side view)
+- Videos, a youtube video iframe in-page would be nice, we'll need it for our toolbox later anyway
+- Pictures/photos
+  - Photo thumbnails/preview => How should we deal with thumbnails, should the server support "dynamic" thumbnails cached by the cacache-based cache driver or something even more fancy? I'd like to avoid storing them as normal docs - trashing the main index, this probably related to video previews too(ffmpeg on the server could generate them off-thread but we'd probably need to store their locations in a specific metadata field in db OR be able to infer them programmatically)
+  - Related, in the canvas element we may want to add a flickr-like gallery view widget that would display all pictures(maybe videos / previews too?) returned by the canvases current context
+    - Related - canvases currently have terrible support for mobile screens mostly due to not autofilling the area properly
+
+One bug related to starage in general: A shared canvas can no-longer retrieve documents without authentication
 
 ## Workspace Hooks
 
@@ -55,6 +81,8 @@ document.inserted into /projects/dc-migration triggers an agent to read that ema
 ### Usecase #3: Agentic workloads
 
 I bind my "Lucy" secretary agents to my "mbag" context. Switching my context url(focus) to /projects/dc-migration/fmo will update all my context-bound apps (browsers will load relevant tabs, obsidian will show relecant notes etc), since Lucy is also allowed to access my context, asking "Do we have any new emails?" or "can you tell me to what server ldap master was migrated to" - should trigger a targetted in-context search of all emails or a query across all documents pre-filted for the current context url for a standard RAG reply
+
+I'd try to do as much of the logic with code, clasifier can have isText(), isImage(), isBlob(), isPdf(), isWebsite or isLink() etc methods (not sure whether to implement this on the Workspace layer or within synapsd, since this is related to the actual data I'd say stored or workspace, we'd just store whatever data we need in the db but open to suggestions here)
 
 
 
@@ -111,59 +139,6 @@ MVP deployment has to happen before **30.06.2026**!
 - [ ] Workspace hooks
 - [ ] Agent runtime
 
-## Tasks
-
-{WORKSPACE_ROOT}
-  /.stored
-  /config
-  /db
-  /home                # Roaming profile exported via SMB and Webdav
-  /data                # Intarnal data/blob store
-  /git
-    bare.git/          # canonical bare remote (HTTP git targets this)
-    hooks/             # deployed files only — HookService reads here
-    # no dotfiles/ on server unless you add a server-side apply feature later
-  /workspace.json
-
-
-## Storage API schema
-
-/rest/v2/contexts/:context_id/documents or
-/rest/v2/workspaces/:workspace_id/documents 
-both return a list
-
-/rest/v2/workspaces/:workspace_id/documents/:docId or /documents/by-id/docId 
-/rest/v2/workspaces/:workspace_id/documents/by-hash/algo/hash 
-return a specific document
-
-Now if a document is stored on multiple backends - lets say a file is stored in s3, some internal cifs share and localy on a file://deviceId/path
-Retrieving of the raw document could be done by appending /content?backend=s3
-
-or as ../documents/by-id/docId/content?backend=foo&token=bar
-GET /documents/by-id/:id                     # metadata (locations[] w/ ids + backends)
-GET /documents/by-hash/:algo/:hash           # same, hash-addressed
-GET /documents/by-id/:id/content?location=<id>&token=<jwt>   # raw bytes / 302 to device
-GET /documents/by-id/:id/content?prefer=s3,cifs,file
-
-
-### Add support for hooks
-
-- We **need** to support hooks for all canvas actions, for example I want to run a hook that automatically sorts all URLs I throw into the to-sort context path. qwen3:latest is really good at this (give it context paths or the whole tree, url title and a few simple instructions how the tree is structures and done)
-- I want to run my youtube downloader whenever a youtube link is thrown into home://downloads and download videos to either my S3 or workspace home file backends
-- Same for website backups/analytics, file postprocessing etc
-
-
-
-Review and refine(if required) all websocket events and their integration across webui and browser-extension to properly handle at least:
-- all tree events (both, context + directory)
-- all document events
-Make sure all active connections are properly shut down on server restart, active ws connections currently prevent a clean server restart (a bug that resurfaced recently)
-
-## WebUI cosmetics
-
-Lets update our current webui @src/ui/web as follows:
-- Content area section should be tabbed
-- Workspace name should pre prepended with the workspace icon, tab should have a bottom border of the color of the workspace or layer
 
 ## Phase #4 - Modular widget/applet systems and Canvas UI
 
@@ -228,10 +203,6 @@ Backend bugs observed (not CLI):
 1. dot init says "already initialized" when target dir exists but isn't a valid bare repo (silent no-op) — fixed manually by rm -rf + reinit
 2. ws start on inactive workspace hung past 30s, caused server crash earlier in session — couldn't repro after restart
 
-
-## Contexts
-
-- Load icon + color from bound path, default to icon + color of a bound workspace
 
 ## UUID + ULID channges
 

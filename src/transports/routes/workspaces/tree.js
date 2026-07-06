@@ -301,6 +301,12 @@ export default async function workspaceTreeRoutes(fastify) {
       const resolved = await getTreeInstance(request, reply);
       if (!resolved) return;
       const path = pathFromSplat(request);
+      // The backends staging tree mirrors backend storage 1:1 — user-created
+      // canvases (or folders) don't belong there.
+      if (resolved.tree.type === 'directory' && isBackendsContextSpec(path)) {
+        const responseObject = new ResponseObject().badRequest('Backends staging tree (/.backends) is read-only');
+        return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+      }
       const result = await insertTreePath(resolved.tree, path, request.body || {});
       if (result?.error) {
         const responseObject = new ResponseObject().badRequest(result.error);

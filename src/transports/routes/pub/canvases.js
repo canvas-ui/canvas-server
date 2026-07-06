@@ -92,7 +92,11 @@ async function resolvePublicCanvasContext(fastify, code, query = {}) {
     throw error;
   }
 
-  const context = tree.type === 'directory'
+  // Scope key must match the tree type: a directory selector passed as
+  // `context` is resolved against the CONTEXT tree (ctx: paths) and returns
+  // nothing — the shared-directory-canvas-shows-no-documents bug.
+  const isDirectory = tree.type === 'directory';
+  const selector = isDirectory
     ? workspace.getDirectoryTreeSelector(share.path, tree.name)
     : workspace.getContextTreeSelector(share.path, tree.name);
 
@@ -102,7 +106,8 @@ async function resolvePublicCanvasContext(fastify, code, query = {}) {
     layer,
     tree,
     listSpec: {
-      context,
+      context: isDirectory ? null : selector,
+      directory: isDirectory ? selector : null,
       attributes: mergeAttributes(
         normalizeQuerySpecFeatures(layer.querySpec?.features),
         buildAttributes(query)

@@ -52,6 +52,10 @@ async function init({ model, cacheDir, maxLength }) {
     // the progress bar when an actual download will happen.
     const modelDir = cacheDir ? path.join(String(cacheDir), resolved) : null;
     const cached = modelDir ? fs.existsSync(modelDir) : false;
+
+    // fastembed mkdirs the cacheDir NON-recursively — a missing parent
+    // (fresh server dir) fails init with ENOENT. Pre-create the full path.
+    if (cacheDir) { fs.mkdirSync(String(cacheDir), { recursive: true }); }
     if (cached) {
         log(`loading cached model '${resolved}' from ${modelDir}`);
     } else {

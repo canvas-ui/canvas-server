@@ -325,6 +325,9 @@ export default async function pubCanvasRoutes(fastify) {
         type: 'object',
         properties: {
           download: { type: 'string' },
+          // Target a specific location/attachment URL of the document
+          // (mirrors the workspace content route incl. its allowlist).
+          url: { type: 'string' },
         },
       },
     },
@@ -352,23 +355,97 @@ export default async function pubCanvasRoutes(fastify) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
-      const resolved = await ctx.workspace.resolveDocument(doc, { stream: true });
+      // ?url= may only target this document's own bytes: its locations[] or an
+      // embedded attachment (email) — same allowlist as the workspace route.
+      const attachments = Array.isArray(doc.data?.attachments) ? doc.data.attachments : [];
+      let attachment = null;
+      if (request.query.url) {
+        const ownUrls = new Set((doc.locations || []).map((l) => l?.url).filter(Boolean));
+        attachment = attachments.find((a) => a?.url === request.query.url) || null;
+        if (!ownUrls.has(request.query.url) && !attachment) {
+          const response = new ResponseObject().forbidden('URL does not belong to this document');
+          return reply.code(response.statusCode).send(response.getResponse());
+        }
+      }
+
+      const resolved = await ctx.workspace.resolveDocument(doc, { stream: true, url: request.query.url });
       if (!resolved) {
         const response = new ResponseObject().notFound('No reachable location');
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
-      const mime = doc.metadata?.contentType || 'application/octet-stream';
-      const filename = locationFilename(resolved.url) || `document-${documentId}`;
+      const mime = attachment?.contentType || (attachment ? 'application/octet-stream' : doc.metadata?.contentType) || 'application/octet-stream';
+      const size = attachment ? attachment.size : doc.metadata?.size;
+      const filename = attachment?.filename || locationFilename(resolved.url) || `document-${documentId}`;
       reply.header('Content-Type', mime);
-      if (Number.isFinite(doc.metadata?.size)) reply.header('Content-Length', doc.metadata.size);
-      reply.header('Content-Disposition', `${request.query.download !== undefined ? 'attachment' : 'inline'}; filename="${filename}"`);
+      if (Number.isFinite(size)) reply.header('Content-Length', size);
+      reply.header('Content-Disposition', `${request.query.download !== undefined ? 'attachment' : 'inline'}; filename="${String(filename).replace(/"/g, '')}"`);
       return reply.send(resolved.stream || resolved.buffer);
     } catch (error) {
       fastify.log.error({ err: error }, 'Failed to read public canvas document content');
       const response = error.statusCode === 404
         ? new ResponseObject().notFound(error.message)
         : new ResponseObject().serverError('Failed to read public canvas document content');
+      return reply.code(response.statusCode).send(response.getResponse());
+    }
+  });
+
+  // Public mirror of the on-demand document thumbnail (visibility-gated like
+  // the content route above).
+  fastify.get('/:code/documents/:docId/thumbnail', {
+    schema: {
+      params: {
+        type: 'object',
+        required: ['code', 'docId'],
+        properties: {
+          code: { type: 'string', maxLength: 8 },
+          docId: { type: 'string' },
+        },
+      },
+      querystring: {
+        type: 'object',
+        properties: { size: { type: 'integer', minimum: 16, maximum: 2048, default: 256 } },
+      },
+    },
+  }, async (request, reply) => {
+    try {
+      let documentId;
+      try { documentId = parseDocumentId(request.params.docId, 'Document ID parameter'); }
+      catch (e) { const r = new ResponseObject().badRequest(e.message); return reply.code(r.statusCode).send(r.getResponse()); }
+
+      const ctx = await resolvePublicCanvasContext(fastify, request.params.code);
+      if (!ctx) {
+        const response = new ResponseObject().notFound('Public canvas not found');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+
+      const visible = await isDocumentVisibleOnPublicCanvas(ctx.workspace, ctx.listSpec, documentId);
+      if (!visible) {
+        const response = new ResponseObject().notFound('Document not found on this canvas');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+
+      const doc = await ctx.workspace.get(documentId);
+      if (!doc) {
+        const response = new ResponseObject().notFound('Document not found');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+
+      const thumb = await ctx.workspace.getDocumentThumbnail(doc, request.query.size);
+      if (!thumb) {
+        const response = new ResponseObject().notFound('No thumbnail available for this document');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+
+      reply.header('Content-Type', thumb.mime);
+      reply.header('Content-Length', thumb.buffer.length);
+      reply.header('Cache-Control', 'public, max-age=86400');
+      return reply.send(thumb.buffer);
+    } catch (error) {
+      fastify.log.error({ err: error }, 'Failed to build public canvas document thumbnail');
+      const response = error.statusCode === 404
+        ? new ResponseObject().notFound(error.message)
+        : new ResponseObject().serverError('Failed to build public canvas document thumbnail');
       return reply.code(response.statusCode).send(response.getResponse());
     }
   });

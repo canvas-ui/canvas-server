@@ -902,6 +902,41 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     }
   });
 
+  // ── Document thumbnail (on-demand, cached in stored.cache) ──────────────
+
+  fastify.get('/:docId/thumbnail', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      params: { type: 'object', required: ['id', 'docId'], properties: { id: { type: 'string' }, docId: { type: 'string' } } },
+      querystring: { type: 'object', properties: { size: { type: 'integer', minimum: 16, maximum: 2048, default: 256 } } },
+    },
+  }, async (request, reply) => {
+    try {
+      const workspace = await getWorkspaceInstance(request, reply);
+      if (!workspace) return;
+
+      let documentId;
+      try { documentId = parseDocumentId(request.params.docId, 'Document ID parameter'); }
+      catch (e) { const r = new ResponseObject().badRequest(e.message); return reply.code(r.statusCode).send(r.getResponse()); }
+
+      const doc = await workspace.get(documentId);
+      if (!doc) { const r = new ResponseObject().notFound('Document not found'); return reply.code(r.statusCode).send(r.getResponse()); }
+
+      const thumb = await workspace.getDocumentThumbnail(doc, request.query.size);
+      if (!thumb) { const r = new ResponseObject().notFound('No thumbnail available for this document'); return reply.code(r.statusCode).send(r.getResponse()); }
+
+      reply.header('Content-Type', thumb.mime);
+      reply.header('Content-Length', thumb.buffer.length);
+      // Derived artifact keyed by content checksum — safe to cache client-side.
+      reply.header('Cache-Control', 'private, max-age=86400');
+      return reply.send(thumb.buffer);
+    } catch (error) {
+      fastify.log.error(error);
+      const r = new ResponseObject().serverError('Failed to build document thumbnail');
+      return reply.code(r.statusCode).send(r.getResponse());
+    }
+  });
+
   // ── Describe document locations (Destroy picker) ────────────────────────
 
   fastify.get('/:docId/locations', {

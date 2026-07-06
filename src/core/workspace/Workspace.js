@@ -1159,6 +1159,15 @@ class Workspace extends EventEmitter {
         return this.#storedIndex.destroy(doc, options);
     }
 
+    /**
+     * On-demand cached thumbnail for an image document (see
+     * WorkspaceStoredIndex.getThumbnail). Returns {buffer, mime} or null.
+     */
+    async getDocumentThumbnail(doc, size = 256) {
+        if (!this.#storedIndex?.isRunning) await this.#startStoredIndex();
+        return this.#storedIndex.getThumbnail(doc, size);
+    }
+
     #buildStoredIndex() {
         return new WorkspaceStoredIndex({
             rootPath: this.#rootPath,

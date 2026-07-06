@@ -566,6 +566,55 @@ export class WorkspaceStoredIndex {
         throw new Error(`No resolver for scheme: ${scheme}`);
     }
 
+    // Allowed thumbnail edge sizes — a fixed set keeps the derived-artifact
+    // cache bounded (no per-pixel-size explosion).
+    static THUMBNAIL_SIZES = [128, 256, 512, 1024];
+
+    /**
+     * On-demand thumbnail for an image document, cached in the stored.cache
+     * cacache store keyed `thumb:<checksum>:<size>` — derived artifacts never
+     * touch the main index and the cache is purgeable at any time.
+     * @param {object} doc image File document (metadata.contentType image/*)
+     * @param {number} [size] longest-edge px, clamped to THUMBNAIL_SIZES
+     * @returns {Promise<{buffer: Buffer, mime: string}|null>} null when not an
+     *   image / no checksum / no reachable bytes
+     */
+    async getThumbnail(doc, size = 256) {
+        if (!this.#stored) throw new Error('WorkspaceStoredIndex is not running');
+        const contentType = String(doc?.metadata?.contentType || '');
+        if (!contentType.startsWith('image/')) return null;
+        const checksum = Array.isArray(doc?.checksumArray) ? doc.checksumArray[0] : null;
+        if (!checksum) return null;
+
+        const edge = WorkspaceStoredIndex.THUMBNAIL_SIZES.reduce(
+            (best, s) => (Math.abs(s - size) < Math.abs(best - size) ? s : best),
+            WorkspaceStoredIndex.THUMBNAIL_SIZES[0],
+        );
+        const cacheKey = `thumb:${checksum}:${edge}`;
+        const cache = this.#stored.cache;
+
+        const hit = await cache.get(cacheKey).catch(() => null);
+        if (hit?.data) return { buffer: hit.data, mime: 'image/webp' };
+
+        // Miss → resolve original bytes from the first reachable location.
+        let original = null;
+        for (const loc of (doc.locations || [])) {
+            if (!loc?.url) continue;
+            try { original = await this.resolve(loc.url); if (original) break; } catch { /* next */ }
+        }
+        if (!original) return null;
+
+        const { default: sharp } = await import('sharp');
+        const buffer = await sharp(original)
+            .rotate() // honor EXIF orientation
+            .resize(edge, edge, { fit: 'inside', withoutEnlargement: true })
+            .webp({ quality: 80 })
+            .toBuffer();
+        await cache.put(cacheKey, buffer, { source: checksum, size: edge }).catch((err) =>
+            this.#logger.warn({ workspaceId: this.#workspaceId, error: err.message }, 'Thumbnail cache write failed'));
+        return { buffer, mime: 'image/webp' };
+    }
+
     /**
      * Describe each of a document's locations for a Destroy picker: whether its
      * bytes can actually be removed (RW backend / workspace file) or only its

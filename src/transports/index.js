@@ -261,7 +261,7 @@ export async function createServer(options = {}) {
       "script-src 'self' 'unsafe-inline' 'unsafe-eval'", // Allow inline scripts for socket.io
       "style-src 'self' 'unsafe-inline'", // Allow inline styles
       "connect-src 'self' ws: wss: http: https:", // Allow WebSocket and HTTP connections
-      "img-src 'self' data: blob:", // Allow images from various sources
+      "img-src 'self' data: blob: https:", // self + data/blob + remote https (favicons, link cards). Email bodies keep a stricter sandboxed CSP.
       "font-src 'self' data:", // Allow fonts
       "frame-src 'self' blob: https://www.youtube-nocookie.com", // PDF/email preview (blob: iframes) + YouTube embeds
       "worker-src 'self' blob:", // Allow web workers

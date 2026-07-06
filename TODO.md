@@ -1,5 +1,36 @@
 # TODO List
 
+mirror backend paths in the directory tree
+a) Rename .incoming to /.backends
+b) Tree structure should have the same schema
+/.backends
+    /<driver>
+        /<resource-address>
+            /<resource-path>
+    /s3
+        /address
+            /bucket
+                /path
+                    /document
+                    /doc
+                    /..
+    /imap
+        /me@idnc.sk
+            /Inbox
+            /Sent
+            /..
+    /workspace:home
+        /path
+            /foo
+                /bar
+    /workpace:data
+        key
+        ..
+
+c) We should support removing resource from the backend from canvas if a backend is defined as rw
+
+
+
 As (virtual) trees are meant to be primaryly(but not exclusively) task or goal-oriented, creating a new "folder" in a context or directory type tree is essentially equivalent of creating a new task:
 
 `universe://projects/augmentd-labs/website`

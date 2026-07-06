@@ -680,29 +680,40 @@ class Workspace extends EventEmitter {
      * apply baz's querySpec when baz is a canvas — no separate /canvases/:id/documents
      * endpoint needed.
      *
-     * Walks every path in spec.context (string, array, or {path}) and folds in
-     * canvas specs found at any leaf. Multi-path context calls compose all canvases.
+     * Applies to BOTH scope keys: `spec.context` (context tree) and
+     * `spec.directory` (directory tree). Directory membership is node-exact, so
+     * a directory-tree canvas reads its PARENT folder's documents (the canvas
+     * node itself holds none) — with or without a stored querySpec.
      */
     #composeCanvasQuerySpec(spec) {
-        if (!spec || typeof spec !== 'object' || !spec.context) { return spec; }
+        if (!spec || typeof spec !== 'object') { return spec; }
+        let out = this.#composeCanvasForScope(spec, 'context');
+        out = this.#composeCanvasForScope(out, 'directory');
+        return out;
+    }
+
+    #composeCanvasForScope(spec, scopeKey) {
+        const scope = spec?.[scopeKey];
+        if (!scope) { return spec; }
 
         let treeRef = null;
         let paths = [];
-        const ctx = spec.context;
-        if (typeof ctx === 'string') {
-            paths = [ctx];
-        } else if (Array.isArray(ctx)) {
-            paths = ctx.filter((p) => typeof p === 'string');
-        } else if (typeof ctx === 'object') {
-            treeRef = ctx.tree ?? ctx.treeId ?? null;
-            const p = ctx.path ?? ctx.context;
+        if (typeof scope === 'string') {
+            paths = [scope];
+        } else if (Array.isArray(scope)) {
+            paths = scope.filter((p) => typeof p === 'string');
+        } else if (typeof scope === 'object') {
+            treeRef = scope.tree ?? scope.treeId ?? null;
+            const p = scope.path ?? scope.context ?? scope.directory;
             paths = Array.isArray(p) ? p.filter((s) => typeof s === 'string') : (typeof p === 'string' ? [p] : []);
         }
         if (paths.length === 0) { return spec; }
 
         let tree;
         try {
-            tree = treeRef ? this.getTree(treeRef) : this.getDefaultContextTree();
+            tree = treeRef
+                ? this.getTree(treeRef)
+                : (scopeKey === 'directory' ? this.getDefaultDirectoryTree() : this.getDefaultContextTree());
         } catch (_) {
             return spec;
         }
@@ -711,18 +722,19 @@ class Workspace extends EventEmitter {
         let features = spec.features ?? spec.attributes ?? null;
         let filters = Array.isArray(spec.filters) ? [...spec.filters] : (spec.filters ? [spec.filters] : []);
         let query = spec.query ?? spec.search ?? spec.q ?? null;
-        let nextContext = spec.context;
+        let nextScope = spec[scopeKey];
         let touched = false;
 
         for (const path of paths) {
             let leaf = null;
             try { leaf = tree.getLayerForPath(path); } catch (_) { /* ignore */ }
-            if (leaf?.type !== 'canvas' || !leaf.querySpec) { continue; }
-            features = Workspace.#composeCanvasFeatures(features, leaf.querySpec.features);
-            filters = Workspace.#composeCanvasFilters(filters, leaf.querySpec.filters);
-            query = Workspace.#composeCanvasQuery(query, leaf.querySpec.query ?? leaf.querySpec.search ?? leaf.querySpec.q);
+            if (leaf?.type !== 'canvas') { continue; }
+            const qs = leaf.querySpec || {};
+            features = Workspace.#composeCanvasFeatures(features, qs.features);
+            filters = Workspace.#composeCanvasFilters(filters, qs.filters);
+            query = Workspace.#composeCanvasQuery(query, qs.query ?? qs.search ?? qs.q);
             if (tree.type === Workspace.DIRECTORY_TYPE) {
-                nextContext = Workspace.#withCanvasParentPath(nextContext, path);
+                nextScope = Workspace.#withCanvasParentPath(nextScope, path);
             }
             touched = true;
         }
@@ -731,7 +743,7 @@ class Workspace extends EventEmitter {
 
         return {
             ...spec,
-            context: nextContext,
+            [scopeKey]: nextScope,
             ...(features !== undefined ? { features } : {}),
             filters,
             ...(query ? { query } : {}),

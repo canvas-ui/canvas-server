@@ -263,7 +263,7 @@ export async function createServer(options = {}) {
       "connect-src 'self' ws: wss: http: https:", // Allow WebSocket and HTTP connections
       "img-src 'self' data: blob:", // Allow images from various sources
       "font-src 'self' data:", // Allow fonts
-      "frame-src 'self'", // Allow frames from same origin
+      "frame-src 'self' blob:", // PDF preview uses <iframe src="blob:…">
       "worker-src 'self' blob:", // Allow web workers
       "object-src 'none'", // Disable object/embed elements
       "base-uri 'self'" // Restrict base tag

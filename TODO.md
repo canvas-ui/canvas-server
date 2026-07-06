@@ -1,59 +1,60 @@
 # TODO List
 
-mirror backend paths in the directory tree
-a) Rename .incoming to /.backends
-b) Tree structure should have the same schema
-/.backends
-    /<driver>
-        /<resource-address>
-            /<resource-path>
-    /s3
-        /address
-            /bucket
-                /path
-                    /document
-                    /doc
-                    /..
-    /imap
-        /me@idnc.sk
-            /Inbox
-            /Sent
-            /..
-    /workspace:home
-        /path
-            /foo
-                /bar
-    /workpace:data
-        key
-        ..
+## Workspace DataBackends
 
-c) We should support removing resource from the backend from canvas if a backend is defined as rw
+We finally need to start working with our data backends.
+- Storage configuration is per-workspace and should be exposed as a workspace-bound settings section
+- Backends are exposed in the webUI based on the objects locations: [] array as follows:
+  - A unified, easily readable, UX-friendly tabbed object propeperties card element appearing next to the object(or slide-in in mobile/small screem view) with the following tabs
+    - Edit 
+      - Tags should list existing cutom/tag/* bitmaps
+    - Metadata (Our redefined and streamlined details window)
+    - JSON (with a Copy to clipboard button)
+    - Synapses
+      - Context tree
+      - Directory tree
+      - Documents
+    - Backends
+      - List of backends where an object is stored at(for plain JSON objects stored in the workspace db, we should show workspace:db)
+        - We should support a tickbox to sync to a backend / delete to delete for blobs but this would require stored syncd so lets not add it yet
+        - We should support removing a blob from a backend
+          - If no backend is left to remove from user should be asked to confirm removal from index, but we probably should support leaving the index in-tact even if no physical copy of the raw bytes exists in the index
+        - Example paths
+          - workspace:db
+          - workspace:data/key?
+          - s3/bucket/path
+          - <backend-name>/<path> 
 
+## Workspace Hooks
 
+One of the major functionalities are workspace hooks
 
-As (virtual) trees are meant to be primaryly(but not exclusively) task or goal-oriented, creating a new "folder" in a context or directory type tree is essentially equivalent of creating a new task:
+### Usecase #1: Plain ol' hooks
 
-`universe://projects/augmentd-labs/website`
+Note: We do not autoindex/autoingest/auto-process hidden files (dotfiles => files starting with a dot), regardless where they are placed
 
-or
+1. User syncs/indexes a link from his browser(browser tab - data/abstraction/tab schema document)
+2. A hook from gets triggered, parses the data.url and finds out the link is a youtube video, 
+3. spins up a bash script from WORKSPACE_ROOT/git/scripts and downloads that video into WORKSPACE_ROOT/home/Videos/some-name.mp4 using ytdl or 
+3.1 to a temporary location (WORKSPACE_ROOT/var/tmp?) then inserts it to ws:data or some other backend 
+3.2 it creates a synapse between 
+3.2 it also inserts it into a virtual context tree /to-sort
+4. A document.inserted hook gets triggered, path is /to-sort, data is a file/blob, a categorizer agent gets triggered, fetches doc synapses and tries to categorize the newly added document into one of the existing tree paths (or - if configured - creates a new one, fallbacks to /to-sort/unsure or whatever the user configured) 
 
-`work://customer-a/devops/jira-1234`
+I already need a simillar implementation for picture URLs/photos and arxiv papers, I may want to trigger an agent to summarize each arxiv paper I index and store that summary as a note linking it to the paper
 
-or
+Another hook example, emails from foo@bar.baz that contain subject "DC Migration" are to be linked under /projects/dc-migration, emais from bar@baf.baz to /path/to-read and /path/something/else and tagged custom/tag/urgent - sky is the limit
 
-`huge-project-a://mvp/releases/customer-foo `
+### Usecase #2: Hooks + Agents
 
+We already partly covered this use-case above  
+A bunch of browser tabs get synced into the /to-sort virtual context or directory tree, triggering a documents.inserted hook. Hook checks the path and triggers a categorizer agent to organize those tabs, fetches the current workspace tree paths array, optionaly uses a web tool to analyze those pages if url title or url does not provide enough context and links those tabs to respective context paths, removing them from to-sort once done.
 
-After such an empty "folder" is created, we should show its content(empty) in a B5 like canvas element and preemtptively another B5 element next to it showing what data we want to associate with that task.
+document.inserted into /projects/dc-migration triggers an agent to read that email(with optional prompt/instructions) to evaluate whether to notify me over slack or teams or by sending an in-app notification ("please let me know if any emails about foo bar and baz arrive, also notify me when I get any comm regarding that intune ts case")
 
-Example use-case:
-A user creates `../devpos/jira-1234` related to a issue with nvidia jetson boards, he associates a list of contacts with that task(list of channels and lets say email subject headers which will automatically associated all incoming messages/emails with that path), he may add a real or virtual folder, notes, browser tabs etc) - canvas filters all his incoming data and indexes + surfaces context-relevant information for that path to whatever application has that path open (or whatever shareable boundable context has that path selected)
+### Usecase #3: Agentic workloads
 
-This means that we need to slightly amend our controlls
-- Lets remove our current toolbox and replace it with a toolbox button
-  - Biggest button at the bottom toggles toolbox sidebar - sidebar is a card element on the same level as the rest of the cards on the main content area. 
-  - Opening toolbox shifts all existing elements to left if needed
-- On top there should be a Link To
+I bind my "Lucy" secretary agents to my "mbag" context. Switching my context url(focus) to /projects/dc-migration/fmo will update all my context-bound apps (browsers will load relevant tabs, obsidian will show relecant notes etc), since Lucy is also allowed to access my context, asking "Do we have any new emails?" or "can you tell me to what server ldap master was migrated to" - should trigger a targetted in-context search of all emails or a query across all documents pre-filted for the current context url for a standard RAG reply
 
 
 
@@ -70,124 +71,7 @@ Lets extend our pi-mono based agent pipeline, we could (continue to) use pi-mono
 - WebRTC/speech support, there are many pi-mono speech modules ready to be used (or servers like kokoro or piper), I'd like to be able to send photos and files or talk to an agent directly
 - Whatsapp and slack support, the work here was already done (openclaw and all its 1000+ derivates), lets say I have a agent bound to my work workspace, I should be able to call him and ask whether we had any new emails, agent should be able to use canvas-cli or direct api calls wrapped in SKILLS/tools to query latest ingested emails from canvas. Canvas should be the main interface how agents interract with user data, all user data will be indexed in canvas, user defines what parts an agent should manage(or sets up hooks that trigger agent actions), agent should be able to send a whatsapp notification to a user in a example scenario - user configures a hook in his workspace to watch for emails with email.subject.contains(MSFT-TICKET-1234) - on hit trigger an agent action with "Given the context information in work://projects/foo/bar, check whether we finally got that ticket resolved and notify me if yes"
 
-
-There are many gaps in the above, we need to start anyway because time IS the most precious resource in the universe and I need to divide mine to something else now
-Let me know if you have any questions
-
-
-
-We now have 2 default timelines
-- crud: Document CRUD ops, internal document lifetime index
-- content: Content-derived events(EXIF extracted timestamps, logs, extracted time periods etc)
-
-There can be any number of additional timelimnes like
-- wikipedia
-- historian-foo
-- personal
-
-Can you make sure our webui properly handles them - especially the soon to be refactored toolbox
-
-Spatial GeoIndex, --backend + named-tree support 
 --
-
-
-Our webUI has one important issue, it is useless. 
-It was never meant as a product, it started and continued its life as an adhoc LLM and canvas-server feature testing bed. 
-There are some usable configuration features but one simple question that points out the uselessness of the current implementation - would a user want to have canvas open as his home-page? Answer is no, not even I would and I'm the one who put the whole thing together. Added to that, the whole UI was never meant to look as it does now, I did some sketches, copy-pasted them to older models and everything they came up with was exactly a standard boring react website regardless of how many times I repeated the exercise and refined my sketches.
-
-I was postponing a real UX-focused refactor for a long time becacuse the integrations (browser extensions, cli, now canvas-fuse)  - for me - were more imporant, but I need to move to mobile and noticed that one can install a website - our website - as a PWA and even found some nice mdn docs that claim one can use native android features to "send a link" to canvas or copy some text and save it as a note in canvas or take a photo and upload it etc - over a PWA!
-
-So, short list of what functionality we need:
-- Send a link, text selection, photo/video or a file to canvas
-  - We should re-use OS native features and register our PWA as a endpoint for all of those
-- Record video or sound and wire it through our PWA to our agent runtime(take into account, deffer for now, backend not implemented yet)
-- Talk to a selected agent directly - iow make a webrtc call through our PWA to the agent runtime(deffered for now)
-
-Now with all of that, lets start to craft a usable webui
-- Our home page (the current "Control Center" place-holder) should be just the menu left and a round button near the bottom right that would toggle a separate card-like toolbox
-- Obove the main floating toolbox button, there should be smaller floating buttons for: 
-  - Add Note
-  - Add Link
-  - Upload file (stored in the default dataset workspace:data)
-  - Take a photo/video (if available)
-- All of those should open a B5 formatted empty canvas
-  - Canvas should have a Save/"Link To" button that would show a tree menu with a search bar where to link that note/link etc into, Maximize, Close
-
-Layout
-- (single-purpose) Canvas
-  - Material-design v2 card-like design
-  - B5 format
-    - Landscape or Portrait orientation
-    - Full-screen mode (fills viewport)
-- Canvas(our canvas element) same view, opens when selected from the menu (shows in the tree), we allow opening of multiple canvases next to each otherOur webUI has one important issue, it is useless. 
-It was never meant as a product, it started and continued its life as an adhoc LLM and canvas-server feature testing bed. 
-There are some usable configuration features but one simple question that points out the uselessness of the current implementation - would a user want to have canvas open as his home-page? Answer is no, not even I would and I'm the one who put the whole thing together. Added to that, the whole UI was never meant to look as it does now, I did some sketches, copy-pasted them to older models and everything they came up with was exactly a standard boring react website regardless of how many times I repeated the exercise and refined my sketches.
-
-I was postponing a real UX-focused refactor for a long time becacuse the integrations (browser extensions, cli, now canvas-fuse)  - for me - were more imporant, but I need to move to mobile and noticed that one can install a website - our website - as a PWA and even found some nice mdn docs that claim one can use native android features to "send a link" to canvas or copy some text and save it as a note in canvas or take a photo and upload it etc - over a PWA!
-
-So, short list of what functionality we need:
-- Send a link, text selection, photo/video or a file to canvas
-  - We should re-use OS native features and register our PWA as a endpoint for all of those
-- Record video or sound and wire it through our PWA to our agent runtime(take into account, deffer for now, backend not implemented yet)
-- Talk to a selected agent directly - iow make a webrtc call through our PWA to the agent runtime(deffered for now)
-
-Now with all of that, lets start to craft a usable webui
-- Our home page (the current "Control Center" place-holder) should be just the menu left and a round button near the bottom right that would toggle a separate card-like toolbox
-- Obove the main floating toolbox button, there should be smaller floating buttons for: 
-  - Add Note
-  - Add Link
-  - Upload file (stored in the default dataset workspace:data)
-  - Take a photo/video (if available)
-- All of those should open a B5 formatted empty canvas
-  - Canvas should have a Save/"Link To" button that would show a tree menu with a search bar where to link that note/link etc into, Maximize, Close
-
-Layout
-- (single-purpose) Canvas
-  - Material-design v2 card-like design
-  - B5 format
-    - Landscape or Portrait orientation
-    - Full-screen mode (fills viewport)
-- Canvas(our canvas element) same view, opens when selected from the menu (shows in the tree), we allow opening of multiple canvases next to each other
-
-Create Canvas #1
- - Aligned in the middle
-Add a new canvas #2
- - Gets added to the right, first canvas moves left
-Add a new canvas #3
- - Gets added to the right, enable vertical scroll
-
-WebUI lives in @src/ui/web/ and this will be a tough one, if you
-  want me to isntall any tools or skills that may be usefull let me know. We just introduced
-  @src/transports/routes/workspaces/blobs.js, PWAs already installed on adroid devices should
-  be updateable (I guess some special consideration is needed for the manifest.json file)
-
-Create Canvas #1
- - Aligned in the middle
-Add a new canvas #2
- - Gets added to the right, first canvas moves left
-Add a new canvas #3
- - Gets added to the right, enable vertical scroll
-
-Optional 
- - OS based speach-to-text for writing notes/chats with agents
- - OS based text-to-speach for reading out loud
- - Record audio/video and send it to an agent real-time
-
-
-
-
-## .incoming backend layers + active-backend delete guard
-
-Land these two together — (3)'s clean form depends on (4)'s single per-backend node.
-
-- [ ] **(4) Normalize the .incoming tree to `.incoming/<driver>/<backend>`.** One stable node per backend (e.g. `.incoming/imap/user@domain.com`, `.incoming/s3/<host>/<bucket>`). Update the context builders in `src/utils/incoming-documents.js` (currently variable-depth: `.incoming/<provider>/<account>/<folder>`, `.incoming/file/<provider>/<account>/…`) + migrate existing trees. Backend layer maps to the `data/backend/<backend>` feature bitmap (already tagged at ingest).
-- [ ] **(3) Lock the backend layer tracking enable/disable state (active-backend delete guard).** Lock the `<driver>`/`<backend>` node while the backend is enabled → can't delete/purge an active backend's folder (stop/remove the backend first); unlock on disable/remove. Hook the lifecycle (`setDataBackendConfig`, `enableImap`/`disableImap`, `saveMailbox`/`removeMailbox`). Needs (4)'s single node — with non-cascading `system:*` locks, locking a variable-depth path only protects one node and leaves its folders deletable (half-guarantee). Brittle standalone, hence coupled to (4).
-
-Context: `system:incoming` now locks only the `.incoming` root (non-cascading); subfolders are remove/purge-able. Remove vs Remove-and-purge wired server-side (`?purge=true`, path-scoped). Source-backend tag `data/backend/<backend>` added at ingest (observability/selection, NOT a purge driver). See memory `project_incoming_lock_semantics`.
-
-- [ ] **webui "Purge All" ignores treeType.** `purgeWorkspaceDocuments` (`src/ui/web/src/services/workspace.ts:675`) calls `appendWorkspaceContext(params, contextSpec)` with no `treeName`/`treeType` → always queries the CONTEXT tree. On any directory-tree path it targets the wrong tree and no-ops (or worse, purges the wrong scope). Already hidden in `/.incoming` (button gated off via `isIncomingPath` in `pages/workspaces/[workspaceName]/index.tsx`), but still wrong for other directory-tree paths where the button shows. Fix: thread `treeName`/`treeType` through `purgeWorkspaceDocuments` + `handlePurgeDocuments` like `deleteWorkspaceDocuments` already does (server `/documents/purge` accepts `treeType=directory`).
-
-Fine-tune .cursor/prompts/20260613-hooks+agents.md
 
 ## MVP Scope
 
@@ -211,17 +95,17 @@ MVP deployment has to happen before **30.06.2026**!
   - [ ] basic desktop overlay (tauri)
 
 - [ ] Roaming profiles
-  - [ ] Webdav for workspace/home
-  - [ ] canvas-fuse
+  - [x] Webdav for workspace/home
+  - [x] canvas-fuse
   - [ ] (optional) dotfiles endpoint via
     - git repo (git clone/push/pull) http(s)://host/workspaces/<workspace>/git/
     - dotfiles(app logic) http(s)://host/workspaces/<workspace>/dotfiles/
     - hooks http(s)://host/workspaces/<workspace>/hooks/
 
-- [ ] Contextualized data 
-  - [ ] Files
-  - [ ] Notes
-  - [ ] Browser tabs
+- [x] Contextualized data 
+  - [x] Files
+  - [x] Notes
+  - [x] Browser tabs
   - [ ] (optional) Dotfile
 
 - [ ] Workspace hooks
@@ -310,11 +194,11 @@ Lets not reinvent the wheel and re-use an existing framework that can seamlessly
 
 
 - Copy/Cut-Paste in layer view (selecting a specific layer > copy > selecting layer B > paste) always uses "/", we should support copy-paste between layers too
-- .incoming tree mirrors the backend layout and is immutable but we should still allow removing data within that tree from the backend(s). 
+- .backends tree mirrors the backend layout (/.backends/<driver>/<resource-address>/<resource-path>) and is immutable but we should still allow removing data within that tree from the backend(s). DONE server-side: DELETE tree path with ?destroy=true (rw backends only, per-backend readOnly config flag, enable-locked backend nodes return 409). Still pending: 
 In general, we need to design a backend removal dialog with tick boxes for each backend, which will require a stored queue(persistent) since some backends may take time.
 - Removing a object from all its backens will also wipe it from the DB
-- .incoming tree should show a "Sync" button for each backend or directory, so that users can trigger a refresh (and sync all newly coppied or renamed files for example)
-- .icoming tree should not have a import option nor 
+- .backends tree should show a "Sync" button for each backend or directory, so that users can trigger a refresh (and sync all newly coppied or renamed files for example)
+- .backends tree should not have a import option nor 
 
 View
 /workspaces
@@ -465,16 +349,6 @@ Agents should be running as self-contained docker containers but for now, we'll 
   - proxying
   - auth handoff
 
-### Add support for additional data sources
-
-- `git`
-  - Aim is to streamline our dotfiles management feature/extract git support into a separate module
-  - Needs to support branches
-- `sql`
-  - We'd cache the result internally; you may want to create a canvas aggregating data from various sql db sources along with your emails etc, working with them in any tool would be a curl https://your-canvas-instance/workspaces/:wid/canvases/:cid/documents | jq .. away
-- `generic REST endpoint`
-  - Lets say a corporate backend with a specific REST API endpoint + query returning a list of non-compliant servers, again could be paired with a TTL for the localy cached result as metadata (this is a pure app concern,  not sure whether we should - at this point - add some form of data invalidation based on TTL to the DB)
-
 ### Add support for a different (internal) data abstraction - map (2d topological radial surface)
 
 ### Import/export workspace(s)
@@ -498,16 +372,26 @@ Workspace config search paths
 
 ### Extend workspaces API (partly blocked by synapsd)
 
-- Add a workspaces/:workspace_id/db endpoint
-  - /stats
-  - /status
-  - /dump
-  - /snapshots
-    - /:timestampOrSnapshotID?
-      - /dump
-      - /restore
+- [] Add a workspaces/:workspace_id/db endpoint
+  - [] /stats
+  - [] /status
+  - [] /dump
+  - [] /snapshots
+    - [] /:timestampOrSnapshotID?
+      - [] /dump
+      - [] /restore
 
-## Implement proper sharing functionality for Workspaces, Contexts and Canvases
+### Implement proper sharing functionality for Workspaces, Contexts and Canvases
 
 - Token based (does not require a local user)
 - User email based (requires a local user to exist on the same canvas-server instance)
+
+### Add support for additional data sources
+
+- `git`
+  - Aim is to streamline our dotfiles management feature/extract git support into a separate module
+  - Needs to support branches
+- `sql`
+  - We'd cache the result internally; you may want to create a canvas aggregating data from various sql db sources along with your emails etc, working with them in any tool would be a curl https://your-canvas-instance/workspaces/:wid/canvases/:cid/documents | jq .. away
+- `generic REST endpoint`
+  - Lets say a corporate backend with a specific REST API endpoint + query returning a list of non-compliant servers, again could be paired with a TTL for the localy cached result as metadata (this is a pure app concern,  not sure whether we should - at this point - add some form of data invalidation based on TTL to the DB)

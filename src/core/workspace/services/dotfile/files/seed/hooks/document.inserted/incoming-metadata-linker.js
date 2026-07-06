@@ -2,11 +2,11 @@ import { readFile, rm } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
-// Example: files dropped into the workspace land in the `.incoming` directory
-// tree. If a file has a sidecar `.<name>.metadata.json` (hidden, so it is not
-// auto-indexed) listing target paths, link the file to those virtual paths and
-// remove the sidecar. Pairs with youtube.js / any downloader that writes the
-// sidecar.
+// Example: files dropped into the workspace land in the `/.backends` directory
+// tree ("/.incoming" in older builds). If a file has a sidecar
+// `.<name>.metadata.json` (hidden, so it is not auto-indexed) listing target
+// paths, link the file to those virtual paths and remove the sidecar. Pairs
+// with youtube.js / any downloader that writes the sidecar.
 
 function locationFilePath(doc) {
     for (const loc of doc?.locations || []) {
@@ -27,8 +27,11 @@ function incomingPaths(payload) {
 }
 
 export default async function run({ payload, workspace, get, logger }) {
-    const landedInIncoming = incomingPaths(payload).some((p) => String(p).includes('/.incoming'));
-    if (!landedInIncoming) { return; }
+    // Match both roots: workspaces seeded before the /.backends rename keep this
+    // hook file, and old ones may still emit /.incoming paths mid-migration.
+    const landedInBackends = incomingPaths(payload)
+        .some((p) => String(p).includes('/.backends') || String(p).includes('/.incoming'));
+    if (!landedInBackends) { return; }
 
     const ids = payload?.ids || (payload?.id != null ? [payload.id] : []);
     for (const id of ids) {

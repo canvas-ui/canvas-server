@@ -7,7 +7,7 @@ import { WebClient } from '@slack/web-api';
 import { Client as TeamsClient } from '@microsoft/microsoft-graph-client';
 import { ClientSecretCredential } from '@azure/identity';
 import { createLogger } from '../../../../utils/log.js';
-import { getIncomingMessageContext } from '../../../../utils/incoming-documents.js';
+import { getBackendChannelContext } from '../../../../utils/backend-documents.js';
 
 const logger = createLogger('chat-service');
 
@@ -246,11 +246,11 @@ class ChatService extends EventEmitter {
                             const workspace = await this.#workspaceManager.getWorkspace(workspaceId, userId);
                             if (workspace) {
                                 const accountId = message.team || config.team || config.workspace || workspaceId;
-                                const contextSpec = getIncomingMessageContext('slack', accountId, channelName || channelId);
+                                const contextSpec = getBackendChannelContext('slack', accountId, channelName || channelId);
                                 const docId = await workspace.put(chatDoc, {
-                                    directory: workspace.getIncomingTreeSelector(contextSpec),
+                                    directory: workspace.getBackendsTreeSelector(contextSpec),
                                     emitEvent: false,
-                                    allowIncomingWrite: true,
+                                    allowBackendsWrite: true,
                                 });
                                 chatDoc.id = docId;
 
@@ -329,11 +329,11 @@ class ChatService extends EventEmitter {
                         if (this.#hookService) {
                             const workspace = await this.#workspaceManager.getWorkspace(workspaceId, userId);
                             if (workspace) {
-                                const contextSpec = getIncomingMessageContext('teams', userPrincipalName || teamId, channel.displayName || channel.id);
+                                const contextSpec = getBackendChannelContext('teams', userPrincipalName || teamId, channel.displayName || channel.id);
                                 const docId = await workspace.put(chatDoc, {
-                                    directory: workspace.getIncomingTreeSelector(contextSpec),
+                                    directory: workspace.getBackendsTreeSelector(contextSpec),
                                     emitEvent: false,
-                                    allowIncomingWrite: true,
+                                    allowBackendsWrite: true,
                                 });
                                 chatDoc.id = docId;
 

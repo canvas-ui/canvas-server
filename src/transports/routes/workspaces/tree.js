@@ -1,7 +1,7 @@
 'use strict';
 
 import ResponseObject from '../../ResponseObject.js';
-import { isIncomingContextSpec } from '../../../utils/incoming-documents.js';
+import { isBackendsContextSpec } from '../../../utils/backend-documents.js';
 
 export default async function workspaceTreeRoutes(fastify) {
   async function getWorkspaceInstance(request, reply) {
@@ -185,11 +185,11 @@ export default async function workspaceTreeRoutes(fastify) {
 
   async function copyAcrossTrees(workspace, sourceTree, targetTree, fromPath, targetPath, recursive = false, move = false) {
     const normalizedTargetPath = normalizeTreePath(targetPath);
-    if (targetTree.type === 'directory' && isIncomingContextSpec(normalizedTargetPath)) {
-      return { data: null, count: 0, error: 'Incoming directory tree is read-only' };
+    if (targetTree.type === 'directory' && isBackendsContextSpec(normalizedTargetPath)) {
+      return { data: null, count: 0, error: 'Backends staging tree (/.backends) is read-only' };
     }
-    if (move && sourceTree.type === 'directory' && isIncomingContextSpec(fromPath)) {
-      return { data: null, count: 0, error: 'Incoming directory tree is read-only' };
+    if (move && sourceTree.type === 'directory' && isBackendsContextSpec(fromPath)) {
+      return { data: null, count: 0, error: 'Backends staging tree (/.backends) is read-only' };
     }
     if (!pathNodeView(targetTree, normalizedTargetPath)) {
       return { data: null, count: 0, error: `Target path not found: ${normalizedTargetPath}` };
@@ -429,13 +429,18 @@ export default async function workspaceTreeRoutes(fastify) {
         type: 'object',
         properties: {
           recursive: { type: 'boolean', default: false },
-          // Opt-in cascade-purge. Only honored for the /.incoming subtree of a
+          // Opt-in cascade-purge. Only honored for the /.backends subtree of a
           // directory tree: drops the folder AND deletes the documents under it
           // from the index ("Remove and purge"). Default (false) is plain
           // "Remove" — folder/membership dropped, documents kept (an agent/user
           // may have already filed the keepers elsewhere; backends re-sync the
           // rest if re-enabled). Ignored elsewhere.
           purge: { type: 'boolean', default: false },
+          // Opt-in backend deletion ("Remove, purge and destroy"). Only honored
+          // for /.backends paths: additionally deletes the mirrored resources ON
+          // the backend (rw backends only; read-only/foreign locations degrade
+          // to a reference drop). Implies purge.
+          destroy: { type: 'boolean', default: false },
         },
       },
     },
@@ -444,20 +449,32 @@ export default async function workspaceTreeRoutes(fastify) {
       const resolved = await getTreeInstance(request, reply);
       if (!resolved) return;
       const path = pathFromSplat(request);
-      const purge = request.query.purge === true
-        && resolved.tree.type === 'directory'
-        && isIncomingContextSpec(path);
-      const result = purge
-        ? await resolved.workspace.removeIncomingTreePath(path, { recursive: request.query.recursive })
-        : await resolved.tree.removePath(path, request.query.recursive);
-      const message = purge && !result?.error
-        ? `Tree path removed and ${result.purged || 0} document(s) purged`
-        : 'Tree path removed successfully';
+      const isBackendsPath = resolved.tree.type === 'directory' && isBackendsContextSpec(path);
+      const destroy = request.query.destroy === true && isBackendsPath;
+      const purge = (request.query.purge === true || destroy) && isBackendsPath;
+      const result = destroy
+        ? await resolved.workspace.destroyBackendsTreePath(path, { recursive: request.query.recursive })
+        : purge
+          ? await resolved.workspace.removeBackendsTreePath(path, { recursive: request.query.recursive })
+          : await resolved.tree.removePath(path, request.query.recursive);
+      const message = result?.error
+        ? null
+        : destroy
+          ? `Tree path removed; ${(result.destroyed?.docsDestroyed || 0) + (result.destroyed?.docsPurged || 0)} document(s) purged, ${result.destroyed?.deletedLocations || 0} location(s) destroyed on backend`
+          : purge
+            ? `Tree path removed and ${result.purged || 0} document(s) purged`
+            : 'Tree path removed successfully';
       const responseObject = result?.error
         ? new ResponseObject().badRequest(result.error)
         : new ResponseObject().success(result, message);
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
     } catch (error) {
+      // A locked node means a backend mapped to this folder is still enabled —
+      // a state conflict, not a server fault.
+      if (/locked/i.test(error.message || '')) {
+        const conflict = new ResponseObject().conflict('Path is locked — a backend mapped to this folder is enabled; disable it first');
+        return reply.code(conflict.statusCode).send(conflict.getResponse());
+      }
       fastify.log.error(`Remove workspace path error for ID ${request.params.id}: ${error.message}`);
       const responseObject = new ResponseObject().serverError(error.message || 'Failed to remove path');
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());

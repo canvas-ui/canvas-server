@@ -8,7 +8,7 @@ import { simpleParser } from 'mailparser';
 import ImapBackend from './ImapBackend.js';
 import Email from '../../../../services/synapsd/src/schemas/abstractions/Email.js';
 import { parseLocationUrl } from '../../../../services/synapsd/src/utils/path-helpers.js';
-import { getIncomingEmailContext } from '../../../../utils/incoming-documents.js';
+import { getBackendEmailContext, normalizeSegment, BACKENDS_ROOT_CONTEXT } from '../../../../utils/backend-documents.js';
 
 /*
  * WorkspaceMailIndex (ImapService)
@@ -16,7 +16,7 @@ import { getIncomingEmailContext } from '../../../../utils/incoming-documents.js
  * Per-workspace IMAP connector: manages mailbox accounts (config/stored.json),
  * runs incremental sync + poll, and ingests messages as Email documents (raw
  * .eml + attachment blobs persisted under data/email/, indexed into the
- * incoming tree).
+ * directory tree's /.backends/imap/<account>/<folder> subtree).
  *
  * Fully self-owned: it instantiates and owns its ImapBackend instances directly
  * (its own registry + event wiring + lifecycle) — it does NOT ride the stored
@@ -44,27 +44,33 @@ export class WorkspaceMailIndex extends EventEmitter {
 
     // Injected dependencies
     #put;
-    #getIncomingTreeSelector;
+    #getBackendsTreeSelector;
     #getDb;
     #persistBlob;
+    // Optional backend-node enable-lock hooks (lock /.backends/imap/<account>
+    // while a mailbox on that account is enabled).
+    #lockBackendNode;
+    #unlockBackendNode;
 
     #started = false;
     #backends = new Map(); // name -> ImapBackend
     #backendStatus = new Map();
 
-    constructor({ rootPath, workspaceId, logger, put, getIncomingTreeSelector, getDb, persistBlob }) {
+    constructor({ rootPath, workspaceId, logger, put, getBackendsTreeSelector, getDb, persistBlob, lockBackendNode = null, unlockBackendNode = null }) {
         super({ wildcard: true, delimiter: '.', maxListeners: 100 });
         if (!rootPath) throw new Error('rootPath is required');
-        if (!put || !getIncomingTreeSelector || !getDb || !persistBlob) {
-            throw new Error('put, getIncomingTreeSelector, getDb, persistBlob are required');
+        if (!put || !getBackendsTreeSelector || !getDb || !persistBlob) {
+            throw new Error('put, getBackendsTreeSelector, getDb, persistBlob are required');
         }
         this.#rootPath = rootPath;
         this.#workspaceId = workspaceId;
         this.#logger = logger || console;
         this.#put = put;
-        this.#getIncomingTreeSelector = getIncomingTreeSelector;
+        this.#getBackendsTreeSelector = getBackendsTreeSelector;
         this.#getDb = getDb;
         this.#persistBlob = persistBlob;
+        this.#lockBackendNode = lockBackendNode;
+        this.#unlockBackendNode = unlockBackendNode;
     }
 
     get isRunning() { return this.#started; }
@@ -112,6 +118,7 @@ export class WorkspaceMailIndex extends EventEmitter {
 
         this.#backends.set(name, backend);
         this.#backendStatus.set(name, { lastScanAt: null, lastError: null });
+        this.#applyAccountNodeLock(name, config, true);
         return backend;
     }
 
@@ -122,6 +129,21 @@ export class WorkspaceMailIndex extends EventEmitter {
         if (!backend) return;
         await backend.stop().catch(() => {});
         this.#backends.delete(name);
+        this.#applyAccountNodeLock(name, backend.config, false);
+    }
+
+    // Enable-lock on the shared account node /.backends/imap/<account>. Holder
+    // is the mailbox backend name (imap:<id>): lockedBy is an array, so two
+    // mailboxes on one account each hold their own entry and the node unlocks
+    // only when the last one releases. Fire-and-forget: lock state is a guard
+    // rail, never worth failing a sync over.
+    #applyAccountNodeLock(name, config = {}, locked) {
+        const hook = locked ? this.#lockBackendNode : this.#unlockBackendNode;
+        if (!hook) return;
+        const account = this.#safeAccount(config.account || config.user);
+        const nodePath = `${BACKENDS_ROOT_CONTEXT}/${IMAP_BACKEND_PREFIX}/${normalizeSegment(account)}`;
+        Promise.resolve(hook(nodePath, name)).catch((err) =>
+            this.#logger.warn({ workspaceId: this.#workspaceId, backend: name, error: err.message }, 'IMAP account node lock update failed'));
     }
 
     // Awaited by ImapBackend.#fetchBatch. Errors propagate so the backend leaves
@@ -160,14 +182,14 @@ export class WorkspaceMailIndex extends EventEmitter {
             folderPath: folder,
         });
 
-        const incomingContext = getIncomingEmailContext('imap', account, folder || 'inbox');
-        const directory = this.#getIncomingTreeSelector(incomingContext);
+        const backendContext = getBackendEmailContext('imap', account, folder || 'inbox');
+        const directory = this.#getBackendsTreeSelector(backendContext);
         const features = Email.getFeatureBitmapArray(emailDoc, { mailboxPath: folder });
         // Canonical source-backend tag (observability/selection, not a purge driver).
         // Mirrors WorkspaceStoredIndex#buildFeatures: data/backend/imap/<account>.
         if (account) features.push(`data/backend/imap/${account}`);
-        // Incoming email is filed ONLY under the directory tree's
-        // /.incoming/imap/<account>/<folder> — context:null keeps it out of the
+        // Ingested email is filed ONLY under the directory tree's
+        // /.backends/imap/<account>/<folder> — context:null keeps it out of the
         // context root (no "all emails dumped into /").
         const docId = await this.#put(emailDoc, { context: null, directory, features, emitEvent: true });
         emailDoc.id = docId;
@@ -271,21 +293,25 @@ export class WorkspaceMailIndex extends EventEmitter {
             tls: entry.tls !== false,
             allowSelfSigned: entry.allowSelfSigned === true,
             folder: entry.folder,
+            readOnly: entry.readOnly === true,
         };
     }
 
     async describeImapLocation(url) {
         const p = parseLocationUrl(url);
         const backend = await this.#ensureImapBackend(p?.backend);
-        return { url, scheme: 'imap', backend: p?.backend, kind: 'imap', deletable: !!backend && backend.canDelete };
+        // Config-level readOnly declares the mailbox hands-off: describe it as
+        // non-deletable even with working credentials (destroy reference-drops).
+        const deletable = !!backend && backend.canDelete && backend.config?.readOnly !== true;
+        return { url, scheme: 'imap', backend: p?.backend, kind: 'imap', deletable };
     }
 
     // EXPUNGE the message behind an imap:// url. Returns { ok } — ok:false means
-    // no credentials wired (caller reference-drops only).
+    // no credentials wired or readOnly mailbox (caller reference-drops only).
     async destroyImapLocation(url) {
         const p = parseLocationUrl(url);
         const backend = await this.#ensureImapBackend(p?.backend);
-        if (!backend || !backend.canDelete) return { ok: false };
+        if (!backend || !backend.canDelete || backend.config?.readOnly === true) return { ok: false };
         await backend.delete(p.key); // STORE \Deleted + EXPUNGE by UID
         return { ok: true };
     }
@@ -320,6 +346,21 @@ export class WorkspaceMailIndex extends EventEmitter {
         config.backends[name] = { ...(config.backends[name] || {}), ...patch };
         await this.writeStoredConfig(config);
         return config.backends[name];
+    }
+
+    // Reset every mailbox's UID cursor so the next sync re-fetches history.
+    // Used once after the /.incoming → /.backends drop+resync migration:
+    // re-ingest is checksum-deduped, so docs just regain their tree placement.
+    async resetSyncCursors() {
+        const config = await this.readStoredConfig();
+        let touched = false;
+        for (const [name, entry] of Object.entries(config.backends || {})) {
+            if (entry?.driver !== 'imap') continue;
+            config.backends[name] = { ...entry, lastUid: 0, lastSyncAt: null };
+            touched = true;
+        }
+        if (touched) await this.writeStoredConfig(config);
+        return touched;
     }
 
     // Register every enabled imap backend from stored.json. Does not start
@@ -403,6 +444,9 @@ export class WorkspaceMailIndex extends EventEmitter {
             account: user,
             folder: String(input.folder || IMAP_DEFAULT_FOLDER).trim() || IMAP_DEFAULT_FOLDER,
             mode: 'poll',
+            // readOnly: never delete on the server (Destroy degrades to a
+            // reference drop) even though the imap driver supports EXPUNGE.
+            readOnly: input.readOnly === true,
             pollInterval, initialSyncDays,
             lastUid: Math.max(0, Number(input.lastUid || 0)),
             lastSyncAt: input.lastSyncAt || null,
@@ -417,6 +461,7 @@ export class WorkspaceMailIndex extends EventEmitter {
             enabled: config.enabled !== false,
             host: config.host, port: config.port, tls: config.tls, allowSelfSigned: config.allowSelfSigned,
             user: config.user, folder: config.folder, mode: config.mode || 'poll',
+            readOnly: config.readOnly === true,
             pollInterval: config.pollInterval, initialSyncDays: config.initialSyncDays,
             lastUid: config.lastUid || 0, lastSyncAt: config.lastSyncAt || null, lastError: config.lastError || null,
             passwordConfigured: Boolean(config.password),

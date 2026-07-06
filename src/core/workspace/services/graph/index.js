@@ -6,7 +6,7 @@ import fs from 'fs';
 import { Client } from '@microsoft/microsoft-graph-client';
 import { ClientSecretCredential } from '@azure/identity';
 import { createLogger } from '../../../../utils/log.js';
-import { getIncomingEmailContext } from '../../../../utils/incoming-documents.js';
+import { getBackendEmailContext } from '../../../../utils/backend-documents.js';
 
 const logger = createLogger('graph-service');
 
@@ -187,11 +187,11 @@ class GraphService extends EventEmitter {
                 if (this.#hookService) {
                     const workspace = await this.#workspaceManager.getWorkspace(workspaceId, userId);
                     if (workspace) {
-                        const contextSpec = getIncomingEmailContext('graph', userPrincipalName, 'inbox');
+                        const contextSpec = getBackendEmailContext('graph', userPrincipalName, 'inbox');
                         const docId = await workspace.put(emailDoc, {
-                            directory: workspace.getIncomingTreeSelector(contextSpec),
+                            directory: workspace.getBackendsTreeSelector(contextSpec),
                             emitEvent: false,
-                            allowIncomingWrite: true,
+                            allowBackendsWrite: true,
                         });
                         emailDoc.id = docId;
 

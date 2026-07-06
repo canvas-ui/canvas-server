@@ -5,10 +5,10 @@ import { parseDocumentId, parseDocumentIdArray } from '../../../utils/documentId
 import { mergeDeviceFeatureTags } from '../../../utils/device-features.js';
 import {
   DIRECTORY_TREE_NAME,
-  INCOMING_ROOT_CONTEXT,
-  isIncomingContextSpec,
-  shouldExcludeIncoming,
-} from '../../../utils/incoming-documents.js';
+  BACKENDS_ROOT_CONTEXT,
+  isBackendsContextSpec,
+  shouldExcludeBackends,
+} from '../../../utils/backend-documents.js';
 
 // Human filename for a location URL: basename of the key after scheme://backend/.
 function locationFilename(url) {
@@ -80,12 +80,16 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       : { context: workspace.getContextTreeSelector(path, treeNameOrId), directory: null };
   }
 
-  function buildReadOptions(contextSelector, includeIncoming, options = {}) {
-    if (!shouldExcludeIncoming(contextSelector?.path, includeIncoming)) {
+  function buildReadOptions(contextSelector, includeBackends, options = {}) {
+    if (!shouldExcludeBackends(contextSelector?.path, includeBackends)) {
       return options;
     }
-    return { ...options, excludeTree: { tree: DIRECTORY_TREE_NAME, path: INCOMING_ROOT_CONTEXT } };
+    return { ...options, excludeTree: { tree: DIRECTORY_TREE_NAME, path: BACKENDS_ROOT_CONTEXT } };
   }
+
+  // Effective opt-in for /.backends reads: `includeIncoming` kept as a
+  // deprecated alias for older clients.
+  const includeBackendsFlag = (query = {}) => query.includeBackends === true || query.includeIncoming === true;
 
   function sendLinkResult(reply, result) {
     if (!result || !Array.isArray(result.failed)) {
@@ -106,16 +110,16 @@ export default async function workspaceDocumentRoutes(fastify, options) {
   }
 
   // selector.path may be a single path or an array of paths (multi-path insert).
-  const anyIncoming = (path) => Array.isArray(path) ? path.some(isIncomingContextSpec) : isIncomingContextSpec(path);
+  const anyBackends = (path) => Array.isArray(path) ? path.some(isBackendsContextSpec) : isBackendsContextSpec(path);
 
-  function rejectIncomingWrite(reply, workspace, selector) {
-    if (!selector || !anyIncoming(selector.path)) return false;
+  function rejectBackendsWrite(reply, workspace, selector) {
+    if (!selector || !anyBackends(selector.path)) return false;
     try {
       if (selector.tree && workspace.getTree(selector.tree)?.type !== 'directory') return false;
     } catch (_) {
       return false;
     }
-    const responseObject = new ResponseObject().badRequest('Incoming directory tree is read-only');
+    const responseObject = new ResponseObject().badRequest('Backends staging tree (/.backends) is read-only');
     reply.code(responseObject.statusCode).send(responseObject.getResponse());
     return true;
   }
@@ -237,7 +241,8 @@ export default async function workspaceDocumentRoutes(fastify, options) {
           // search — drops weak (far) kNN hits before fusion. 0..2 (0 = identical).
           minDistance: { type: 'number' },
           maxDistance: { type: 'number' },
-          includeIncoming: { type: 'boolean', default: false },
+          includeBackends: { type: 'boolean', default: false },
+          includeIncoming: { type: 'boolean', default: false }, // deprecated alias
           // 'workspace' drops the path bucket entirely → list every document in
           // the DB (synapsd default). 'path' (default) scopes to context/tree.
           scope: { type: 'string', enum: ['path', 'workspace'], default: 'path' },
@@ -269,7 +274,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
         directory: dirSelector,
         attributes: buildAttributes(request.query),
         filters: request.query.filters,
-        ...buildReadOptions(activeSelector, request.query.includeIncoming, {
+        ...buildReadOptions(activeSelector, includeBackendsFlag(request.query), {
           limit: request.query.limit,
           offset: request.query.offset,
           page: request.query.page,
@@ -353,13 +358,13 @@ export default async function workspaceDocumentRoutes(fastify, options) {
 
       const isTopLevelArray = Array.isArray(request.body);
       const { treeType: insertTreeType, selector: insertSelector } = resolveInsertTarget(workspace, request.body, isTopLevelArray);
-      if (insertTreeType === 'directory' && rejectIncomingWrite(reply, workspace, insertSelector)) return;
+      if (insertTreeType === 'directory' && rejectBackendsWrite(reply, workspace, insertSelector)) return;
       const features = isTopLevelArray ? [] : (request.body.features || []);
       const enforcedFeatures = enforceClientTags(request, features);
 
       const treeSpec = {
         context: insertTreeType === 'directory'
-          ? (anyIncoming(insertSelector?.path) ? null : workspace.getContextTreeSelector('/'))
+          ? (anyBackends(insertSelector?.path) ? null : workspace.getContextTreeSelector('/'))
           : insertSelector,
         directory: insertTreeType === 'directory' ? insertSelector : null,
         features: enforcedFeatures,
@@ -446,7 +451,8 @@ export default async function workspaceDocumentRoutes(fastify, options) {
           ...attributesQueryProps,
           ...filtersQueryProps,
           ...paginationQueryProps,
-          includeIncoming: { type: 'boolean', default: false },
+          includeBackends: { type: 'boolean', default: false },
+          includeIncoming: { type: 'boolean', default: false }, // deprecated alias
         },
       },
     },
@@ -464,7 +470,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
         directory: dirSel,
         attributes: { ...attrs, allOf },
         filters: request.query.filters,
-        ...buildReadOptions(activeSelector, request.query.includeIncoming, {
+        ...buildReadOptions(activeSelector, includeBackendsFlag(request.query), {
           limit: request.query.limit,
           offset: request.query.offset,
           page: request.query.page,
@@ -527,7 +533,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       }
 
       const { treeType: updateTreeType, selector: updateSelector } = resolveInsertTarget(workspace, request.body, false);
-      if (updateTreeType === 'directory' && rejectIncomingWrite(reply, workspace, updateSelector)) return;
+      if (updateTreeType === 'directory' && rejectBackendsWrite(reply, workspace, updateSelector)) return;
       const result = await workspace.putMany(itemsToUpdate, {
         context: updateTreeType === 'directory' ? null : updateSelector,
         directory: updateTreeType === 'directory' ? updateSelector : null,
@@ -616,7 +622,8 @@ export default async function workspaceDocumentRoutes(fastify, options) {
           ...contextQueryProps,
           ...attributesQueryProps,
           ...filtersQueryProps,
-          includeIncoming: { type: 'boolean', default: false },
+          includeBackends: { type: 'boolean', default: false },
+          includeIncoming: { type: 'boolean', default: false }, // deprecated alias
         },
       },
     },
@@ -633,7 +640,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
         directory: dirSel,
         attributes,
         filters: request.query.filters,
-        ...buildReadOptions(activeSelector, request.query.includeIncoming, { parse: false, limit: 0 }),
+        ...buildReadOptions(activeSelector, includeBackendsFlag(request.query), { parse: false, limit: 0 }),
       });
 
       if (matches.error) {

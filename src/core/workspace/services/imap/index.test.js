@@ -22,11 +22,13 @@ describe('WorkspaceMailIndex', () => {
     let mail;
     let puts;
     let blobs;
+    let lockCalls;
 
     beforeEach(async () => {
         rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'workspace-mail-'));
         puts = [];
         blobs = [];
+        lockCalls = [];
     });
 
     afterEach(async () => {
@@ -40,8 +42,10 @@ describe('WorkspaceMailIndex', () => {
             rootPath,
             workspaceId: 'test-workspace',
             logger: { warn() {}, debug() {} },
-            getIncomingTreeSelector: (spec) => spec,
+            getBackendsTreeSelector: (spec) => spec,
             getDb: () => ({}),
+            lockBackendNode: (nodePath, holder) => { lockCalls.push({ nodePath, holder, locked: true }); },
+            unlockBackendNode: (nodePath, holder) => { lockCalls.push({ nodePath, holder, locked: false }); },
             put: async (record, options) => {
                 const id = record.id || `doc-${puts.length + 1}`;
                 puts.push({ record: { ...record, id }, options });
@@ -73,9 +77,9 @@ describe('WorkspaceMailIndex', () => {
         assert.ok(urls.some((u) => u.startsWith('stored://workspace:data/')), `expected stored://workspace:data location, got ${urls}`);
         assert.ok(urls.some((u) => u.startsWith('imap://alice@example.com/INBOX;UID=5')), `expected imap:// location, got ${urls}`);
         assert.equal(record.checksumArray.length, 1);
-        // filed into the directory .incoming path, NOT the context root
+        // filed into the directory /.backends path, NOT the context root
         assert.equal(options.context, null);
-        assert.match(String(options.directory), /imap\/alice/);
+        assert.equal(String(options.directory), '/.backends/imap/alice@example.com/inbox');
         // raw blob persisted into the content-addressable store
         assert.equal(blobs.length, 1);
         assert.equal(record.checksumArray[0], `sha256/${blobs[0].checksum}`);
@@ -105,6 +109,48 @@ describe('WorkspaceMailIndex', () => {
         // describe constructs a backend from creds (no network) → deletable via EXPUNGE capability
         const d = await mail.describeImapLocation('imap://carol@example.com/INBOX;UID=3');
         assert.equal(d.deletable, true);
+    });
+
+    test('readOnly mailbox is never deletable (describe + destroy reference-drop)', async () => {
+        mail = createMail();
+        await mail.start();
+        await mail.writeStoredConfig({ backends: { 'imap:acct': {
+            driver: 'imap', account: 'carol@example.com', user: 'carol@example.com',
+            password: 'secret', host: 'imap.example.com', port: 993, enabled: false,
+            readOnly: true,
+        } } });
+        const d = await mail.describeImapLocation('imap://carol@example.com/INBOX;UID=3');
+        assert.equal(d.deletable, false);
+        assert.deepEqual(await mail.destroyImapLocation('imap://carol@example.com/INBOX;UID=3'), { ok: false });
+    });
+
+    test('saveMailbox locks the account node; removeMailbox unlocks it', async () => {
+        mail = createMail();
+        await mail.start();
+        // Host is unreachable — sync fails but registration (and the lock) happen.
+        const saved = await mail.saveMailbox({
+            id: 'acct', user: 'dave@example.com', password: 'secret',
+            host: '127.0.0.1', port: 1, tls: false, pollInterval: 60000,
+        });
+        assert.equal(saved.id, 'acct');
+        assert.ok(lockCalls.some((c) => c.locked && c.nodePath === '/.backends/imap/dave@example.com' && c.holder === 'imap:acct'));
+
+        await mail.removeMailbox('acct');
+        assert.ok(lockCalls.some((c) => !c.locked && c.nodePath === '/.backends/imap/dave@example.com' && c.holder === 'imap:acct'));
+    });
+
+    test('resetSyncCursors zeroes lastUid on every imap entry', async () => {
+        mail = createMail();
+        await mail.start();
+        await mail.writeStoredConfig({ backends: {
+            'imap:a': { driver: 'imap', user: 'a', lastUid: 42, lastSyncAt: 'x', enabled: false },
+            'other': { driver: 'file', lastUid: 7 },
+        } });
+        assert.equal(await mail.resetSyncCursors(), true);
+        const { backends } = await mail.readStoredConfig();
+        assert.equal(backends['imap:a'].lastUid, 0);
+        assert.equal(backends['imap:a'].lastSyncAt, null);
+        assert.equal(backends['other'].lastUid, 7); // non-imap untouched
     });
 
     test('stored.json read/write roundtrip + empty getImapStatus', async () => {

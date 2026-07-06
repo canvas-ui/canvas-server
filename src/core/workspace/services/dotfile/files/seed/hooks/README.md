@@ -21,7 +21,7 @@ export default async function hook({ eventName, payload, workspace, logger,
 ```
 
 `payload.context` / `payload.directory` carry the tree path the document landed
-in, so handlers can branch on location (e.g. `/to-sort`, `/.incoming`).
+in, so handlers can branch on location (e.g. `/to-sort`, `/.backends`).
 
 `agent(slug, prompt)` prompts one of your agents and returns its text reply.
 

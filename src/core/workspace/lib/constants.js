@@ -37,6 +37,9 @@ const WORKSPACE_DATA_BACKENDS = {
         resync: true,
         indexIncoming: true,
         incomingPathMode: 'sourceDirectories',
+        // readOnly: true blocks byte-deletion on the backend (Destroy degrades
+        // to reference-drop) even when the driver itself supports delete.
+        readOnly: false,
     },
     // Local content-addressable blob store (cacache). The default managed data
     // target for users without an external object store: dump blobs, care only
@@ -51,6 +54,7 @@ const WORKSPACE_DATA_BACKENDS = {
         watch: false,
         resync: false,
         indexIncoming: false,
+        readOnly: false,
     },
     'stored.cache': {
         enabled: true,

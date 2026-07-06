@@ -23,6 +23,7 @@ describe('WorkspaceStoredIndex', () => {
     let index;
     let documents;
     let documentPaths;
+    let lockCalls;
 
     beforeEach(async () => {
         rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'workspace-index-'));
@@ -30,6 +31,7 @@ describe('WorkspaceStoredIndex', () => {
         await fs.writeFile(path.join(rootPath, 'home', 'nested', 'a.txt'), 'hello');
         documents = new Map();
         documentPaths = new Map();
+        lockCalls = [];
     });
 
     afterEach(async () => {
@@ -47,7 +49,10 @@ describe('WorkspaceStoredIndex', () => {
             async list({ directory }) {
                 return [...documents.values()].filter((doc) => (documentPaths.get(doc.id) || []).some((p) => p.startsWith(directory)));
             },
-            async listDocumentTreePaths(id) {
+            async listDocumentTreePaths(id, treeNameOrId) {
+                // Regression: stale-path cleanup must query the 'directory' tree
+                // (the legacy 'incoming' tree name silently resolved to nothing).
+                assert.equal(treeNameOrId, 'directory');
                 return documentPaths.get(id) || [];
             },
             async delete(id) {
@@ -65,7 +70,9 @@ describe('WorkspaceStoredIndex', () => {
             dataBackends: WORKSPACE_DATA_BACKENDS,
             logger: { warn() {}, debug() {} },
             getDb: () => db,
-            getIncomingTreeSelector: (pathSpec) => pathSpec,
+            getBackendsTreeSelector: (pathSpec) => pathSpec,
+            lockBackendNode: (nodePath, holder) => { lockCalls.push({ nodePath, holder, locked: true }); },
+            unlockBackendNode: (nodePath, holder) => { lockCalls.push({ nodePath, holder, locked: false }); },
             unlink: async (id, { directory }) => {
                 documentPaths.set(id, (documentPaths.get(id) || []).filter((p) => p !== directory));
             },
@@ -79,7 +86,7 @@ describe('WorkspaceStoredIndex', () => {
         });
     }
 
-    test('resync indexes watched home files into the incoming tree', async () => {
+    test('resync indexes watched home files into the /.backends tree', async () => {
         index = createIndex();
         await index.start();
 
@@ -90,9 +97,11 @@ describe('WorkspaceStoredIndex', () => {
         const [doc] = documents.values();
         assert.deepEqual(doc.data, {});
         assert.deepEqual(doc.locations, [{ url: 'stored://workspace:home/nested/a.txt' }]);
-        assert.deepEqual(documentPaths.get(doc.id), ['/.incoming/workspace/home/nested']);
+        assert.deepEqual(documentPaths.get(doc.id), ['/.backends/file/workspace:home/nested']);
         assert.equal(index.getBackendStatus('workspace:home').running, true);
         assert.ok(index.getBackendStatus('workspace:home').lastScanAt);
+        // Enable-lock applied to the backend mirror node on start
+        assert.ok(lockCalls.some((c) => c.locked && c.nodePath === '/.backends/file/workspace:home' && c.holder === 'workspace:home'));
     });
 
     test('resync purges docs whose only location was deleted', async () => {
@@ -108,7 +117,7 @@ describe('WorkspaceStoredIndex', () => {
         assert.equal(documentPaths.get(doc.id), undefined);
     });
 
-    test('resync updates incoming paths when a home file moves', async () => {
+    test('resync updates backend paths when a home file moves', async () => {
         index = createIndex();
         await index.start();
         await index.resync('workspace:home');
@@ -119,7 +128,7 @@ describe('WorkspaceStoredIndex', () => {
         await index.resync('workspace:home');
 
         assert.equal(documents.size, 1);
-        assert.deepEqual(documentPaths.get(doc.id), ['/.incoming/workspace/home/renamed']);
+        assert.deepEqual(documentPaths.get(doc.id), ['/.backends/file/workspace:home/renamed']);
         assert.deepEqual([...documents.values()][0].locations, [
             { url: 'stored://workspace:home/renamed/a.txt' },
         ]);

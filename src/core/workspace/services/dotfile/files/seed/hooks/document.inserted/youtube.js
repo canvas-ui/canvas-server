@@ -5,7 +5,7 @@ import path from 'node:path';
 // Example: when a YouTube link is indexed, download it with yt-dlp into
 // home/Videos. The script writes a hidden `.<file>.metadata.json` sidecar
 // listing the virtual paths the resulting file should be linked to; once the
-// download lands in .incoming, incoming-metadata-linker.js does the linking.
+// download lands in /.backends, incoming-metadata-linker.js does the linking.
 const YOUTUBE_RE = /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/shorts\/)/i;
 
 export default async function run({ payload, workspace, logger }) {

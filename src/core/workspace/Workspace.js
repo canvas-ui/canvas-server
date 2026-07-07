@@ -1350,19 +1350,92 @@ class Workspace extends EventEmitter {
         return (await this.#mail()).syncMailbox(container.mailboxId);
     }
 
-    // Subscribe folders on an imap account (creates per-folder mailboxes).
+    // Add containers: imap → subscribe folders (per-folder mailboxes); file →
+    // create real directories under the backend root (each folder is a relative
+    // path key like "docs" or "docs/2024").
     async addBackendContainers(driver, address, folders = []) {
-        if (driver !== 'imap') throw new Error(`Backend "${driver}/${address}" has no containers`);
-        const [primary] = await this.#imapAccountMailboxes(address);
-        if (!primary) throw new Error(`No IMAP mailbox for account "${address}"`);
-        return this.subscribeImapFolders(primary.id, folders);
+        if (driver === 'imap') {
+            const [primary] = await this.#imapAccountMailboxes(address);
+            if (!primary) throw new Error(`No IMAP mailbox for account "${address}"`);
+            return this.subscribeImapFolders(primary.id, folders);
+        }
+        if (driver === 'file') {
+            const created = [];
+            for (const folder of folders) created.push(await this.createBackendFolder(driver, address, folder));
+            return created;
+        }
+        throw new Error(`Backend "${driver}/${address}" has no containers`);
     }
 
     async removeBackendContainer(driver, address, name) {
-        if (driver !== 'imap') throw new Error(`Backend "${driver}/${address}" has no containers`);
-        const target = (await this.#imapAccountMailboxes(address)).find((m) => (m.folder || 'INBOX') === name);
-        if (!target) throw new Error(`Container "${name}" not found on imap/${address}`);
-        return this.removeImapMailbox(target.id);
+        if (driver === 'imap') {
+            const target = (await this.#imapAccountMailboxes(address)).find((m) => (m.folder || 'INBOX') === name);
+            if (!target) throw new Error(`Container "${name}" not found on imap/${address}`);
+            return this.removeImapMailbox(target.id);
+        }
+        if (driver === 'file') return this.deleteBackendFolder(driver, address, name);
+        throw new Error(`Backend "${driver}/${address}" has no containers`);
+    }
+
+    // ── File-backend folder ops ───────────────────────────────────────────────
+    // Fs op runs on the (writable) file driver; the directory-tree mirror is
+    // updated here so empty folders are visible (docs alone would never surface
+    // an empty dir — the watcher only sees file events). Folder "name" is a
+    // relative path key under the backend root.
+    #backendFolderKey(name) {
+        const key = String(name || '').replace(/^\/+|\/+$/g, '').replace(/\/+/g, '/');
+        if (!key || key.split('/').some((seg) => seg === '..' || seg === '.')) {
+            throw new Error(`Invalid folder name: ${name}`);
+        }
+        return key;
+    }
+
+    async #directoryTreeForBackends() {
+        if (!this.#storedIndex?.isRunning) await this.#startStoredIndex();
+        return this.getDirectoryTree(Workspace.DIRECTORY_TREE_NAME);
+    }
+
+    async createBackendFolder(driver, address, name) {
+        if (driver !== 'file') throw new Error(`Driver "${driver}" has no mutable folders`);
+        const key = this.#backendFolderKey(name);
+        const tree = await this.#directoryTreeForBackends();
+        await this.#storedIndex.createBackendContainer(address, key);
+        const root = this.#storedIndex.getBackendTreeRoot(address);
+        if (root) await tree.insertPath(`${root}/${key}`, { ignoreLocks: true });
+        return { driver, address, folder: key };
+    }
+
+    async deleteBackendFolder(driver, address, name) {
+        if (driver !== 'file') throw new Error(`Driver "${driver}" has no mutable folders`);
+        const key = this.#backendFolderKey(name);
+        const tree = await this.#directoryTreeForBackends();
+        // rm -rf on disk removes the files → the watcher drops their docs; the
+        // structural tree node is removed here (it survives empty otherwise).
+        await this.#storedIndex.deleteBackendContainer(address, key);
+        const root = this.#storedIndex.getBackendTreeRoot(address);
+        if (root) await tree.removePath(`${root}/${key}`, true).catch(() => {});
+        return { driver, address, folder: key, removed: true };
+    }
+
+    async renameBackendFolder(driver, address, fromName, toName) {
+        if (driver !== 'file') throw new Error(`Driver "${driver}" has no mutable folders`);
+        const fromKey = this.#backendFolderKey(fromName);
+        const toKey = this.#backendFolderKey(toName);
+        const tree = await this.#directoryTreeForBackends();
+        // fs move relocates the bytes; the watcher re-files contained docs under
+        // the new path (checksum-deduped). movePath keeps the structural node in
+        // sync immediately (and carries empty folders the watcher can't see).
+        await this.#storedIndex.renameBackendContainer(address, fromKey, toKey);
+        const root = this.#storedIndex.getBackendTreeRoot(address);
+        if (root) {
+            // movePath asserts mutability with no ignoreLocks escape under the
+            // locked /.backends root, so mirror the move as remove-old +
+            // insert-new (same pattern as create/delete). The watcher re-files
+            // the contained docs under the new path.
+            await tree.removePath(`${root}/${fromKey}`, true).catch(() => {});
+            await tree.insertPath(`${root}/${toKey}`, { ignoreLocks: true });
+        }
+        return { driver, address, from: fromKey, to: toKey };
     }
 
     // Pre-create folder discovery — probe a connector with candidate creds

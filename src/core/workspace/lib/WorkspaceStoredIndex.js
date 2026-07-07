@@ -159,6 +159,36 @@ export class WorkspaceStoredIndex {
         if (!this.#stored.getBackend(backendName)) throw new Error(`Data backend "${backendName}" is not registered`);
     }
 
+    // ── Container (folder) mutation on a writable file backend ────────────────
+    // The backend does the fs op; the Workspace facade updates the tree mirror.
+    // The mirror tree root for a backend (/.backends/<driver>/<address>).
+    getBackendTreeRoot(backendName) {
+        return this.#getBackendRootPath(backendName);
+    }
+
+    #mutableFileBackend(backendName) {
+        const config = this.#dataBackends[backendName];
+        if (!config) throw new Error(`Unknown data backend: ${backendName}`);
+        if (config.driver !== 'file') throw new Error(`Backend "${backendName}" has no mutable folders`);
+        if (config.readOnly === true) throw new Error(`Backend "${backendName}" is read-only`);
+        if (!this.#stored) throw new Error('WorkspaceStoredIndex is not running');
+        const backend = this.#stored.getBackend(backendName);
+        if (!backend) throw new Error(`Data backend "${backendName}" is not registered`);
+        return backend;
+    }
+
+    async createBackendContainer(backendName, key) {
+        return this.#mutableFileBackend(backendName).createContainer(key);
+    }
+
+    async deleteBackendContainer(backendName, key) {
+        return this.#mutableFileBackend(backendName).deleteContainer(key);
+    }
+
+    async renameBackendContainer(backendName, fromKey, toKey) {
+        return this.#mutableFileBackend(backendName).renameContainer(fromKey, toKey);
+    }
+
     /**
      * Launch a resync without blocking the caller. Validation errors are thrown
      * synchronously; the (potentially slow) scan runs in the background and its

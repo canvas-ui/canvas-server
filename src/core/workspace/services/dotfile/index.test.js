@@ -60,4 +60,31 @@ describe('DotfileManager seed backfill', () => {
         // Others still arrive.
         assert.ok(fs.existsSync(path.join(hookDir, 'example-arxiv-summarizer.js')));
     });
+
+    test('refreshes a stale hooks/README.md in place (docs only, hooks untouched)', async () => {
+        const hooksDir = path.join(rootPath, 'git', 'hooks');
+        fs.mkdirSync(path.join(hooksDir, 'document.inserted'), { recursive: true });
+        fs.writeFileSync(path.join(hooksDir, 'README.md'), '# old docs\n');
+        fs.writeFileSync(path.join(hooksDir, 'document.inserted', 'youtube-downloader.js'), '// user version');
+
+        const { added } = await manager.backfillSeed(workspace);
+
+        // README replaced with the shipped copy…
+        assert.ok(added.includes(path.join('hooks', 'README.md')));
+        const readme = fs.readFileSync(path.join(hooksDir, 'README.md'), 'utf8');
+        assert.ok(readme.includes('Execution model'), 'shipped README content present');
+        // …while user hooks are never overwritten.
+        assert.equal(
+            fs.readFileSync(path.join(hooksDir, 'document.inserted', 'youtube-downloader.js'), 'utf8'),
+            '// user version',
+        );
+    });
+
+    test('README refresh is a no-op when content already matches', async () => {
+        await manager.backfillSeed(workspace);
+        // New manager instance to reset the once-per-process guard.
+        const manager2 = new DotfileManager({ workspaceManager: { getWorkspace: async () => workspace } });
+        const { added } = await manager2.backfillSeed(workspace);
+        assert.ok(!added.includes(path.join('hooks', 'README.md')));
+    });
 });

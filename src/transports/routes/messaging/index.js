@@ -64,6 +64,28 @@ export default async function messagingRoutes(fastify, _options) {
         }
     });
 
+    // Recent in-app notifications (canvas adapter ring buffer) — populates the
+    // UI notifications area on load; live updates arrive over ws 'notification'.
+    fastify.get('/notifications', {
+        onRequest: [fastify.authenticate],
+    }, async (request, reply) => {
+        if (!requireUser(request, reply) || !requireMessaging(reply)) return;
+        const adapter = fastify.messaging.getAdapter?.('canvas');
+        const notifications = adapter?.list?.(request.user.id) || [];
+        const r = new ResponseObject().found(notifications, 'Notifications retrieved', 200, notifications.length);
+        return reply.code(r.statusCode).send(r.getResponse());
+    });
+
+    fastify.delete('/notifications', {
+        onRequest: [fastify.authenticate],
+        preHandler: [rejectAgentTokens],
+    }, async (request, reply) => {
+        if (!requireUser(request, reply) || !requireMessaging(reply)) return;
+        fastify.messaging.getAdapter?.('canvas')?.clear?.(request.user.id);
+        const r = new ResponseObject().success(true, 'Notifications cleared');
+        return reply.code(r.statusCode).send(r.getResponse());
+    });
+
     fastify.get('/bindings', {
         onRequest: [fastify.authenticate],
         preHandler: [rejectAgentTokens],

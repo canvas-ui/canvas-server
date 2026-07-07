@@ -68,8 +68,8 @@ Hooks, rules and scripts live in a per-workspace **git repository**, editable
 from the web UI/CLI or by cloning it directly:
 
 ```bash
-# username: anything, password: a canvas API token
-git clone https://your-canvas-server/rest/v2/workspaces/<workspace-id>/git my-workspace
+# basic auth: any non-empty username (git requires one), password: a canvas API token
+git clone https://canvas@your-canvas-server/rest/v2/workspaces/<workspace-id>/git my-workspace
 # edit hooks/ and scripts/, then push — the server redeploys and hot-reloads
 ```
 

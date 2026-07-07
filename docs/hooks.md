@@ -91,7 +91,7 @@ A handler exports a default async function receiving one context object:
 | `classify` | document classifier, see below |
 | `insert`, `update`, `remove`, `deleteDocument`, `get`, `list`, `find`, `link` | document CRUD on the workspace |
 | `agent(slug, prompt, opts)` | prompt one of your agents, returns its text reply (null on failure) |
-| `notify(message, { channel? })` | message the workspace owner (Slack/WhatsApp/default) |
+| `notify(message, { channel? })` | message the workspace owner — bound channel (Slack/WhatsApp/…) or, unbound, the in-app `canvas` channel (web-UI toast + toolbox notifications area, buffered server-side) |
 | `emit(name, payload)` | re-emit a workspace event (stamped `source:'hook'`) |
 | `logger` | debug logger |
 
@@ -171,7 +171,9 @@ Executed sequentially; an action error is logged and the rest continue.
 
 String fields in `agent.prompt`, `notify.message` and `script.args` support
 `{{path}}` templates over `{ doc, payload, event, workspace: { id, name } }`,
-e.g. `{{doc.data.subject}}`. Missing paths render empty.
+e.g. `{{doc.data.subject}}`, `{{doc.data.body}}` / `{{doc.data.bodyHtml}}`
+(emails). Any document path works; objects/arrays such as `{{doc.locations}}`
+are inserted as JSON. Missing paths render empty.
 
 ## Loop prevention — and one pitfall
 
@@ -210,8 +212,9 @@ e.g. `{{doc.data.subject}}`. Missing paths render empty.
   `git/scripts/` (the helpers hooks spawn); PUT chmods `0755` and commits.
   The webui hooks panel has a Hooks | Scripts switch covering both.
 - Git: the whole thing is a per-workspace git repo, served over HTTP at
-  `https://<server>/rest/v2/workspaces/:id/git` (basic auth: any username,
-  password = a canvas API token). `git clone` it, edit `hooks/` + `scripts/`,
+  `https://canvas@<server>/rest/v2/workspaces/:id/git` (basic auth: any
+  non-empty username — git requires one, so embed it in the URL — password =
+  a canvas API token). `git clone` it, edit `hooks/` + `scripts/`,
   push — the server force-checkouts on receive and hooks hot-reload.
 - CLI: `canvas ws hooks list|get|set|edit|push|clone|delete`.
 - Seeds: every example ships disabled with an `example-` prefix — the pairs

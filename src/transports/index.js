@@ -302,6 +302,11 @@ export async function createServer(options = {}) {
   // Setup WebSocket handlers
   setupWebSocketHandlers(server);
 
+  // Late-bind the in-app notification adapter to the ws broadcast helper —
+  // Messaging is constructed before transports, so the adapter buffers until
+  // this point and pushes live from here on.
+  options.messaging?.getAdapter?.('canvas')?.setBroadcast?.(server.broadcastToUser);
+
   // Context events are forwarded via the wildcard listener in websocket/channels/context.js
   // No additional listeners needed here (would cause duplicate delivery)
 

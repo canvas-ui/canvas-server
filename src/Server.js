@@ -31,6 +31,7 @@ import Voice from './services/voice/src/index.js';
 import Messaging from './services/messaging/src/index.js';
 import ChatRouter from './services/messaging/src/router.js';
 import ConsoleAdapter from './services/messaging/src/adapters/console.js';
+import CanvasAdapter from './services/messaging/src/adapters/canvas.js';
 import SlackAdapter from './services/messaging/src/adapters/slack.js';
 import WhatsAppAdapter from './services/messaging/src/adapters/whatsapp.js';
 
@@ -286,7 +287,12 @@ class Server extends EventEmitter {
         if (env.messaging.enabled) {
             const messagingLogger = createLogger('messaging');
             const bindingsStore = jim.createIndex('messaging');
-            const adapters = [new ConsoleAdapter({ logger: messagingLogger })];
+            // canvas = in-app (websocket -> UI notifications area); the transport
+            // layer late-binds its broadcast function once websockets are up.
+            const adapters = [
+                new ConsoleAdapter({ logger: messagingLogger }),
+                new CanvasAdapter({ logger: messagingLogger }),
+            ];
             if (env.messaging.slack.botToken) {
                 adapters.push(new SlackAdapter({
                     botToken: env.messaging.slack.botToken,

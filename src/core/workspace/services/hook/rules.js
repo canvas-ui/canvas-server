@@ -138,13 +138,18 @@ export function matchRule(rule, eventName, c) {
 // ── Actions ──────────────────────────────────────────────────────────────────
 
 // Minimal `{{path.to.value}}` interpolation over the action scope. Missing
-// paths resolve to an empty string; non-string values are String()ed. Kept
+// paths resolve to an empty string; objects/arrays (e.g. {{doc.locations}})
+// are JSON-serialized so they survive into agent prompts intact. Kept
 // deliberately dumb so a UI rule builder can round-trip the JSON.
 export function interpolate(template, scope) {
     if (typeof template !== 'string') { return template; }
     return template.replace(/\{\{\s*([\w.[\]]+)\s*\}\}/g, (_, keyPath) => {
         const value = keyPath.split('.').reduce((acc, key) => (acc == null ? undefined : acc[key]), scope);
-        return value == null ? '' : String(value);
+        if (value == null) { return ''; }
+        if (typeof value === 'object') {
+            try { return JSON.stringify(value); } catch { return String(value); }
+        }
+        return String(value);
     });
 }
 

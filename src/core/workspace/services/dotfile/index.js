@@ -14,6 +14,9 @@ import { enabledName } from '../hook/naming.js';
 const logger = createLogger('dotfile-manager');
 const TEMPLATE_DIRNAME = 'files';
 const DEPLOY_PATHSPECS = ['hooks/', 'scripts/'];
+// Seed files that are documentation: backfill refreshes these in place when
+// the shipped copy changed (unlike hooks/scripts, which are never overwritten).
+const DOC_SEED_FILES = new Set([path.join('hooks', 'README.md')]);
 
 function getModuleDir() {
     // fileURLToPath, not URL.pathname: the latter leaves percent-encoding in
@@ -213,6 +216,24 @@ class DotfileManager extends EventEmitter {
             if (existsSync(targetDir)) {
                 const existing = await fsPromises.readdir(targetDir);
                 blocked = existing.some((name) => enabledName(name) === seedName);
+            }
+            // Documentation files are refreshed in place when the shipped copy
+            // changed — the README documents the hook/rules/context API and
+            // must not go stale in long-lived workspaces. The overwrite is a
+            // committed git change, so a user edit stays recoverable.
+            if (blocked && DOC_SEED_FILES.has(relPath)) {
+                const target = path.join(targetDir, seedBase);
+                if (existsSync(target)) {
+                    const [seedContent, targetContent] = await Promise.all([
+                        fsPromises.readFile(path.join(seedRoot, relPath), 'utf8'),
+                        fsPromises.readFile(target, 'utf8'),
+                    ]);
+                    if (seedContent !== targetContent) {
+                        await fsPromises.writeFile(target, seedContent, 'utf8');
+                        added.push(relPath);
+                    }
+                }
+                continue;
             }
             if (blocked) { continue; }
 

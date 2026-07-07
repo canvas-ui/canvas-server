@@ -81,7 +81,8 @@ export class Messaging {
      * @param {string} message
      * @param {Object} [options]
      * @param {string} [options.channel] - adapter name; defaults to the user's
-     *   defaultChannel, then the first bound channel, then console.
+     *   defaultChannel, then the first bound channel, then in-app ('canvas')
+     *   when available, then console.
      * @returns {Promise<{ channel: string, delivered: boolean, detail?: Object }>}
      */
     async notify(userId, message, options = {}) {
@@ -93,13 +94,18 @@ export class Messaging {
         const channel = options.channel
             || bindings.defaultChannel
             || Object.keys(bindings.channels)[0]
+            || (this.#adapters.has('canvas') ? 'canvas' : 'console')
             || 'console';
 
         const adapter = this.#adapters.get(channel);
         if (!adapter) throw new Error(`Messaging channel not available: ${channel}`);
 
-        const recipient = bindings.channels[channel]?.recipient || null;
-        if (!recipient && channel !== 'console') {
+        // Self-delivering channels need no binding: 'canvas' targets the user's
+        // own connected clients (recipient = userId), 'console' just logs.
+        const selfDelivering = channel === 'console' || channel === 'canvas';
+        const recipient = bindings.channels[channel]?.recipient
+            || (selfDelivering ? userId : null);
+        if (!recipient && !selfDelivering) {
             throw new Error(`No ${channel} recipient bound for user ${userId}`);
         }
 

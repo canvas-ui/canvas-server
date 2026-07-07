@@ -153,18 +153,32 @@ export function interpolate(template, scope) {
     });
 }
 
+// A link target is a context-tree path by default; 'ctx:/a/b' is explicit and
+// 'dir:/a/b' targets the directory tree instead.
+function parseLinkTarget(raw) {
+    const value = String(raw || '');
+    if (value.startsWith('dir:')) { return { tree: 'directory', path: value.slice(4) || '/' }; }
+    if (value.startsWith('ctx:')) { return { tree: 'context', path: value.slice(4) || '/' }; }
+    return { tree: 'context', path: value };
+}
+
 const ACTIONS = {
-    // Link the document to context tree paths, optionally with feature tags.
+    // Link the document to tree paths, optionally with feature tags. Paths
+    // default to the context tree; 'dir:/path' targets the directory tree.
     // emitEvent:false so the resulting membership change can't re-trigger rules.
     async link(action, { workspace, doc, logger }) {
         if (!doc?.id) { return; }
-        for (const targetPath of asArray(action.paths || action.path || []).filter(Boolean)) {
+        for (const rawPath of asArray(action.paths || action.path || []).filter(Boolean)) {
+            const target = parseLinkTarget(rawPath);
+            const selector = target.tree === 'directory'
+                ? { directory: target.path }
+                : { context: workspace.getContextTreeSelector(target.path) };
             await workspace.link(doc.id, {
-                context: workspace.getContextTreeSelector(targetPath),
+                ...selector,
                 features: action.tags || [],
                 emitEvent: false,
             });
-            logger.debug(`rule link: ${doc.id} -> ${targetPath}`);
+            logger.debug(`rule link: ${doc.id} -> ${target.tree}:${target.path}`);
         }
     },
 
@@ -179,10 +193,34 @@ const ACTIONS = {
         logger.debug(`rule tag: ${doc.id} += ${tags.join(',')}`);
     },
 
+    // Prompt an agent; optionally consume its reply via action.output:
+    //   { note: { path, title? }, notify: true }
+    // note  -> insert the reply as a note document at path ('dir:' prefix for
+    //          the directory tree); title defaults to the rule description.
+    // notify -> send the reply to the workspace owner.
+    // NOTE: the inserted note emits a normal document.inserted — a rule that
+    // matches its own note (schema note + same path + agent action) loops.
     async agent(action, { context, scope, logger }) {
         if (!action.slug || !action.prompt) { return; }
         const reply = await context.agent(action.slug, interpolate(action.prompt, scope), action.options || {});
         logger.debug(`rule agent(${action.slug}): ${reply ? String(reply).slice(0, 120) : 'no reply'}`);
+        if (!reply) { return; }
+
+        const output = action.output && typeof action.output === 'object' ? action.output : null;
+        if (!output) { return; }
+
+        if (output.note && typeof output.note === 'object' && output.note.path) {
+            const target = parseLinkTarget(interpolate(String(output.note.path), scope));
+            const title = interpolate(String(output.note.title || scope.rule?.description || `Agent reply (${action.slug})`), scope);
+            const note = await context.insert(
+                { schema: 'data/abstraction/note', data: { title, content: String(reply) } },
+                target.tree === 'directory' ? { context: null, directory: target.path } : { context: target.path },
+            );
+            logger.debug(`rule agent(${action.slug}): reply saved as note ${note?.id ?? note} at ${target.tree}:${target.path}`);
+        }
+        if (output.notify) {
+            await context.notify(String(reply), typeof output.notify === 'object' && output.notify.channel ? { channel: output.notify.channel } : {});
+        }
     },
 
     async notify(action, { context, scope }) {
@@ -239,6 +277,7 @@ export async function executeRuleActions(rule, context, logger) {
         payload,
         event: eventName,
         workspace: { id: workspace.id, name: workspace.name },
+        rule: { id: rule.id, description: rule.description },
     };
 
     for (const action of rule.then) {

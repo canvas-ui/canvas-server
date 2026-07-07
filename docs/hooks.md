@@ -162,9 +162,9 @@ Executed sequentially; an action error is logged and the rest continue.
 
 | Action | Fields | Effect |
 |---|---|---|
-| `link` | `paths`, `tags?` | link doc to context paths (`emitEvent:false`, loop-safe) |
+| `link` | `paths`, `tags?` | link doc to tree paths (`emitEvent:false`, loop-safe). Paths hit the context tree by default; `dir:/a/b` targets the directory tree, `ctx:/a/b` is explicit |
 | `tag` | `tags` | re-link doc on its own paths with feature tags |
-| `agent` | `slug`, `prompt`, `options?` | prompt an agent |
+| `agent` | `slug`, `prompt`, `options?`, `output?` | prompt an agent; `output: { note: { path, title? }, notify: true }` saves the reply as a note at `path` (`dir:` prefix supported) and/or sends it to the owner. Caution: the inserted note emits a normal `document.inserted` — a rule matching its own note loops |
 | `notify` | `message`, `channel?` | message the workspace owner |
 | `script` | `path`, `args?` | spawn `bash git/<path>` detached; paths outside `git/` rejected |
 | `emit` | `event`, `payload?` | re-emit a workspace event (`source:'hook'`) |

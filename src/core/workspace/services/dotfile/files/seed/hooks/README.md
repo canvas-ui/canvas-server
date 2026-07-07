@@ -120,9 +120,14 @@ Simple match→action automations go into `rules.json` (or files under `rules/`)
 substring or `{equals|contains|startsWith|regex}`; `url` a substring or
 `{host|prefix|contains|regex}`. Every matching rule fires (no first-match-wins).
 Actions: `link`, `tag`, `agent`, `notify`, `script` (path under `git/`),
-`emit`. Strings support `{{doc.data.subject}}`-style templates over
-`{doc, payload, event, workspace}`. Rules only match `document.*` events that
-carry a document (batch fan-out included).
+`emit`. Link paths target the context tree by default; `dir:/a/b` targets the
+directory tree. The `agent` action takes an optional
+`output: { note: { path, title? }, notify: true }` — the agent's reply is
+saved as a note at `path` and/or sent to you (careful: the note emits a normal
+`document.inserted`, so a rule matching its own note loops). Strings support
+`{{doc.data.subject}}`-style templates over `{doc, payload, event, workspace,
+rule}`; objects/arrays like `{{doc.locations}}` are inserted as JSON. Rules
+only match `document.*` events that carry a document (batch fan-out included).
 
 ## Rules of the road
 

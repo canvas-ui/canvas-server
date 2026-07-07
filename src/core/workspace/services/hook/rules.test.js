@@ -129,7 +129,7 @@ describe('rule loading', () => {
 
 describe('rule actions', () => {
     function stubContext(payload) {
-        const calls = { link: [], agent: [], notify: [], emit: [] };
+        const calls = { link: [], agent: [], notify: [], emit: [], insert: [] };
         const workspace = {
             id: 'ws-1',
             name: 'test',
@@ -144,6 +144,7 @@ describe('rule actions', () => {
             agent: async (slug, prompt) => { calls.agent.push({ slug, prompt }); return 'ok'; },
             notify: async (message, options) => calls.notify.push({ message, options }),
             emit: async (event, p) => calls.emit.push({ event, p }),
+            insert: async (document, options) => { calls.insert.push({ document, options }); return { id: 999, ...document }; },
         };
         return { context, calls };
     }
@@ -187,6 +188,49 @@ describe('rule actions', () => {
 
         assert.deepEqual(calls.agent, [{ slug: 'lucy', prompt: 'Check email 102: prod down' }]);
         assert.deepEqual(calls.notify, [{ message: 'mail from boss@corp.com missing !', options: {} }]);
+    });
+
+    test('link action routes dir:-prefixed paths to the directory tree', async () => {
+        const payload = tabPayload('https://x.com');
+        const { context, calls } = stubContext(payload);
+        await executeRuleActions({
+            id: 'r', when: {}, then: [{ action: 'link', paths: ['dir:/projects/dc', 'ctx:/work', '/plain'] }],
+        }, context, noopLogger);
+
+        assert.equal(calls.link.length, 3);
+        assert.equal(calls.link[0].opts.directory, '/projects/dc');
+        assert.equal(calls.link[0].opts.context, undefined);
+        assert.deepEqual(calls.link[1].opts.context, { type: 'context', path: '/work' });
+        assert.deepEqual(calls.link[2].opts.context, { type: 'context', path: '/plain' });
+    });
+
+    test('agent action output saves the reply as a note and notifies', async () => {
+        const payload = emailPayload('boss@corp.com', 'DC migration');
+        const { context, calls } = stubContext(payload);
+        await executeRuleActions({
+            id: 'r', description: 'DC mail summarizer', when: {}, then: [{
+                action: 'agent', slug: 'lucy', prompt: 'Summarize {{doc.data.subject}}',
+                output: { note: { path: '/work/summaries', title: 'Summary: {{doc.data.subject}}' }, notify: true },
+            }],
+        }, context, noopLogger);
+
+        assert.equal(calls.agent.length, 1);
+        assert.equal(calls.insert.length, 1);
+        assert.equal(calls.insert[0].document.schema, 'data/abstraction/note');
+        assert.equal(calls.insert[0].document.data.title, 'Summary: DC migration');
+        assert.equal(calls.insert[0].document.data.content, 'ok');
+        assert.deepEqual(calls.insert[0].options, { context: '/work/summaries' });
+        assert.deepEqual(calls.notify, [{ message: 'ok', options: {} }]);
+    });
+
+    test('agent action without output leaves the reply alone', async () => {
+        const payload = emailPayload('a@b.c', 's');
+        const { context, calls } = stubContext(payload);
+        await executeRuleActions({
+            id: 'r', when: {}, then: [{ action: 'agent', slug: 'lucy', prompt: 'p' }],
+        }, context, noopLogger);
+        assert.equal(calls.insert.length, 0);
+        assert.equal(calls.notify.length, 0);
     });
 
     test('script action refuses paths outside git/', async () => {

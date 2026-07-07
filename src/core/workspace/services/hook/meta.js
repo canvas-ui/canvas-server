@@ -17,6 +17,8 @@ export const HOOK_EVENTS = Object.freeze([
     // Document CRUD — the workhorses
     { name: 'document.inserted', document: true, description: 'A document was indexed/inserted', payload: '{ id, document, context, directory }' },
     { name: 'document.updated', document: true, description: 'A document was updated or re-linked', payload: '{ id, document, context, directory }' },
+    { name: 'document.inserted.batch', document: false, description: 'A batch of documents was inserted in one go (e.g. browser-extension sync)', payload: '{ ids, count, context, directory }' },
+    { name: 'document.updated.batch', document: false, description: 'A batch of documents was updated in one go', payload: '{ ids, count, context, directory }' },
     { name: 'document.removed', document: false, description: 'A document was unlinked from paths', payload: '{ id | ids }' },
     { name: 'document.deleted', document: false, description: 'A document was hard-deleted', payload: '{ id | ids }' },
     { name: 'document.removed.batch', document: false, description: 'Bulk unlink (single event for the batch)', payload: '{ ids }' },

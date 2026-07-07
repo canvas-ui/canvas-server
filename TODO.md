@@ -11,7 +11,7 @@ Lets update our current webui @src/ui/web as follows:
 - Workspace name should pre prepended with the workspace icon, tab should have a bottom border of the color of the workspace or layer
 
 ### Contexts
-- Load icon + color from bound path, default to icon + color of a bound workspace
+- Load icon + color from bound path, defaults/fallbacks to icon + color of the bound workspace
 
 ## Workspace Hooks
 
@@ -46,8 +46,7 @@ I bind my "Lucy" secretary agents to my "mbag" context. Switching my context url
 
 I'd try to do as much of the logic with code, clasifier can have isText(), isImage(), isBlob(), isPdf(), isWebsite or isLink() etc methods (not sure whether to implement this on the Workspace layer or within synapsd, since this is related to the actual data I'd say stored or workspace, we'd just store whatever data we need in the db but open to suggestions here)
 
-
-
+---
 
 Lets extend our pi-mono based agent pipeline, we could (continue to) use pi-mono because of the somehow well-tested ecosystem but I'm open to suggestions given the requirements
 - Agents should be self-contained, they will eventually run in their own containers
@@ -98,7 +97,7 @@ MVP deployment has to happen before **30.06.2026**!
   - [x] Browser tabs
   - [ ] (optional) Dotfile
 
-- [ ] Workspace hooks
+- [x] Workspace hooks
 - [ ] Agent runtime
 
 
@@ -109,36 +108,6 @@ Lets not reinvent the wheel and re-use an existing framework that can seamlessly
 - https://developers.googleblog.com/introducing-a2ui-an-open-project-for-agent-driven-interfaces/
 - https://github.com/ag-ui-protocol/ag-ui
 - https://www.copilotkit.ai/
-
-### Widgets/Applets
-
-- Central component for the "Canvas" and "Toolbox" elements
-- Widgets are self-contained, they can show a clock, video or audio player, a list of recent emails or messages with a specific filter or a list of recently added files or notes or direct messages from your agents
-- Widgets can write or update documents or trigger actions(lets say to add a note or quick-reply to a message - chat, email or agent)
-- Widgets should be movable and resizeable metro-ui style with a default, minimum and (optional) maximum size configuration, api  should also support auto-resize on screen change(if widgets implement it)
-- Widgets should support placement on a Canvas(canvas-server Canvas), Toolbox or both
-- Widgets need to store their configuration
-  - Each Canvas and Context object has a metadata section, we can store the canvas layout information in metadata.ui.layout and specific canvas widget configuration in metadata.ui.applets (or .widgets) .widget-name {}
-- Widgets need to be controllable by agents - "Lucy, show me yesterdays emails related to the migration project on my tv canvas" 
-
-### Toolbox
-
-- Has a global section that contains widgets that are always visible, and a contextualized section that only shows elements related to the current bound/selected context OR chosen/selected canvas
-- Good place to store data may be in canvas.metadata.ui.toolbox or context.metadata.ui.toolbox 
-
-## Phase #5
-- WebUI should have a "Pinned" section next to Context/Directory tree and Lyers. It should be a nice list of "pinned" folder shortcuts with folder names pointing to any of the 2 supported trees. This seems like a UI/App concern even though we'll rely on that feature in our tauri/electron UIs/desktop overlays too. OK, might not be, maybe we should implement it on the DB level or probably better in the workspace as pinned paths. Not sure whether pinning of a path should lock it or whether we'd just return some "Path not found" error if a pinned path changes. Internally a pinned "DC-Migration" layer points to /work/customer-foo/projects/DC-Migration so behaviour would be exactly the same as when traversing the full path. Having multiple pinned layers with the same name is allowed - its a user-concern to mitigate this.
-
-
-- Copy/Cut-Paste in layer view (selecting a specific layer > copy > selecting layer B > paste) always uses "/", we should support copy-paste between layers too
-- .backends tree mirrors the backend layout (/.backends/<driver>/<resource-address>/<resource-path>) and is immutable but we should still allow removing data within that tree from the backend(s). DONE server-side: DELETE tree path with ?destroy=true (rw backends only, per-backend readOnly config flag, enable-locked backend nodes return 409). Still pending: 
-In general, we need to design a backend removal dialog with tick boxes for each backend, which will require a stored queue(persistent) since some backends may take time.
-- Removing a object from all its backens will also wipe it from the DB
-- .backends tree should show a "Sync" button for each backend or directory, so that users can trigger a refresh (and sync all newly coppied or renamed files for example)
-- .backends tree should not have a import option nor 
-
-View
-/workspaces
 
 ## canvas-edge
 
@@ -218,18 +187,6 @@ We should support resolving all those resources by name (workspace "universe" is
   - `Agent queries`
     - ?agent=foo&agent_query=bar
     - /rest/v2/contexts/default?agent=lucy&agent_query="any new emails from nvidia"
-
-## Agents
-
-Agents should be running as self-contained docker containers but for now, we'll implement them the same way as we workspaces
-
-### Memory
-
-### Folder structure
-
--
-- connectors
-
 
 
 ## Workspaces

@@ -164,6 +164,30 @@ describe('HookService declarative rules', () => {
         assert.deepEqual(linkCalls[1].opts.context, { type: 'context', path: '/elsewhere' });
     });
 
+    test('document.inserted.batch dispatches to hooks in its event directory', async () => {
+        const hookDir = path.join(workspace.hooksPath, 'document.inserted.batch');
+        fs.mkdirSync(hookDir, { recursive: true });
+        const resultFile = path.join(rootPath, 'batch-result.json');
+        fs.writeFileSync(path.join(hookDir, 'probe.js'), `
+import fs from 'node:fs';
+export default async function hook({ payload, classify }) {
+    fs.writeFileSync(${JSON.stringify(resultFile)}, JSON.stringify({
+        ids: payload?.ids, inToSort: classify(payload).inPath('/to-sort'),
+    }));
+}
+`);
+        workspace.emit('document.inserted.batch', {
+            ids: [1, 2, 3],
+            count: 3,
+            context: { paths: ['/to-sort'] },
+            source: 'db',
+        });
+        await new Promise(resolve => setTimeout(resolve, 60));
+
+        const result = JSON.parse(fs.readFileSync(resultFile, 'utf8'));
+        assert.deepEqual(result, { ids: [1, 2, 3], inToSort: true });
+    });
+
     test('hook context exposes classify()', async () => {
         const hookDir = path.join(workspace.hooksPath, 'document.inserted');
         fs.mkdirSync(hookDir, { recursive: true });

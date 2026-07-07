@@ -89,8 +89,9 @@ Shipped examples (all disabled): `youtube-downloader` + `incoming-metadata-linke
 (pair: download videos, link the file), `pinterest-downloader` +
 `image-categorizer` (pair: fetch pinned images, vision agent sorts them from
 /to-sort), `email-linker`, `to-sort-categorizer`, `ticket-notify`,
-`arxiv-summarizer`, `image-url-downloader`, plus `example-rules.json`.
-Pairs need both halves enabled.
+`arxiv-summarizer`, `image-url-downloader`, `batch-tab-sorter` (on
+`document.inserted.batch` — one run per browser-extension sync batch), plus
+`example-rules.json`. Pairs need both halves enabled.
 
 ## Debounce
 
@@ -102,3 +103,10 @@ sync instead of once per document when the app inserts singletons.
 
 Edit hooks from the workspace settings UI or by `git push` to the workspace
 repo. Saving from the UI commits the change; a push redeploys and hot-reloads.
+
+The repo (hooks/, scripts/, dotfiles) is served over HTTP:
+
+```bash
+# username: anything, password: a canvas API token
+git clone https://<canvas-server>/rest/v2/workspaces/<workspace-id>/git
+```

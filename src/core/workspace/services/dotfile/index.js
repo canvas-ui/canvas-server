@@ -238,6 +238,12 @@ class DotfileManager extends EventEmitter {
         return this.#repo(workspace).commitWorkTree('hooks/', message);
     }
 
+    // Same persistence contract for git/scripts (the helpers hooks spawn).
+    async commitScripts(workspaceIdOrObject, message = 'Update workspace scripts', requestingUserId) {
+        const workspace = await this.#resolveWorkspace(workspaceIdOrObject, requestingUserId);
+        return this.#repo(workspace).commitWorkTree('scripts/', message);
+    }
+
     async getRepositoryStatus(userId, workspaceIdOrObject, requestingUserId) {
         const workspace = await this.#resolveWorkspace(workspaceIdOrObject, requestingUserId);
         const repo = this.#repo(workspace);

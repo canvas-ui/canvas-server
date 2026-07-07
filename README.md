@@ -56,6 +56,35 @@ Index:        SynapsD (LMDB + roaring bitmaps, context/directory trees)
 
 Each workspace owns a StoreD instance. The home directory is just a file backend (`{ driver: 'file', root: './home', watch: true }`). Future backends (S3, SMB) sync via background worker threads.
 
+## Workspace hooks & per-workspace git
+
+Every workspace ships a user-owned automation layer: JS hooks and declarative
+`rules.json` rules that fire on workspace events (document indexed, batch
+synced, email arrived), plus the shell scripts they spawn. See the
+**[Workspace Hooks guide](docs/hooks.md)** for the event catalog, hook context
+API, classifier, rules format and shipped examples.
+
+Hooks, rules and scripts live in a per-workspace **git repository**, editable
+from the web UI/CLI or by cloning it directly:
+
+```bash
+# username: anything, password: a canvas API token
+git clone https://your-canvas-server/rest/v2/workspaces/<workspace-id>/git my-workspace
+# edit hooks/ and scripts/, then push — the server redeploys and hot-reloads
+```
+
+The same repo carries your dotfiles (see the dotfile routes under
+`/rest/v2/workspaces/:id/dotfiles`).
+
+## Documentation
+
+- [API Documentation](docs/API.md)
+- [Workspace Hooks](docs/hooks.md) — events, hook context, declarative rules, examples
+- [Authentication Guide](docs/auth.md)
+- [Security](docs/SECURITY.md)
+- [Client data-layout spec](docs/client-spec.md)
+- [Web UI frontend](src/ui/web/README.md) — bundled React frontend (standalone deployment, screenshots)
+
 ## REST + Websocket transports
 
 - [API Documentation](docs/API.md)

@@ -28,6 +28,7 @@ Hooks receive the canonical synapsd events re-emitted on the workspace
 |---|---|
 | `document.inserted` | `id`, `document` (full parsed doc), `context`, `directory` |
 | `document.updated` | same |
+| `document.inserted.batch` / `document.updated.batch` | `{ ids, count, context, directory }` — one event per bulk op (e.g. browser-extension tab sync); fetch docs via `get(id)` + `classify(doc)`. The singular event also fires once with `{ ids, batch: true }` for older consumers. |
 | `document.removed` / `document.deleted` (+ `.batch`) | ids |
 | `tree.path.inserted/moved/copied/removed/locked/unlocked` | `{ path, treeId }` |
 | `tree.created/renamed/deleted`, `tree.document.*` | tree/doc ids |
@@ -182,12 +183,21 @@ e.g. `{{doc.data.subject}}`. Missing paths render empty.
   (`src/transports/routes/workspaces/hooks.js`) — accepts `{event}.js`,
   `{event}/{name}.js`, `lib/*.js`, `rules.json`, `rules/*.json` (inactive
   prefixes allowed). Writes are git-committed.
+- Scripts: `GET/PUT/DELETE /rest/v2/workspaces/:id/scripts/*`
+  (`src/transports/routes/workspaces/scripts.js`) — same contract for
+  `git/scripts/` (the helpers hooks spawn); PUT chmods `0755` and commits.
+  The webui hooks panel has a Hooks | Scripts switch covering both.
+- Git: the whole thing is a per-workspace git repo, served over HTTP at
+  `https://<server>/rest/v2/workspaces/:id/git` (basic auth: any username,
+  password = a canvas API token). `git clone` it, edit `hooks/` + `scripts/`,
+  push — the server force-checkouts on receive and hooks hot-reload.
 - CLI: `canvas ws hooks list|get|set|edit|push|clone|delete`.
 - Seeds: every example ships disabled with an `example-` prefix — the pairs
   `youtube-downloader`+`incoming-metadata-linker` and `pinterest-downloader`+
   `image-categorizer` (vision agent sorts images out of /to-sort), plus
   `email-linker`, `to-sort-categorizer`, `ticket-notify`, `arxiv-summarizer`,
-  `image-url-downloader`, `api-reference` and `example-rules.json`
+  `image-url-downloader`, `batch-tab-sorter` (`document.inserted.batch` —
+  browser-extension batch sync), `api-reference` and `example-rules.json`
   (`src/core/workspace/services/dotfile/files/seed/hooks/`).
 - Backfill: seeding normally happens only when the workspace git repo is first
   initialized. `DotfileManager.backfillSeed` copies examples a workspace is

@@ -130,6 +130,10 @@ export default async function workspaceRoutes(fastify, options) {
     prefix: '/:id/hooks',
     onRequest: [resolveWorkspaceAddress]
   });
+  fastify.register(import('./scripts.js'), {
+    prefix: '/:id/scripts',
+    onRequest: [resolveWorkspaceAddress]
+  });
   fastify.register(import('./devices.js'), {
     prefix: '/:id/devices',
     onRequest: [resolveWorkspaceAddress]

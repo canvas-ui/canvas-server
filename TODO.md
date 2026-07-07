@@ -2,7 +2,7 @@
 
 ## WebUI cosmetics
 
-Lets update our current webui @src/ui/web as follows:
+We **need** to replace those bluish ie6 like document list/document icons with something more colorfull and nicer, people associate those blue links/icons with 200x and since our UI is black-and-white, a color is not some extra but a very important part of the UI => we will introduce more vibrant colors covering larger sections of our buttons and header areas in the near future and use colors as visual cues for our context/directory paths once we start supporting the to-be vertically and horizontally scrollable multi-context multi-focus layout
 
 ### Content
 - (deffered) Content area section should support tabs 
@@ -12,6 +12,8 @@ Lets update our current webui @src/ui/web as follows:
 
 ### Contexts
 - Load icon + color from bound path, defaults/fallbacks to icon + color of the bound workspace
+
+---
 
 ## Workspace Hooks
 
@@ -46,19 +48,11 @@ I bind my "Lucy" secretary agents to my "mbag" context. Switching my context url
 
 I'd try to do as much of the logic with code, clasifier can have isText(), isImage(), isBlob(), isPdf(), isWebsite or isLink() etc methods (not sure whether to implement this on the Workspace layer or within synapsd, since this is related to the actual data I'd say stored or workspace, we'd just store whatever data we need in the db but open to suggestions here)
 
----
+### Agent runtime integration
 
-Lets extend our pi-mono based agent pipeline, we could (continue to) use pi-mono because of the somehow well-tested ecosystem but I'm open to suggestions given the requirements
-- Agents should be self-contained, they will eventually run in their own containers
-- Eventually we'll create a canvas-edge runtime that will be used for docker based (service) roles, agents and workspaces, with injected tokens/configuration and maybe autoregistration to configured canvas-server instances
-- Agents should be assignable to context and workspaces, we should reuse/extend our current ACL model and allow it to lock a agent to a specific workspace or workspace path or context
-- Maybe they can re-use our existing canvas-cli, workspace module(with its git capabilities) and our transports but this is a canvas-edge topic, lets aim for the simplest MVP implementation with the current runtime which runs directly from canvas-server
-- Agent runtime support
-  - Onnx 
-  - Ollama/openAI compatible API
-  - Anthropic
-- WebRTC/speech support, there are many pi-mono speech modules ready to be used (or servers like kokoro or piper), I'd like to be able to send photos and files or talk to an agent directly
-- Whatsapp and slack support, the work here was already done (openclaw and all its 1000+ derivates), lets say I have a agent bound to my work workspace, I should be able to call him and ask whether we had any new emails, agent should be able to use canvas-cli or direct api calls wrapped in SKILLS/tools to query latest ingested emails from canvas. Canvas should be the main interface how agents interract with user data, all user data will be indexed in canvas, user defines what parts an agent should manage(or sets up hooks that trigger agent actions), agent should be able to send a whatsapp notification to a user in a example scenario - user configures a hook in his workspace to watch for emails with email.subject.contains(MSFT-TICKET-1234) - on hit trigger an agent action with "Given the context information in work://projects/foo/bar, check whether we finally got that ticket resolved and notify me if yes"
+SKILLS.md or an MCP surface mirroring canvas-cli for agent access setup is a
+  clean idea: the PUT /agents/:id/access flow is exactly one call, so a skill/tool
+  wrapping "bind agent X to workspace Y path Z" would make hook-triggered agents
 
 --
 
@@ -99,15 +93,6 @@ MVP deployment has to happen before **30.06.2026**!
 
 - [x] Workspace hooks
 - [ ] Agent runtime
-
-
-## Phase #4 - Modular widget/applet systems and Canvas UI
-
-We need to implement a proper, modular, extendible widget/applet system that could be shared between our electron and tauri desktop and android UIs and our main webui. It has to be easily extendible, hence, have a developer-friendly architecture - it should take only a few minutes to create a widget that for example displays a list of recent notes.
-Lets not reinvent the wheel and re-use an existing framework that can seamlessly work with agents - A2UI / AGUI / CopilotKit
-- https://developers.googleblog.com/introducing-a2ui-an-open-project-for-agent-driven-interfaces/
-- https://github.com/ag-ui-protocol/ag-ui
-- https://www.copilotkit.ai/
 
 ## canvas-edge
 

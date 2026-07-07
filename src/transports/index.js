@@ -27,6 +27,7 @@ import contextRoutes from './routes/contexts/index.js';
 import agentRoutes from './routes/agents/index.js';
 import pubRoutes from './routes/pub/index.js';
 import pingRoute from './routes/ping.js';
+import pdfProxyRoutes from './routes/pdf-proxy.js';
 import schemaRoutes from './routes/schemas.js';
 import adminRoutes from './routes/admin/index.js';
 import webdavRoutes from './routes/webdav.js';
@@ -329,6 +330,7 @@ export async function createServer(options = {}) {
   server.register(agentRoutes, { prefix: '/rest/v2/agents' });
   server.register(pubRoutes, { prefix: '/rest/v2/pub' });
   server.register(schemaRoutes, { prefix: '/rest/v2/schemas' });
+  server.register(pdfProxyRoutes, { prefix: '/rest/v2/proxy' });
   server.register(messagingRoutes, { prefix: '/rest/v2/messaging' });
   server.register(messagingWebhookRoutes, { prefix: '/rest/v2/messaging/webhooks' });
   server.register(voiceRoutes, { prefix: '/rest/v2/voice' });

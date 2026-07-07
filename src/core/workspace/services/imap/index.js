@@ -8,7 +8,7 @@ import { simpleParser } from 'mailparser';
 import ImapBackend from './ImapBackend.js';
 import Email from '../../../../services/synapsd/src/schemas/abstractions/Email.js';
 import { parseLocationUrl } from '../../../../services/synapsd/src/utils/path-helpers.js';
-import { getBackendEmailContext, normalizeSegment, BACKENDS_ROOT_CONTEXT } from '../../../../utils/backend-documents.js';
+import { getBackendEmailContext, normalizeSegment, legacyBitmapKey, BACKENDS_ROOT_CONTEXT } from '../../../../utils/backend-documents.js';
 
 /*
  * WorkspaceMailIndex (ImapService)
@@ -36,6 +36,9 @@ const IMAP_BACKEND_PREFIX = 'imap';
 const IMAP_DEFAULT_FOLDER = 'INBOX';
 const IMAP_DEFAULT_POLL_INTERVAL = 60000;
 const IMAP_DEFAULT_INITIAL_SYNC_DAYS = 180;
+// Parallel simpleParser + blob writes per fetch batch. Unbounded concurrency
+// starved the event loop during large initial syncs (server "unavailable").
+const IMAP_INGEST_CONCURRENCY = 4;
 
 export class WorkspaceMailIndex extends EventEmitter {
     #rootPath;
@@ -44,6 +47,7 @@ export class WorkspaceMailIndex extends EventEmitter {
 
     // Injected dependencies
     #put;
+    #putMany;
     #getBackendsTreeSelector;
     #getDb;
     #persistBlob;
@@ -56,7 +60,7 @@ export class WorkspaceMailIndex extends EventEmitter {
     #backends = new Map(); // name -> ImapBackend
     #backendStatus = new Map();
 
-    constructor({ rootPath, workspaceId, logger, put, getBackendsTreeSelector, getDb, persistBlob, lockBackendNode = null, unlockBackendNode = null }) {
+    constructor({ rootPath, workspaceId, logger, put, putMany = null, getBackendsTreeSelector, getDb, persistBlob, lockBackendNode = null, unlockBackendNode = null }) {
         super({ wildcard: true, delimiter: '.', maxListeners: 100 });
         if (!rootPath) throw new Error('rootPath is required');
         if (!put || !getBackendsTreeSelector || !getDb || !persistBlob) {
@@ -66,6 +70,7 @@ export class WorkspaceMailIndex extends EventEmitter {
         this.#workspaceId = workspaceId;
         this.#logger = logger || console;
         this.#put = put;
+        this.#putMany = putMany;
         this.#getBackendsTreeSelector = getBackendsTreeSelector;
         this.#getDb = getDb;
         this.#persistBlob = persistBlob;
@@ -80,6 +85,7 @@ export class WorkspaceMailIndex extends EventEmitter {
         this.#started = true;
         try {
             await this.#registerStoredConfigBackends();
+            await this.#migrateLegacyAccountBitmaps();
             await this.#startStoredConfigSources();
         } catch (error) {
             this.#logger.warn({ workspaceId: this.#workspaceId, error: error.message }, 'IMAP service unavailable');
@@ -108,8 +114,11 @@ export class WorkspaceMailIndex extends EventEmitter {
         backend = new ImapBackend(name, config);
 
         // Awaited ingest — the backend advances its UID cursor only after this
-        // resolves, so a failed index never silently skips a message.
+        // resolves, so a failed index never silently skips a message. Whole
+        // fetch batches land through ingestBatch (bounded parse concurrency +
+        // one putMany per feature group instead of one put per message).
         backend.onMessage = (payload) => this.#onObject(payload);
+        backend.onBatch = (payloads) => this.ingestBatch(payloads);
         backend.on('backend:state', (payload) => this.#persistBackendState(payload));
         backend.on('error', (error) => {
             this.#setBackendError(name, error);
@@ -166,10 +175,9 @@ export class WorkspaceMailIndex extends EventEmitter {
         this.emit('source:state', { source: payload.backend, lastUid: payload.lastUid });
     }
 
-    // Ingest one fetched message into an Email document. Normally driven by an
-    // owned ImapBackend's object:add event (#onObject); also the entry point for
-    // any connector that pushes raw messages.
-    async ingestMessage(payload = {}) {
+    // Parse one fetched message into an Email document + its feature/directory
+    // spec. Shared by the single and batch ingest paths.
+    async #prepareMessage(payload = {}) {
         const { raw, uid, seqno, flags, folder, account } = payload;
         if (!Buffer.isBuffer(raw)) return null;
 
@@ -182,19 +190,102 @@ export class WorkspaceMailIndex extends EventEmitter {
             folderPath: folder,
         });
 
-        const backendContext = getBackendEmailContext('imap', account, folder || 'inbox');
-        const directory = this.#getBackendsTreeSelector(backendContext);
         const features = Email.getFeatureBitmapArray(emailDoc, { mailboxPath: folder });
         // Canonical source-backend tag (observability/selection, not a purge driver).
         // Mirrors WorkspaceStoredIndex#buildFeatures: data/backend/imap/<account>.
         if (account) features.push(`data/backend/imap/${account}`);
-        // Ingested email is filed ONLY under the directory tree's
-        // /.backends/imap/<account>/<folder> — context:null keeps it out of the
-        // context root (no "all emails dumped into /").
-        const docId = await this.#put(emailDoc, { context: null, directory, features, emitEvent: true });
-        emailDoc.id = docId;
+        return { payload, emailDoc, features };
+    }
+
+    // Ingested email is filed ONLY under the directory tree's
+    // /.backends/imap/<account>/<folder> — context:null keeps it out of the
+    // context root (no "all emails dumped into /").
+    #directoryFor(account, folder) {
+        const backendContext = getBackendEmailContext('imap', account, folder || 'inbox');
+        return this.#getBackendsTreeSelector(backendContext);
+    }
+
+    // Ingest one fetched message into an Email document. Entry point for any
+    // connector that pushes single raw messages; the owned ImapBackends land
+    // whole fetch batches through ingestBatch instead.
+    async ingestMessage(payload = {}) {
+        const item = await this.#prepareMessage(payload);
+        if (!item) return null;
+        const { folder, account, uid } = item.payload;
+        const docId = await this.#put(item.emailDoc, {
+            context: null,
+            directory: this.#directoryFor(account, folder),
+            features: item.features,
+            emitEvent: true,
+        });
+        item.emailDoc.id = docId;
         this.emit('object:add', { kind: 'message', docId, source: account, payload: { folder, account, uid } });
         return docId;
+    }
+
+    // Batch ingest for one IMAP fetch batch: parse with bounded concurrency,
+    // then group by folder + feature signature and write each group with a
+    // single putMany (one LMDB tx, one bitmap flush, one Lance batch add,
+    // batch events) instead of one put per message. Falls back to sequential
+    // single puts when no putMany seam is injected.
+    async ingestBatch(payloads = []) {
+        const messages = (payloads || []).filter((p) => p?.kind === 'message' && Buffer.isBuffer(p.raw));
+        if (!messages.length) return [];
+        if (!this.#putMany) {
+            const ids = [];
+            for (const payload of messages) ids.push(await this.ingestMessage(payload));
+            return ids;
+        }
+
+        const prepared = (await this.#mapWithConcurrency(messages, IMAP_INGEST_CONCURRENCY, (p) => this.#prepareMessage(p)))
+            .filter(Boolean);
+
+        // Feature arrays differ only by per-message flags (attachment/flagged),
+        // so a fetch batch collapses into a handful of putMany groups.
+        const groups = new Map();
+        for (const item of prepared) {
+            const { folder, account } = item.payload;
+            const key = `${account}\n${folder || ''}\n${[...item.features].sort().join(',')}`;
+            if (!groups.has(key)) groups.set(key, []);
+            groups.get(key).push(item);
+        }
+
+        const docIds = [];
+        for (const items of groups.values()) {
+            const { folder, account } = items[0].payload;
+            const ids = await this.#putMany(items.map((i) => i.emailDoc), {
+                context: null,
+                directory: this.#directoryFor(account, folder),
+                features: items[0].features,
+            });
+            docIds.push(...ids);
+            // ids align with input unless putMany's in-batch checksum dedup
+            // collapsed identical raw messages — then skip per-uid attribution.
+            const aligned = ids.length === items.length;
+            items.forEach((item, idx) => {
+                const docId = aligned ? ids[idx] : undefined;
+                if (docId != null) item.emailDoc.id = docId;
+                this.emit('object:add', {
+                    kind: 'message', docId, source: account,
+                    payload: { folder, account, uid: item.payload.uid },
+                });
+            });
+        }
+        return docIds;
+    }
+
+    // Order-preserving concurrent map with a fixed worker pool.
+    async #mapWithConcurrency(items, limit, fn) {
+        const results = new Array(items.length);
+        let next = 0;
+        const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+            while (next < items.length) {
+                const idx = next++;
+                results[idx] = await fn(items[idx], idx);
+            }
+        });
+        await Promise.all(workers);
+        return results;
     }
 
     #createChecksum(buffer) {
@@ -364,17 +455,56 @@ export class WorkspaceMailIndex extends EventEmitter {
         }
     }
 
-    // Initial incremental sync, then start the poll loop, for each imap account.
+    // Bitmap keys squashed '@' to '_' before synapsd widened its allowed
+    // charset — merge each account's legacy source tag bitmap
+    // (data/backend/imap/user_domain.tld) into the canonical '@' key.
+    // Idempotent: no-op once migrated or when keys don't differ.
+    async #migrateLegacyAccountBitmaps() {
+        const db = this.#getDb?.();
+        if (typeof db?.migrateBitmapKey !== 'function') return;
+        const accounts = new Set();
+        for (const backend of this.#backends.values()) {
+            const account = backend.config?.account || backend.config?.user;
+            if (account) accounts.add(account);
+        }
+        for (const account of accounts) {
+            const tag = `data/backend/imap/${account}`;
+            try {
+                await db.migrateBitmapKey(legacyBitmapKey(tag), tag);
+            } catch (error) {
+                this.#logger.warn({ workspaceId: this.#workspaceId, account, error: error.message }, 'Legacy imap bitmap key migration failed');
+            }
+        }
+    }
+
+    // Kick the initial incremental sync + poll loop for each imap account.
+    // Syncs run in the background — service start (and the HTTP requests that
+    // trigger it) must never block on a potentially hours-long initial sync.
     async #startStoredConfigSources() {
         for (const [name, backend] of this.#backends) {
+            this.#kickBackendSync(name, backend);
+        }
+    }
+
+    // Run a backend sync in the background: mark it syncing (surfaces as
+    // runtime.status 'syncing'), record errors, and always start the poll
+    // loop afterwards (its exponential backoff owns the retry cadence).
+    #kickBackendSync(name, backend) {
+        const status = this.#backendStatus.get(name) || {};
+        if (status.syncing) return;
+        this.#backendStatus.set(name, { ...status, syncing: true });
+        (async () => {
             try {
                 await this.#syncImapBackend(name, backend);
             } catch (error) {
                 this.#setBackendError(name, error);
-                this.#logger.warn({ workspaceId: this.#workspaceId, backend: name, error: error.message }, 'IMAP initial sync failed');
+                this.#logger.warn({ workspaceId: this.#workspaceId, backend: name, error: error.message }, 'IMAP sync failed');
+            } finally {
+                this.#backendStatus.set(name, { ...(this.#backendStatus.get(name) || {}), syncing: false });
+                // The backend may have been removed (config change) mid-sync.
+                if (this.#backends.get(name) === backend) backend.watch?.();
             }
-            backend.watch?.();
-        }
+        })();
     }
 
     async #syncImapBackend(name, backend) {
@@ -440,7 +570,9 @@ export class WorkspaceMailIndex extends EventEmitter {
     }
 
     #serializeMailbox(id, config) {
-        const backend = this.#getBackend(this.#mailboxName(id));
+        const name = this.#mailboxName(id);
+        const backend = this.#getBackend(name);
+        const syncing = this.#backendStatus.get(name)?.syncing === true;
         return {
             id,
             enabled: config.enabled !== false,
@@ -453,7 +585,8 @@ export class WorkspaceMailIndex extends EventEmitter {
             runtime: {
                 active: !!backend,
                 watching: backend?.watching === true,
-                status: backend ? (backend.watching ? 'running' : 'idle') : 'stopped',
+                syncing,
+                status: syncing ? 'syncing' : (backend ? (backend.watching ? 'running' : 'idle') : 'stopped'),
             },
         };
     }
@@ -478,9 +611,11 @@ export class WorkspaceMailIndex extends EventEmitter {
         const merged = { ...(current || {}), ...input, id };
         if (current && typeof input.password === 'string' && input.password.length === 0) merged.password = current.password;
         // initialSyncDays only governs the first sync (lastUid==0); see
-        // ImapBackend#searchCriteria. If it changed, reset the cursor so the new
-        // window is honored on the next sync (re-ingest dedups).
-        if (current && input.initialSyncDays != null && Number(input.initialSyncDays) !== Number(current.initialSyncDays)) {
+        // ImapBackend#searchCriteria. Reset the cursor only when the window
+        // WIDENED (older mail now wanted) — a same/narrower value must not
+        // force a full re-ingest on every save (re-ingest dedups, but it
+        // refetches and re-parses everything).
+        if (current && input.initialSyncDays != null && Number(input.initialSyncDays) > Number(current.initialSyncDays)) {
             merged.lastUid = 0;
             merged.lastSyncAt = null;
         }
@@ -567,6 +702,9 @@ export class WorkspaceMailIndex extends EventEmitter {
         return result.map(({ id: childId, config }) => this.#serializeMailbox(childId, config));
     }
 
+    // Kick a sync for one mailbox. Non-blocking: a full (re)sync can take
+    // longer than any sane HTTP timeout — progress surfaces via
+    // runtime.status 'syncing' and the persisted lastUid/lastSyncAt.
     async syncMailbox(id) {
         const name = this.#mailboxName(id);
         let backend = this.#getBackend(name);
@@ -576,19 +714,19 @@ export class WorkspaceMailIndex extends EventEmitter {
             if (!entry) throw new Error(`Mailbox "${id}" not found`);
             backend = this.#registerBackend(name, entry);
         }
-        const result = await this.#syncImapBackend(name, backend);
+        this.#kickBackendSync(name, backend);
         const config = await this.readStoredConfig();
-        return { mailbox: this.#serializeMailbox(id, config.backends[name]), inserted: result.inserted, lastUid: result.lastUid };
+        return { mailbox: this.#serializeMailbox(id, config.backends[name]), syncing: true };
     }
 
-    // Register (if needed) + start/stop a mailbox backend to match its enabled flag.
+    // Register (if needed) + start/stop a mailbox backend to match its enabled
+    // flag. The sync itself runs in the background — callers (save/subscribe
+    // HTTP requests) return immediately with runtime.status 'syncing'.
     async #refreshMailboxBackend(id, config) {
         const name = this.#mailboxName(id);
         if (config.enabled === false) { await this.#removeBackend(name); return; }
         const backend = this.#registerBackend(name, config);
-        try { await this.#syncImapBackend(name, backend); }
-        catch (error) { this.#setBackendError(name, error); }
-        backend.watch?.();
+        this.#kickBackendSync(name, backend);
     }
 
     // Workspace 'imap' service hooks.

@@ -7,7 +7,11 @@ const debug = Debug('stored:backend:imap');
 const DEFAULT_FOLDER = 'INBOX';
 const DEFAULT_POLL_INTERVAL = 60000;
 const DEFAULT_INITIAL_SYNC_DAYS = 180;
-const FETCH_BATCH_SIZE = 200;
+// Raw messages of a fetch batch are held in memory until the batch ingest
+// resolves — keep the batch small enough that attachment-heavy mail can't
+// balloon the heap.
+const FETCH_BATCH_SIZE = 50;
+const MAX_BACKOFF_MS = 30 * 60 * 1000;
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 /**
@@ -25,11 +29,19 @@ export default class ImapBackend extends StorageBackend {
     #pollTimer = null;
     #lastUid = 0;
     #syncing = false;
+    // Poll backoff: consecutive scan failures push the next attempt out
+    // exponentially (capped) instead of re-running a possibly full initial
+    // sync every poll tick.
+    #failures = 0;
+    #nextAttemptAt = 0;
 
-    // Awaited ingest handler injected by the owning service. scan() only advances
-    // the UID cursor after this resolves, so a failed ingest never silently skips
-    // a message (at-least-once; the service dedups on re-ingest).
+    // Awaited ingest handlers injected by the owning service. scan() only
+    // advances the UID cursor after they resolve, so a failed ingest never
+    // silently skips a message (at-least-once; the service dedups on
+    // re-ingest). onBatch (whole fetch batch at once) is preferred; onMessage
+    // is the per-message fallback.
     onMessage = null;
+    onBatch = null;
 
     constructor(name, config = {}) {
         super(name, config);
@@ -204,11 +216,7 @@ export default class ImapBackend extends StorageBackend {
     #fetchBatch(imap, source) {
         return new Promise((resolve, reject) => {
             const fetch = imap.fetch(source, { bodies: '' });
-            const pending = [];
-            // Advance the persisted cursor only to the highest UID that actually
-            // ingested. On any failure the batch rejects and #lastUid is left
-            // untouched, so the whole batch is refetched next pass (no skip).
-            let maxUid = this.#lastUid;
+            const payloads = [];
             fetch.on('message', (msg, seqno) => {
                 const chunks = [];
                 let attrs = {};
@@ -217,7 +225,7 @@ export default class ImapBackend extends StorageBackend {
                 msg.once('end', () => {
                     const uid = Number(attrs.uid) || 0;
                     const folderKey = this.#encodeFolder(this.#folder);
-                    const payload = {
+                    payloads.push({
                         backend: this.name,
                         kind: 'message',
                         key: `${folderKey};UID=${uid}`,
@@ -227,18 +235,27 @@ export default class ImapBackend extends StorageBackend {
                         flags: attrs.flags || [],
                         folder: this.#folder,
                         account: this.#account,
-                    };
-                    // Await ingest before crediting the UID; fall back to a plain
-                    // emit only if no handler is wired (cursor still advances).
-                    pending.push(Promise.resolve()
-                        .then(() => (this.onMessage ? this.onMessage(payload) : this.emit('object:add', payload)))
-                        .then(() => { if (uid > maxUid) maxUid = uid; }));
+                    });
                 });
             });
             fetch.once('error', reject);
-            fetch.once('end', () => Promise.all(pending)
-                .then(() => { this.#lastUid = maxUid; resolve(); })
-                .catch(reject));
+            // Ingest is all-or-nothing per fetch batch: the cursor advances only
+            // after the whole batch ingested, so a failure leaves #lastUid
+            // untouched and the batch is refetched next pass (no skip; the
+            // service dedups re-ingests).
+            fetch.once('end', () => {
+                (async () => {
+                    if (this.onBatch) {
+                        await this.onBatch(payloads);
+                    } else {
+                        for (const payload of payloads) {
+                            await (this.onMessage ? this.onMessage(payload) : this.emit('object:add', payload));
+                        }
+                    }
+                    const maxUid = payloads.reduce((max, p) => Math.max(max, p.uid || 0), this.#lastUid);
+                    this.#lastUid = maxUid;
+                })().then(resolve, reject);
+            });
         });
     }
 
@@ -248,24 +265,34 @@ export default class ImapBackend extends StorageBackend {
      */
     async scan(options = {}) {
         if (typeof options.lastUid === 'number') this.#lastUid = Math.max(this.#lastUid, options.lastUid);
-        return this.#withConnection((imap) => new Promise((resolve, reject) => {
-            this.#openBox(imap, this.#folder, true).then(() => {
-                imap.search(this.#searchCriteria(), (err, results) => {
-                    if (err) return reject(err);
-                    if (!results || results.length === 0) return resolve({ inserted: 0, lastUid: this.#lastUid });
-                    const before = this.#lastUid;
-                    void before;
-                    const batches = this.#fetchBatches(results);
-                    (async () => {
-                        try {
-                            for (const range of batches) await this.#fetchBatch(imap, range);
-                            this.emit('backend:state', { backend: this.name, lastUid: this.#lastUid });
-                            resolve({ inserted: results.length, lastUid: this.#lastUid });
-                        } catch (e) { reject(e); }
-                    })();
-                });
-            }).catch(reject);
-        }));
+        try {
+            const result = await this.#withConnection((imap) => new Promise((resolve, reject) => {
+                this.#openBox(imap, this.#folder, true).then(() => {
+                    imap.search(this.#searchCriteria(), (err, results) => {
+                        if (err) return reject(err);
+                        if (!results || results.length === 0) return resolve({ inserted: 0, lastUid: this.#lastUid });
+                        const batches = this.#fetchBatches(results);
+                        (async () => {
+                            try {
+                                for (const range of batches) await this.#fetchBatch(imap, range);
+                                this.emit('backend:state', { backend: this.name, lastUid: this.#lastUid });
+                                resolve({ inserted: results.length, lastUid: this.#lastUid });
+                            } catch (e) { reject(e); }
+                        })();
+                    });
+                }).catch(reject);
+            }));
+            this.#failures = 0;
+            this.#nextAttemptAt = 0;
+            return result;
+        } catch (error) {
+            this.#failures += 1;
+            const interval = Number(this.config.pollInterval || DEFAULT_POLL_INTERVAL);
+            const backoff = Math.min(interval * 2 ** this.#failures, MAX_BACKOFF_MS);
+            this.#nextAttemptAt = Date.now() + backoff;
+            debug(`scan failed for ${this.name} (attempt ${this.#failures}), backing off ${backoff}ms`);
+            throw error;
+        }
     }
 
     /**
@@ -277,6 +304,9 @@ export default class ImapBackend extends StorageBackend {
         const interval = Number(this.config.pollInterval || DEFAULT_POLL_INTERVAL);
         const tick = async () => {
             if (this.#syncing) return;
+            // Failed scans (e.g. a failing initial sync) back off exponentially
+            // instead of re-running a full sync attempt on every poll tick.
+            if (Date.now() < this.#nextAttemptAt) return;
             this.#syncing = true;
             try { await this.scan(); }
             catch (e) { this.emit('error', e); }

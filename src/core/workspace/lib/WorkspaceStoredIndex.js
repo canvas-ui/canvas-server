@@ -6,7 +6,7 @@ import { createReadStream } from 'fs';
 import Stored from '../../../services/stored/src/index.js';
 import { extract as extractBlobMetadata } from '../../../services/stored/src/extractors/index.js';
 import { parseLocationUrl } from '../../../services/synapsd/src/utils/path-helpers.js';
-import { BACKENDS_ROOT_CONTEXT, DIRECTORY_TREE_NAME, isBackendsContextSpec } from '../../../utils/backend-documents.js';
+import { BACKENDS_ROOT_CONTEXT, DIRECTORY_TREE_NAME, isBackendsContextSpec, legacyBitmapKey } from '../../../utils/backend-documents.js';
 
 /*
  * WorkspaceStoredIndex — watches a workspace home directory and syncs file
@@ -339,6 +339,22 @@ export class WorkspaceStoredIndex {
             });
             this.#backendStatus.set(backendName, { lastScanAt: null, lastError: null });
             await this.#applyBackendNodeLock(backendName, true);
+            await this.#migrateLegacyBackendBitmap(backendName);
+        }
+    }
+
+    // Bitmap keys squashed ':' (and '@') to '_' before synapsd widened its
+    // allowed charset — data/backend/workspace:home lived as
+    // data/backend/workspace_home. Merge the legacy bitmap into the canonical
+    // key; idempotent no-op once migrated.
+    async #migrateLegacyBackendBitmap(backendName) {
+        const db = this.#getDb?.();
+        if (typeof db?.migrateBitmapKey !== 'function') return;
+        const tag = `data/backend/${backendName}`;
+        try {
+            await db.migrateBitmapKey(legacyBitmapKey(tag), tag);
+        } catch (error) {
+            this.#logger.warn({ workspaceId: this.#workspaceId, backend: backendName, error: error.message }, 'Legacy backend bitmap key migration failed');
         }
     }
 

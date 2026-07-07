@@ -1516,6 +1516,7 @@ class Workspace extends EventEmitter {
             workspaceId: this.id,
             logger: this.#logger,
             put: (record, options = {}) => this.put(record, { ...options, allowBackendsWrite: true }),
+            putMany: (records, options = {}) => this.putMany(records, { ...options, allowBackendsWrite: true }),
             getBackendsTreeSelector: this.getBackendsTreeSelector.bind(this),
             getDb: () => this.#db,
             // Persist email/attachment blobs into the local content-addressable

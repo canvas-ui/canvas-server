@@ -28,6 +28,24 @@ export function normalizeSegment(value, fallback = 'unknown') {
   return parts.length > 0 ? parts.join('/') : fallback;
 }
 
+/**
+ * Bitmap keys used to squash '@' and ':' to '_' before synapsd widened its
+ * allowed charset (data/backend/imap/user@domain.tld ended up as
+ * .../user_domain.tld). This reproduces the OLD normalization so services
+ * that know a tag's true spelling can merge the legacy bitmap into the
+ * canonical key via db.migrateBitmapKey(legacyBitmapKey(tag), tag) — a no-op
+ * once migrated (synapsd skips identical keys / missing legacy bitmaps).
+ */
+export function legacyBitmapKey(key) {
+  return String(key || '')
+    .replace(/\\/g, '/')
+    .replace(/\s+/g, '_')
+    .toLowerCase()
+    .replace(/[^a-z0-9_\-./]/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/\/+/g, '/');
+}
+
 function normalizeContextSpec(contextSpec) {
   if (contextSpec === null || contextSpec === undefined) { return null; }
   const value = String(contextSpec).trim();

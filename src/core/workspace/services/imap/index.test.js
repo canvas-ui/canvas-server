@@ -37,7 +37,7 @@ describe('WorkspaceMailIndex', () => {
         mail = null; rootPath = null;
     });
 
-    function createMail() {
+    function createMail(overrides = {}) {
         return new WorkspaceMailIndex({
             rootPath,
             workspaceId: 'test-workspace',
@@ -57,7 +57,35 @@ describe('WorkspaceMailIndex', () => {
                 blobs.push({ checksum, size: buffer.length });
                 return { url: `stored://workspace:data/${checksum.slice(0, 2)}/${checksum.slice(2, 4)}/${checksum}`, key: checksum, checksum, size: buffer.length };
             },
+            ...overrides,
         });
+    }
+
+    function rawEmail({ subject = 'Hello', id = 'test-1', attachment = false } = {}) {
+        const lines = [
+            'From: alice@example.com',
+            'To: bob@example.com',
+            `Subject: ${subject}`,
+            `Message-ID: <${id}@example.com>`,
+            'Date: Mon, 16 Jun 2025 10:00:00 +0000',
+        ];
+        if (attachment) {
+            lines.push(
+                'MIME-Version: 1.0',
+                'Content-Type: multipart/mixed; boundary="B"',
+                '', '--B',
+                'Content-Type: text/plain', '', 'body text', '',
+                '--B',
+                'Content-Type: application/octet-stream; name="a.bin"',
+                'Content-Disposition: attachment; filename="a.bin"',
+                'Content-Transfer-Encoding: base64', '',
+                Buffer.from(`payload-${id}`).toString('base64'),
+                '--B--', '',
+            );
+        } else {
+            lines.push('', 'body text', '');
+        }
+        return Buffer.from(lines.join('\r\n'), 'utf8');
     }
 
     test('ingestMessage builds one Email doc with workspace:data + imap:// locations', async () => {
@@ -137,6 +165,89 @@ describe('WorkspaceMailIndex', () => {
 
         await mail.removeMailbox('acct');
         assert.ok(lockCalls.some((c) => !c.locked && c.nodePath === '/.backends/imap/dave@example.com' && c.holder === 'imap:acct'));
+    });
+
+    test('ingestBatch groups by feature signature into putMany calls (single put untouched)', async () => {
+        const putManyCalls = [];
+        mail = createMail({
+            putMany: async (records, options) => {
+                putManyCalls.push({ records, options });
+                return records.map((_, i) => `batch-${putManyCalls.length}-${i}`);
+            },
+        });
+        await mail.start();
+
+        const emitted = [];
+        mail.on('object:add', (p) => emitted.push(p));
+
+        const docIds = await mail.ingestBatch([
+            { kind: 'message', raw: rawEmail({ id: 'm1' }), account: 'alice@example.com', folder: 'INBOX', uid: 1 },
+            { kind: 'message', raw: rawEmail({ id: 'm2' }), account: 'alice@example.com', folder: 'INBOX', uid: 2 },
+            { kind: 'message', raw: rawEmail({ id: 'm3', attachment: true }), account: 'alice@example.com', folder: 'INBOX', uid: 3 },
+        ]);
+
+        // no per-message puts; two putMany groups (plain vs +attachment feature)
+        assert.equal(puts.length, 0);
+        assert.equal(putManyCalls.length, 2);
+        assert.equal(docIds.length, 3);
+        const sizes = putManyCalls.map((c) => c.records.length).sort();
+        assert.deepEqual(sizes, [1, 2]);
+        for (const call of putManyCalls) {
+            assert.equal(call.options.context, null);
+            assert.equal(String(call.options.directory), '/.backends/imap/alice@example.com/inbox');
+            assert.ok(call.options.features.includes('data/backend/imap/alice@example.com'));
+        }
+        const attachmentGroup = putManyCalls.find((c) => c.records.length === 1);
+        assert.ok(attachmentGroup.options.features.some((f) => f.includes('attachment')), `expected attachment feature, got ${attachmentGroup.options.features}`);
+        assert.equal(emitted.length, 3);
+        assert.ok(emitted.every((e) => e.kind === 'message' && e.docId));
+    });
+
+    test('ingestBatch falls back to sequential single puts without a putMany seam', async () => {
+        mail = createMail();
+        await mail.start();
+        const docIds = await mail.ingestBatch([
+            { kind: 'message', raw: rawEmail({ id: 's1' }), account: 'alice@example.com', folder: 'INBOX', uid: 1 },
+            { kind: 'message', raw: rawEmail({ id: 's2' }), account: 'alice@example.com', folder: 'INBOX', uid: 2 },
+        ]);
+        assert.equal(puts.length, 2);
+        assert.equal(docIds.length, 2);
+    });
+
+    test('saveMailbox resets the UID cursor only when initialSyncDays widens', async () => {
+        mail = createMail();
+        await mail.start();
+        const base = {
+            id: 'acct', user: 'dave@example.com', password: 'secret',
+            host: '127.0.0.1', port: 1, tls: false, pollInterval: 60000, initialSyncDays: 180,
+        };
+        await mail.saveMailbox(base);
+        await mail.patchStoredBackend('imap:acct', { lastUid: 42, lastSyncAt: '2026-01-01T00:00:00.000Z' });
+
+        // same window → cursor untouched
+        await mail.saveMailbox({ ...base, password: '' });
+        assert.equal((await mail.readStoredConfig()).backends['imap:acct'].lastUid, 42);
+
+        // narrower window → cursor untouched
+        await mail.saveMailbox({ ...base, password: '', initialSyncDays: 30 });
+        assert.equal((await mail.readStoredConfig()).backends['imap:acct'].lastUid, 42);
+
+        // wider window → full re-sync wanted, cursor reset
+        await mail.saveMailbox({ ...base, password: '', initialSyncDays: 365 });
+        assert.equal((await mail.readStoredConfig()).backends['imap:acct'].lastUid, 0);
+    });
+
+    test('saveMailbox returns immediately with a syncing runtime status', async () => {
+        mail = createMail();
+        await mail.start();
+        const saved = await mail.saveMailbox({
+            id: 'acct', user: 'dave@example.com', password: 'secret',
+            host: '127.0.0.1', port: 1, tls: false, pollInterval: 60000,
+        });
+        // The (unreachable) sync runs in the background; the save response
+        // already reflects it.
+        assert.equal(saved.runtime.syncing, true);
+        assert.equal(saved.runtime.status, 'syncing');
     });
 
     test('stored.json read/write roundtrip + empty getImapStatus', async () => {

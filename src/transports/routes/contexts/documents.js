@@ -46,6 +46,8 @@ export default async function documentRoutes(fastify, options) {
           limit: { type: 'integer', default: 200 },
           offset: { type: 'integer' },
           page: { type: 'integer' },
+          // Document lists default to newest first; search results stay ranked.
+          order: { type: 'string', enum: ['asc', 'desc'], default: 'desc' },
           q: { type: 'string' },
           search: { type: 'string' },
           mode: { type: 'string', enum: ['fts', 'vector', 'hybrid'] },
@@ -70,6 +72,7 @@ export default async function documentRoutes(fastify, options) {
         limit: request.query.limit,
         offset: request.query.offset,
         page: request.query.page,
+        order: request.query.order,
       };
 
       const searchQuery = request.query.q || request.query.search;

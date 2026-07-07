@@ -216,6 +216,8 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     limit: { type: 'integer', default: 200 },
     offset: { type: 'integer' },
     page: { type: 'integer' },
+    // Document lists default to newest first; search results stay ranked.
+    order: { type: 'string', enum: ['asc', 'desc'], default: 'desc' },
   };
 
   // ── List documents ──────────────────────────────────────────────────────
@@ -276,6 +278,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
           limit: request.query.limit,
           offset: request.query.offset,
           page: request.query.page,
+          order: request.query.order,
         }),
       };
 
@@ -471,6 +474,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
           limit: request.query.limit,
           offset: request.query.offset,
           page: request.query.page,
+          order: request.query.order,
         }),
       });
 

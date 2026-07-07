@@ -90,7 +90,7 @@ A handler exports a default async function receiving one context object:
 | `workspace`, `db`, `tree` | workspace instance, SynapsD, default context tree (null when inactive) |
 | `classify` | document classifier, see below |
 | `insert`, `update`, `remove`, `deleteDocument`, `get`, `list`, `find`, `link` | document CRUD on the workspace |
-| `agent(slug, prompt, opts)` | prompt one of your agents, returns its text reply (null on failure) |
+| `agent(slug, prompt, opts)` | prompt one of your agents, returns its text reply (null on failure). Prompts are wrapped in a standard automation envelope (event, document summary, reply expectations — see `hook/agent-prompt.js`); `opts.raw: true` sends the prompt verbatim |
 | `notify(message, { channel? })` | message the workspace owner — bound channel (Slack/WhatsApp/…) or, unbound, the in-app `canvas` channel (web-UI toast + toolbox notifications area, buffered server-side) |
 | `emit(name, payload)` | re-emit a workspace event (stamped `source:'hook'`) |
 | `logger` | debug logger |

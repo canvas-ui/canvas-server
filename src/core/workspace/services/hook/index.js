@@ -7,6 +7,7 @@ import { pathToFileURL } from 'url';
 import { createLogger } from '../../../../utils/log.js';
 import { classifyDocument } from '../../lib/classifier.js';
 import { resolveRuleFiles, loadRuleFile, matchRule, executeRuleActions } from './rules.js';
+import { buildHookAgentPrompt } from './agent-prompt.js';
 import { isDisabledFile } from './naming.js';
 
 const logger = createLogger('hook-service');
@@ -361,7 +362,19 @@ class HookService extends EventEmitter {
             get: async (id, options = { parse: true }) => workspace.get(id, options),
             list: async (spec = {}) => workspace.list(spec),
             find: async (spec = {}) => workspace.search(spec),
-            agent: this.#buildAgentHelper(workspace),
+            // Hook-fired agent prompts get a standard envelope (event, doc
+            // summary, reply expectations) so small agents know what hit them.
+            // Opt out with agent(slug, prompt, { raw: true }).
+            agent: (slugOrId, prompt, options = {}) => {
+                const { raw, ...rest } = options;
+                const finalPrompt = raw ? prompt : buildHookAgentPrompt({
+                    workspaceName: workspace.name || workspace.id,
+                    eventName,
+                    payload,
+                    prompt,
+                });
+                return this.#buildAgentHelper(workspace)(slugOrId, finalPrompt, rest);
+            },
             notify: this.#buildNotifyHelper(workspace),
             // classify() → the event's document; classify(otherPayload) for a
             // debounced burst element; classify(rawDoc) for a fetched document.

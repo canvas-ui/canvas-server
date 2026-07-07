@@ -71,7 +71,7 @@ export default async function hook(ctx) {
 | `update(id, doc, opts?)` / `remove(id, opts?)` / `deleteDocument(id)` | Update in place / unlink from paths / hard-delete. |
 | `get(id)` / `list(spec)` / `find({query})` | Fetch by id / list / full-text+hybrid search. |
 | `link(id, ['/path', …])` | Link a document into context paths. |
-| `agent(slug, prompt)` | Prompt one of the user's agents (auto-starts it), returns its text reply. Agents only get canvas_* tools if previously bound via `PUT /rest/v2/agents/<slug>/access`. |
+| `agent(slug, prompt, {raw?})` | Prompt one of the user's agents (auto-starts it), returns its text reply. The prompt is wrapped in a standard automation envelope (event, doc summary, "reply with the final result only") — pass `{ raw: true }` to skip it. Agents only get canvas_* tools if previously bound via `PUT /rest/v2/agents/<slug>/access`. |
 | `notify(message, {channel?})` | Message the workspace owner via the messaging service. Bound channel (slack/whatsapp/…) wins; unbound users get the in-app `canvas` channel — a web-UI toast plus the toolbox notifications area. |
 | `emit(name, payload)` | Emit a custom workspace event, stamped `source:'hook'` (never re-triggers hooks). |
 | `event` / `workspace` / `db` / `tree` | Event envelope and escape hatches (db/tree are null while the workspace is inactive). |

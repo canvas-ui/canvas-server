@@ -87,9 +87,8 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     return { ...options, excludeTree: { tree: DIRECTORY_TREE_NAME, path: BACKENDS_ROOT_CONTEXT } };
   }
 
-  // Effective opt-in for /.backends reads: `includeIncoming` kept as a
-  // deprecated alias for older clients.
-  const includeBackendsFlag = (query = {}) => query.includeBackends === true || query.includeIncoming === true;
+  // Effective opt-in for /.backends reads (default excludes the staging tree).
+  const includeBackendsFlag = (query = {}) => query.includeBackends === true;
 
   function sendLinkResult(reply, result) {
     if (!result || !Array.isArray(result.failed)) {
@@ -242,7 +241,6 @@ export default async function workspaceDocumentRoutes(fastify, options) {
           minDistance: { type: 'number' },
           maxDistance: { type: 'number' },
           includeBackends: { type: 'boolean', default: false },
-          includeIncoming: { type: 'boolean', default: false }, // deprecated alias
           // 'workspace' drops the path bucket entirely → list every document in
           // the DB (synapsd default). 'path' (default) scopes to context/tree.
           scope: { type: 'string', enum: ['path', 'workspace'], default: 'path' },
@@ -255,7 +253,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       if (!workspace) return;
 
       // Whole-workspace scope = no path selector. Null selector still excludes
-      // the /.incoming staging tree by default (buildReadOptions), opt in via includeIncoming.
+      // the /.backends staging tree by default (buildReadOptions), opt in via includeBackends.
       const { context: ctxSelector, directory: dirSelector } = request.query.scope === 'workspace'
         ? { context: null, directory: null }
         : resolveScopeSelectors(workspace, request.query, '/');
@@ -452,7 +450,6 @@ export default async function workspaceDocumentRoutes(fastify, options) {
           ...filtersQueryProps,
           ...paginationQueryProps,
           includeBackends: { type: 'boolean', default: false },
-          includeIncoming: { type: 'boolean', default: false }, // deprecated alias
         },
       },
     },
@@ -623,7 +620,6 @@ export default async function workspaceDocumentRoutes(fastify, options) {
           ...attributesQueryProps,
           ...filtersQueryProps,
           includeBackends: { type: 'boolean', default: false },
-          includeIncoming: { type: 'boolean', default: false }, // deprecated alias
         },
       },
     },

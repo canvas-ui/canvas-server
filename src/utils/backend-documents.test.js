@@ -77,7 +77,7 @@ test('isBackendsContextSpec matches root and descendants only', () => {
   assert.equal(isBackendsContextSpec('/.backends/imap/foo@bar.tld'), true);
   assert.equal(isBackendsContextSpec('/.backends-not'), false);
   assert.equal(isBackendsContextSpec('/foo'), false);
-  assert.equal(isBackendsContextSpec('/.incoming'), false);
+  assert.equal(isBackendsContextSpec('/.other'), false);
 });
 
 test('normalizeBackendsTreePath prefixes unprefixed paths', () => {

@@ -13,7 +13,6 @@
  */
 
 export const BACKENDS_ROOT_CONTEXT = '/.backends';
-export const LEGACY_BACKENDS_ROOT_CONTEXT = '/.incoming';
 export const DIRECTORY_TREE_NAME = 'directory';
 
 export function normalizeSegment(value, fallback = 'unknown') {

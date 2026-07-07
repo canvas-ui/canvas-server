@@ -138,16 +138,14 @@ export default async function workspaceRoutes(fastify, options) {
     prefix: '/:id/bitmaps',
     onRequest: [resolveWorkspaceAddress]
   });
-  fastify.register(import('./data-backends.js'), {
-    prefix: '/:id/data-backends',
+  // Unified backend/connector API (storage backends + message connectors),
+  // mirroring the /.backends/<driver>/<address> tree.
+  fastify.register(import('./backends.js'), {
+    prefix: '/:id/backends',
     onRequest: [resolveWorkspaceAddress]
   });
   fastify.register(import('./services.js'), {
     prefix: '/:id/services',
-    onRequest: [resolveWorkspaceAddress]
-  });
-  fastify.register(import('./services-imap.js'), {
-    prefix: '/:id/services/imap',
     onRequest: [resolveWorkspaceAddress]
   });
   fastify.register(import('./home.js'), {

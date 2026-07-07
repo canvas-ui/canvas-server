@@ -348,21 +348,6 @@ export class WorkspaceMailIndex extends EventEmitter {
         return config.backends[name];
     }
 
-    // Reset every mailbox's UID cursor so the next sync re-fetches history.
-    // Used once after the /.incoming → /.backends drop+resync migration:
-    // re-ingest is checksum-deduped, so docs just regain their tree placement.
-    async resetSyncCursors() {
-        const config = await this.readStoredConfig();
-        let touched = false;
-        for (const [name, entry] of Object.entries(config.backends || {})) {
-            if (entry?.driver !== 'imap') continue;
-            config.backends[name] = { ...entry, lastUid: 0, lastSyncAt: null };
-            touched = true;
-        }
-        if (touched) await this.writeStoredConfig(config);
-        return touched;
-    }
-
     // Register every enabled imap backend from stored.json. Does not start
     // sources — that happens in #startStoredConfigSources.
     async #registerStoredConfigBackends() {
@@ -485,12 +470,6 @@ export class WorkspaceMailIndex extends EventEmitter {
         return entries.map(({ id, config }) => this.#serializeMailbox(id, config));
     }
 
-    async getMailbox(id) {
-        const config = await this.readStoredConfig();
-        const entry = config.backends[this.#mailboxName(id)];
-        return entry && entry.driver === 'imap' ? this.#serializeMailbox(id, entry) : null;
-    }
-
     async saveMailbox(input = {}) {
         const stored = await this.readStoredConfig();
         const id = String(input.id || '').trim() || this.#generateMailboxId(input);
@@ -513,6 +492,26 @@ export class WorkspaceMailIndex extends EventEmitter {
         await this.writeStoredConfig(stored);
         await this.#refreshMailboxBackend(id, mailbox);
         return this.#serializeMailbox(id, mailbox);
+    }
+
+    // Resync every enabled mailbox on an account, addressed by its normalized
+    // /.backends/imap/<account> tree segment. The tree segment was built with
+    // normalizeSegment(accountId), so we normalize each mailbox's account the
+    // same way to match. MVP resyncs the whole account (folder ignored).
+    async resyncAccount(accountSegment) {
+        const wanted = normalizeSegment(accountSegment);
+        const config = await this.readStoredConfig();
+        const ids = [];
+        for (const [name, entry] of Object.entries(config.backends || {})) {
+            if (entry?.driver !== 'imap') continue;
+            if (entry?.enabled === false) continue;
+            const acc = normalizeSegment(entry.account || entry.user || '');
+            if (acc === wanted) ids.push(this.#mailboxIdFromName(name));
+        }
+        if (!ids.length) throw new Error(`No IMAP mailbox found for account "${accountSegment}"`);
+        const results = [];
+        for (const id of ids) results.push(await this.syncMailbox(id));
+        return { account: wanted, mailboxes: results.length, results };
     }
 
     async removeMailbox(id) {
@@ -580,26 +579,6 @@ export class WorkspaceMailIndex extends EventEmitter {
         const result = await this.#syncImapBackend(name, backend);
         const config = await this.readStoredConfig();
         return { mailbox: this.#serializeMailbox(id, config.backends[name]), inserted: result.inserted, lastUid: result.lastUid };
-    }
-
-    async startMailbox(id) {
-        const stored = await this.readStoredConfig();
-        const name = this.#mailboxName(id);
-        const entry = stored.backends[name];
-        if (!entry) throw new Error(`Mailbox "${id}" not found`);
-        if (entry.enabled === false) { entry.enabled = true; stored.backends[name] = entry; await this.writeStoredConfig(stored); }
-        await this.#refreshMailboxBackend(id, entry);
-        return this.#serializeMailbox(id, entry);
-    }
-
-    async stopMailbox(id) {
-        const stored = await this.readStoredConfig();
-        const name = this.#mailboxName(id);
-        const entry = stored.backends[name];
-        if (!entry) throw new Error(`Mailbox "${id}" not found`);
-        await this.#removeBackend(name);
-        entry.enabled = false; stored.backends[name] = entry; await this.writeStoredConfig(stored);
-        return this.#serializeMailbox(id, entry);
     }
 
     // Register (if needed) + start/stop a mailbox backend to match its enabled flag.

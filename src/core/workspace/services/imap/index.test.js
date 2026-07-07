@@ -139,20 +139,6 @@ describe('WorkspaceMailIndex', () => {
         assert.ok(lockCalls.some((c) => !c.locked && c.nodePath === '/.backends/imap/dave@example.com' && c.holder === 'imap:acct'));
     });
 
-    test('resetSyncCursors zeroes lastUid on every imap entry', async () => {
-        mail = createMail();
-        await mail.start();
-        await mail.writeStoredConfig({ backends: {
-            'imap:a': { driver: 'imap', user: 'a', lastUid: 42, lastSyncAt: 'x', enabled: false },
-            'other': { driver: 'file', lastUid: 7 },
-        } });
-        assert.equal(await mail.resetSyncCursors(), true);
-        const { backends } = await mail.readStoredConfig();
-        assert.equal(backends['imap:a'].lastUid, 0);
-        assert.equal(backends['imap:a'].lastSyncAt, null);
-        assert.equal(backends['other'].lastUid, 7); // non-imap untouched
-    });
-
     test('stored.json read/write roundtrip + empty getImapStatus', async () => {
         mail = createMail();
         await mail.start();

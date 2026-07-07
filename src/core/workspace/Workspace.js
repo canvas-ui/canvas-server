@@ -12,7 +12,7 @@ import { createLogger } from '../../utils/log.js';
 // Includes
 import Db from '../../services/synapsd/src/index.js';
 import { parseDocumentId, parseDocumentIdArray } from '../../utils/documentId.js';
-import { isBackendsContextSpec, normalizeBackendsTreePath } from '../../utils/backend-documents.js';
+import { isBackendsContextSpec, normalizeBackendsTreePath, normalizeSegment } from '../../utils/backend-documents.js';
 import { parseLocationUrl } from '../../services/synapsd/src/utils/path-helpers.js';
 
 // Sub-modules
@@ -43,7 +43,6 @@ class Workspace extends EventEmitter {
     // Backend-mirrored staging path within the directory tree
     // (/.backends/<driver>/<resource-address>/<resource-path>)
     static BACKENDS_PATH = '/.backends';
-    static LEGACY_BACKENDS_PATH = '/.incoming';
     // Default cosine-distance floor for the dense side of vector/hybrid search.
     // synapsd applies no floor by default (pure mechanism); Workspace sets the
     // product policy: drop kNN neighbours past this cosine distance so the dense
@@ -55,7 +54,6 @@ class Workspace extends EventEmitter {
     // query. Callers may override via an explicit maxDistance (pass 2 to disable).
     static DEFAULT_MAX_COSINE_DISTANCE = 0.35;
     static BACKENDS_LOCK_ID = 'system:backends';
-    static LEGACY_INCOMING_LOCK_ID = 'system:incoming';
     // Per-backend enable-lock holder prefix on /.backends/<driver>/<address>
     static BACKEND_NODE_LOCK_PREFIX = 'system:backend:';
 
@@ -70,10 +68,6 @@ class Workspace extends EventEmitter {
     #tokens = null;
     #status = WORKSPACE_STATUS_CODES.INACTIVE;
     #runtimeListeners = [];
-    // One-shot flag set by #ensureBackendsTreeRoot when a legacy /.incoming
-    // subtree was dropped this start; consumed by the stored/mail index boot
-    // to trigger the resync that re-files docs under /.backends.
-    #backendsMigrated = false;
 
     // Managers (injected)
     #storageManager = null;
@@ -1153,6 +1147,232 @@ class Workspace extends EventEmitter {
     }
 
     /**
+     * Resync a backend addressed by its /.backends mirror node path
+     * (/.backends/<driver>/<address>/…). Dispatches by driver because
+     * "backend" is overloaded: file/s3/etc. are stored data backends keyed by
+     * name, while imap accounts are mailbox connectors keyed by mailbox id.
+     * The context-menu resync in the tree routes through here. MVP resyncs the
+     * whole backend/account; the folder segment (if any) is ignored.
+     */
+    // ─────────────────────────────────────────────────────────────────────────
+    // Unified backend/connector facade — one surface over every "thing mounted
+    // under /.backends/<driver>/<address>": storage backends (file/cacache/s3,
+    // via WorkspaceStoredIndex) and message connectors (imap accounts, via
+    // WorkspaceMailIndex). The /:id/backends routes mirror the tree; driver
+    // dispatch + capabilities live here so the URL never carries an internal id.
+    // Descriptor: { driver, address, kind, enabled, status, lastSyncAt,
+    // lastError, capabilities, containers? }.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // Capability map the UI reads to decide which actions to expose — replaces
+    // per-name special-casing. Future container mutation / object delete slot
+    // onto mutableContainers / deleteObject without new URL shapes.
+    #backendCapabilities(driver, config = {}) {
+        if (driver === 'imap') {
+            return { sync: true, test: true, containers: true, mutableContainers: false, deleteObject: true };
+        }
+        const supported = config.supported !== false;
+        return {
+            sync: Boolean(config.resync) && supported,
+            test: false,
+            containers: false,
+            mutableContainers: driver === 'file' && config.readOnly !== true && supported,
+            deleteObject: config.readOnly !== true && supported,
+        };
+    }
+
+    #storageBackendDescriptor(name, status = {}) {
+        const driver = status.driver || 'file';
+        const state = status.lastError ? 'error' : (status.running ? (status.watching ? 'running' : 'idle') : 'stopped');
+        return {
+            driver,
+            address: name,
+            kind: 'storage',
+            enabled: status.enabled !== false,
+            status: state,
+            lastSyncAt: status.lastScanAt || null,
+            lastError: status.lastError || null,
+            capabilities: this.#backendCapabilities(driver, status),
+            config: {
+                root: status.root || null,
+                readOnly: status.readOnly === true,
+                managed: status.managed === true,
+                supported: status.supported !== false,
+                watch: status.watch === true,
+                indexIncoming: status.indexIncoming === true,
+                resync: Boolean(status.resync),
+            },
+        };
+    }
+
+    #listStorageBackends() {
+        return Object.entries(this.getDataBackendStatus())
+            .map(([name, status]) => this.#storageBackendDescriptor(name, status));
+    }
+
+    #imapBackendDescriptor(address, mailboxes = []) {
+        const errored = mailboxes.find((m) => m.lastError);
+        const anyRunning = mailboxes.some((m) => m.runtime?.active);
+        const lastSyncAt = mailboxes.map((m) => m.lastSyncAt).filter(Boolean).sort().at(-1) || null;
+        const primary = mailboxes[0] || {};
+        return {
+            driver: 'imap',
+            address,
+            kind: 'messages',
+            enabled: mailboxes.some((m) => m.enabled !== false),
+            status: errored ? 'error' : (anyRunning ? 'running' : 'idle'),
+            lastSyncAt,
+            lastError: errored?.lastError || null,
+            capabilities: this.#backendCapabilities('imap'),
+            // Connection config (from the account's primary mailbox) so the
+            // settings panel can render/edit the account without a second fetch.
+            config: {
+                host: primary.host || '',
+                port: primary.port ?? 993,
+                tls: primary.tls !== false,
+                allowSelfSigned: primary.allowSelfSigned !== false,
+                user: primary.user || '',
+                pollInterval: primary.pollInterval ?? 60000,
+                initialSyncDays: primary.initialSyncDays ?? 180,
+                passwordConfigured: mailboxes.some((m) => m.passwordConfigured),
+            },
+            containers: mailboxes.map((m) => ({
+                name: m.folder || 'INBOX',
+                mailboxId: m.id,
+                enabled: m.enabled !== false,
+                status: m.runtime?.status || (m.enabled === false ? 'stopped' : 'idle'),
+                lastSyncAt: m.lastSyncAt || null,
+                lastError: m.lastError || null,
+            })),
+        };
+    }
+
+    // Group per-folder imap mailboxes by account into one instance each. The
+    // account segment matches the /.backends/imap/<account> tree node.
+    async #listImapBackends() {
+        const mailboxes = await this.listImapMailboxes();
+        const byAccount = new Map();
+        for (const mb of mailboxes) {
+            const address = normalizeSegment(mb.account || mb.user || '');
+            if (!address) continue;
+            if (!byAccount.has(address)) byAccount.set(address, []);
+            byAccount.get(address).push(mb);
+        }
+        return [...byAccount.entries()].map(([address, mbs]) => this.#imapBackendDescriptor(address, mbs));
+    }
+
+    async listBackends() {
+        return [...this.#listStorageBackends(), ...(await this.#listImapBackends())];
+    }
+
+    async listBackendsByDriver(driver) {
+        return (await this.listBackends()).filter((b) => b.driver === driver);
+    }
+
+    async getBackend(driver, address) {
+        const match = (await this.listBackends()).find((b) => b.driver === driver && b.address === address);
+        if (!match) throw new Error(`Backend not found: ${driver}/${address}`);
+        return match;
+    }
+
+    async addBackend(driver, config = {}) {
+        if (driver === 'imap') return this.saveImapMailbox(config);
+        const name = config.name || config.address;
+        if (!name) throw new Error('Storage backend name is required');
+        await this.setDataBackendConfig(name, config);
+        return this.getBackend(driver, name);
+    }
+
+    async updateBackend(driver, address, patch = {}) {
+        if (driver === 'imap') {
+            // Account-level settings/creds are shared across the account's folder
+            // mailboxes, so apply the patch to each.
+            const targets = (await this.listImapMailboxes())
+                .filter((m) => normalizeSegment(m.account || m.user || '') === normalizeSegment(address));
+            if (!targets.length) throw new Error(`No IMAP mailbox for account "${address}"`);
+            for (const m of targets) await this.saveImapMailbox({ ...patch, id: m.id });
+            return this.getBackend('imap', address);
+        }
+        await this.setDataBackendConfig(address, patch);
+        return this.getBackend(driver, address);
+    }
+
+    async removeBackend(driver, address) {
+        if (driver === 'imap') {
+            const targets = (await this.listImapMailboxes())
+                .filter((m) => normalizeSegment(m.account || m.user || '') === normalizeSegment(address));
+            if (!targets.length) return false;
+            for (const m of targets) await this.removeImapMailbox(m.id);
+            return true;
+        }
+        // Managed storage defaults can't be deleted; disabling is the remove op.
+        await this.setDataBackendConfig(address, { enabled: false });
+        return true;
+    }
+
+    async syncBackend(driver, address) {
+        if (driver === 'imap') return (await this.#mail()).resyncAccount(address);
+        // Storage: address is the (normalized, lowercase) backend name, which
+        // matches the lowercase config keys (workspace:home, …).
+        return this.resyncDataBackend(address);
+    }
+
+    async testBackend(driver, address) {
+        if (driver !== 'imap') throw new Error(`Backend "${driver}/${address}" does not support test`);
+        const target = (await this.listImapMailboxes())
+            .find((m) => normalizeSegment(m.account || m.user || '') === normalizeSegment(address));
+        if (!target) throw new Error(`No IMAP mailbox for account "${address}"`);
+        return this.testImapMailbox(target.id);
+    }
+
+    // Mailboxes belonging to one imap account (the account's folder set).
+    async #imapAccountMailboxes(address) {
+        return (await this.listImapMailboxes())
+            .filter((m) => normalizeSegment(m.account || m.user || '') === normalizeSegment(address));
+    }
+
+    async listBackendContainers(driver, address, { available = false } = {}) {
+        if (driver !== 'imap') throw new Error(`Backend "${driver}/${address}" has no containers`);
+        if (available) {
+            // Folders available on the server (for subscribing more), from the
+            // account's primary mailbox creds.
+            const [primary] = await this.#imapAccountMailboxes(address);
+            if (!primary) throw new Error(`No IMAP mailbox for account "${address}"`);
+            return this.listImapMailboxFolders(primary.id);
+        }
+        return (await this.getBackend('imap', address)).containers || [];
+    }
+
+    async syncBackendContainer(driver, address, name) {
+        if (driver !== 'imap') throw new Error(`Backend "${driver}/${address}" has no containers`);
+        const container = (await this.listBackendContainers('imap', address)).find((c) => c.name === name);
+        if (!container) throw new Error(`Container "${name}" not found on imap/${address}`);
+        return (await this.#mail()).syncMailbox(container.mailboxId);
+    }
+
+    // Subscribe folders on an imap account (creates per-folder mailboxes).
+    async addBackendContainers(driver, address, folders = []) {
+        if (driver !== 'imap') throw new Error(`Backend "${driver}/${address}" has no containers`);
+        const [primary] = await this.#imapAccountMailboxes(address);
+        if (!primary) throw new Error(`No IMAP mailbox for account "${address}"`);
+        return this.subscribeImapFolders(primary.id, folders);
+    }
+
+    async removeBackendContainer(driver, address, name) {
+        if (driver !== 'imap') throw new Error(`Backend "${driver}/${address}" has no containers`);
+        const target = (await this.#imapAccountMailboxes(address)).find((m) => (m.folder || 'INBOX') === name);
+        if (!target) throw new Error(`Container "${name}" not found on imap/${address}`);
+        return this.removeImapMailbox(target.id);
+    }
+
+    // Pre-create folder discovery — probe a connector with candidate creds
+    // before any instance exists (the "add account" flow).
+    async discoverBackendFolders(driver, config = {}) {
+        if (driver !== 'imap') throw new Error(`Driver "${driver}" does not support folder discovery`);
+        return this.discoverImapFolders(config);
+    }
+
+    /**
      * Describe a document's locations for a Destroy picker (which can have bytes
      * removed vs reference-dropped only).
      */
@@ -1205,15 +1425,6 @@ class Workspace extends EventEmitter {
         if (this.#storedIndex?.isRunning) return;
         this.#storedIndex = this.#buildStoredIndex();
         await this.#storedIndex.start();
-        // Drop+resync migration: the legacy /.incoming subtree was removed on
-        // this start, so re-file home docs under the new /.backends schema.
-        if (this.#backendsMigrated && this.isDataBackendEnabled(WorkspaceStoredIndex.HOME_STORED_BACKEND)) {
-            try {
-                this.#storedIndex.resyncInBackground(WorkspaceStoredIndex.HOME_STORED_BACKEND);
-            } catch (err) {
-                this.#logger.warn({ workspaceId: this.id, error: err.message }, 'Post-migration home resync failed to start');
-            }
-        }
         await this.#startMailIndex();
     }
 
@@ -1254,13 +1465,6 @@ class Workspace extends EventEmitter {
         // Forward the mail service's object:* / source:state / error events with
         // workspaceId + source stamped (same envelope as the db runtime events).
         this.#mailRuntimeBinding = this.#createRuntimeListener(this.#mailIndex, 'imap');
-        // Drop+resync migration: reset per-mailbox UID cursors so the initial
-        // sync re-fetches history and re-files email docs (checksum-deduped)
-        // under the new /.backends schema.
-        if (this.#backendsMigrated) {
-            await this.#mailIndex.resetSyncCursors().catch((err) =>
-                this.#logger.warn({ workspaceId: this.id, error: err.message }, 'Post-migration imap cursor reset failed'));
-        }
         await this.#mailIndex.start();
     }
 
@@ -1284,8 +1488,9 @@ class Workspace extends EventEmitter {
         return this.#mailIndex?.isRunning ? this.#mailIndex : this.#buildMailIndex();
     }
 
+    // IMAP wrappers backing the unified backend facade (listBackends / addBackend
+    // / syncBackend / containers). getImapStatus feeds the services status view.
     async listImapMailboxes() { return this.#mailReadonly().listMailboxes(); }
-    async getImapMailbox(id) { return this.#mailReadonly().getMailbox(id); }
     async getImapStatus() { return this.#mailReadonly().getImapStatus(); }
     async saveImapMailbox(input) { return (await this.#mail()).saveMailbox(input); }
     async removeImapMailbox(id) { return (await this.#mail()).removeMailbox(id); }
@@ -1293,9 +1498,6 @@ class Workspace extends EventEmitter {
     async listImapMailboxFolders(id) { return (await this.#mail()).listMailboxFolders(id); }
     async discoverImapFolders(input) { return (await this.#mail()).discoverFolders(input); }
     async subscribeImapFolders(id, folders) { return (await this.#mail()).subscribeFolders(id, folders); }
-    async syncImapMailbox(id) { return (await this.#mail()).syncMailbox(id); }
-    async startImapMailbox(id) { return (await this.#mail()).startMailbox(id); }
-    async stopImapMailbox(id) { return (await this.#mail()).stopMailbox(id); }
 
     // Service-level enable/disable for 'imap'.
     async enableImap() { await this.#startStoredIndex(); return this.getImapStatus(); }
@@ -1338,15 +1540,6 @@ class Workspace extends EventEmitter {
             return tree;
         }
 
-        // Migration: rename legacy names ('incoming', 'DirectoryTree') -> 'directory'
-        const defaultDirectoryTree = this.#db.getDefaultDirectoryTree();
-        if (defaultDirectoryTree?.type === Workspace.DIRECTORY_TYPE && ['incoming', 'DirectoryTree'].includes(defaultDirectoryTree.name)) {
-            await this.#db.renameTree(defaultDirectoryTree.id, Workspace.DIRECTORY_TREE_NAME);
-            const tree = this.#db.getTree(Workspace.DIRECTORY_TREE_NAME);
-            await this.#ensureBackendsTreeRoot(tree);
-            return tree;
-        }
-
         await this.#db.createTree(Workspace.DIRECTORY_TREE_NAME, Workspace.DIRECTORY_TYPE);
         const tree = this.#db.getTree(Workspace.DIRECTORY_TREE_NAME);
         await this.#ensureBackendsTreeRoot(tree);
@@ -1354,29 +1547,9 @@ class Workspace extends EventEmitter {
     }
 
     async #ensureBackendsTreeRoot(tree) {
-        // ── drop + resync migration ────────────────────────────────────────────
-        // Legacy /.incoming subtrees used ad-hoc path shapes; rebuilding them in
-        // place isn't worth the code. Drop the subtree (documents keep their
-        // checksums + data/backend/* features, NO purge) and let the enabled
-        // backends re-file everything under the /.backends schema on their next
-        // sync (#startStoredIndex / #startMailIndex consume #backendsMigrated).
-        if (typeof tree.pathExists === 'function' && tree.pathExists(Workspace.LEGACY_BACKENDS_PATH)) {
-            this.#logger.info({ workspaceId: this.id }, 'Migrating legacy /.incoming staging tree to /.backends (drop + resync)');
-            if (typeof tree.unlockPath === 'function') {
-                await tree.unlockPath(Workspace.LEGACY_BACKENDS_PATH, Workspace.LEGACY_INCOMING_LOCK_ID, { recursive: true, system: true })
-                    .catch((err) => this.#logger.warn({ workspaceId: this.id, error: err.message }, 'Failed to unlock legacy incoming tree'));
-            }
-            const removed = await tree.removePath(Workspace.LEGACY_BACKENDS_PATH, true).catch((err) => ({ error: err.message }));
-            if (removed?.error) {
-                this.#logger.warn({ workspaceId: this.id, error: removed.error }, 'Failed to drop legacy /.incoming subtree');
-            } else {
-                this.#backendsMigrated = true;
-            }
-        }
-
-        // ── seed + lock the /.backends root (idempotent every start) ──────────
-        // Only the root node is protected from structural ops; system:* locks do
-        // not cascade, so backend subfolders stay deletable (remove/purge/destroy).
+        // Seed + lock the /.backends root (idempotent every start). Only the root
+        // node is protected from structural ops; system:* locks do not cascade,
+        // so backend subfolders stay deletable (remove/purge/destroy).
         await tree.insertPath(Workspace.BACKENDS_PATH, { ignoreLocks: true });
         if (typeof tree.lockPath !== 'function') return;
         await tree.lockPath(Workspace.BACKENDS_PATH, Workspace.BACKENDS_LOCK_ID);

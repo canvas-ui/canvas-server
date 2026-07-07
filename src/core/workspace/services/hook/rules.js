@@ -100,7 +100,7 @@ function matchUrl(classification, matcher) {
     if (!matcher || typeof matcher !== 'object') { return false; }
     if (matcher.host !== undefined && !asArray(matcher.host).some((h) => classification.hostMatches(h))) { return false; }
     if (matcher.prefix !== undefined && !(classification.url || '').toLowerCase().startsWith(String(matcher.prefix).toLowerCase())) { return false; }
-    if (matcher.contains !== undefined && !classification.urlMatches(matcher.contains)) { return false; }
+    if (matcher.contains !== undefined && !asArray(matcher.contains).some((c) => classification.urlMatches(c))) { return false; }
     if (matcher.regex !== undefined && !classification.urlMatches(safeRegex(matcher.regex))) { return false; }
     return true;
 }

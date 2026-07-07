@@ -17,6 +17,7 @@ import { parseLocationUrl } from '../../services/synapsd/src/utils/path-helpers.
 
 // Sub-modules
 import { WorkspaceTokens } from './lib/WorkspaceTokens.js';
+import { classifyDocument } from './lib/classifier.js';
 import { WorkspaceStoredIndex } from './lib/WorkspaceStoredIndex.js';
 import { WorkspaceMailIndex } from './services/imap/index.js';
 
@@ -496,25 +497,20 @@ class Workspace extends EventEmitter {
         const updatedAt = doc.updatedAt || new Date().toISOString();
         const contentType = doc.metadata?.contentType || null;
         const chunkOpts = doc.indexOptions?.embeddingOptions?.chunking || {};
-        const hasBlob = Array.isArray(doc.locations) && doc.locations.length > 0;
-        const isFile = schema === 'data/abstraction/file';
+        const classification = classifyDocument(doc);
 
-        if (isFile) {
+        if (classification.isFile()) {
             // Byte blob: only text/image content is embeddable; everything else
             // (pdf, octet-stream, …) is a deliberate skip until a decoder/CLIP
             // model exists. Bytes must be server-resident (device file:// throws).
-            if (!hasBlob || !contentType) { return { skip: true, schema, updatedAt, contentType }; }
-            if (/^image\//.test(contentType)) {
-                const resolved = await this.resolveDocument(doc).catch(() => null);
-                if (!resolved?.buffer) { return { skip: true, schema, updatedAt, contentType }; }
-                return { modality: 'image', schema, updatedAt, bytes: resolved.buffer, contentType };
-            }
-            if (/^text\//.test(contentType)) {
-                const resolved = await this.resolveDocument(doc).catch(() => null);
-                if (!resolved?.buffer) { return { skip: true, schema, updatedAt, contentType }; }
-                return { modality: 'text', schema, updatedAt, text: resolved.buffer.toString('utf8'), contentType, chunkOpts };
-            }
-            return { skip: true, schema, updatedAt, contentType };
+            if (!classification.isBlob() || !contentType) { return { skip: true, schema, updatedAt, contentType }; }
+            const modality = classification.embeddingModality();
+            if (!modality) { return { skip: true, schema, updatedAt, contentType }; }
+            const resolved = await this.resolveDocument(doc).catch(() => null);
+            if (!resolved?.buffer) { return { skip: true, schema, updatedAt, contentType }; }
+            return modality === 'image'
+                ? { modality, schema, updatedAt, bytes: resolved.buffer, contentType }
+                : { modality, schema, updatedAt, text: resolved.buffer.toString('utf8'), contentType, chunkOpts };
         }
 
         // JSON abstraction (note, etc.) → the text the doc exposes for embedding.

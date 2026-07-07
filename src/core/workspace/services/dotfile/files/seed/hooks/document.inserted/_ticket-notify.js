@@ -26,12 +26,13 @@ const RULES = [
 // Coalesce mail-sync bursts: one run per event burst instead of one per message.
 export const debounce = 2000;
 
-export default async function hook({ payloads, agent, notify, logger }) {
+export default async function hook({ payloads, classify, agent, notify, logger }) {
   for (const payload of payloads) {
+    const c = classify(payload);
     const doc = payload?.document;
-    if (!doc?.id || !doc.schema?.includes('email')) { continue; }
+    if (!doc?.id || !c.isEmail()) { continue; }
 
-    const subject = String(doc.data?.subject || '');
+    const subject = c.subject || '';
     for (const rule of RULES) {
       if (!subject.toLowerCase().includes(rule.subject.toLowerCase())) { continue; }
 

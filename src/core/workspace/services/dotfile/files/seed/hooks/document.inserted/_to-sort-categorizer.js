@@ -7,15 +7,9 @@
 
 export const debounce = 3000;
 
-function landedInToSort(payload) {
-  const ctx = payload?.context;
-  const paths = ctx?.paths || (ctx?.path ? [ctx.path] : []);
-  return paths.some((p) => String(p).startsWith('/to-sort'));
-}
-
-export default async function hook({ payloads, workspace, agent, logger }) {
+export default async function hook({ payloads, classify, workspace, agent, logger }) {
   const ids = payloads
-    .filter(landedInToSort)
+    .filter((p) => classify(p).inPath('/to-sort'))
     .flatMap((p) => p?.ids || (p?.id != null ? [p.id] : []));
   if (ids.length === 0) { return; }
 

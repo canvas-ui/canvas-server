@@ -1,0 +1,73 @@
+{
+  "$schema": "canvas.hook-rules/v1",
+  "$comment": "Declarative hook rules — the no-code companion to JS hooks. Rename to rules.json (or drop files into hooks/rules/*.json) to activate. `when` keys AND together; give a key an array for OR. Every matching rule fires. Matchers: event (required), schema, path (prefix), url (substring or {host,prefix,contains,regex}), from, subject (substring or {equals,contains,startsWith,regex}), mime ('image/*' globs). Actions: link, tag, agent, notify, script, emit. `{{doc.data.subject}}`-style templates work in agent prompts, notify messages and script args.",
+  "rules": [
+    {
+      "id": "youtube-to-media",
+      "enabled": true,
+      "description": "File YouTube tabs under /media/youtube and tag them",
+      "when": {
+        "event": "document.inserted",
+        "schema": "tab",
+        "url": { "host": "youtube.com" }
+      },
+      "then": [
+        { "action": "link", "paths": ["/media/youtube"], "tags": ["custom/media/video"] }
+      ]
+    },
+    {
+      "id": "dc-migration-mail",
+      "enabled": true,
+      "description": "Emails about the DC migration land under /projects/dc-migration",
+      "when": {
+        "event": "document.inserted",
+        "schema": "email",
+        "from": "foo@bar.baz",
+        "subject": { "contains": "dc migration" }
+      },
+      "then": [
+        { "action": "link", "paths": ["/projects/dc-migration"] }
+      ]
+    },
+    {
+      "id": "urgent-mail-assessor",
+      "enabled": false,
+      "description": "Ask an agent to assess urgent mail and ping me on my default channel",
+      "when": {
+        "event": "document.inserted",
+        "schema": "email",
+        "subject": ["urgent", "outage"]
+      },
+      "then": [
+        { "action": "agent", "slug": "assistant", "prompt": "An email arrived from {{doc.data.from}} with subject \"{{doc.data.subject}}\". Assess whether it needs my attention right now and reply with one short sentence." },
+        { "action": "notify", "message": "[canvas] urgent mail: {{doc.data.subject}}" }
+      ]
+    },
+    {
+      "id": "pdf-links-to-read",
+      "enabled": false,
+      "description": "Links pointing at PDFs get filed to /to-read",
+      "when": {
+        "event": "document.inserted",
+        "schema": "tab",
+        "url": { "regex": "\\.pdf($|\\?)" }
+      },
+      "then": [
+        { "action": "link", "paths": ["/to-read"], "tags": ["custom/format/pdf"] }
+      ]
+    },
+    {
+      "id": "image-files-run-script",
+      "enabled": false,
+      "description": "Run a git/scripts helper for every indexed image blob",
+      "when": {
+        "event": "document.inserted",
+        "schema": "file",
+        "mime": "image/*"
+      },
+      "then": [
+        { "action": "script", "path": "scripts/on-image.sh", "args": ["{{doc.id}}"] }
+      ]
+    }
+  ]
+}

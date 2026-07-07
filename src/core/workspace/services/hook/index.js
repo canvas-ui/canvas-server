@@ -5,6 +5,8 @@ import fs from 'fs';
 import path from 'path';
 import { pathToFileURL } from 'url';
 import { createLogger } from '../../../../utils/log.js';
+import { classifyDocument } from '../../lib/classifier.js';
+import { resolveRuleFiles, loadRuleFile, matchRule, executeRuleActions } from './rules.js';
 
 const logger = createLogger('hook-service');
 
@@ -22,6 +24,7 @@ class HookService extends EventEmitter {
     #workspaceListeners = new Map();
     #recentDispatches = new Map();
     #hookModuleCache = new Map(); // hookPath -> { mtimeMs, run, debounce }
+    #ruleFileCache = new Map(); // filePath -> { mtimeMs, rules }
     #debounce = new Map(); // key -> { timer, payloads }
     #initialized = false;
 
@@ -119,6 +122,7 @@ class HookService extends EventEmitter {
         }
 
         promises.push(this.#runWorkspaceHook(workspace, eventName, payload));
+        promises.push(this.#runWorkspaceRules(workspace, eventName, payload));
 
         await Promise.allSettled(promises);
     }
@@ -149,6 +153,27 @@ class HookService extends EventEmitter {
         await Promise.allSettled(
             hookFiles.map((hookPath) => this.#dispatchHookFile(hookPath, workspace, eventName, payload))
         );
+    }
+
+    // Declarative rules: rules.json + rules/*.json evaluated against the
+    // event's classified document. Runs alongside JS hooks with no precedence;
+    // every matching rule fires (no first-match-wins).
+    async #runWorkspaceRules(workspace, eventName, payload) {
+        const hooksRoot = workspace.hooksPath || path.join(workspace.rootPath, 'hooks');
+        const ruleFiles = resolveRuleFiles(hooksRoot);
+        if (ruleFiles.length === 0) { return; }
+
+        const classification = classifyDocument(payload?.document, payload);
+        let context = null;
+
+        for (const filePath of ruleFiles) {
+            for (const rule of loadRuleFile(filePath, this.#ruleFileCache, logger)) {
+                if (!matchRule(rule, eventName, classification)) { continue; }
+                context = context || this.#buildHookContext(workspace, eventName, payload);
+                logger.debug(`Rule ${rule.id || '?'} matched ${eventName} in workspace ${workspace.id}`);
+                await executeRuleActions(rule, context, logger);
+            }
+        }
     }
 
     // Collect every enabled handler for an event: the single `{event}.js` file
@@ -291,6 +316,13 @@ class HookService extends EventEmitter {
             find: async (spec = {}) => workspace.search(spec),
             agent: this.#buildAgentHelper(workspace),
             notify: this.#buildNotifyHelper(workspace),
+            // classify() → the event's document; classify(otherPayload) for a
+            // debounced burst element; classify(rawDoc) for a fetched document.
+            classify: (target = payload) => {
+                if (target?.document) { return classifyDocument(target.document, target); }
+                if (target?.schema) { return classifyDocument(target, null); }
+                return classifyDocument(null, target);
+            },
             link: async (documentId, contexts = []) => {
                 const targets = Array.isArray(contexts) ? contexts : [contexts];
                 for (const context of targets.filter(Boolean)) {

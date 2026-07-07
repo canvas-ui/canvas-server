@@ -5,6 +5,9 @@
 // Optional: `export const debounce = 2000;` coalesces a burst of events into a
 // single run carrying all of them in `payloads` (handy when the app inserts N
 // documents as singletons instead of one batch event).
+//
+// Simple match→action automations need no JS at all: drop declarative rules
+// into `rules.json` (or `rules/*.json`) — see `_rules.json` for the format.
 
 export default async function hook({
   event,          // { name, workspaceId, payload, timestamp, payloads? }
@@ -25,6 +28,13 @@ export default async function hook({
   find,           // find(spec) -> search
   link,           // link(documentId, contextSelector | [selectors])
   agent,          // agent(slug, prompt, options) -> assistant text reply
+  notify,         // notify(message, { channel? }) -> message the workspace owner
+  classify,       // classify() -> classification of the event's document:
+                  //   c.isTab()/isEmail()/isFile()/isNote(), c.isLink()/isYoutube()/
+                  //   isArxiv()/isImageUrl(), c.isImage()/isPdf()/mimeMatches('image/*'),
+                  //   c.inPath('/to-sort'), c.url/host/from/subject/paths
+                  // classify(otherPayload) for debounced bursts, classify(doc) for
+                  // documents fetched via get().
 }) {
   logger.debug(`Hook fired: ${eventName} in workspace ${workspace.id}`);
 

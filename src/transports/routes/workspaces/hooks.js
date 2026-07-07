@@ -23,8 +23,20 @@ function validateHookPath(inputPath) {
   }
 
   const normalized = segments.join('/');
+
+  // Declarative rules: `rules.json` plus one level of `rules/{name}.json`.
+  // A leading underscore (disabled file) is allowed for toggling, like hooks.
+  if (normalized.endsWith('.json')) {
+    const isRulesFile = /^_?rules\.json$/.test(normalized)
+      || (normalized.startsWith('rules/') && segments.length === 2);
+    if (!isRulesFile) {
+      return { error: 'JSON files must be rules.json or rules/{name}.json' };
+    }
+    return { path: normalized };
+  }
+
   if (!normalized.endsWith('.js')) {
-    return { error: 'Only .js hook files are allowed' };
+    return { error: 'Only .js hook files and rules .json files are allowed' };
   }
 
   // Allowed shapes: `{event}.js` (single handler), `{event}/{name}.js`
@@ -44,13 +56,17 @@ async function statEntry(basePath, relativePath) {
 
 // Lists root `{event}.js` files plus one level of subdirectory handlers
 // (`{event}/*.js` and `lib/*.js`). Handlers for an event are grouped under its
-// directory; clients render them grouped by event name.
+// directory; clients render them grouped by event name. Declarative rule files
+// (`rules.json`, `rules/*.json`) are included alongside.
 async function listHookFiles(basePath) {
   const dirents = await fs.readdir(basePath, { withFileTypes: true });
   const entries = [];
+  const isListable = (name, dirName = null) => name.endsWith('.js')
+    || (dirName === null && /^_?rules\.json$/.test(name))
+    || (dirName === 'rules' && name.endsWith('.json'));
 
   for (const dirent of dirents) {
-    if (dirent.isFile() && dirent.name.endsWith('.js')) {
+    if (dirent.isFile() && isListable(dirent.name)) {
       entries.push(await statEntry(basePath, dirent.name));
       continue;
     }
@@ -58,7 +74,7 @@ async function listHookFiles(basePath) {
 
     const subDirents = await fs.readdir(path.join(basePath, dirent.name), { withFileTypes: true });
     for (const sub of subDirents) {
-      if (sub.isFile() && sub.name.endsWith('.js')) {
+      if (sub.isFile() && isListable(sub.name, dirent.name)) {
         entries.push(await statEntry(basePath, `${dirent.name}/${sub.name}`));
       }
     }

@@ -13,44 +13,6 @@ Lets update our current webui @src/ui/web as follows:
 ### Contexts
 - Load icon + color from bound path, default to icon + color of a bound workspace
 
-### Workspace DataBackends
-
-We finally need to start working with our data backends. These changes mostly relate to the frontend/webui
-- Storage configuration is per-workspace and should be exposed as a workspace-bound settings section
-- Backends are exposed in the webUI based on the objects locations: [] array as follows:
-  - A unified, easily readable, UX-friendly tabbed object propeperties card element appearing next to the object(or slide-in in mobile/small screem view) with the following tabs
-    - View/Edit 
-      - Tags should list existing cutom/tag/* bitmaps
-    - Metadata (Our redefined and streamlined details window)
-    - JSON (with a Copy to clipboard button)
-    - Synapses
-      - Context tree
-      - Directory tree
-      - Documents
-    - Backends
-      - List of backends where an object is stored at(for plain JSON objects stored in the workspace db, we should show workspace:db)
-        - We should support a tickbox to sync to a backend / delete to delete for blobs but this would require stored syncd so lets not add it yet
-        - We should support removing a blob from a backend
-          - If no backend is left to remove from user should be asked to confirm removal from index, but we probably should support leaving the index in-tact even if no physical copy of the raw bytes exists in the index
-        - Example paths
-          - workspace:db
-          - workspace:data/key?
-          - s3/bucket/path
-          - <backend-name>/<path> 
-
-We should also create applets/widgets or per-filetype reusable webui components to properly display file content, one place we need to use them besides the content or document details/open-to-the-side area is toolbox and canvases.
-- Plaintext documents
-  - We need to show/render nice(r) markdown files
-  - aand plaintext files in general
-- PDFs (esp the open-to-the side view)
-- Videos, a youtube video iframe in-page would be nice, we'll need it for our toolbox later anyway
-- Pictures/photos
-  - Photo thumbnails/preview => How should we deal with thumbnails, should the server support "dynamic" thumbnails cached by the cacache-based cache driver or something even more fancy? I'd like to avoid storing them as normal docs - trashing the main index, this probably related to video previews too(ffmpeg on the server could generate them off-thread but we'd probably need to store their locations in a specific metadata field in db OR be able to infer them programmatically)
-  - Related, in the canvas element we may want to add a flickr-like gallery view widget that would display all pictures(maybe videos / previews too?) returned by the canvases current context
-    - Related - canvases currently have terrible support for mobile screens mostly due to not autofilling the area properly
-
-One bug related to starage in general: A shared canvas can no-longer retrieve documents without authentication
-
 ## Workspace Hooks
 
 One of the major functionalities are workspace hooks

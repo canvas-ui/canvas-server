@@ -208,3 +208,76 @@ export default async function hook({ classify }) {
         assert.deepEqual(result, { isTab: true, isYoutube: true, inInbox: true });
     });
 });
+
+describe('HookService batch fan-out', () => {
+    let rootPath;
+    let workspace;
+    let service;
+    let linkCalls;
+    let hookRuns;
+
+    const docs = {
+        1: { id: 1, schema: 'data/abstraction/email', data: { from: 'boss@corp.tld', subject: 'urgent' } },
+        2: { id: 2, schema: 'data/abstraction/email', data: { from: 'news@list.tld', subject: 'weekly' } },
+    };
+
+    beforeEach(() => {
+        rootPath = fs.mkdtempSync(path.join(os.tmpdir(), 'hook-batch-'));
+        workspace = createWorkspace('workspace-batch', rootPath);
+        fs.mkdirSync(workspace.hooksPath, { recursive: true });
+        linkCalls = [];
+        hookRuns = [];
+        workspace.getContextTreeSelector = (p) => ({ type: 'context', path: p });
+        workspace.link = async (id, opts) => linkCalls.push({ id, opts });
+        workspace.get = async (id) => docs[id] || null;
+        service = new HookService({ workspaceManager: { getWorkspace: async () => workspace } });
+        service.trackWorkspace(workspace);
+    });
+
+    afterEach(() => {
+        service.untrackWorkspace(workspace.id);
+        fs.rmSync(rootPath, { recursive: true, force: true });
+    });
+
+    test('document.inserted.batch fans out to singular hooks + rules per doc', async () => {
+        // singular JS hook file
+        fs.writeFileSync(path.join(workspace.hooksPath, 'document.inserted.js'),
+            'export default async (ctx) => { globalThis.__batchHookRuns.push(ctx.payload); };');
+        globalThis.__batchHookRuns = hookRuns;
+        // singular rule matching one of the two emails
+        fs.writeFileSync(path.join(workspace.hooksPath, 'rules.json'), JSON.stringify({ rules: [{
+            id: 'boss-mail',
+            when: { event: 'document.inserted', schema: 'email', from: 'boss@corp.tld' },
+            then: [{ action: 'link', paths: ['/work/urgent'] }],
+        }] }));
+
+        workspace.emit('document.inserted.batch', {
+            ids: [1, 2], count: 2,
+            directory: { type: 'directory', path: '/.backends/imap/a@b.c/inbox' },
+            context: null, source: 'db',
+        });
+        await new Promise(resolve => setTimeout(resolve, 50));
+
+        // hook ran once per document with the full doc + batch flag
+        assert.equal(hookRuns.length, 2);
+        assert.deepEqual(hookRuns.map((p) => p.document.id).sort(), [1, 2]);
+        assert.ok(hookRuns.every((p) => p.batch === true && p.batchCount === 2));
+        // rule matched only the boss email
+        assert.equal(linkCalls.length, 1);
+        assert.equal(linkCalls[0].id, 1);
+        delete globalThis.__batchHookRuns;
+    });
+
+    test('doc-less singular compat emission (batch:true) is skipped', async () => {
+        fs.writeFileSync(path.join(workspace.hooksPath, 'document.inserted.js'),
+            'export default async (ctx) => { globalThis.__batchCompatRuns.push(ctx.payload); };');
+        const runs = [];
+        globalThis.__batchCompatRuns = runs;
+
+        workspace.emit('document.inserted', { ids: [1, 2], count: 2, batch: true, source: 'db' });
+        await new Promise(resolve => setTimeout(resolve, 50));
+
+        assert.equal(runs.length, 0);
+        delete globalThis.__batchCompatRuns;
+    });
+});

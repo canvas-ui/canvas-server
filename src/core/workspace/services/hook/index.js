@@ -105,6 +105,11 @@ class HookService extends EventEmitter {
      */
     async dispatchEvent(eventName, payload, workspaceId) {
         if (payload?.source === 'hook') { return; }
+        // putMany's compat emission (singular event name, batch:true, ids only)
+        // carries no document — hooks/rules get their per-document dispatch via
+        // the .batch fan-out below. Skip it here to avoid a doc-less run PLUS a
+        // fanned-out run of the same hooks.
+        if ((eventName === 'document.inserted' || eventName === 'document.updated') && payload?.batch === true) { return; }
         if (this.#isDuplicateDispatch(eventName, payload, workspaceId)) { return; }
 
         logger.debug(`Dispatching event ${eventName} to ${this.#hooks.size} hooks`);
@@ -125,7 +130,48 @@ class HookService extends EventEmitter {
         promises.push(this.#runWorkspaceHook(workspace, eventName, payload));
         promises.push(this.#runWorkspaceRules(workspace, eventName, payload));
 
+        // Batch fan-out: batch events additionally re-dispatch as per-document
+        // singular events (full document loaded, batch:true stamped), so plain
+        // document.inserted hooks and declarative rules work unchanged for
+        // batch-ingested documents (imap sync, browser-extension batch sync).
+        const singularEvent = HookService.#BATCH_FANOUT[eventName];
+        if (singularEvent && Array.isArray(payload?.ids) && payload.ids.length > 0) {
+            promises.push(this.#fanOutBatch(workspace, singularEvent, payload));
+        }
+
         await Promise.allSettled(promises);
+    }
+
+    static #BATCH_FANOUT = {
+        'document.inserted.batch': 'document.inserted',
+        'document.updated.batch': 'document.updated',
+    };
+
+    // Load each batched document and run the workspace's singular hooks/rules
+    // for it, sequentially — a 50-message imap batch must not spawn 50
+    // concurrent hook chains (agents, scripts).
+    async #fanOutBatch(workspace, eventName, batchPayload) {
+        for (const id of batchPayload.ids) {
+            let document = null;
+            try { document = await workspace.get(id); }
+            catch (err) { logger.debug(`Batch fan-out: failed to load doc ${id}: ${err.message}`); }
+            if (!document) { continue; }
+
+            const payload = {
+                id,
+                document,
+                context: batchPayload.context ?? null,
+                directory: batchPayload.directory ?? null,
+                batch: true,
+                batchCount: batchPayload.count ?? batchPayload.ids.length,
+                ...(batchPayload.workspaceId ? { workspaceId: batchPayload.workspaceId } : {}),
+                ...(batchPayload.source ? { source: batchPayload.source } : {}),
+            };
+            await Promise.allSettled([
+                this.#runWorkspaceHook(workspace, eventName, payload),
+                this.#runWorkspaceRules(workspace, eventName, payload),
+            ]);
+        }
     }
 
     #shouldRunHook(hook, eventName) {

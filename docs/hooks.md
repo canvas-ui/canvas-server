@@ -26,9 +26,9 @@ Hooks receive the canonical synapsd events re-emitted on the workspace
 
 | Event | Payload highlights |
 |---|---|
-| `document.inserted` | `id`, `document` (full parsed doc), `context`, `directory` |
+| `document.inserted` | `id`, `document` (full parsed doc), `context`, `directory`; for batch inserts also `batch: true`, `batchCount` |
 | `document.updated` | same |
-| `document.inserted.batch` / `document.updated.batch` | `{ ids, count, context, directory }` — one event per bulk op (e.g. browser-extension tab sync); fetch docs via `get(id)` + `classify(doc)`. The singular event also fires once with `{ ids, batch: true }` for older consumers. |
+| `document.inserted.batch` / `document.updated.batch` | `{ ids, count, context, directory }` — one event per bulk op (imap sync, browser-extension tab sync); fetch docs via `get(id)` + `classify(doc)` when you need them. |
 | `document.removed` / `document.deleted` (+ `.batch`) | ids |
 | `tree.path.inserted/moved/copied/removed/locked/unlocked` | `{ path, treeId }` |
 | `tree.created/renamed/deleted`, `tree.document.*` | tree/doc ids |
@@ -41,6 +41,28 @@ defined in `src/core/workspace/services/hook/meta.js` (`HOOK_EVENTS`).
 
 Payloads originating from hooks are stamped `source: 'hook'` and are never
 re-dispatched; a 1s window dedupes identical events.
+
+### Batch fan-out
+
+Bulk inserts (imap mail sync, browser-extension batch tab sync) are written
+with a single `putMany` and emit one `document.inserted.batch` event. The hook
+engine then **fans that batch out**: it loads each document and dispatches an
+ordinary `document.inserted` per doc — full `document` in the payload,
+`batch: true` and `batchCount` stamped — sequentially, so a 50-message sync
+does not spawn 50 concurrent hook chains.
+
+Rule of thumb:
+
+- **Per-document logic** (link an email by sender, download an image, tag a
+  tab): write a plain `document.inserted` hook or a declarative rule. It works
+  identically for single and batch inserts; check `payload.batch` if you want
+  to behave differently inside a bulk sync.
+- **Whole-batch logic** (categorize N tabs with one agent call, one summary
+  notification per sync): hook `document.inserted.batch` and work with `ids`.
+
+The legacy singular emission with `{ ids, batch: true }` (no document) is a
+compat signal for the ws bridge/embedd and is *not* dispatched to hooks or
+rules — you never see a doc-less `document.inserted`.
 
 ## File layout
 

@@ -4,7 +4,7 @@ import path from 'path';
 import { promises as fs } from 'fs';
 import ResponseObject from '../../ResponseObject.js';
 import { requireWorkspaceRead, requireWorkspaceWrite } from '../../middleware/workspace-acl.js';
-import { HOOK_EVENTS, HOOK_ACTIONS, CLASSIFIER_SURFACE, generateHookSkeleton } from '../../../core/workspace/services/hook/meta.js';
+import { HOOK_EVENTS, HOOK_ACTIONS, CLASSIFIER_SURFACE, HOOK_CONTEXT_API, generateHookSkeleton } from '../../../core/workspace/services/hook/meta.js';
 
 function normalizePathSegments(inputPath = '') {
   return String(inputPath || '')
@@ -131,6 +131,7 @@ export default async function workspaceHooksRoutes(fastify) {
       events: HOOK_EVENTS,
       actions: HOOK_ACTIONS.map(({ id, label, description }) => ({ id, label, description })),
       classifier: CLASSIFIER_SURFACE,
+      contextApi: HOOK_CONTEXT_API,
     }, 'Workspace hook metadata retrieved successfully');
     return reply.code(response.statusCode).send(response.getResponse());
   });

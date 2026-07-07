@@ -168,6 +168,28 @@ export const CLASSIFIER_SURFACE = Object.freeze({
     fields: ['url', 'parsedUrl', 'host', 'from', 'subject', 'mime', 'paths', 'schema', 'doc'],
 });
 
+// Hook context API — every key available on the `ctx` object a hook receives.
+// Served via GET /workspaces/:id/hooks/meta for the in-UI reference docs.
+export const HOOK_CONTEXT_API = Object.freeze([
+    { name: 'payload', signature: 'ctx.payload', description: 'The event payload. document.* events carry the full document (batch inserts fan out per document with batch:true + batchCount).' },
+    { name: 'payloads', signature: 'ctx.payloads', description: 'All payloads of a debounced burst (export const debounce = ms). Without debounce it is [payload].' },
+    { name: 'classify', signature: 'ctx.classify(target?)', description: 'Classify the event document (default) or another payload/raw doc. Returns predicates like isEmail()/isYoutube()/isPdf()/inPath() plus fields url/host/from/subject/mime/paths. Never throws.' },
+    { name: 'logger', signature: 'ctx.logger.debug|info|warn|error(msg)', description: 'Server logger. Output lands in the canvas-server log (debug level is hidden unless the server runs with debug logging).' },
+    { name: 'notify', signature: "await ctx.notify(message, { channel? })", description: "Send a message to the workspace owner via the messaging service. Delivers to the user's bound channel (slack, whatsapp, …) or their default; falls back to the console adapter (server log) when nothing is bound. NOT a web-UI toast (yet). Silently no-ops if messaging is unavailable." },
+    { name: 'agent', signature: "await ctx.agent(slug, prompt)", description: 'Prompt an agent by slug (auto-starts it) and return its text reply. Agents only get canvas_* tools if previously bound via PUT /agents/:id/access.' },
+    { name: 'insert', signature: 'await ctx.insert(document, { context?, directory?, features? })', description: "Insert a document. Emits a normal (source:'db') event — a hook inserting a doc that matches its own trigger loops; guard with classify()." },
+    { name: 'update', signature: 'await ctx.update(id, document, options?)', description: 'Update a document in place (same id).' },
+    { name: 'remove', signature: 'await ctx.remove(id, { context?, directory? })', description: 'Unlink a document from paths (index entry survives).' },
+    { name: 'deleteDocument', signature: 'await ctx.deleteDocument(id)', description: 'Hard-delete a document from the index.' },
+    { name: 'get', signature: 'await ctx.get(id)', description: 'Fetch one document by id (parsed).' },
+    { name: 'list', signature: 'await ctx.list(spec)', description: 'List documents ({ context, features, limit, order… }).' },
+    { name: 'find', signature: "await ctx.find({ query, … })", description: 'Full-text / hybrid search.' },
+    { name: 'link', signature: "await ctx.link(id, ['/path', …])", description: 'Link a document into one or more context paths (loop-safe: rules use emitEvent:false internally).' },
+    { name: 'emit', signature: "await ctx.emit(name, payload)", description: "Emit a custom workspace event, stamped source:'hook' so it never re-triggers hooks." },
+    { name: 'event', signature: 'ctx.event', description: '{ name, workspaceId, payload, timestamp } envelope.' },
+    { name: 'workspace / db / tree', signature: 'ctx.workspace, ctx.db, ctx.tree', description: 'Escape hatches: the Workspace instance, active synapsd db and default context tree (db/tree are null while the workspace is inactive).' },
+]);
+
 // ── Skeleton generator ───────────────────────────────────────────────────────
 
 const BASE_CONTEXT_KEYS = ['classify', 'payload', 'logger'];

@@ -1,7 +1,8 @@
 'use strict';
 
-import { lookup } from 'node:dns/promises';
+import dns from 'node:dns';
 import { isIP } from 'node:net';
+import { fetch as undiciFetch, Agent } from 'undici';
 import ResponseObject from '../ResponseObject.js';
 
 /**
@@ -13,13 +14,16 @@ import ResponseObject from '../ResponseObject.js';
  * streams it back same-origin.
  *
  * Scope is deliberately narrow (SSRF surface): https only, public addresses
- * only, response must be a PDF, capped size, no cookies forwarded.
+ * only, response must be a PDF, capped size, no cookies forwarded. The
+ * private-address check runs INSIDE the connection's DNS lookup (custom
+ * undici connector), so it also covers DNS rebinding (public at pre-check,
+ * private at connect) and every redirect hop — not just the initial URL.
  */
 
 const MAX_PDF_BYTES = 50 * 1024 * 1024;
 const FETCH_TIMEOUT_MS = 30_000;
 
-function isPrivateAddress(address) {
+export function isPrivateAddress(address) {
   if (address.includes(':')) {
     const lower = address.toLowerCase();
     return lower === '::1'
@@ -35,7 +39,7 @@ function isPrivateAddress(address) {
     || (a === 169 && b === 254);
 }
 
-async function assertPublicHttpsUrl(rawUrl) {
+export function assertPublicHttpsUrl(rawUrl) {
   let url;
   try {
     url = new URL(rawUrl);
@@ -48,19 +52,58 @@ async function assertPublicHttpsUrl(rawUrl) {
   if (url.username || url.password) {
     throw new Error('Credentials in URL are not allowed');
   }
-  const hostname = url.hostname;
-  if (isIP(hostname)) {
-    if (isPrivateAddress(hostname)) { throw new Error('Address not allowed'); }
-    return url;
+  // URL.hostname keeps the brackets on IPv6 literals ('[::1]') — strip them
+  // or isIP() misses the literal entirely.
+  const hostname = url.hostname.replace(/^\[|\]$/g, '');
+  if (isIP(hostname) && isPrivateAddress(hostname)) {
+    throw new Error('Address not allowed');
   }
   if (hostname === 'localhost' || hostname.endsWith('.local') || hostname.endsWith('.internal')) {
     throw new Error('Address not allowed');
   }
-  const resolved = await lookup(hostname, { all: true }).catch(() => []);
-  if (!resolved.length || resolved.some((r) => isPrivateAddress(r.address))) {
-    throw new Error('Address not allowed');
-  }
   return url;
+}
+
+// DNS lookup used for the ACTUAL connection: any resolved private address
+// aborts the connect. Because the check and the connection share one
+// resolution, a rebinding attacker has no gap to race, and redirect targets
+// (same dispatcher) are validated too.
+function guardedLookup(hostname, options, callback) {
+  dns.lookup(hostname, { ...options, all: true }, (err, addresses) => {
+    if (err) { return callback(err); }
+    const list = Array.isArray(addresses) ? addresses : [{ address: addresses, family: 4 }];
+    if (!list.length || list.some((entry) => isPrivateAddress(entry.address))) {
+      return callback(new Error('Address not allowed'));
+    }
+    if (options?.all) { return callback(null, list); }
+    return callback(null, list[0].address, list[0].family);
+  });
+}
+
+export const guardedDispatcher = new Agent({ connect: { lookup: guardedLookup } });
+
+// Follow redirects manually so EVERY hop goes through assertPublicHttpsUrl —
+// the lookup guard never runs for IP-literal hosts (no DNS involved), so a
+// redirect to https://10.0.0.5/... would otherwise sail past it.
+export async function guardedFetch(rawUrl, { maxRedirects = 5, timeoutMs = FETCH_TIMEOUT_MS } = {}) {
+  let url = assertPublicHttpsUrl(rawUrl);
+  for (let hop = 0; hop <= maxRedirects; hop++) {
+    const res = await undiciFetch(url, {
+      dispatcher: guardedDispatcher,
+      redirect: 'manual',
+      signal: AbortSignal.timeout(timeoutMs),
+      headers: { accept: 'application/pdf,*/*' },
+    });
+    if ([301, 302, 303, 307, 308].includes(res.status)) {
+      const location = res.headers.get('location');
+      if (!location) { return res; }
+      await res.body?.cancel().catch(() => {});
+      url = assertPublicHttpsUrl(new URL(location, url).href);
+      continue;
+    }
+    return res;
+  }
+  throw new Error('Too many redirects');
 }
 
 export default async function pdfProxyRoutes(fastify) {
@@ -74,20 +117,16 @@ export default async function pdfProxyRoutes(fastify) {
       },
     },
   }, async (request, reply) => {
-    let url;
     try {
-      url = await assertPublicHttpsUrl(request.query.url);
+      assertPublicHttpsUrl(request.query.url);
     } catch (error) {
       const response = new ResponseObject().badRequest(error.message);
       return reply.code(response.statusCode).send(response.getResponse());
     }
+    const url = request.query.url;
 
     try {
-      const upstream = await fetch(url, {
-        redirect: 'follow',
-        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-        headers: { accept: 'application/pdf,*/*' },
-      });
+      const upstream = await guardedFetch(url);
       if (!upstream.ok) {
         const response = new ResponseObject().badRequest(`Upstream responded ${upstream.status}`);
         return reply.code(response.statusCode).send(response.getResponse());

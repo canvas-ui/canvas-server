@@ -15,6 +15,23 @@ We **need** to replace those bluish ie6 like document list/document icons with s
 
 ---
 
+
+CORS proxy or "fetch-through" proxy
+New `src/transports/routes/pdf-proxy.js`  endpoint for `/proxy/pdf` 
+with `?url=`
+
+To add/eval proxy_cache on /rest/v2/proxy/pdf to get CDN-ish caching for free
+A future
+  /proxy/preview for other types is the same call with a different content allowlist (and
+  that allowlist matters: proxying arbitrary HTML same-origin would let hostile pages
+  into your origin context — stick to passive media: images, PDF, audio/video). Also
+  worth knowing you already have the ingest-side alternative for anything you want to
+  keep: fetch-url.sh + stored. Proxy = preview without commitment; ingest = preview with
+  retention.
+
+
+---
+
 ## Workspace Hooks
 
 One of the major functionalities are workspace hooks

@@ -7,6 +7,7 @@ import { pathToFileURL } from 'url';
 import { createLogger } from '../../../../utils/log.js';
 import { classifyDocument } from '../../lib/classifier.js';
 import { resolveRuleFiles, loadRuleFile, matchRule, executeRuleActions } from './rules.js';
+import { isDisabledFile } from './naming.js';
 
 const logger = createLogger('hook-service');
 
@@ -177,9 +178,9 @@ class HookService extends EventEmitter {
     }
 
     // Collect every enabled handler for an event: the single `{event}.js` file
-    // plus every `*.js` inside the `{event}/` directory. A leading underscore
-    // (`_name.js`) marks a hook as disabled (the webui toggle renames it); `lib/`
-    // holds shared modules and is never auto-run.
+    // plus every `*.js` inside the `{event}/` directory. Files prefixed
+    // `example-`, `disabled-` or `_` are inactive (the UI toggle renames them);
+    // `lib/` holds shared modules and is never auto-run.
     #resolveHookFiles(hooksRoot, eventName) {
         const files = [];
 
@@ -189,7 +190,7 @@ class HookService extends EventEmitter {
         const eventDir = path.join(hooksRoot, eventName);
         try {
             for (const entry of fs.readdirSync(eventDir, { withFileTypes: true })) {
-                if (entry.isFile() && entry.name.endsWith('.js') && !entry.name.startsWith('_')) {
+                if (entry.isFile() && entry.name.endsWith('.js') && !isDisabledFile(entry.name)) {
                     files.push(path.join(eventDir, entry.name));
                 }
             }

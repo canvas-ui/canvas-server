@@ -3,14 +3,15 @@
 import fs from 'fs';
 import path from 'path';
 import { spawn } from 'child_process';
+import { isDisabledFile } from './naming.js';
 
 /**
  * Declarative hook rules (canvas.hook-rules/v1).
  *
  * Rules live next to JS hooks in `{WORKSPACE_ROOT}/git/hooks` as `rules.json`
- * plus `rules/*.json` (merged in filename sort order). A leading underscore
- * disables a file (same convention as JS hooks); a rule with `enabled: false`
- * is skipped individually.
+ * plus `rules/*.json` (merged in filename sort order). An `example-`,
+ * `disabled-` or `_` prefix deactivates a file (same convention as JS hooks);
+ * a rule with `enabled: false` is skipped individually.
  *
  * Rule shape:
  *   { id, enabled?, description?, when: { event, schema?, path?, url?, from?,
@@ -34,7 +35,7 @@ export function resolveRuleFiles(hooksRoot) {
     const rulesDir = path.join(hooksRoot, 'rules');
     try {
         const entries = fs.readdirSync(rulesDir, { withFileTypes: true })
-            .filter((e) => e.isFile() && e.name.endsWith('.json') && !e.name.startsWith('_'))
+            .filter((e) => e.isFile() && e.name.endsWith('.json') && !isDisabledFile(e.name))
             .map((e) => path.join(rulesDir, e.name))
             .sort();
         files.push(...entries);

@@ -2,7 +2,7 @@
 // Enable by renaming to `email-linker.js`.
 //
 // Tip: simple sender/subject → path rules like these need no code at all —
-// see `hooks/_rules.json` for the declarative equivalent. Use a JS hook when
+// see `hooks/example-rules.json` for the declarative equivalent. Use a JS hook when
 // you need logic the rule matchers can't express.
 
 const RULES = [

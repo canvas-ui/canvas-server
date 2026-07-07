@@ -29,7 +29,14 @@ Hooks receive the canonical synapsd events re-emitted on the workspace
 | `document.inserted` | `id`, `document` (full parsed doc), `context`, `directory` |
 | `document.updated` | same |
 | `document.removed` / `document.deleted` (+ `.batch`) | ids |
-| `tree.*`, `membership.changed`, workspace lifecycle events | varies (often id-only) |
+| `tree.path.inserted/moved/copied/removed/locked/unlocked` | `{ path, treeId }` |
+| `tree.created/renamed/deleted`, `tree.document.*` | tree/doc ids |
+| `membership.changed` | `{ changes: [{ docId, op, keys }] }` |
+| `started`, `stopped`, `status.changed`, `dataBackends.changed`, `services.changed`, `links.changed` | workspace lifecycle/config |
+
+The machine-readable catalog (names, payload shapes, whether the payload
+carries a full document) is served by `GET /workspaces/:id/hooks/meta` and
+defined in `src/core/workspace/services/hook/meta.js` (`HOOK_EVENTS`).
 
 Payloads originating from hooks are stamped `source: 'hook'` and are never
 re-dispatched; a 1s window dedupes identical events.
@@ -45,8 +52,10 @@ git/hooks/
   lib/                          # shared modules, never auto-run
 ```
 
-A leading underscore disables a file (`_foo.js`, `_rules.json`); the UI toggle
-just renames it.
+A filename prefix marks a file inactive — the engine skips `example-*`
+(shipped examples), `disabled-*` (user-disabled; the UI toggle adds/strips
+this) and legacy `_*`. Enabling = stripping the prefix
+(`src/core/workspace/services/hook/naming.js`).
 
 ## JS hook context
 
@@ -152,14 +161,37 @@ e.g. `{{doc.data.subject}}`. Missing paths render empty.
   un-matchable (e.g. the arxiv summarizer stores a note with no URL) or guard
   on schema/path.
 
+## Creating hooks (wizard)
+
+`Create > select event > select action(s) > edit skeleton`:
+
+- `GET /rest/v2/workspaces/:id/hooks/meta` — event catalog, action catalog
+  (link / insert / move-remove / agent / notify / script / emit) and the
+  classifier surface, for pickers.
+- `POST /rest/v2/workspaces/:id/hooks/generate` `{ event, name, actions[] }` —
+  writes an editable skeleton to `git/hooks/{event}/disabled-{name}.js`
+  (disabled so unedited TODO snippets can't fire) and commits it. 409 if the
+  file exists.
+- The webui hooks panel (`src/ui/web/src/components/workspace/hooks-panel.tsx`)
+  wraps both in a New Hook wizard; skeleton generation lives in
+  `src/core/workspace/services/hook/meta.js` (`generateHookSkeleton`).
+
 ## Management
 
 - REST: `GET/PUT/DELETE /rest/v2/workspaces/:id/hooks/*`
   (`src/transports/routes/workspaces/hooks.js`) — accepts `{event}.js`,
-  `{event}/{name}.js`, `lib/*.js`, `rules.json`, `rules/*.json`. Writes are
-  git-committed.
+  `{event}/{name}.js`, `lib/*.js`, `rules.json`, `rules/*.json` (inactive
+  prefixes allowed). Writes are git-committed.
 - CLI: `canvas ws hooks list|get|set|edit|push|clone|delete`.
-- Seeds: new workspaces receive the example hooks from
-  `src/core/workspace/services/dotfile/files/seed/hooks/` (youtube downloader
-  enabled; email-linker, to-sort categorizer, ticket-notify, arxiv summarizer,
-  image-url downloader and `_rules.json` shipped disabled).
+- Seeds: every example ships disabled with an `example-` prefix — the pairs
+  `youtube-downloader`+`incoming-metadata-linker` and `pinterest-downloader`+
+  `image-categorizer` (vision agent sorts images out of /to-sort), plus
+  `email-linker`, `to-sort-categorizer`, `ticket-notify`, `arxiv-summarizer`,
+  `image-url-downloader`, `api-reference` and `example-rules.json`
+  (`src/core/workspace/services/dotfile/files/seed/hooks/`).
+- Backfill: seeding normally happens only when the workspace git repo is first
+  initialized. `DotfileManager.backfillSeed` copies examples a workspace is
+  missing — non-destructively (a file whose enabled name already exists is
+  skipped) — and runs lazily on the hooks REST listing and on git-enable, so
+  pre-existing workspaces receive new examples the first time the hooks panel
+  is opened.

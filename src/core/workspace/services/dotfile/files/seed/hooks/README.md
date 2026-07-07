@@ -71,12 +71,26 @@ Simple match→action automations go into `rules.json` (or several files under
 `subject`, `mime`); give a key an array for OR. Every matching rule fires.
 Actions: `link`, `tag`, `agent`, `notify`, `script` (under `git/`), `emit`.
 Strings in prompts/messages/args support `{{doc.data.subject}}` templates.
-See `_rules.json` for a full example; rename it to `rules.json` to activate.
+See `example-rules.json` for a full example; rename it to `rules.json` to
+activate.
 
 ## Enable / disable
 
-A leading underscore disables a hook (`_youtube.js` is off, `youtube.js` is on).
-The settings UI toggle just renames the file. Disabled hooks ship as examples.
+A filename prefix marks a hook as inactive — the engine skips it:
+
+- `example-*` - shipped example (everything in a fresh workspace starts this way)
+- `disabled-*` - a hook you switched off (the UI toggle adds/strips this)
+- `_*` - legacy disable prefix, still honoured
+
+Enable a hook by stripping the prefix (`example-youtube-downloader.js` →
+`youtube-downloader.js`), via the settings UI toggle, or `git mv` + push.
+
+Shipped examples (all disabled): `youtube-downloader` + `incoming-metadata-linker`
+(pair: download videos, link the file), `pinterest-downloader` +
+`image-categorizer` (pair: fetch pinned images, vision agent sorts them from
+/to-sort), `email-linker`, `to-sort-categorizer`, `ticket-notify`,
+`arxiv-summarizer`, `image-url-downloader`, plus `example-rules.json`.
+Pairs need both halves enabled.
 
 ## Debounce
 

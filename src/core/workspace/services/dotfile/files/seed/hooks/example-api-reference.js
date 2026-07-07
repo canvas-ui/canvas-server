@@ -1,13 +1,13 @@
 // Reference hook: every value the context hands a handler. Disabled by the
-// leading underscore (the webui toggle adds/strips it; the engine skips `_*`).
-// Copy it to `{event}.js` or `{event}/<name>.js` to make it fire.
+// `example-` prefix (the engine skips `example-*`, `disabled-*` and `_*` files;
+// the webui toggle renames). Copy it to `{event}.js` or `{event}/<name>.js` to make it fire.
 //
 // Optional: `export const debounce = 2000;` coalesces a burst of events into a
 // single run carrying all of them in `payloads` (handy when the app inserts N
 // documents as singletons instead of one batch event).
 //
 // Simple match→action automations need no JS at all: drop declarative rules
-// into `rules.json` (or `rules/*.json`) — see `_rules.json` for the format.
+// into `rules.json` (or `rules/*.json`) — see `example-rules.json` for the format.
 
 export default async function hook({
   event,          // { name, workspaceId, payload, timestamp, payloads? }

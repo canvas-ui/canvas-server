@@ -2,19 +2,23 @@
 
 import path from 'path';
 import os from 'os';
+import { fileURLToPath } from 'url';
 import { existsSync } from 'fs';
 import * as fsPromises from 'fs/promises';
 import EventEmitter from 'eventemitter2';
 import { createLogger } from '../../../../utils/log.js';
 import { WORKSPACE_DIRECTORIES, WORKSPACE_GIT_BARE_DIR } from '../../lib/constants.js';
 import WorkspaceGitRepo from '../../lib/WorkspaceGitRepo.js';
+import { enabledName } from '../hook/naming.js';
 
 const logger = createLogger('dotfile-manager');
 const TEMPLATE_DIRNAME = 'files';
 const DEPLOY_PATHSPECS = ['hooks/', 'scripts/'];
 
 function getModuleDir() {
-    return path.dirname(new URL(import.meta.url).pathname);
+    // fileURLToPath, not URL.pathname: the latter leaves percent-encoding in
+    // place, breaking installs whose path contains spaces.
+    return path.dirname(fileURLToPath(import.meta.url));
 }
 
 async function copyTemplateInto(targetDir) {
@@ -30,15 +34,35 @@ async function copyTemplateInto(targetDir) {
     }
 }
 
+function getSeedRoot() {
+    return path.resolve(getModuleDir(), TEMPLATE_DIRNAME, 'seed');
+}
+
+async function chmodSeedScripts(workDir) {
+    const scriptsDir = path.join(workDir, 'scripts');
+    if (!existsSync(scriptsDir)) return;
+    for (const entry of await fsPromises.readdir(scriptsDir)) {
+        if (!entry.endsWith('.sh')) continue;
+        try { await fsPromises.chmod(path.join(scriptsDir, entry), 0o755); } catch (_) {}
+    }
+}
+
 // Copies the seed `hooks/` and `scripts/` into a fresh repo work tree.
 async function copySeedInto(workDir) {
-    const seedRoot = path.resolve(getModuleDir(), TEMPLATE_DIRNAME, 'seed');
+    const seedRoot = getSeedRoot();
     if (!existsSync(seedRoot)) return;
     await fsPromises.cp(seedRoot, workDir, { recursive: true, force: true });
-    const script = path.join(workDir, 'scripts', 'ytdl.sh');
-    if (existsSync(script)) {
-        try { await fsPromises.chmod(script, 0o755); } catch (_) {}
+    await chmodSeedScripts(workDir);
+}
+
+async function listFilesRecursive(root, base = root) {
+    const out = [];
+    for (const entry of await fsPromises.readdir(root, { withFileTypes: true })) {
+        const abs = path.join(root, entry.name);
+        if (entry.isDirectory()) { out.push(...await listFilesRecursive(abs, base)); }
+        else if (entry.isFile()) { out.push(path.relative(base, abs)); }
     }
+    return out;
 }
 
 /**
@@ -49,6 +73,8 @@ async function copySeedInto(workDir) {
  * WorkspaceGitRepo; this class only orchestrates and emits service events.
  */
 class DotfileManager extends EventEmitter {
+    #backfilledWorkspaces = new Set();
+
     constructor(options = {}) {
         super();
         this.workspaceManager = options.workspaceManager;
@@ -102,6 +128,9 @@ class DotfileManager extends EventEmitter {
 
         if (!hasRepo) {
             await this.initializeRepository(userId, workspace, userId);
+        } else {
+            await this.backfillSeed(workspace, userId).catch((err) =>
+                logger.debug(`Seed backfill failed for workspace ${workspace.id}: ${err.message}`));
         }
 
         this.emit('dotfiles.enabled', { workspaceId: workspace.id, path: repoPath });
@@ -153,6 +182,51 @@ class DotfileManager extends EventEmitter {
         await repo.deploy(DEPLOY_PATHSPECS);
         this.emit('repository.initialized', { userId, workspace: workspace.id, path: repoPath });
         return { success: true, message: 'Repository initialized successfully', path: repoPath };
+    }
+
+    // Copy seed example hooks/scripts a workspace is missing into its work
+    // tree. Seeding normally happens only when the git repo is first
+    // initialized, so workspaces created before an example existed never get
+    // it — this backfills them, never overwriting anything: a seed file is
+    // skipped when its directory already holds a file with the same enabled
+    // name (so a user's renamed/enabled `youtube.js` blocks
+    // `example-youtube.js` from reappearing). Runs once per workspace per
+    // process; called lazily from the hooks REST listing and from enable().
+    async backfillSeed(workspaceIdOrObject, requestingUserId) {
+        const workspace = await this.#resolveWorkspace(workspaceIdOrObject, requestingUserId);
+        if (this.#backfilledWorkspaces.has(workspace.id)) {
+            return { success: true, added: [] };
+        }
+        this.#backfilledWorkspaces.add(workspace.id);
+
+        const seedRoot = getSeedRoot();
+        if (!existsSync(seedRoot)) { return { success: true, added: [] }; }
+
+        const gitDir = this.#getGitDir(workspace);
+        const added = [];
+        for (const relPath of await listFilesRecursive(seedRoot)) {
+            const targetDir = path.join(gitDir, path.dirname(relPath));
+            const seedBase = path.basename(relPath);
+            const seedName = enabledName(seedBase);
+
+            let blocked = false;
+            if (existsSync(targetDir)) {
+                const existing = await fsPromises.readdir(targetDir);
+                blocked = existing.some((name) => enabledName(name) === seedName);
+            }
+            if (blocked) { continue; }
+
+            await fsPromises.mkdir(targetDir, { recursive: true });
+            await fsPromises.copyFile(path.join(seedRoot, relPath), path.join(targetDir, seedBase));
+            added.push(relPath);
+        }
+
+        if (added.length > 0) {
+            await chmodSeedScripts(gitDir);
+            await this.#repo(workspace).commitWorkTree(DEPLOY_PATHSPECS, `Backfill ${added.length} seed example file(s)`);
+            logger.debug(`Backfilled ${added.length} seed file(s) into workspace ${workspace.id}`);
+        }
+        return { success: true, added };
     }
 
     // Persist webui hook edits back into the bare repo. Hooks are deployed by

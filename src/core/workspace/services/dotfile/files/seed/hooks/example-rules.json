@@ -1,6 +1,6 @@
 {
   "$schema": "canvas.hook-rules/v1",
-  "$comment": "Declarative hook rules — the no-code companion to JS hooks. Rename to rules.json (or drop files into hooks/rules/*.json) to activate. `when` keys AND together; give a key an array for OR. Every matching rule fires. Matchers: event (required), schema, path (prefix), url (substring or {host,prefix,contains,regex}), from, subject (substring or {equals,contains,startsWith,regex}), mime ('image/*' globs). Actions: link, tag, agent, notify, script, emit. `{{doc.data.subject}}`-style templates work in agent prompts, notify messages and script args.",
+  "$comment": "Declarative hook rules — the no-code companion to JS hooks. Rename to rules.json — strip the example- prefix — (or drop files into hooks/rules/*.json) to activate. `when` keys AND together; give a key an array for OR. Every matching rule fires. Matchers: event (required), schema, path (prefix), url (substring or {host,prefix,contains,regex}), from, subject (substring or {equals,contains,startsWith,regex}), mime ('image/*' globs). Actions: link, tag, agent, notify, script, emit. `{{doc.data.subject}}`-style templates work in agent prompts, notify messages and script args.",
   "rules": [
     {
       "id": "youtube-to-media",

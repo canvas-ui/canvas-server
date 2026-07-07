@@ -2,10 +2,13 @@ import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 
-// Example: when a YouTube link is indexed, download it with yt-dlp into
-// home/Videos. The script writes a hidden `.<file>.metadata.json` sidecar
-// listing the virtual paths the resulting file should be linked to; once the
-// download lands in /.backends, incoming-metadata-linker.js does the linking.
+// Example (disabled): when a YouTube link is indexed, download it with yt-dlp
+// into home/Videos. Enable by renaming to `youtube-downloader.js` (strip the
+// `example-` prefix, or toggle in the webui) — and enable
+// `incoming-metadata-linker.js` too: the script writes a hidden
+// `.<file>.metadata.json` sidecar listing the virtual paths the resulting
+// file should be linked to, and that hook does the linking once the download
+// lands in /.backends.
 
 export default async function run({ classify, workspace, logger }) {
     const c = classify();

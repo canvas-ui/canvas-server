@@ -107,10 +107,11 @@ export class WorkspaceGitRepo {
     async commitWorkTree(pathspec, message) {
         if (!existsSync(this.#barePath)) return { success: false, skipped: true };
 
+        const pathspecs = Array.isArray(pathspec) ? pathspec : [pathspec];
         const repoArgs = this.#repoArgs();
         try {
             await spawnPromise('git', [...repoArgs, 'read-tree', 'HEAD']);
-            await spawnPromise('git', [...repoArgs, 'add', '-A', '--', pathspec]);
+            await spawnPromise('git', [...repoArgs, 'add', '-A', '--', ...pathspecs]);
 
             // `diff --cached --quiet` exits non-zero when there are staged
             // changes; a zero exit means nothing to commit.

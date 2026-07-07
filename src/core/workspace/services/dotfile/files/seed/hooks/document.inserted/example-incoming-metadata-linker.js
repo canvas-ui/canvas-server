@@ -2,11 +2,13 @@ import { readFile, rm } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
-// Example: files dropped into the workspace land in the `/.backends` directory
-// tree ("/.incoming" in older builds). If a file has a sidecar
+// Example (disabled): files dropped into the workspace land in the `/.backends`
+// directory tree ("/.incoming" in older builds). If a file has a sidecar
 // `.<name>.metadata.json` (hidden, so it is not auto-indexed) listing target
 // paths, link the file to those virtual paths and remove the sidecar. Pairs
-// with youtube.js / any downloader that writes the sidecar.
+// with any downloader hook that writes the sidecar (youtube, image-url,
+// pinterest) — enable this one alongside them by renaming to
+// `incoming-metadata-linker.js`.
 
 function locationFilePath(doc) {
     for (const loc of doc?.locations || []) {

@@ -4,6 +4,7 @@ import path from 'path';
 import { promises as fs } from 'fs';
 import ResponseObject from '../../ResponseObject.js';
 import { requireWorkspaceRead, requireWorkspaceWrite } from '../../middleware/workspace-acl.js';
+import { HOOK_EVENTS, HOOK_ACTIONS, CLASSIFIER_SURFACE, generateHookSkeleton } from '../../../core/workspace/services/hook/meta.js';
 
 function normalizePathSegments(inputPath = '') {
   return String(inputPath || '')
@@ -25,9 +26,9 @@ function validateHookPath(inputPath) {
   const normalized = segments.join('/');
 
   // Declarative rules: `rules.json` plus one level of `rules/{name}.json`.
-  // A leading underscore (disabled file) is allowed for toggling, like hooks.
+  // An `example-`/`disabled-`/`_` prefix (inactive file) is allowed for toggling.
   if (normalized.endsWith('.json')) {
-    const isRulesFile = /^_?rules\.json$/.test(normalized)
+    const isRulesFile = /^(?:example-|disabled-|_)?rules\.json$/.test(normalized)
       || (normalized.startsWith('rules/') && segments.length === 2);
     if (!isRulesFile) {
       return { error: 'JSON files must be rules.json or rules/{name}.json' };
@@ -49,6 +50,15 @@ function validateHookPath(inputPath) {
   return { path: normalized };
 }
 
+async function fileExists(filePath) {
+  try {
+    await fs.stat(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function statEntry(basePath, relativePath) {
   const stat = await fs.stat(path.join(basePath, relativePath));
   return { path: relativePath, size: stat.size, modifiedAt: stat.mtime.toISOString() };
@@ -62,7 +72,7 @@ async function listHookFiles(basePath) {
   const dirents = await fs.readdir(basePath, { withFileTypes: true });
   const entries = [];
   const isListable = (name, dirName = null) => name.endsWith('.js')
-    || (dirName === null && /^_?rules\.json$/.test(name))
+    || (dirName === null && /^(?:example-|disabled-|_)?rules\.json$/.test(name))
     || (dirName === 'rules' && name.endsWith('.json'));
 
   for (const dirent of dirents) {
@@ -98,12 +108,77 @@ export default async function workspaceHooksRoutes(fastify) {
   }, async (request, reply) => {
     try {
       await fs.mkdir(request.workspace.hooksPath, { recursive: true });
+      // Lazily backfill seed examples a pre-existing workspace never received
+      // (seeding otherwise only happens on git-repo initialization).
+      await fastify.dotfileManager?.backfillSeed?.(request.workspace, request.user?.id)
+        ?.catch((error) => request.log.debug(`Seed backfill skipped: ${error.message}`));
       const files = await listHookFiles(request.workspace.hooksPath);
       const response = new ResponseObject().found(files, 'Workspace hooks retrieved successfully', 200, files.length);
       return reply.code(response.statusCode).send(response.getResponse());
     } catch (error) {
       request.log.error(error);
       const response = new ResponseObject().serverError('Failed to list workspace hooks');
+      return reply.code(response.statusCode).send(response.getResponse());
+    }
+  });
+
+  // Hook authoring metadata for clients (event catalog, actions, classifier
+  // surface) — the create-hook wizard is a thin client of this + /generate.
+  fastify.get('/meta', {
+    onRequest: [fastify.authenticate, requireWorkspaceRead()],
+  }, async (request, reply) => {
+    const response = new ResponseObject().found({
+      events: HOOK_EVENTS,
+      actions: HOOK_ACTIONS.map(({ id, label, description }) => ({ id, label, description })),
+      classifier: CLASSIFIER_SURFACE,
+    }, 'Workspace hook metadata retrieved successfully');
+    return reply.code(response.statusCode).send(response.getResponse());
+  });
+
+  // Generate an editable hook skeleton from event + actions and write it into
+  // git/hooks (Create > select event > select actions > edit skeleton).
+  fastify.post('/generate', {
+    onRequest: [fastify.authenticate, requireWorkspaceWrite()],
+    schema: {
+      body: {
+        type: 'object',
+        required: ['event'],
+        properties: {
+          event: { type: 'string' },
+          name: { type: 'string' },
+          actions: { type: 'array', items: { type: 'string' } },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    try {
+      const { event, name, actions } = request.body || {};
+      let skeleton;
+      try {
+        skeleton = generateHookSkeleton({ event, name, actions });
+      } catch (error) {
+        const response = new ResponseObject().badRequest(error.message);
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+
+      const filePath = path.join(request.workspace.hooksPath, skeleton.path);
+      if (await fileExists(filePath)) {
+        const response = new ResponseObject().conflict(`Hook ${skeleton.path} already exists`);
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+
+      await fs.mkdir(path.dirname(filePath), { recursive: true });
+      await fs.writeFile(filePath, skeleton.content, 'utf-8');
+      await commitHooks(fastify, request, `Create hook ${skeleton.path}`);
+
+      const response = new ResponseObject().created(
+        { path: skeleton.path, content: skeleton.content },
+        'Workspace hook created successfully',
+      );
+      return reply.code(response.statusCode).send(response.getResponse());
+    } catch (error) {
+      request.log.error(error);
+      const response = new ResponseObject().serverError('Failed to generate workspace hook');
       return reply.code(response.statusCode).send(response.getResponse());
     }
   });

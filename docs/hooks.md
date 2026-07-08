@@ -89,7 +89,8 @@ A handler exports a default async function receiving one context object:
 | `event`, `eventName`, `payload`, `payloads` | event data; `payloads` carries the whole burst for debounced hooks |
 | `workspace`, `db`, `tree` | workspace instance, SynapsD, default context tree (null when inactive) |
 | `classify` | document classifier, see below |
-| `insert`, `update`, `remove`, `deleteDocument`, `get`, `list`, `find`, `link` | document CRUD on the workspace |
+| `insert`, `update`, `remove`, `deleteDocument`, `get`, `list`, `find`, `link` | document CRUD on the workspace (`remove` = unlink from paths, `deleteDocument` = purge from index only) |
+| `destroy(idOrDoc)` | delete the document everywhere: bytes on every deletable location (stored:// blob, workspace file, imap EXPUNGE — read-only locations degrade to a reference drop), then purge from the index. Irreversible |
 | `agent(slug, prompt, opts)` | prompt one of your agents, returns its text reply (null on failure). Prompts are wrapped in a standard automation envelope (event, document summary, reply expectations — see `hook/agent-prompt.js`); `opts.raw: true` sends the prompt verbatim |
 | `notify(message, { channel? })` | message the workspace owner — bound channel (Slack/WhatsApp/…) or, unbound, the in-app `canvas` channel (web-UI toast + toolbox notifications area, buffered server-side) |
 | `emit(name, payload)` | re-emit a workspace event (stamped `source:'hook'`) |
@@ -163,11 +164,28 @@ Executed sequentially; an action error is logged and the rest continue.
 | Action | Fields | Effect |
 |---|---|---|
 | `link` | `paths`, `tags?` | link doc to tree paths (`emitEvent:false`, loop-safe). Paths hit the context tree by default; `dir:/a/b` targets the directory tree, `ctx:/a/b` is explicit |
+| `unlink` | `paths` | remove the doc from tree paths (inverse of `link`; same `dir:`/`ctx:` prefixes). The doc survives on its other paths |
 | `tag` | `tags` | re-link doc on its own paths with feature tags |
-| `agent` | `slug`, `prompt`, `options?`, `output?` | prompt an agent; `output: { note: { path, title? }, notify: true }` saves the reply as a note at `path` (`dir:` prefix supported) and/or sends it to the owner. Caution: the inserted note emits a normal `document.inserted` — a rule matching its own note loops |
+| `delete` | — | purge the doc from the index. Bytes on storage backends (blobs, files, mail) stay untouched |
+| `destroy` | — | **irreversible**: delete the doc's bytes on every deletable location (stored:// blob, workspace file, imap EXPUNGE; read-only locations degrade to a reference drop), then purge it from the index |
+| `agent` | `slug`, `prompt`, `options?`, `output?` | prompt an agent; the reply feeds the output pipeline (below) |
 | `notify` | `message`, `channel?` | message the workspace owner |
-| `script` | `path`, `args?` | spawn `bash git/<path>` detached; paths outside `git/` rejected |
+| `script` | `path`, `args?`, `output?` | run `bash git/<path>`; paths outside `git/` rejected. Without `output`: detached fire-and-forget. With `output`: stdout is captured (60s timeout, 256 KiB cap) and feeds the output pipeline |
 | `emit` | `event`, `payload?` | re-emit a workspace event (`source:'hook'`) |
+
+`agent` and `script` share an **output pipeline** — `output` may combine:
+
+- `note: { path, title? }` — insert the text as a note at `path` (`dir:`
+  prefix supported); title defaults to the rule description.
+- `file: { path, backend?, append?, insert? }` — save the text to a file.
+  `backend: 'home'` (default) writes `{WORKSPACE_ROOT}/home/<path>`
+  (`append: true` appends — e.g. a running log); `backend: 'data'` persists
+  it to the workspace:data blob store. `insert: '/a/b'` additionally indexes
+  the result as a File document at that tree path.
+- `notify: true | { channel }` — send the text to the workspace owner.
+
+Caution: a note/File inserted via `output` emits a normal
+`document.inserted` — a rule matching its own output loops.
 
 String fields in `agent.prompt`, `notify.message` and `script.args` support
 `{{path}}` templates over `{ doc, payload, event, workspace: { id, name } }`,

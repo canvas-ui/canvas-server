@@ -68,7 +68,8 @@ export default async function hook(ctx) {
 | `classify(target?)` | Classification of the event document (default), another payload, or a raw doc. Never throws. |
 | `logger` | Server logger (`debug/info/warn/error`). Output goes to the canvas-server log. |
 | `insert(doc, {context?, directory?, features?})` | Insert a document. **Emits a normal `source:'db'` event** — see loop warning below. |
-| `update(id, doc, opts?)` / `remove(id, opts?)` / `deleteDocument(id)` | Update in place / unlink from paths / hard-delete. |
+| `update(id, doc, opts?)` / `remove(id, opts?)` / `deleteDocument(id)` | Update in place / unlink from paths / hard-delete from the index (backend bytes untouched). |
+| `destroy(idOrDoc)` | Delete the document **everywhere**: bytes on every deletable location (stored:// blob, workspace file, imap EXPUNGE; read-only locations degrade to a reference drop), then purge from the index. Irreversible. |
 | `get(id)` / `list(spec)` / `find({query})` | Fetch by id / list / full-text+hybrid search. |
 | `link(id, ['/path', …])` | Link a document into context paths. |
 | `agent(slug, prompt, {raw?})` | Prompt one of the user's agents (auto-starts it), returns its text reply. The prompt is wrapped in a standard automation envelope (event, doc summary, "reply with the final result only") — pass `{ raw: true }` to skip it. Agents only get canvas_* tools if previously bound via `PUT /rest/v2/agents/<slug>/access`. |
@@ -119,12 +120,18 @@ Simple match→action automations go into `rules.json` (or files under `rules/`)
 `subject`, `mime`); an array value means OR. `from`/`subject` accept a
 substring or `{equals|contains|startsWith|regex}`; `url` a substring or
 `{host|prefix|contains|regex}`. Every matching rule fires (no first-match-wins).
-Actions: `link`, `tag`, `agent`, `notify`, `script` (path under `git/`),
-`emit`. Link paths target the context tree by default; `dir:/a/b` targets the
-directory tree. The `agent` action takes an optional
-`output: { note: { path, title? }, notify: true }` — the agent's reply is
-saved as a note at `path` and/or sent to you (careful: the note emits a normal
-`document.inserted`, so a rule matching its own note loops). Strings support
+Actions: `link`, `unlink` (remove from paths), `tag`, `delete` (purge from
+index; backend bytes untouched), `destroy` (**irreversible** — delete bytes on
+every deletable location, then purge), `agent`, `notify`, `script` (path under
+`git/`), `emit`. Link/unlink paths target the context tree by default;
+`dir:/a/b` targets the directory tree. `agent` and `script` take an optional
+`output` consuming the agent reply / script stdout (60s timeout, 256 KiB cap):
+`{ note: { path, title? }, file: { path, backend?: 'home'|'data', append?,
+insert? }, notify: true }` — save as note, write to a file under `home/`
+(or the workspace:data blob store; `insert` additionally indexes it as a File
+doc at that tree path), and/or message you (careful: an inserted note/File
+emits a normal `document.inserted`, so a rule matching its own output loops).
+Strings support
 `{{doc.data.subject}}`-style templates over `{doc, payload, event, workspace,
 rule}`; objects/arrays like `{{doc.locations}}` are inserted as JSON. Rules
 only match `document.*` events that carry a document (batch fan-out included).

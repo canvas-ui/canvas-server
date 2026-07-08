@@ -22,8 +22,27 @@
 
 import { parentPort } from 'worker_threads';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
+import ort from 'onnxruntime-node';
 import { FlagEmbedding, EmbeddingModel } from 'fastembed';
+
+// onnxruntime pins pool threads to CPUs when the thread count is left
+// implicit; in cgroup-limited environments (containers, cloud VMs with a
+// restricted cpuset) pthread_setaffinity_np fails with EINVAL and ORT logs a
+// noisy "error code: 22" per thread. Setting the counts explicitly disables
+// affinity pinning (per ORT's own advice in that message). fastembed hardcodes
+// its session options, so inject ours through the shared module instance.
+// Modest default: embedding batches don't need every core, and the cap keeps
+// bulk ingest from starving small instances. Override: EMBEDD_ONNX_THREADS.
+const ONNX_THREADS = Math.max(1, Number(process.env.EMBEDD_ONNX_THREADS)
+    || Math.min(4, os.availableParallelism?.() ?? os.cpus().length));
+const originalCreate = ort.InferenceSession.create.bind(ort.InferenceSession);
+ort.InferenceSession.create = (pathOrBuffer, options = {}, ...rest) => originalCreate(pathOrBuffer, {
+    intraOpNumThreads: ONNX_THREADS,
+    interOpNumThreads: 1,
+    ...options,
+}, ...rest);
 
 // Lifecycle (init/download/ready) is logged unconditionally — a one-time model
 // download is operationally important and must be visible without DEBUG=*.

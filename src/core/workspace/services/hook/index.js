@@ -359,6 +359,16 @@ class HookService extends EventEmitter {
             update: async (id, document, options = {}) => workspace.put({ ...document, id }, options),
             remove: async (id, options = {}) => workspace.unlink(id, options),
             deleteDocument: async (id) => workspace.delete(id),
+            // Destroy = delete bytes on every deletable location (stored://
+            // blob, workspace file, imap EXPUNGE; read-only locations degrade
+            // to a reference drop), then purge the doc from the index.
+            destroy: async (idOrDoc) => {
+                const doc = typeof idOrDoc === 'object' && idOrDoc !== null ? idOrDoc : await workspace.get(idOrDoc);
+                if (!doc?.id) { return null; }
+                const res = await workspace.destroyDocument(doc);
+                if (!res?.docDeleted) { await workspace.delete(doc.id).catch(() => {}); }
+                return res;
+            },
             get: async (id, options = { parse: true }) => workspace.get(id, options),
             list: async (spec = {}) => workspace.list(spec),
             find: async (spec = {}) => workspace.search(spec),

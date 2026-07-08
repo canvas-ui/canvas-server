@@ -129,13 +129,18 @@ describe('rule loading', () => {
 
 describe('rule actions', () => {
     function stubContext(payload) {
-        const calls = { link: [], agent: [], notify: [], emit: [], insert: [] };
+        const calls = { link: [], unlink: [], delete: [], destroy: [], persistBlob: [], agent: [], notify: [], emit: [], insert: [] };
         const workspace = {
             id: 'ws-1',
             name: 'test',
             rootPath: '/nonexistent/ws',
+            homePath: '/nonexistent/ws/home',
             getContextTreeSelector: (p) => ({ type: 'context', path: p }),
             link: async (id, opts) => calls.link.push({ id, opts }),
+            unlink: async (id, opts) => calls.unlink.push({ id, opts }),
+            delete: async (id) => calls.delete.push({ id }),
+            destroyDocument: async (doc) => { calls.destroy.push({ id: doc.id }); return { deleted: ['stored://x'], droppedRefs: [], docDeleted: true }; },
+            persistBlob: async (buffer) => { calls.persistBlob.push({ size: buffer.length }); return { url: 'stored://workspace:data/abc', checksum: 'deadbeef', size: buffer.length }; },
         };
         const context = {
             workspace,
@@ -231,6 +236,120 @@ describe('rule actions', () => {
         }, context, noopLogger);
         assert.equal(calls.insert.length, 0);
         assert.equal(calls.notify.length, 0);
+    });
+
+    test('unlink action removes each path (dir: aware), doc survives', async () => {
+        const payload = tabPayload('https://x.com');
+        const { context, calls } = stubContext(payload);
+        await executeRuleActions({
+            id: 'r', when: {}, then: [{ action: 'unlink', paths: ['/inbox', 'dir:/staging'] }],
+        }, context, noopLogger);
+
+        assert.equal(calls.unlink.length, 2);
+        assert.equal(calls.unlink[0].id, 101);
+        assert.deepEqual(calls.unlink[0].opts.context, { type: 'context', path: '/inbox' });
+        assert.equal(calls.unlink[1].opts.directory, '/staging');
+        assert.equal(calls.delete.length, 0);
+        assert.equal(calls.destroy.length, 0);
+    });
+
+    test('delete action purges from index only; destroy wipes backends too', async () => {
+        const payload = emailPayload('spam@evil.com', 'buy now');
+        const { context, calls } = stubContext(payload);
+        await executeRuleActions({
+            id: 'r', when: {}, then: [{ action: 'delete' }],
+        }, context, noopLogger);
+        assert.deepEqual(calls.delete, [{ id: 102 }]);
+        assert.equal(calls.destroy.length, 0);
+
+        await executeRuleActions({
+            id: 'r2', when: {}, then: [{ action: 'destroy' }],
+        }, context, noopLogger);
+        assert.deepEqual(calls.destroy, [{ id: 102 }]);
+        assert.equal(calls.delete.length, 1); // docDeleted:true -> no extra purge
+    });
+
+    test('destroy falls back to index purge when backend wipe incomplete', async () => {
+        const payload = emailPayload('a@b.c', 's');
+        const { context, calls } = stubContext(payload);
+        context.workspace.destroyDocument = async (doc) => { calls.destroy.push({ id: doc.id }); return { deleted: [], droppedRefs: [], docDeleted: false }; };
+        await executeRuleActions({
+            id: 'r', when: {}, then: [{ action: 'destroy' }],
+        }, context, noopLogger);
+        assert.equal(calls.destroy.length, 1);
+        assert.deepEqual(calls.delete, [{ id: 102 }]);
+    });
+
+    test('agent output.file backend:data persists blob and indexes File doc at insert path', async () => {
+        const payload = emailPayload('boss@corp.com', 'weekly report');
+        const { context, calls } = stubContext(payload);
+        await executeRuleActions({
+            id: 'r', when: {}, then: [{
+                action: 'agent', slug: 'lucy', prompt: 'Summarize',
+                output: { file: { path: 'reports/summary.txt', backend: 'data', insert: 'dir:/reports' } },
+            }],
+        }, context, noopLogger);
+
+        assert.equal(calls.persistBlob.length, 1);
+        assert.equal(calls.insert.length, 1);
+        const doc = calls.insert[0].document;
+        assert.equal(doc.schema, 'data/abstraction/file');
+        assert.deepEqual(doc.checksumArray, ['sha256/deadbeef']);
+        assert.deepEqual(doc.locations, [{ url: 'stored://workspace:data/abc' }]);
+        assert.equal(doc.metadata.filename, 'summary.txt');
+        assert.deepEqual(calls.insert[0].options, { context: null, directory: '/reports' });
+    });
+
+    test('agent output.file backend:home writes under home/ and rejects traversal', async () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hook-out-'));
+        try {
+            const payload = emailPayload('a@b.c', 'log me');
+            const { context, calls } = stubContext(payload);
+            context.workspace.homePath = dir;
+            await executeRuleActions({
+                id: 'r', when: {}, then: [{
+                    action: 'agent', slug: 'lucy', prompt: 'p',
+                    output: { file: { path: 'logs/agent.log', append: true } },
+                }],
+            }, context, noopLogger);
+            assert.equal(fs.readFileSync(path.join(dir, 'logs', 'agent.log'), 'utf8'), 'ok\n');
+            assert.equal(calls.insert.length, 0); // no insert requested
+
+            const logged = [];
+            await executeRuleActions({
+                id: 'r2', when: {}, then: [{
+                    action: 'agent', slug: 'lucy', prompt: 'p',
+                    output: { file: { path: '../../etc/pwned' } },
+                }],
+            }, context, { debug: (m) => logged.push(m) });
+            assert.ok(logged.some((m) => m.includes('outside home/')));
+        } finally {
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    test('script action with output captures stdout into the output pipeline', async () => {
+        const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'hook-ws-'));
+        try {
+            fs.mkdirSync(path.join(ws, 'git', 'scripts'), { recursive: true });
+            fs.writeFileSync(path.join(ws, 'git', 'scripts', 'echo.sh'), 'echo "script says hi"\n');
+            const payload = tabPayload('https://x.com');
+            const { context, calls } = stubContext(payload);
+            context.workspace.rootPath = ws;
+            await executeRuleActions({
+                id: 'r', description: 'echo rule', when: {}, then: [{
+                    action: 'script', path: 'scripts/echo.sh',
+                    output: { note: { path: '/logs' }, notify: true },
+                }],
+            }, context, noopLogger);
+
+            assert.equal(calls.insert.length, 1);
+            assert.equal(calls.insert[0].document.data.content, 'script says hi');
+            assert.equal(calls.insert[0].document.data.title, 'echo rule');
+            assert.deepEqual(calls.notify, [{ message: 'script says hi', options: {} }]);
+        } finally {
+            fs.rmSync(ws, { recursive: true, force: true });
+        }
     });
 
     test('script action refuses paths outside git/', async () => {

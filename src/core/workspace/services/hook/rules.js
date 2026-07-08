@@ -2,6 +2,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import { spawn } from 'child_process';
 import { isDisabledFile } from './naming.js';
 
@@ -162,6 +163,85 @@ function parseLinkTarget(raw) {
     return { tree: 'context', path: value };
 }
 
+// Shared output pipeline for actions that produce text (agent reply, script
+// stdout). `output` supports, in any combination:
+//   note:   { path, title? }  -> insert the text as a note document at path
+//   file:   { path, backend?: 'home'|'data', append?, insert? }
+//           backend 'home' (default) writes {WORKSPACE_ROOT}/home/<path>
+//           (append: true appends); backend 'data' persists to the
+//           workspace:data blob store. `insert: '/a/b'` additionally indexes
+//           the result as a File document at that tree path.
+//   notify: true | { channel } -> send the text to the workspace owner
+// Paths accept 'dir:' / 'ctx:' prefixes and {{...}} templates.
+async function handleActionOutput(text, output, { context, scope, workspace, logger, label }) {
+    if (!text || !output || typeof output !== 'object') { return; }
+
+    if (output.note && typeof output.note === 'object' && output.note.path) {
+        const target = parseLinkTarget(interpolate(String(output.note.path), scope));
+        const title = interpolate(String(output.note.title || scope.rule?.description || `Automation output (${label})`), scope);
+        const note = await context.insert(
+            { schema: 'data/abstraction/note', data: { title, content: String(text) } },
+            target.tree === 'directory' ? { context: null, directory: target.path } : { context: target.path },
+        );
+        logger.debug(`rule ${label}: output saved as note ${note?.id ?? note} at ${target.tree}:${target.path}`);
+    }
+
+    if (output.file && typeof output.file === 'object' && output.file.path) {
+        await writeOutputFile(String(text), output.file, { context, scope, workspace, logger, label });
+    }
+
+    if (output.notify) {
+        await context.notify(String(text), typeof output.notify === 'object' && output.notify.channel ? { channel: output.notify.channel } : {});
+    }
+}
+
+async function writeOutputFile(text, fileSpec, { context, scope, workspace, logger, label }) {
+    const backend = fileSpec.backend === 'data' ? 'data' : 'home';
+    const relPath = interpolate(String(fileSpec.path), scope).replace(/^\/+/, '');
+    if (!relPath) { return; }
+
+    let location = null; // { url, checksum, size }
+    if (backend === 'data') {
+        const buffer = Buffer.from(fileSpec.append ? `${text}\n` : text, 'utf8');
+        const persisted = await workspace.persistBlob(buffer);
+        location = { url: persisted.url, checksum: persisted.checksum, size: persisted.size };
+        logger.debug(`rule ${label}: output persisted to ${persisted.url}`);
+    } else {
+        const homeRoot = path.resolve(workspace.homePath);
+        const filePath = path.resolve(homeRoot, relPath);
+        if (filePath !== homeRoot && !filePath.startsWith(`${homeRoot}${path.sep}`)) {
+            logger.debug(`rule ${label}: refusing output file outside home/: ${fileSpec.path}`);
+            return;
+        }
+        await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+        if (fileSpec.append) { await fs.promises.appendFile(filePath, `${text}\n`, 'utf8'); }
+        else { await fs.promises.writeFile(filePath, text, 'utf8'); }
+        const bytes = await fs.promises.readFile(filePath);
+        location = {
+            url: `file://{WORKSPACE_ROOT}/home/${relPath.split(path.sep).join('/')}`,
+            checksum: crypto.createHash('sha256').update(bytes).digest('hex'),
+            size: bytes.length,
+        };
+        logger.debug(`rule ${label}: output written to home/${relPath}`);
+    }
+
+    if (fileSpec.insert) {
+        const target = parseLinkTarget(interpolate(String(fileSpec.insert), scope));
+        const doc = {
+            schema: 'data/abstraction/file',
+            checksumArray: location.checksum ? [`sha256/${location.checksum}`] : [],
+            locations: [{ url: location.url }],
+            metadata: { contentType: 'text/plain', size: location.size, filename: path.posix.basename(relPath.split(path.sep).join('/')) },
+            data: {},
+        };
+        const inserted = await context.insert(
+            doc,
+            target.tree === 'directory' ? { context: null, directory: target.path } : { context: target.path },
+        );
+        logger.debug(`rule ${label}: output file indexed as ${inserted?.id ?? inserted} at ${target.tree}:${target.path}`);
+    }
+}
+
 const ACTIONS = {
     // Link the document to tree paths, optionally with feature tags. Paths
     // default to the context tree; 'dir:/path' targets the directory tree.
@@ -193,34 +273,51 @@ const ACTIONS = {
         logger.debug(`rule tag: ${doc.id} += ${tags.join(',')}`);
     },
 
-    // Prompt an agent; optionally consume its reply via action.output:
-    //   { note: { path, title? }, notify: true }
-    // note  -> insert the reply as a note document at path ('dir:' prefix for
-    //          the directory tree); title defaults to the rule description.
-    // notify -> send the reply to the workspace owner.
-    // NOTE: the inserted note emits a normal document.inserted — a rule that
-    // matches its own note (schema note + same path + agent action) loops.
-    async agent(action, { context, scope, logger }) {
+    // Remove the document from tree path(s) — the inverse of `link`. The doc
+    // stays in the index and on its other paths.
+    async unlink(action, { workspace, doc, logger }) {
+        if (!doc?.id) { return; }
+        for (const rawPath of asArray(action.paths || action.path || []).filter(Boolean)) {
+            const target = parseLinkTarget(rawPath);
+            const selector = target.tree === 'directory'
+                ? { directory: target.path }
+                : { context: workspace.getContextTreeSelector(target.path) };
+            // unlink emits an id-only document.removed — rules never match
+            // id-only events, so no loop guard needed here.
+            await workspace.unlink(doc.id, selector);
+            logger.debug(`rule unlink: ${doc.id} -x- ${target.tree}:${target.path}`);
+        }
+    },
+
+    // Purge the document from the index (all paths, all bitmaps). Bytes on
+    // storage backends (blobs, files, mail on the server) are NOT touched.
+    async delete(action, { workspace, doc, logger }) {
+        if (!doc?.id) { return; }
+        await workspace.delete(doc.id);
+        logger.debug(`rule delete: ${doc.id} purged from index`);
+    },
+
+    // Destroy the document everywhere: delete its bytes on every location the
+    // backend can delete (stored:// blob, workspace file rm, imap EXPUNGE —
+    // read-only locations degrade to a reference drop), then purge it from the
+    // index. Irreversible.
+    async destroy(action, { workspace, doc, logger }) {
+        if (!doc?.id) { return; }
+        const res = await workspace.destroyDocument(doc);
+        if (!res?.docDeleted) { await workspace.delete(doc.id).catch(() => {}); }
+        logger.debug(`rule destroy: ${doc.id} (${res?.deleted?.length || 0} locations deleted, ${res?.droppedRefs?.length || 0} refs dropped)`);
+    },
+
+    // Prompt an agent; optionally consume its reply via action.output
+    // (see handleActionOutput: note / file / notify).
+    // NOTE: an inserted note/file emits a normal document.inserted — a rule
+    // that matches its own output loops.
+    async agent(action, { context, scope, workspace, logger }) {
         if (!action.slug || !action.prompt) { return; }
         const reply = await context.agent(action.slug, interpolate(action.prompt, scope), action.options || {});
         logger.debug(`rule agent(${action.slug}): ${reply ? String(reply).slice(0, 120) : 'no reply'}`);
         if (!reply) { return; }
-
-        const output = action.output && typeof action.output === 'object' ? action.output : null;
-        if (!output) { return; }
-
-        if (output.note && typeof output.note === 'object' && output.note.path) {
-            const target = parseLinkTarget(interpolate(String(output.note.path), scope));
-            const title = interpolate(String(output.note.title || scope.rule?.description || `Agent reply (${action.slug})`), scope);
-            const note = await context.insert(
-                { schema: 'data/abstraction/note', data: { title, content: String(reply) } },
-                target.tree === 'directory' ? { context: null, directory: target.path } : { context: target.path },
-            );
-            logger.debug(`rule agent(${action.slug}): reply saved as note ${note?.id ?? note} at ${target.tree}:${target.path}`);
-        }
-        if (output.notify) {
-            await context.notify(String(reply), typeof output.notify === 'object' && output.notify.channel ? { channel: output.notify.channel } : {});
-        }
+        await handleActionOutput(String(reply), action.output, { context, scope, workspace, logger, label: `agent(${action.slug})` });
     },
 
     async notify(action, { context, scope }) {
@@ -229,9 +326,12 @@ const ACTIONS = {
         await context.notify(interpolate(action.message, scope), options);
     },
 
-    // Fire-and-forget script under the workspace git/ tree (same pattern as the
-    // youtube seed hook). Paths resolving outside git/ are rejected.
-    async script(action, { workspace, scope, logger }) {
+    // Script under the workspace git/ tree (same pattern as the youtube seed
+    // hook). Paths resolving outside git/ are rejected. Without `output` the
+    // script is fire-and-forget (detached); with `output` its stdout is
+    // captured (60s timeout, 256 KiB cap) and fed through the same output
+    // pipeline as agent replies (note / file / notify).
+    async script(action, { context, workspace, scope, logger }) {
         if (!action.path) { return; }
         const gitRoot = path.resolve(workspace.rootPath, 'git');
         const scriptPath = path.resolve(gitRoot, String(action.path));
@@ -244,10 +344,41 @@ const ACTIONS = {
             return;
         }
         const args = asArray(action.args || []).map((a) => interpolate(String(a), scope));
-        const child = spawn('bash', [scriptPath, ...args], { stdio: 'ignore', detached: true });
-        child.on('error', (err) => logger.debug(`rule script: spawn failed: ${err.message}`));
-        child.unref();
-        logger.debug(`rule script: spawned ${action.path}`);
+
+        if (!action.output || typeof action.output !== 'object') {
+            const child = spawn('bash', [scriptPath, ...args], { stdio: 'ignore', detached: true });
+            child.on('error', (err) => logger.debug(`rule script: spawn failed: ${err.message}`));
+            child.unref();
+            logger.debug(`rule script: spawned ${action.path}`);
+            return;
+        }
+
+        const stdout = await new Promise((resolve) => {
+            const child = spawn('bash', [scriptPath, ...args], { stdio: ['ignore', 'pipe', 'ignore'] });
+            const chunks = [];
+            let size = 0;
+            const timer = setTimeout(() => {
+                logger.debug(`rule script: ${action.path} timed out after 60s, killing`);
+                child.kill('SIGKILL');
+            }, 60_000);
+            child.stdout.on('data', (chunk) => {
+                if (size >= 256 * 1024) { return; }
+                size += chunk.length;
+                chunks.push(chunk);
+            });
+            child.on('error', (err) => {
+                clearTimeout(timer);
+                logger.debug(`rule script: spawn failed: ${err.message}`);
+                resolve(null);
+            });
+            child.on('close', (code) => {
+                clearTimeout(timer);
+                if (code !== 0) { logger.debug(`rule script: ${action.path} exited ${code}`); }
+                resolve(Buffer.concat(chunks).toString('utf8').trim());
+            });
+        });
+        if (!stdout) { return; }
+        await handleActionOutput(stdout, action.output, { context, scope, workspace, logger, label: `script(${action.path})` });
     },
 
     // Re-emit a workspace event (context.emit stamps source:'hook').

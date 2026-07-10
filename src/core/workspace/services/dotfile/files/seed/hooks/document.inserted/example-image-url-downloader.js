@@ -1,14 +1,16 @@
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
+import { insertHomeFile } from '../lib/insert-file.js';
 
 // Example (disabled): when a link to an image file is indexed, download it
-// into home/Pictures. The script writes a hidden `.<file>.metadata.json`
-// sidecar so incoming-metadata-linker.js links the downloaded file to the
-// same context path the link landed in. Enable by renaming to
-// `image-url-downloader.js`.
+// into home/Pictures and register the file through the front door — the hook
+// inserts the File document itself (checksummed, linked to the same context
+// path the link landed in, origin:'hook'). No metadata sidecars. Enable by
+// renaming to `image-url-downloader.js`.
 
-export default async function hook({ classify, workspace, logger }) {
+export default async function hook(ctx) {
+  const { classify, workspace, logger } = ctx;
   const c = classify();
   if (!c.isLink() || !c.isImageUrl()) { return; }
 
@@ -21,12 +23,19 @@ export default async function hook({ classify, workspace, logger }) {
   const targetDir = path.join(workspace.rootPath, 'home', 'Pictures');
   const linkPath = c.paths[0] || '/';
 
-  const child = spawn('bash', [script, c.url, targetDir, linkPath], {
-    stdio: 'ignore',
-    detached: true,
+  // The script prints the downloaded file's absolute path on stdout.
+  const filePath = await new Promise((resolve) => {
+    const child = spawn('bash', [script, c.url, targetDir], { stdio: ['ignore', 'pipe', 'ignore'] });
+    let out = '';
+    child.stdout.on('data', (chunk) => { out += chunk; });
+    child.on('error', (err) => { logger.debug(`image-url-downloader: spawn failed: ${err.message}`); resolve(null); });
+    child.on('close', () => resolve(out.trim().split('\n').pop() || null));
   });
-  child.on('error', (err) => logger.debug(`image-url-downloader: spawn failed: ${err.message}`));
-  child.unref();
+  if (!filePath || !existsSync(filePath)) {
+    logger.debug(`image-url-downloader: nothing downloaded for ${c.url}`);
+    return;
+  }
 
-  logger.debug(`image-url-downloader: fetching ${c.url} -> ${targetDir} (link: ${linkPath})`);
+  await insertHomeFile(ctx, filePath, { linkPath, source: c.url });
+  logger.debug(`image-url-downloader: ${c.url} -> ${filePath} (linked: ${linkPath})`);
 }

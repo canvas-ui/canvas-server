@@ -15,9 +15,11 @@ Both are dispatched by `HookService`
 event via a wildcard subscription. Edits hot-reload (mtime-keyed cache); saving
 from the settings UI commits to the workspace repo, a `git push` redeploys.
 
-Note: hidden files (dotfiles) are never auto-indexed, so hook-driven scripts
-use hidden `.<file>.metadata.json` sidecars to pass link targets to the
-`incoming-metadata-linker` hook without triggering indexing themselves.
+Note: hidden files (dotfiles) are never auto-indexed. Hooks whose scripts
+produce files register them through the front door — the script prints the
+file path, the hook inserts the File document itself (checksummed, located,
+linked, provenance-stamped; see the seed `hooks/lib/insert-file.js`) — rather
+than dropping files into `home/` and waiting for the indexer.
 
 ## Events
 
@@ -98,7 +100,7 @@ A handler exports a default async function receiving one context object:
 | `insert`, `update`, `remove`, `deleteDocument`, `get`, `list`, `find`, `link` | document CRUD on the workspace (`remove` = unlink from paths, `deleteDocument` = purge from index only) |
 | `destroy(idOrDoc)` | delete the document everywhere: bytes on every deletable location (stored:// blob, workspace file, imap EXPUNGE — read-only locations degrade to a reference drop), then purge from the index. Irreversible |
 | `agent(slug, prompt, opts)` | prompt one of your agents, returns its text reply (null on failure). Prompts are wrapped in a standard automation envelope (event, document summary, reply expectations — see `hook/agent-prompt.js`); `opts.raw: true` sends the prompt verbatim |
-| `notify(message, { channel? })` | message the workspace owner — bound channel (Slack/WhatsApp/…) or, unbound, the in-app `canvas` channel (web-UI toast + toolbox notifications area, buffered server-side) |
+| `notify(message, { channel? })` | message the workspace owner — bound channel (Slack/WhatsApp/`webhook` — POSTs `{ text }` to a bound URL, Slack/Teams incoming-webhook compatible) or, unbound, the in-app `canvas` channel (web-UI toast + toolbox notifications area, buffered server-side) |
 | `emit(name, payload)` | re-emit a workspace event (stamped `source:'hook'`) |
 | `logger` | debug logger |
 
@@ -176,7 +178,7 @@ Executed sequentially; an action error is logged and the rest continue.
 | `destroy` | — | **irreversible**: delete the doc's bytes on every deletable location (stored:// blob, workspace file, imap EXPUNGE; read-only locations degrade to a reference drop), then purge it from the index |
 | `agent` | `slug`, `prompt`, `options?`, `output?` | prompt an agent; the reply feeds the output pipeline (below) |
 | `notify` | `message`, `channel?` | message the workspace owner |
-| `script` | `path`, `args?`, `output?` | run `bash git/<path>`; paths outside `git/` rejected. Without `output`: detached fire-and-forget. With `output`: stdout is captured (60s timeout, 256 KiB cap) and feeds the output pipeline |
+| `script` | `path`, `args?`, `timeout?`, `output?` | run `bash git/<path>`; paths outside `git/` rejected. Hardened contract: env sanitized to `PATH`/`HOME`/`LANG` + `CANVAS_EVENT`, `CANVAS_EVENT_ID`, `CANVAS_WORKSPACE`, `CANVAS_WORK_DIR`; the full JSON envelope arrives on stdin; cwd = a per-run scratch dir under `var/tmp` (cleaned after a clean captured run, stale dirs swept after 24h). Without `output`: detached fire-and-forget. With `output`: stdout is captured (`timeout` ms, default 60 s, max 600 s; 256 KiB cap) and feeds the output pipeline |
 | `emit` | `event`, `payload?` | re-emit a workspace event (`source:'hook'`) |
 
 `agent` and `script` share an **output pipeline** — `output` may combine:
@@ -219,6 +221,47 @@ eventId>`, `depth: <triggering depth> + 1`. Dispatch enforces two guards:
 Additionally: events with `payload.source === 'hook'` (custom `emit()`s) are
 never re-dispatched, and `link`/`tag` rule actions use `emitEvent:false`.
 
+## Observability — run log & explain
+
+Every handler execution appends one record to
+`{WORKSPACE_ROOT}/var/hooks/runs.jsonl` (5 MiB rotation, one previous
+generation kept): hook file or rule id, event + eventId + provenance, doc ids,
+duration, status `ok`/`error`/`skipped` (cascade/depth skips include the
+reason), per-action results for rules, and a replay envelope (payload with the
+document body reduced to `{ id, schema }`). Handler errors are logged at warn
+level and recorded — nothing fails silently anymore.
+
+- `GET /rest/v2/workspaces/:id/hooks/runs?limit&handler&event&failed` — newest
+  first. UI: the **Runs** tab in the Automation panel. CLI:
+  `canvas ws <name> hooks runs [--failed] [--handler x] [--event y]`.
+- `POST /rest/v2/workspaces/:id/hooks/explain` `{ documentId, event?, paths? }`
+  — matcher-by-matcher evaluation of every rule against a stored document
+  ("why didn't my rule run"), plus the JS hook files the event would invoke.
+  Path matchers evaluate against the `paths` you pass (a stored doc doesn't
+  carry its live landing paths). CLI: `canvas ws <name> hooks explain <docId>
+  [--event document.inserted] [--paths /a,/b]`.
+
+### Backfill & replay
+
+- `POST /rest/v2/workspaces/:id/hooks/backfill`
+  `{ ruleId | hookFile, event?, schema?, limit? (≤500), dryRun? }` — run ONE
+  rule/hook against existing documents as if each had just been inserted.
+  Discovery filters by `schema` (defaults to the rule's own `when.schema`).
+  `dryRun` returns the per-document matcher breakdown without executing.
+  Synthesized envelopes carry `origin:'backfill'` — downstream writes are
+  cascade-guarded like any automation. Path matchers evaluate false during
+  backfill (stored docs carry no landing paths). UI: ▶ button on a rule row
+  (dry-run → confirm). CLI: `canvas ws <name> hooks backfill --rule <id>
+  [--dry-run] [--schema email] [--limit 100]`.
+- `POST /rest/v2/workspaces/:id/hooks/runs/:runId/replay` — re-deliver a
+  logged run's envelope to its handler: the document is reloaded by id (404 if
+  gone), the envelope gets a fresh `eventId`, `origin:'replay'` and
+  `causedBy` pointing at the original event. UI: ↺ button on a run row.
+  CLI: `canvas ws <name> hooks replay <runId>`.
+
+Both bypass dispatch (no dedup/cascade gating on the way in — you asked for
+the run), but everything the handler writes is provenance-stamped normally.
+
 ## Creating hooks (wizard)
 
 `Create > select event > select action(s) > edit skeleton`:
@@ -250,10 +293,11 @@ never re-dispatched, and `link`/`tag` rule actions use `emitEvent:false`.
   a canvas API token). `git clone` it, edit `hooks/` + `scripts/`,
   push — the server force-checkouts on receive and hooks hot-reload.
 - CLI: `canvas ws hooks list|get|set|edit|push|clone|delete`.
-- Seeds: every example ships disabled with an `example-` prefix — the pairs
-  `youtube-downloader`+`incoming-metadata-linker` and `pinterest-downloader`+
-  `image-categorizer` (vision agent sorts images out of /to-sort), plus
-  `email-linker`, `to-sort-categorizer`, `ticket-notify`, `arxiv-summarizer`,
+- Seeds: every example ships disabled with an `example-` prefix —
+  `youtube-downloader`, the pair `pinterest-downloader`+`image-categorizer`
+  (vision agent sorts images out of /to-sort; stage 2 exports `cascade = true`
+  to see stage 1's front-door inserts), plus `email-linker`,
+  `to-sort-categorizer`, `ticket-notify`, `arxiv-summarizer`,
   `image-url-downloader`, `batch-tab-sorter` (`document.inserted.batch` —
   browser-extension batch sync), `api-reference` and `example-rules.json`
   (`src/core/workspace/services/dotfile/files/seed/hooks/`).

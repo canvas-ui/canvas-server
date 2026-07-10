@@ -32,6 +32,7 @@ import Messaging from './services/messaging/src/index.js';
 import ChatRouter from './services/messaging/src/router.js';
 import ConsoleAdapter from './services/messaging/src/adapters/console.js';
 import CanvasAdapter from './services/messaging/src/adapters/canvas.js';
+import WebhookAdapter from './services/messaging/src/adapters/webhook.js';
 import SlackAdapter from './services/messaging/src/adapters/slack.js';
 import WhatsAppAdapter from './services/messaging/src/adapters/whatsapp.js';
 
@@ -292,6 +293,9 @@ class Server extends EventEmitter {
             const adapters = [
                 new ConsoleAdapter({ logger: messagingLogger }),
                 new CanvasAdapter({ logger: messagingLogger }),
+                // Outbound webhook (Slack/Teams incoming-webhook compatible);
+                // credential-free — the bound recipient IS the target URL.
+                new WebhookAdapter({ logger: messagingLogger }),
             ];
             if (env.messaging.slack.botToken) {
                 adapters.push(new SlackAdapter({

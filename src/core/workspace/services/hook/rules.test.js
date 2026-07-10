@@ -3,10 +3,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { resolveRuleFiles, loadRuleFile, matchRule, executeRuleActions, interpolate } from './rules.js';
+import { resolveRuleFiles, loadRuleFile, matchRule, explainRule, executeRuleActions, interpolate } from './rules.js';
 import { classifyDocument } from '../../lib/classifier.js';
 
-const noopLogger = { debug: () => {} };
+const noopLogger = { debug: () => {}, warn: () => {} };
 
 function tabPayload(url, contextPaths = ['/inbox']) {
     return {
@@ -352,6 +352,73 @@ describe('rule actions', () => {
         }
     });
 
+    test('script gets sanitized env, the envelope on stdin and a var/tmp workdir (cleaned on success)', async () => {
+        const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'hook-ws-'));
+        try {
+            fs.mkdirSync(path.join(ws, 'git', 'scripts'), { recursive: true });
+            // Dump cwd, selected env and stdin as JSON on stdout.
+            fs.writeFileSync(path.join(ws, 'git', 'scripts', 'probe.sh'), `
+STDIN=$(cat)
+echo "{\\"cwd\\":\\"$PWD\\",\\"event\\":\\"$CANVAS_EVENT\\",\\"eventId\\":\\"$CANVAS_EVENT_ID\\",\\"workspace\\":\\"$CANVAS_WORKSPACE\\",\\"workdir\\":\\"$CANVAS_WORK_DIR\\",\\"leak\\":\\"\${CANVAS_SECRET_PROBE:-none}\\",\\"stdin\\":$STDIN}"
+`);
+            process.env.CANVAS_SECRET_PROBE = 'leaky';
+            const payload = { ...tabPayload('https://x.com'), eventId: 'evt-script-1' };
+            const { context, calls } = stubContext(payload);
+            context.workspace.rootPath = ws;
+            await executeRuleActions({
+                id: 'probe-rule', when: {}, then: [{
+                    action: 'script', path: 'scripts/probe.sh',
+                    output: { note: { path: '/logs', title: 't' } },
+                }],
+            }, context, noopLogger);
+
+            assert.equal(calls.insert.length, 1);
+            const probe = JSON.parse(calls.insert[0].document.data.content);
+            const expectedWorkDir = path.join(ws, 'var/tmp', 'probe-rule', 'evt-script-1');
+            assert.equal(probe.workdir, expectedWorkDir);
+            // cwd == workdir (compare via suffix — $PWD may be a realpath)
+            assert.ok(probe.cwd.endsWith(path.join('probe-rule', 'evt-script-1')));
+            assert.equal(probe.event, 'document.inserted');
+            assert.equal(probe.eventId, 'evt-script-1');
+            assert.equal(probe.workspace, context.workspace.id);
+            assert.equal(probe.leak, 'none'); // server env did NOT leak
+            assert.equal(probe.stdin.event, 'document.inserted');
+            assert.equal(probe.stdin.eventId, 'evt-script-1');
+            assert.equal(probe.stdin.rule.id, 'probe-rule');
+            assert.equal(probe.stdin.payload.document.schema, 'data/abstraction/tab');
+            // clean exit → workdir removed (async cleanup; poll briefly)
+            for (let i = 0; i < 20 && fs.existsSync(expectedWorkDir); i++) {
+                await new Promise((r) => setTimeout(r, 25));
+            }
+            assert.equal(fs.existsSync(expectedWorkDir), false);
+        } finally {
+            delete process.env.CANVAS_SECRET_PROBE;
+            fs.rmSync(ws, { recursive: true, force: true });
+        }
+    });
+
+    test('script honors a custom timeout (long-running script killed, no output)', async () => {
+        const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'hook-ws-'));
+        try {
+            fs.mkdirSync(path.join(ws, 'git', 'scripts'), { recursive: true });
+            fs.writeFileSync(path.join(ws, 'git', 'scripts', 'slow.sh'), 'sleep 30\necho done\n');
+            const payload = tabPayload('https://x.com');
+            const { context, calls } = stubContext(payload);
+            context.workspace.rootPath = ws;
+            const t0 = Date.now();
+            await executeRuleActions({
+                id: 'slow', when: {}, then: [{
+                    action: 'script', path: 'scripts/slow.sh', timeout: 1200,
+                    output: { notify: true },
+                }],
+            }, context, noopLogger);
+            assert.ok(Date.now() - t0 < 10_000, 'timeout did not kick in');
+            assert.equal(calls.notify.length, 0); // no stdout captured
+        } finally {
+            fs.rmSync(ws, { recursive: true, force: true });
+        }
+    });
+
     test('script action refuses paths outside git/', async () => {
         const payload = tabPayload('https://x.com');
         const { context } = stubContext(payload);
@@ -362,22 +429,53 @@ describe('rule actions', () => {
         assert.ok(logged.some((m) => m.includes('outside git/')));
     });
 
-    test('unknown and failing actions are logged, not thrown', async () => {
+    test('unknown and failing actions are logged, not thrown; per-action results returned', async () => {
         const payload = tabPayload('https://x.com');
         const { context, calls } = stubContext(payload);
         context.workspace.link = async () => { throw new Error('boom'); };
-        await assert.doesNotReject(executeRuleActions({
+        const results = await executeRuleActions({
             id: 'r', when: {}, then: [
                 { action: 'nope' },
                 { action: 'link', paths: ['/a'] },
                 { action: 'notify', message: 'still runs' },
             ],
-        }, context, noopLogger));
+        }, context, noopLogger);
         assert.equal(calls.notify.length, 1);
+        assert.deepEqual(results, [
+            { action: 'nope', status: 'skipped', error: 'unknown action' },
+            { action: 'link', status: 'error', error: 'boom' },
+            { action: 'notify', status: 'ok' },
+        ]);
     });
 
     test('interpolate resolves nested paths, blanks missing ones', () => {
         assert.equal(interpolate('{{a.b}} {{a.missing}} {{c}}', { a: { b: 'x' }, c: 3 }), 'x  3');
         assert.equal(interpolate(42, {}), 42);
+    });
+
+    test('explainRule reports every check without short-circuiting', () => {
+        const payload = tabPayload('https://youtube.com/watch?v=1');
+        const c = classifyDocument(payload.document, payload);
+        const rule = {
+            id: 'yt',
+            when: { event: 'document.inserted', schema: 'tab', url: { host: 'youtube.com' }, from: 'boss@', bogus: 1 },
+            then: [],
+        };
+        const explained = explainRule(rule, 'document.inserted', c);
+        assert.equal(explained.matched, false);
+        assert.equal(explained.enabled, true);
+        const byKey = Object.fromEntries(explained.checks.map((chk) => [chk.key, chk]));
+        assert.equal(byKey.event.matched, true);
+        assert.equal(byKey.schema.matched, true);
+        assert.equal(byKey.url.matched, true);
+        assert.equal(byKey.from.matched, false); // reported despite earlier passes
+        assert.equal(byKey.bogus.matched, false);
+        assert.equal(byKey.bogus.unknown, true);
+
+        const matching = explainRule({ id: 'ok', when: { event: 'document.inserted', schema: 'tab' }, then: [] }, 'document.inserted', c);
+        assert.equal(matching.matched, true);
+        const disabled = explainRule({ id: 'off', enabled: false, when: { event: 'document.inserted' }, then: [] }, 'document.inserted', c);
+        assert.equal(disabled.matched, false);
+        assert.equal(disabled.enabled, false);
     });
 });

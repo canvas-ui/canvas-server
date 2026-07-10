@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
-# Download a URL into a target directory and write a hidden metadata sidecar
-# listing the virtual paths the resulting file should be linked to once indexed
-# (consumed by the incoming-metadata-linker hook).
+# Download a URL into a target directory and print the resulting file's
+# absolute path on stdout (the calling hook inserts it into the index through
+# the front door).
 #
-# Usage: fetch-url.sh <url> <target-dir> [link-path]
+# Usage: fetch-url.sh <url> <target-dir>
 set -euo pipefail
 
 URL="${1:?url required}"
 TARGET_DIR="${2:?target dir required}"
-LINK_PATH="${3:-/}"
 
 if ! command -v curl >/dev/null 2>&1; then
     echo "fetch-url.sh: curl not installed, skipping" >&2
@@ -31,13 +30,4 @@ fi
 
 curl -fsSL -o "$FILE_PATH" "$URL" || { rm -f "$FILE_PATH"; exit 0; }
 
-# Hidden sidecar (leading dot) so it is not auto-indexed; the
-# incoming-metadata-linker hook consumes and deletes it.
-META="$(dirname "$FILE_PATH")/.$(basename "$FILE_PATH").metadata.json"
-cat > "$META" <<EOF
-{
-  "file": "$(basename "$FILE_PATH")",
-  "source": "$URL",
-  "paths": ["$LINK_PATH"]
-}
-EOF
+echo "$FILE_PATH"

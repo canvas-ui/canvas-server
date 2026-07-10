@@ -1,10 +1,14 @@
 'use strict';
 
 import path from 'path';
+import crypto from 'crypto';
 import { promises as fs } from 'fs';
 import ResponseObject from '../../ResponseObject.js';
 import { requireWorkspaceRead, requireWorkspaceWrite } from '../../middleware/workspace-acl.js';
 import { HOOK_EVENTS, HOOK_ACTIONS, CLASSIFIER_SURFACE, HOOK_CONTEXT_API, generateHookSkeleton } from '../../../core/workspace/services/hook/meta.js';
+import { resolveRuleFiles, loadRuleFile, explainRule } from '../../../core/workspace/services/hook/rules.js';
+import { resolveHookFiles } from '../../../core/workspace/services/hook/files.js';
+import { classifyDocument } from '../../../core/workspace/lib/classifier.js';
 
 function normalizePathSegments(inputPath = '') {
   return String(inputPath || '')
@@ -180,6 +184,277 @@ export default async function workspaceHooksRoutes(fastify) {
     } catch (error) {
       request.log.error(error);
       const response = new ResponseObject().serverError('Failed to generate workspace hook');
+      return reply.code(response.statusCode).send(response.getResponse());
+    }
+  });
+
+  // Run log: per-execution records (hook files + rules) from
+  // {WORKSPACE_ROOT}/var/hooks/runs.jsonl, newest first.
+  fastify.get('/runs', {
+    onRequest: [fastify.authenticate, requireWorkspaceRead()],
+    schema: {
+      querystring: {
+        type: 'object',
+        properties: {
+          limit: { type: 'integer', minimum: 1, maximum: 500 },
+          handler: { type: 'string' },
+          event: { type: 'string' },
+          failed: { type: 'boolean' },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    try {
+      const runLog = fastify.workspaceManager?.hookService?.runLogFor(request.workspace);
+      if (!runLog) {
+        const response = new ResponseObject().serverError('Hook service unavailable');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+      const { limit, handler, event, failed } = request.query || {};
+      const runs = await runLog.query({ limit, handler, event, failed });
+      const response = new ResponseObject().found(runs, 'Workspace hook runs retrieved successfully', 200, runs.length);
+      return reply.code(response.statusCode).send(response.getResponse());
+    } catch (error) {
+      request.log.error(error);
+      const response = new ResponseObject().serverError('Failed to list workspace hook runs');
+      return reply.code(response.statusCode).send(response.getResponse());
+    }
+  });
+
+  // Explain: which rules and JS hooks would fire for a document + event, with
+  // a matcher-by-matcher breakdown ("why didn't my rule run"). Path matchers
+  // evaluate against `paths` from the body (a live event carries the landing
+  // paths, which a stored document does not) — pass the paths to simulate.
+  fastify.post('/explain', {
+    onRequest: [fastify.authenticate, requireWorkspaceRead()],
+    schema: {
+      body: {
+        type: 'object',
+        required: ['documentId'],
+        properties: {
+          documentId: { type: 'integer' },
+          event: { type: 'string', default: 'document.inserted' },
+          paths: { type: 'array', items: { type: 'string' } },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    try {
+      const { documentId, event = 'document.inserted', paths = [] } = request.body || {};
+      let document = null;
+      try {
+        document = await request.workspace.get(documentId);
+      } catch (error) {
+        request.log.debug(`explain: get(${documentId}) failed: ${error.message}`);
+      }
+      if (!document) {
+        const response = new ResponseObject().notFound(`Document ${documentId} not found (workspace inactive or unknown id)`);
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+
+      const payload = { id: documentId, document, context: paths.length ? { paths } : null };
+      const classification = classifyDocument(document, payload);
+
+      const rules = [];
+      for (const filePath of resolveRuleFiles(request.workspace.hooksPath)) {
+        for (const rule of loadRuleFile(filePath, null, request.log)) {
+          const explained = explainRule(rule, event, classification);
+          rules.push({ id: rule.id || '?', description: rule.description, cascade: rule.cascade === true, ...explained });
+        }
+      }
+
+      const hooksRoot = request.workspace.hooksPath;
+      const hooks = resolveHookFiles(hooksRoot, event)
+        .map((p) => ({ path: path.relative(hooksRoot, p), note: 'JS hook — would be invoked; its own code decides what to do' }));
+
+      const response = new ResponseObject().found({
+        documentId,
+        event,
+        schema: document.schema,
+        paths,
+        rules,
+        hooks,
+      }, 'Explain evaluated successfully');
+      return reply.code(response.statusCode).send(response.getResponse());
+    } catch (error) {
+      request.log.error(error);
+      const response = new ResponseObject().serverError('Failed to explain hooks for document');
+      return reply.code(response.statusCode).send(response.getResponse());
+    }
+  });
+
+  // Backfill: run ONE rule or JS hook against existing documents, as if each
+  // had just been inserted. dryRun evaluates matchers only (per-doc breakdown).
+  // Synthesized envelopes carry origin:'backfill' — downstream writes are
+  // cascade-guarded like any automation. NOTE: stored documents carry no live
+  // landing paths, so `when.path` matchers evaluate false during backfill.
+  fastify.post('/backfill', {
+    onRequest: [fastify.authenticate, requireWorkspaceWrite()],
+    schema: {
+      body: {
+        type: 'object',
+        properties: {
+          ruleId: { type: 'string' },
+          hookFile: { type: 'string' },
+          event: { type: 'string', default: 'document.inserted' },
+          schema: { type: 'string' },
+          limit: { type: 'integer', minimum: 1, maximum: 500, default: 100 },
+          dryRun: { type: 'boolean', default: false },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    try {
+      const { ruleId, hookFile, event = 'document.inserted', schema, limit = 100, dryRun = false } = request.body || {};
+      if ((ruleId ? 1 : 0) + (hookFile ? 1 : 0) !== 1) {
+        const response = new ResponseObject().badRequest('Pass exactly one of ruleId or hookFile');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+
+      const hookService = fastify.workspaceManager?.hookService;
+      if (!hookService) {
+        const response = new ResponseObject().serverError('Hook service unavailable');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+
+      let rule = null;
+      if (ruleId) {
+        rule = hookService.findRule(request.workspace, ruleId);
+        if (!rule) {
+          const response = new ResponseObject().notFound(`Rule "${ruleId}" not found`);
+          return reply.code(response.statusCode).send(response.getResponse());
+        }
+      }
+
+      // Discovery: schema filter from the request, else from the rule's own
+      // matcher (short names → data/abstraction/<name> feature bitmaps).
+      const ruleSchemas = rule?.when?.schema ? (Array.isArray(rule.when.schema) ? rule.when.schema : [rule.when.schema]) : [];
+      const schemas = (schema ? [schema] : ruleSchemas)
+        .map((s) => (s.includes('/') ? s : `data/abstraction/${s}`));
+
+      let documents;
+      try {
+        documents = await request.workspace.list({ ...(schemas.length ? { features: schemas } : {}), limit });
+      } catch (error) {
+        const response = new ResponseObject().serverError(`Document discovery failed (workspace active?): ${error.message}`);
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+      const docs = (Array.isArray(documents) ? documents : documents?.data || []).slice(0, limit);
+
+      const results = [];
+      let matched = 0;
+      let failed = 0;
+      for (const document of docs) {
+        if (!document?.id) { continue; }
+        const payload = {
+          id: document.id,
+          document,
+          context: null,
+          directory: null,
+          eventId: crypto.randomUUID(),
+          origin: 'backfill',
+          depth: 0,
+          backfill: true,
+        };
+
+        if (dryRun) {
+          const explained = rule
+            ? explainRule(rule, event, classifyDocument(document, payload))
+            : { matched: null, checks: [] }; // JS hooks decide in code
+          if (explained.matched) { matched++; }
+          results.push({ docId: document.id, schema: document.schema, matched: explained.matched, checks: explained.checks });
+          continue;
+        }
+
+        const outcome = await hookService.runTargeted(
+          request.workspace,
+          ruleId ? { ruleId } : { hookFile },
+          event,
+          payload,
+          { trigger: 'backfill' },
+        );
+        if (outcome.status !== 'skipped') { matched++; }
+        if (outcome.status === 'error') { failed++; }
+        results.push({ docId: document.id, schema: document.schema, ...outcome });
+      }
+
+      const response = new ResponseObject().success({
+        target: ruleId ? { ruleId } : { hookFile },
+        event,
+        dryRun,
+        processed: docs.length,
+        matched,
+        failed,
+        results,
+      }, dryRun ? 'Backfill dry-run evaluated' : 'Backfill executed');
+      return reply.code(response.statusCode).send(response.getResponse());
+    } catch (error) {
+      request.log.error(error);
+      const response = new ResponseObject().serverError(`Backfill failed: ${error.message}`);
+      return reply.code(response.statusCode).send(response.getResponse());
+    }
+  });
+
+  // Replay one logged run: reload the document(s) by id, rebuild the envelope
+  // (fresh eventId, origin:'replay', causedBy = the original eventId) and
+  // re-run the recorded handler.
+  fastify.post('/runs/:runId/replay', {
+    onRequest: [fastify.authenticate, requireWorkspaceWrite()],
+  }, async (request, reply) => {
+    try {
+      const hookService = fastify.workspaceManager?.hookService;
+      const runLog = hookService?.runLogFor(request.workspace);
+      if (!runLog) {
+        const response = new ResponseObject().serverError('Hook service unavailable');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+
+      const record = await runLog.get(request.params.runId);
+      if (!record) {
+        const response = new ResponseObject().notFound(`Run ${request.params.runId} not found`);
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+      if (!record.replayEnvelope || record.handlerType === 'dispatch') {
+        const response = new ResponseObject().badRequest('Run record carries no replayable envelope');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+
+      const basePayload = { ...(record.replayEnvelope.payload || {}) };
+      const docId = basePayload.document?.id ?? basePayload.id ?? null;
+      if (docId != null) {
+        let document = null;
+        try { document = await request.workspace.get(docId); }
+        catch (error) { request.log.debug(`replay: get(${docId}) failed: ${error.message}`); }
+        if (!document) {
+          const response = new ResponseObject().notFound(`Document ${docId} no longer exists — cannot replay`);
+          return reply.code(response.statusCode).send(response.getResponse());
+        }
+        basePayload.document = document;
+      }
+
+      const payload = {
+        ...basePayload,
+        eventId: crypto.randomUUID(),
+        origin: 'replay',
+        causedBy: record.eventId ?? null,
+        depth: 0,
+      };
+
+      const target = record.handlerType === 'rule' ? { ruleId: record.handler } : { hookFile: record.handler };
+      const outcome = await hookService.runTargeted(
+        request.workspace, target, record.replayEnvelope.event, payload, { trigger: 'replay' },
+      );
+
+      const response = new ResponseObject().success({
+        replayedRunId: record.runId,
+        target,
+        event: record.replayEnvelope.event,
+        ...outcome,
+      }, 'Run replayed');
+      return reply.code(response.statusCode).send(response.getResponse());
+    } catch (error) {
+      request.log.error(error);
+      const response = new ResponseObject().serverError(`Replay failed: ${error.message}`);
       return reply.code(response.statusCode).send(response.getResponse());
     }
   });

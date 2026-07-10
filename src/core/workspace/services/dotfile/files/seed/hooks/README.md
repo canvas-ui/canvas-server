@@ -134,8 +134,13 @@ substring or `{equals|contains|startsWith|regex}`; `url` a substring or
 `{host|prefix|contains|regex}`. Every matching rule fires (no first-match-wins).
 Actions: `link`, `unlink` (remove from paths), `tag`, `delete` (purge from
 index; backend bytes untouched), `destroy` (**irreversible** — delete bytes on
-every deletable location, then purge), `agent`, `notify`, `script` (path under
-`git/`), `emit`. Link/unlink paths target the context tree by default;
+every deletable location, then purge), `agent`, `notify`, `script`, `emit`.
+Rule `script`s run hardened: path must resolve under `git/`; env is sanitized
+to `PATH`/`HOME`/`LANG` plus `CANVAS_EVENT`, `CANVAS_EVENT_ID`,
+`CANVAS_WORKSPACE`, `CANVAS_WORK_DIR` (a per-run scratch dir under `var/tmp`,
+also the cwd — cleaned after a successful captured run, swept after 24h
+otherwise); the full JSON event envelope arrives on stdin; `timeout` (ms,
+captured mode, default 60000, max 600000) is configurable per action. Link/unlink paths target the context tree by default;
 `dir:/a/b` targets the directory tree. `agent` and `script` take an optional
 `output` consuming the agent reply / script stdout (60s timeout, 256 KiB cap):
 `{ note: { path, title? }, file: { path, backend?: 'home'|'data', append?,
@@ -160,16 +165,24 @@ only match `document.*` events that carry a document (batch fan-out included).
 2. **Stay disabled until done.** Generated skeletons and examples carry an
    inactive prefix on purpose; strip it only when TODOs are resolved. When
    experimenting, prefer a `disabled-` copy + rename over editing a live hook.
-3. **Errors are swallowed.** Verify behavior via `ctx.logger` output in the
-   server log, not by assuming an exception would surface.
+3. **Errors are swallowed — but recorded.** A throwing hook/rule never breaks
+   ingestion; every execution (ok / error / skipped) lands in the run log:
+   the Runs tab in the settings UI, `GET /rest/v2/workspaces/<id>/hooks/runs`,
+   or `{WORKSPACE_ROOT}/var/hooks/runs.jsonl` directly. Use
+   `POST …/hooks/explain` (or the CLI `hooks explain <docId>`) to see which
+   rules would fire for a document and why.
 4. **A 1s dedup window** drops identical event payloads; don't rely on
    duplicate deliveries.
 5. **Full permissions, no sandbox.** Hooks and scripts run as the server
    process with the workspace owner's data. Never commit secrets to this repo;
    scripts get no env injection beyond the server's own environment.
 6. **Dotfiles are never auto-indexed** — files starting with a dot are invisible
-   to ingestion regardless of location. Scripts can use `.name.metadata.json`
-   sidecars (see `incoming-metadata-linker`) without triggering loops.
+   to ingestion regardless of location.
+7. **Register produced files through the front door.** A script that downloads
+   something should print the file path; the hook then inserts the File
+   document itself (see `lib/insert-file.js` and the downloader examples) —
+   checksummed, located, linked, provenance-stamped. Don't drop files into
+   `home/` and hope the indexer notices.
 
 ## Enable / disable
 
@@ -182,12 +195,12 @@ A filename prefix marks a file inactive — the engine skips it:
 Enable by stripping the prefix (`example-youtube-downloader.js` →
 `youtube-downloader.js`) via the settings UI toggle, or `git mv` + push.
 
-Shipped examples (all disabled): `youtube-downloader` +
-`incoming-metadata-linker` (pair), `pinterest-downloader` + `image-categorizer`
-(pair), `email-linker`, `to-sort-categorizer`, `ticket-notify`,
-`arxiv-summarizer`, `image-url-downloader`, `batch-tab-sorter`
-(`document.inserted.batch`), plus `example-rules.json` (rename to `rules.json`
-to activate). Pairs need both halves enabled.
+Shipped examples (all disabled): `youtube-downloader`,
+`pinterest-downloader` + `image-categorizer` (pair — stage 2 exports
+`cascade = true` to see stage 1's inserts), `email-linker`,
+`to-sort-categorizer`, `ticket-notify`, `arxiv-summarizer`,
+`image-url-downloader`, `batch-tab-sorter` (`document.inserted.batch`), plus
+`example-rules.json` (rename to `rules.json` to activate).
 
 ## Editing & git access
 
@@ -201,5 +214,7 @@ git clone https://canvas@<canvas-server>/rest/v2/workspaces/<workspace-id>/git
 ```
 
 Pushes force-checkout `hooks/` + `scripts/` into the live workspace and
-hot-reload. `scripts/*` are chmod 755 on deploy; spawn them from hooks
-detached (see `scripts/ytdl.sh` usage in `youtube-downloader`).
+hot-reload. `scripts/*` are chmod 755 on deploy. From a JS hook, spawn a
+script, capture its stdout and register produced files via
+`lib/insert-file.js` (see `youtube-downloader`); rule `script` actions get the
+hardened contract described above automatically.

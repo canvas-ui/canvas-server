@@ -3,12 +3,14 @@
 import EventEmitter from 'eventemitter2';
 import fs from 'fs';
 import path from 'path';
+import { WORKSPACE_DIRECTORIES } from '../../lib/constants.js';
 import { pathToFileURL } from 'url';
 import { createLogger } from '../../../../utils/log.js';
 import { classifyDocument } from '../../lib/classifier.js';
 import { resolveRuleFiles, loadRuleFile, matchRule, executeRuleActions } from './rules.js';
 import { buildHookAgentPrompt } from './agent-prompt.js';
-import { isDisabledFile } from './naming.js';
+import { resolveHookFiles, statFile } from './files.js';
+import HookRunLog, { buildReplayEnvelope } from './run-log.js';
 
 const logger = createLogger('hook-service');
 
@@ -39,6 +41,7 @@ class HookService extends EventEmitter {
     #hookModuleCache = new Map(); // hookPath -> { mtimeMs, run, debounce }
     #ruleFileCache = new Map(); // filePath -> { mtimeMs, rules }
     #debounce = new Map(); // key -> { timer, payloads }
+    #runLogs = new Map(); // workspaceId -> HookRunLog
     #initialized = false;
 
     constructor(options = {}) {
@@ -99,6 +102,36 @@ class HookService extends EventEmitter {
 
         workspace.on('**', listener);
         this.#workspaceListeners.set(workspace.id, { workspace, listener });
+        this.#sweepStaleWorkDirs(workspace);
+    }
+
+    // Detached scripts clean nothing up themselves — lazily drop var/tmp
+    // work dirs older than 24h whenever a workspace is (re)tracked.
+    #sweepStaleWorkDirs(workspace) {
+        if (!workspace.rootPath) { return; }
+        const tmpRoot = path.join(workspace.rootPath, WORKSPACE_DIRECTORIES.varTmp);
+        const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+        (async () => {
+            let handlers;
+            try { handlers = await fs.promises.readdir(tmpRoot, { withFileTypes: true }); }
+            catch { return; }
+            for (const handler of handlers) {
+                if (!handler.isDirectory()) { continue; }
+                const handlerDir = path.join(tmpRoot, handler.name);
+                let runs;
+                try { runs = await fs.promises.readdir(handlerDir, { withFileTypes: true }); }
+                catch { continue; }
+                for (const run of runs) {
+                    const runDir = path.join(handlerDir, run.name);
+                    try {
+                        const stat = await fs.promises.stat(runDir);
+                        if (stat.mtimeMs < cutoff) {
+                            await fs.promises.rm(runDir, { recursive: true, force: true });
+                        }
+                    } catch { /* raced or unreadable — skip */ }
+                }
+            }
+        })().catch(() => {});
     }
 
     untrackWorkspace(workspaceId) {
@@ -139,6 +172,13 @@ class HookService extends EventEmitter {
         const maxDepth = Number(workspace.config?.hooks?.maxDepth) || DEFAULT_MAX_DEPTH;
         if (depth >= maxDepth) {
             logger.warn(`Hook cascade depth ${depth} >= maxDepth ${maxDepth} — dropping ${eventName} (origin=${payload?.origin}, causedBy=${payload?.causedBy}) in workspace ${workspaceId}`);
+            this.runLogFor(workspace)?.append({
+                trigger: 'event', event: eventName, eventId: payload?.eventId ?? null,
+                origin: payload?.origin ?? 'user', depth, batch: payload?.batch === true,
+                handlerType: 'dispatch', handler: '*',
+                docIds: HookService.#payloadDocIds(payload),
+                durationMs: 0, status: 'skipped', skipReason: `depth ${depth} >= maxDepth ${maxDepth}`,
+            });
             return;
         }
         const automated = isAutomatedOrigin(payload?.origin);
@@ -169,6 +209,106 @@ class HookService extends EventEmitter {
         'document.inserted.batch': 'document.inserted',
         'document.updated.batch': 'document.updated',
     };
+
+    static #payloadDocIds(payload = {}) {
+        if (Array.isArray(payload.ids)) { return payload.ids; }
+        const id = payload.id ?? payload.documentId ?? payload.document?.id;
+        return id != null ? [id] : [];
+    }
+
+    // Run one specific handler (a rule by id or a JS hook file) against a
+    // synthesized/replayed envelope, bypassing dispatchEvent (no dedup, no
+    // cascade gating on the way IN — the caller controls the envelope; writes
+    // the handler makes are still provenance-stamped and cascade-guarded on
+    // the way OUT). Backing for the backfill and replay endpoints.
+    //
+    // @param {Object} target - { ruleId } | { hookFile } (path rel. hooks root)
+    // @returns {{ status: 'ok'|'error'|'skipped', actions? }}
+    async runTargeted(workspace, target, eventName, payload, { trigger = 'backfill' } = {}) {
+        const runLog = this.runLogFor(workspace);
+
+        if (target?.ruleId) {
+            const rule = this.findRule(workspace, target.ruleId);
+            if (!rule) { throw new Error(`Rule "${target.ruleId}" not found`); }
+
+            const classification = classifyDocument(payload?.document, payload);
+            if (!matchRule(rule, eventName, classification)) {
+                runLog?.append({
+                    ...this.#baseRecord(eventName, payload, trigger),
+                    handlerType: 'rule', handler: rule.id || '?',
+                    durationMs: 0, status: 'skipped', skipReason: 'matcher did not match',
+                });
+                return { status: 'skipped' };
+            }
+
+            const context = this.#buildHookContext(workspace, eventName, payload, 'rule');
+            const t0 = Date.now();
+            const actions = await executeRuleActions(rule, context, logger);
+            const status = actions.some((a) => a.status === 'error') ? 'error' : 'ok';
+            runLog?.append({
+                ...this.#baseRecord(eventName, payload, trigger),
+                handlerType: 'rule', handler: rule.id || '?',
+                durationMs: Date.now() - t0, status, actions,
+                replayEnvelope: buildReplayEnvelope(eventName, payload),
+            });
+            return { status, actions };
+        }
+
+        if (target?.hookFile) {
+            const hooksRoot = path.resolve(workspace.hooksPath || path.join(workspace.rootPath, 'hooks'));
+            const hookPath = path.resolve(hooksRoot, String(target.hookFile));
+            if (hookPath !== hooksRoot && !hookPath.startsWith(`${hooksRoot}${path.sep}`)) {
+                throw new Error('Hook path escapes the hooks root');
+            }
+            const loaded = await this.#loadHookRun(hookPath);
+            if (!loaded) { throw new Error(`Hook "${target.hookFile}" not found`); }
+
+            const context = this.#buildHookContext(workspace, eventName, payload);
+            await this.#invokeHook(loaded.run, context, hookPath, { workspace, eventName, payload, trigger });
+            // #invokeHook records ok/error itself; read nothing back — errors
+            // are swallowed by design, the run log is the outcome surface.
+            return { status: 'ok' };
+        }
+
+        throw new Error('runTargeted: target must be { ruleId } or { hookFile }');
+    }
+
+    // Locate one rule by id across rules.json + rules/*.json (enabled files).
+    findRule(workspace, ruleId) {
+        const hooksRoot = workspace.hooksPath || path.join(workspace.rootPath, 'hooks');
+        for (const filePath of resolveRuleFiles(hooksRoot)) {
+            for (const rule of loadRuleFile(filePath, this.#ruleFileCache, logger)) {
+                if (rule.id === ruleId) { return rule; }
+            }
+        }
+        return null;
+    }
+
+    // Lazy per-workspace run log (JSONL under {root}/var/hooks). Public so the
+    // REST layer (runs/replay endpoints) reads through the same instance —
+    // sharing the size cache used for rotation.
+    runLogFor(workspace) {
+        if (!workspace?.id || !workspace.rootPath) { return null; }
+        let log = this.#runLogs.get(workspace.id);
+        if (!log) {
+            log = new HookRunLog(workspace.rootPath);
+            this.#runLogs.set(workspace.id, log);
+        }
+        return log;
+    }
+
+    // Shared record skeleton for one handler execution.
+    #baseRecord(eventName, payload, trigger = 'event') {
+        return {
+            trigger,
+            event: eventName,
+            eventId: payload?.eventId ?? null,
+            origin: payload?.origin ?? 'user',
+            depth: Number.isInteger(payload?.depth) ? payload.depth : 0,
+            batch: payload?.batch === true,
+            docIds: HookService.#payloadDocIds(payload),
+        };
+    }
 
     // Load each batched document and run the workspace's singular hooks/rules
     // for it, sequentially — a 50-message imap batch must not spawn 50
@@ -223,7 +363,7 @@ class HookService extends EventEmitter {
 
     async #runWorkspaceHook(workspace, eventName, payload, automated = false) {
         const hooksRoot = workspace.hooksPath || path.join(workspace.rootPath, 'hooks');
-        const hookFiles = this.#resolveHookFiles(hooksRoot, eventName);
+        const hookFiles = resolveHookFiles(hooksRoot, eventName);
         if (hookFiles.length === 0) { return; }
 
         await Promise.allSettled(
@@ -242,48 +382,35 @@ class HookService extends EventEmitter {
         const classification = classifyDocument(payload?.document, payload);
         let context = null;
 
+        const runLog = this.runLogFor(workspace);
         for (const filePath of ruleFiles) {
             for (const rule of loadRuleFile(filePath, this.#ruleFileCache, logger)) {
+                if (!matchRule(rule, eventName, classification)) { continue; }
+                // Cascade gate AFTER matching so the run log only records
+                // skips for rules that would actually have fired.
                 if (automated && rule.cascade !== true) {
                     logger.debug(`Rule ${rule.id || '?'} skipped: automated event (origin=${payload?.origin}) and rule has no cascade:true`);
+                    runLog?.append({
+                        ...this.#baseRecord(eventName, payload),
+                        handlerType: 'rule', handler: rule.id || '?',
+                        durationMs: 0, status: 'skipped',
+                        skipReason: `automated origin '${payload?.origin}' and no cascade:true`,
+                    });
                     continue;
                 }
-                if (!matchRule(rule, eventName, classification)) { continue; }
                 context = context || this.#buildHookContext(workspace, eventName, payload, 'rule');
                 logger.debug(`Rule ${rule.id || '?'} matched ${eventName} in workspace ${workspace.id}`);
-                await executeRuleActions(rule, context, logger);
+                const t0 = Date.now();
+                const actions = await executeRuleActions(rule, context, logger);
+                runLog?.append({
+                    ...this.#baseRecord(eventName, payload),
+                    handlerType: 'rule', handler: rule.id || '?',
+                    durationMs: Date.now() - t0,
+                    status: actions.some((a) => a.status === 'error') ? 'error' : 'ok',
+                    actions,
+                    replayEnvelope: buildReplayEnvelope(eventName, payload),
+                });
             }
-        }
-    }
-
-    // Collect every enabled handler for an event: the single `{event}.js` file
-    // plus every `*.js` inside the `{event}/` directory. Files prefixed
-    // `example-`, `disabled-` or `_` are inactive (the UI toggle renames them);
-    // `lib/` holds shared modules and is never auto-run.
-    #resolveHookFiles(hooksRoot, eventName) {
-        const files = [];
-
-        const singleFile = path.join(hooksRoot, `${eventName}.js`);
-        if (this.#statFile(singleFile)) { files.push(singleFile); }
-
-        const eventDir = path.join(hooksRoot, eventName);
-        try {
-            for (const entry of fs.readdirSync(eventDir, { withFileTypes: true })) {
-                if (entry.isFile() && entry.name.endsWith('.js') && !isDisabledFile(entry.name)) {
-                    files.push(path.join(eventDir, entry.name));
-                }
-            }
-        } catch { /* no directory for this event */ }
-
-        return files;
-    }
-
-    #statFile(filePath) {
-        try {
-            const stat = fs.statSync(filePath);
-            return stat.isFile() ? stat : null;
-        } catch {
-            return null;
         }
     }
 
@@ -292,7 +419,7 @@ class HookService extends EventEmitter {
     // unchanged hook is compiled once (re-importing on every event also leaks a
     // module into the ESM registry per call).
     async #loadHookRun(hookPath) {
-        const stat = this.#statFile(hookPath);
+        const stat = statFile(hookPath);
         if (!stat) { return null; }
 
         let cached = this.#hookModuleCache.get(hookPath);
@@ -313,18 +440,35 @@ class HookService extends EventEmitter {
         return cached;
     }
 
+    // Handler name as recorded/reported: path relative to the hooks root.
+    #hookName(workspace, hookPath) {
+        const hooksRoot = workspace.hooksPath || path.join(workspace.rootPath, 'hooks');
+        return path.relative(hooksRoot, hookPath) || hookPath;
+    }
+
     async #dispatchHookFile(hookPath, workspace, eventName, payload, automated = false) {
         let loaded;
         try {
             loaded = await this.#loadHookRun(hookPath);
         } catch (err) {
-            logger.debug(`Error loading workspace hook ${hookPath}: ${err.message}`);
+            logger.warn(`Error loading workspace hook ${hookPath}: ${err.message}`);
+            this.runLogFor(workspace)?.append({
+                ...this.#baseRecord(eventName, payload),
+                handlerType: 'hook', handler: this.#hookName(workspace, hookPath),
+                durationMs: 0, status: 'error', error: `load failed: ${err.message}`,
+            });
             return;
         }
         if (!loaded) { return; }
 
         if (automated && !loaded.cascade) {
             logger.debug(`Hook ${hookPath} skipped: automated event (origin=${payload?.origin}) and no \`export const cascade = true\``);
+            this.runLogFor(workspace)?.append({
+                ...this.#baseRecord(eventName, payload),
+                handlerType: 'hook', handler: this.#hookName(workspace, hookPath),
+                durationMs: 0, status: 'skipped',
+                skipReason: `automated origin '${payload?.origin}' and no cascade export`,
+            });
             return;
         }
 
@@ -334,7 +478,7 @@ class HookService extends EventEmitter {
         }
 
         const context = this.#buildHookContext(workspace, eventName, payload);
-        await this.#invokeHook(loaded.run, context, hookPath);
+        await this.#invokeHook(loaded.run, context, hookPath, { workspace, eventName, payload });
     }
 
     // Coalesce a burst of events (e.g. N singleton inserts the app didn't batch)
@@ -350,19 +494,36 @@ class HookService extends EventEmitter {
         entry.timer = setTimeout(() => {
             this.#debounce.delete(key);
             const payloads = entry.payloads;
-            const context = this.#buildHookContext(workspace, eventName, payloads[payloads.length - 1]);
+            const lastPayload = payloads[payloads.length - 1];
+            const context = this.#buildHookContext(workspace, eventName, lastPayload);
             context.payloads = payloads;
             context.event.payloads = payloads;
-            this.#invokeHook(loaded.run, context, hookPath);
+            this.#invokeHook(loaded.run, context, hookPath, {
+                workspace, eventName, payload: lastPayload, debouncedCount: payloads.length,
+            });
         }, loaded.debounce);
         if (entry.timer.unref) { entry.timer.unref(); }
     }
 
-    async #invokeHook(run, context, hookPath) {
+    async #invokeHook(run, context, hookPath, meta = null) {
+        const t0 = Date.now();
+        let error = null;
         try {
             await run(context);
         } catch (err) {
-            logger.debug(`Error running workspace hook ${hookPath}: ${err.message}`);
+            error = err;
+            logger.warn(`Error running workspace hook ${hookPath}: ${err.message}`);
+        }
+        if (meta?.workspace) {
+            this.runLogFor(meta.workspace)?.append({
+                ...this.#baseRecord(meta.eventName, meta.payload, meta.trigger || 'event'),
+                handlerType: 'hook', handler: this.#hookName(meta.workspace, hookPath),
+                ...(meta.debouncedCount ? { debouncedCount: meta.debouncedCount } : {}),
+                durationMs: Date.now() - t0,
+                status: error ? 'error' : 'ok',
+                ...(error ? { error: error.message } : {}),
+                replayEnvelope: buildReplayEnvelope(meta.eventName, meta.payload),
+            });
         }
     }
 

@@ -12,6 +12,11 @@ const FALLBACK_PATH = '/to-sort/unsure';
 // One agent run per sync burst, not one per image.
 export const debounce = 3000;
 
+// Stage 1 (pinterest-downloader) inserts the files with origin:'hook' — this
+// hook must opt into automation-caused events to see them. The maxDepth
+// ceiling still bounds the chain.
+export const cascade = true;
+
 export default async function hook({ payloads, classify, workspace, agent, logger }) {
   const ids = payloads
     .filter((p) => {

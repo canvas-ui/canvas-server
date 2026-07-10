@@ -405,6 +405,38 @@ export default async ({ insert }) => {
         assert.deepEqual(putCalls[0].options.provenance, { origin: 'hook', causedBy: 'e6', depth: 1 });
     });
 
+    test('runs are recorded in the run log (rule ok, hook error, cascade skip)', async () => {
+        writeRules([RULE]);
+        const hookDir = path.join(workspace.hooksPath, 'document.inserted');
+        fs.mkdirSync(hookDir, { recursive: true });
+        fs.writeFileSync(path.join(hookDir, 'thrower.js'),
+            'export default async () => { throw new Error("kaboom"); };');
+
+        emitTab(20, { eventId: 'e20' });
+        // automated event → both handlers skip (rule matches but no cascade)
+        emitTab(21, { eventId: 'e21', origin: 'hook', causedBy: 'e20', depth: 1 });
+        await new Promise(resolve => setTimeout(resolve, 80));
+
+        const runs = await service.runLogFor(workspace).query({ limit: 50 });
+        const byKey = (handlerType, status) => runs.filter((r) => r.handlerType === handlerType && r.status === status);
+
+        const ruleOk = byKey('rule', 'ok');
+        assert.equal(ruleOk.length, 1);
+        assert.equal(ruleOk[0].handler, 'yt');
+        assert.equal(ruleOk[0].eventId, 'e20');
+        assert.deepEqual(ruleOk[0].actions, [{ action: 'link', status: 'ok' }]);
+        assert.deepEqual(ruleOk[0].replayEnvelope.payload.document, { id: 20, schema: 'data/abstraction/tab' });
+
+        const hookErr = byKey('hook', 'error');
+        assert.equal(hookErr.length, 1);
+        assert.equal(hookErr[0].handler, path.join('document.inserted', 'thrower.js'));
+        assert.match(hookErr[0].error, /kaboom/);
+
+        const skips = runs.filter((r) => r.status === 'skipped');
+        assert.equal(skips.length, 2); // rule + hook, both for e21
+        assert.ok(skips.every((r) => r.eventId === 'e21' && /cascade/.test(r.skipReason)));
+    });
+
     test('dedup keys on eventId: same eventId dedups, distinct eventIds for the same doc both run', async () => {
         writeRules([RULE]);
         emitTab(7, { eventId: 'same' });
@@ -415,5 +447,67 @@ export default async ({ insert }) => {
         emitTab(7, { eventId: 'other' });
         await new Promise(resolve => setTimeout(resolve, 30));
         assert.equal(linkCalls.length, 2);
+    });
+
+    test('runTargeted executes ONLY the targeted rule and records the trigger', async () => {
+        writeRules([
+            RULE,
+            { id: 'other', when: { event: 'document.inserted', schema: 'tab' }, then: [{ action: 'link', paths: ['/elsewhere'] }] },
+        ]);
+        const payload = {
+            id: 30, document: tabDoc(30), context: null, directory: null,
+            eventId: 'bf-1', origin: 'backfill', depth: 0, backfill: true,
+        };
+        const outcome = await service.runTargeted(workspace, { ruleId: 'yt' }, 'document.inserted', payload, { trigger: 'backfill' });
+
+        assert.equal(outcome.status, 'ok');
+        assert.equal(linkCalls.length, 1); // 'other' matched too but must NOT fire
+        assert.deepEqual(linkCalls[0].opts.context, { type: 'context', path: '/media' });
+        assert.deepEqual(linkCalls[0].opts.provenance, { origin: 'rule', causedBy: 'bf-1', depth: 1 });
+
+        const [record] = await service.runLogFor(workspace).query({ handler: 'yt' });
+        assert.equal(record.trigger, 'backfill');
+        assert.equal(record.origin, 'backfill');
+        assert.equal(record.status, 'ok');
+    });
+
+    test('runTargeted records a skip when the matcher does not match', async () => {
+        writeRules([{ ...RULE, when: { ...RULE.when, schema: 'email' } }]);
+        const payload = { id: 31, document: tabDoc(31), eventId: 'bf-2', origin: 'backfill', depth: 0 };
+        const outcome = await service.runTargeted(workspace, { ruleId: 'yt' }, 'document.inserted', payload);
+
+        assert.equal(outcome.status, 'skipped');
+        assert.equal(linkCalls.length, 0);
+        const [record] = await service.runLogFor(workspace).query({ handler: 'yt' });
+        assert.equal(record.status, 'skipped');
+        assert.equal(record.skipReason, 'matcher did not match');
+    });
+
+    test('runTargeted runs a JS hook file and rejects paths escaping the hooks root', async () => {
+        const hookDir = path.join(workspace.hooksPath, 'document.inserted');
+        fs.mkdirSync(hookDir, { recursive: true });
+        fs.writeFileSync(path.join(hookDir, 'probe.js'),
+            'export default async ({ payload }) => { globalThis.__targetedRuns.push(payload.id); };');
+        globalThis.__targetedRuns = [];
+
+        const payload = { id: 32, document: tabDoc(32), eventId: 'rp-1', origin: 'replay', depth: 0 };
+        const outcome = await service.runTargeted(
+            workspace, { hookFile: 'document.inserted/probe.js' }, 'document.inserted', payload, { trigger: 'replay' },
+        );
+        assert.equal(outcome.status, 'ok');
+        assert.deepEqual(globalThis.__targetedRuns, [32]);
+
+        const [record] = await service.runLogFor(workspace).query({ handler: 'probe' });
+        assert.equal(record.trigger, 'replay');
+
+        await assert.rejects(
+            service.runTargeted(workspace, { hookFile: '../../etc/passwd' }, 'document.inserted', payload),
+            /escapes the hooks root/,
+        );
+        await assert.rejects(
+            service.runTargeted(workspace, { ruleId: 'missing' }, 'document.inserted', payload),
+            /not found/,
+        );
+        delete globalThis.__targetedRuns;
     });
 });

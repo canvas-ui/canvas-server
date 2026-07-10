@@ -22,7 +22,9 @@ const WORKSPACE_DIRECTORIES = {
     git: 'git',
     hooks: 'git/hooks',
     roles: 'roles',
-    var: 'var', // For Unix sockets
+    var: 'var', // Unix sockets + runtime state
+    varHooks: 'var/hooks', // hook/rule run log (runs.jsonl)
+    varTmp: 'var/tmp', // scratch space for hook scripts (CANVAS_WORK_DIR)
 };
 
 const WORKSPACE_GIT_BARE_DIR = 'bare.git';

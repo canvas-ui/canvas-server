@@ -5,6 +5,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { spawn } from 'child_process';
 import { isDisabledFile } from './naming.js';
+import { WORKSPACE_DIRECTORIES } from '../../lib/constants.js';
 
 /**
  * Declarative hook rules (canvas.hook-rules/v1).
@@ -114,6 +115,44 @@ function safeRegex(pattern) {
     }
 }
 
+// One check per `when` key. Shared by matchRule (dispatch) and explainRule
+// (the explain endpoint's matcher-by-matcher breakdown).
+const WHEN_CHECKS = {
+    event: (c, matcher, eventName) => Boolean(matcher) && asArray(matcher).includes(eventName),
+    schema: (c, matcher) => asArray(matcher).some((s) => c.isSchema(s)),
+    path: (c, matcher) => asArray(matcher).some((p) => c.inPath(p)),
+    url: (c, matcher) => asArray(matcher).some((u) => matchUrl(c, u)),
+    from: (c, matcher) => asArray(matcher).some((f) => matchText(c.from, f)),
+    subject: (c, matcher) => asArray(matcher).some((s) => matchText(c.subject, s)),
+    mime: (c, matcher) => asArray(matcher).some((m) => c.mimeMatches(m)),
+};
+
+/**
+ * Matcher-by-matcher evaluation of one rule — "why (didn't) my rule fire".
+ * Unlike matchRule it does not short-circuit, so every check is reported.
+ * @param {Object} rule
+ * @param {string} eventName
+ * @param {Classification} c - classification of the document
+ * @returns {{ matched: boolean, enabled: boolean, checks: Array<{key, expected, matched}> }}
+ */
+export function explainRule(rule, eventName, c) {
+    const enabled = rule.enabled !== false;
+    const when = rule.when && typeof rule.when === 'object' ? rule.when : {};
+    const checks = [];
+
+    for (const [key, check] of Object.entries(WHEN_CHECKS)) {
+        if (key !== 'event' && when[key] === undefined) { continue; }
+        checks.push({ key, expected: when[key] ?? null, matched: check(c, when[key], eventName) });
+    }
+    // Unknown when-keys can never be satisfied — surface them instead of
+    // silently ignoring what the engine would reject.
+    for (const key of Object.keys(when)) {
+        if (!(key in WHEN_CHECKS)) { checks.push({ key, expected: when[key], matched: false, unknown: true }); }
+    }
+
+    return { matched: enabled && checks.length > 0 && checks.every((chk) => chk.matched), enabled, checks };
+}
+
 /**
  * @param {Object} rule
  * @param {string} eventName
@@ -125,13 +164,10 @@ export function matchRule(rule, eventName, c) {
     const when = rule.when;
     if (!when || typeof when !== 'object') { return false; }
 
-    if (!when.event || !asArray(when.event).includes(eventName)) { return false; }
-    if (when.schema !== undefined && !asArray(when.schema).some((s) => c.isSchema(s))) { return false; }
-    if (when.path !== undefined && !asArray(when.path).some((p) => c.inPath(p))) { return false; }
-    if (when.url !== undefined && !asArray(when.url).some((u) => matchUrl(c, u))) { return false; }
-    if (when.from !== undefined && !asArray(when.from).some((f) => matchText(c.from, f))) { return false; }
-    if (when.subject !== undefined && !asArray(when.subject).some((s) => matchText(c.subject, s))) { return false; }
-    if (when.mime !== undefined && !asArray(when.mime).some((m) => c.mimeMatches(m))) { return false; }
+    if (!WHEN_CHECKS.event(c, when.event, eventName)) { return false; }
+    for (const key of ['schema', 'path', 'url', 'from', 'subject', 'mime']) {
+        if (when[key] !== undefined && !WHEN_CHECKS[key](c, when[key])) { return false; }
+    }
 
     return true;
 }
@@ -330,10 +366,21 @@ const ACTIONS = {
     },
 
     // Script under the workspace git/ tree (same pattern as the youtube seed
-    // hook). Paths resolving outside git/ are rejected. Without `output` the
-    // script is fire-and-forget (detached); with `output` its stdout is
-    // captured (60s timeout, 256 KiB cap) and fed through the same output
-    // pipeline as agent replies (note / file / notify).
+    // hook). Paths resolving outside git/ are rejected.
+    //
+    // Hardened execution contract:
+    //   env    — sanitized to PATH/HOME/LANG + CANVAS_EVENT, CANVAS_EVENT_ID,
+    //            CANVAS_WORKSPACE, CANVAS_WORK_DIR. Server secrets/config never
+    //            leak into workspace-synced scripts.
+    //   stdin  — the full JSON event envelope ({ event, eventId, payload,
+    //            workspace, rule }); argv (action.args) stays available for
+    //            scripts that predate the envelope.
+    //   cwd    — {WORKSPACE_ROOT}/var/tmp/<ruleId>/<eventId> (CANVAS_WORK_DIR),
+    //            created per run; removed after a clean captured run.
+    //   output — without `output` the script is fire-and-forget (detached);
+    //            with `output` stdout is captured (default 60s timeout,
+    //            `timeout` ms overrides up to 600s; 256 KiB cap) and fed
+    //            through the same pipeline as agent replies (note/file/notify).
     async script(action, { context, workspace, scope, logger }) {
         if (!action.path) { return; }
         const gitRoot = path.resolve(workspace.rootPath, 'git');
@@ -348,22 +395,59 @@ const ACTIONS = {
         }
         const args = asArray(action.args || []).map((a) => interpolate(String(a), scope));
 
+        const eventId = scope.payload?.eventId || crypto.randomUUID();
+        const handlerId = String(scope.rule?.id || 'rule').replace(/[^a-zA-Z0-9._-]+/g, '-');
+        const workDir = path.join(workspace.rootPath, WORKSPACE_DIRECTORIES.varTmp, handlerId, eventId);
+        try { fs.mkdirSync(workDir, { recursive: true }); }
+        catch (err) { logger.warn(`rule script: work dir creation failed: ${err.message}`); return; }
+
+        const env = {
+            PATH: process.env.PATH,
+            HOME: process.env.HOME,
+            ...(process.env.LANG ? { LANG: process.env.LANG } : {}),
+            CANVAS_EVENT: String(scope.event || ''),
+            CANVAS_EVENT_ID: eventId,
+            CANVAS_WORKSPACE: String(workspace.id || ''),
+            CANVAS_WORK_DIR: workDir,
+        };
+        const envelope = JSON.stringify({
+            event: scope.event,
+            eventId,
+            payload: scope.payload ?? null,
+            workspace: { id: workspace.id, name: workspace.name },
+            rule: scope.rule ?? null,
+        });
+        const writeStdin = (child) => {
+            try { child.stdin.write(envelope); child.stdin.end(); }
+            catch (err) { logger.debug(`rule script: stdin write failed: ${err.message}`); }
+        };
+
         if (!action.output || typeof action.output !== 'object') {
-            const child = spawn('bash', [scriptPath, ...args], { stdio: 'ignore', detached: true });
+            const child = spawn('bash', [scriptPath, ...args], {
+                stdio: ['pipe', 'ignore', 'ignore'], detached: true, cwd: workDir, env,
+            });
             child.on('error', (err) => logger.debug(`rule script: spawn failed: ${err.message}`));
+            writeStdin(child);
             child.unref();
-            logger.debug(`rule script: spawned ${action.path}`);
+            logger.debug(`rule script: spawned ${action.path} (workdir ${workDir})`);
             return;
         }
 
+        const timeoutMs = Math.min(Math.max(1000, Number(action.timeout) || 60_000), 600_000);
         const stdout = await new Promise((resolve) => {
-            const child = spawn('bash', [scriptPath, ...args], { stdio: ['ignore', 'pipe', 'ignore'] });
+            // detached → own process group, so the timeout can kill the whole
+            // tree: killing only bash leaves its children holding the stdout
+            // pipe open and 'close' never fires until they exit.
+            const child = spawn('bash', [scriptPath, ...args], {
+                stdio: ['pipe', 'pipe', 'ignore'], cwd: workDir, env, detached: true,
+            });
             const chunks = [];
             let size = 0;
             const timer = setTimeout(() => {
-                logger.debug(`rule script: ${action.path} timed out after 60s, killing`);
-                child.kill('SIGKILL');
-            }, 60_000);
+                logger.warn(`rule script: ${action.path} timed out after ${timeoutMs}ms, killing`);
+                try { process.kill(-child.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); }
+            }, timeoutMs);
+            writeStdin(child);
             child.stdout.on('data', (chunk) => {
                 if (size >= 256 * 1024) { return; }
                 size += chunk.length;
@@ -376,7 +460,8 @@ const ACTIONS = {
             });
             child.on('close', (code) => {
                 clearTimeout(timer);
-                if (code !== 0) { logger.debug(`rule script: ${action.path} exited ${code}`); }
+                if (code !== 0) { logger.warn(`rule script: ${action.path} exited ${code}`); }
+                else { fs.promises.rm(workDir, { recursive: true, force: true }).catch(() => {}); }
                 resolve(Buffer.concat(chunks).toString('utf8').trim());
             });
         });
@@ -396,12 +481,13 @@ const ACTIONS = {
 
 /**
  * Execute a matched rule's `then` actions sequentially. Action errors are
- * logged and swallowed (same policy as JS hook invocation) so one broken
- * action never blocks the rest of the rule or other rules.
+ * logged (warn) and swallowed so one broken action never blocks the rest of
+ * the rule or other rules; the per-action outcome is returned for the run log.
  *
  * @param {Object} rule
  * @param {Object} context - hook context (from HookService#buildHookContext)
  * @param {Object} logger
+ * @returns {Promise<Array<{ action: string, status: 'ok'|'error'|'skipped', error?: string }>>}
  */
 export async function executeRuleActions(rule, context, logger) {
     const { workspace, payload, eventName } = context;
@@ -422,16 +508,21 @@ export async function executeRuleActions(rule, context, logger) {
         depth: (Number.isInteger(payload?.depth) ? payload.depth : 0) + 1,
     };
 
+    const results = [];
     for (const action of rule.then) {
         const handler = ACTIONS[action?.action];
         if (!handler) {
-            logger.debug(`rule ${rule.id || '?'}: unknown action "${action?.action}"`);
+            logger.warn(`rule ${rule.id || '?'}: unknown action "${action?.action}"`);
+            results.push({ action: String(action?.action ?? '?'), status: 'skipped', error: 'unknown action' });
             continue;
         }
         try {
             await handler(action, { workspace, doc, payload, context, scope, logger, provenance });
+            results.push({ action: action.action, status: 'ok' });
         } catch (err) {
-            logger.debug(`rule ${rule.id || '?'} action ${action.action} failed: ${err.message}`);
+            logger.warn(`rule ${rule.id || '?'} action ${action.action} failed: ${err.message}`);
+            results.push({ action: action.action, status: 'error', error: err.message });
         }
     }
+    return results;
 }

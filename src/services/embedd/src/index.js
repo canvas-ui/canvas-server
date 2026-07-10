@@ -8,6 +8,7 @@ import Queue from './queue.js';
 import OnnxProvider from './providers/onnx.js';
 import OllamaProvider from './providers/ollama.js';
 import { chunkText } from './chunking.js';
+import { COMMENT_CHUNK_ID, TEXT_SPACE } from './constants.js';
 
 /**
  * Embedd — the canvas embedding service.
@@ -94,25 +95,59 @@ export default class Embedd {
         // most one; the rest must still be marked seen so reconcile converges.
         const candidateSpaces = this.#router.candidateSpaces(schema);
         const rule = input.skip ? null : this.#router.route(input);
+        const comment = typeof input.comment === 'string' ? input.comment.trim() : '';
 
-        let resolvedSpace = null;
+        // Spaces we've written real vectors to (so the seen-[] pass below skips them
+        // and never wipes a row we just wrote — e.g. a photo's comment in the text
+        // space, where the doc's content routed to the image space).
+        const written = new Set();
+
         if (rule) {
             const provider = this.#providers.get(rule.provider);
             if (!provider) { throw new Error(`unknown provider '${rule.provider}'`); }
-            const rows = await this.#embedInput(provider, rule, input);
+            let rows = await this.#embedInput(provider, rule, input);
+            // If content routes to the text space, bundle the comment chunk into the
+            // same upsert (one storeVectors per space — a second text upsert would
+            // delete+replace and wipe the content chunks).
+            if (rule.space === TEXT_SPACE && comment) {
+                const cRow = await this.#embedComment(comment);
+                if (cRow) { rows = [...rows, cRow]; }
+            }
             await ws.storeVectors(job.docId, schema, updatedAt, rows, { space: rule.space });
-            resolvedSpace = rule.space;
+            written.add(rule.space);
             debug(`embedded ${job.wsId}:${job.docId} → ${rows.length} chunk(s) in '${rule.space}'`);
         } else {
             debug(`skip ${job.wsId}:${job.docId} (schema=${schema}, ct=${input.contentType})`);
         }
 
+        // Comment → text space when content didn't already route there (photos,
+        // non-text files, or non-embeddable JSON like tabs). Own upsert with just
+        // the comment chunk; marks the doc seen in text so it leaves the gap.
+        if (comment && !written.has(TEXT_SPACE)) {
+            const cRow = await this.#embedComment(comment);
+            await ws.storeVectors(job.docId, schema, updatedAt, cRow ? [cRow] : [], { space: TEXT_SPACE });
+            written.add(TEXT_SPACE);
+        }
+
         // Mark seen (no vectors) in every other candidate space so the doc leaves
         // all gaps. storeVectors with [] ticks the seen bitmap without presence.
         for (const sp of candidateSpaces) {
-            if (sp === resolvedSpace) { continue; }
+            if (written.has(sp)) { continue; }
             await ws.storeVectors(job.docId, schema, updatedAt, [], { space: sp });
         }
+    }
+
+    // Embed a document's user-authored comment as a single dedicated chunk row
+    // (reserved chunkId) using the text space's provider/model. Returns null if the
+    // text space has no provider or the vector couldn't be produced.
+    async #embedComment(comment) {
+        const rule = this.#router.spaceRule(TEXT_SPACE);
+        if (!rule) { return null; }
+        const provider = this.#providers.get(rule.provider);
+        if (!provider) { return null; }
+        const { vectors } = await provider.embedText([comment], rule);
+        const vec = vectors?.[0];
+        return Array.isArray(vec) ? { chunkId: COMMENT_CHUNK_ID, text: comment, vector: vec } : null;
     }
 
     // Turn a resolved input into chunk rows { chunkId, text?, vector }.

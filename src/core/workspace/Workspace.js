@@ -500,26 +500,29 @@ class Workspace extends EventEmitter {
         const contentType = doc.metadata?.contentType || null;
         const chunkOpts = doc.indexOptions?.embeddingOptions?.chunking || {};
         const classification = classifyDocument(doc);
+        // User-authored comment rides along on every return shape (even skip/image),
+        // so the embedd worker can give any commented doc a dedicated text vector.
+        const comment = doc.hasComment ? doc.comment.trim() : '';
 
         if (classification.isFile()) {
             // Byte blob: only text/image content is embeddable; everything else
             // (pdf, octet-stream, …) is a deliberate skip until a decoder/CLIP
             // model exists. Bytes must be server-resident (device file:// throws).
-            if (!classification.isBlob() || !contentType) { return { skip: true, schema, updatedAt, contentType }; }
+            if (!classification.isBlob() || !contentType) { return { skip: true, schema, updatedAt, contentType, comment }; }
             const modality = classification.embeddingModality();
-            if (!modality) { return { skip: true, schema, updatedAt, contentType }; }
+            if (!modality) { return { skip: true, schema, updatedAt, contentType, comment }; }
             const resolved = await this.resolveDocument(doc).catch(() => null);
-            if (!resolved?.buffer) { return { skip: true, schema, updatedAt, contentType }; }
+            if (!resolved?.buffer) { return { skip: true, schema, updatedAt, contentType, comment }; }
             return modality === 'image'
-                ? { modality, schema, updatedAt, bytes: resolved.buffer, contentType }
-                : { modality, schema, updatedAt, text: resolved.buffer.toString('utf8'), contentType, chunkOpts };
+                ? { modality, schema, updatedAt, bytes: resolved.buffer, contentType, comment }
+                : { modality, schema, updatedAt, text: resolved.buffer.toString('utf8'), contentType, chunkOpts, comment };
         }
 
         // JSON abstraction (note, etc.) → the text the doc exposes for embedding.
         const data = typeof doc.generateEmbeddingsData === 'function' ? doc.generateEmbeddingsData() : null;
         const text = Array.isArray(data) ? data.join('\n').trim() : (typeof data === 'string' ? data.trim() : '');
-        if (!text) { return { skip: true, schema, updatedAt, contentType }; }
-        return { modality: 'text', schema, updatedAt, text, contentType, chunkOpts };
+        if (!text) { return { skip: true, schema, updatedAt, contentType, comment }; }
+        return { modality: 'text', schema, updatedAt, text, contentType, chunkOpts, comment };
     }
 
     async linkMany(ids, { context = '/', directory = null, features = [], attributes, emitEvent = true, allowBackendsWrite = false } = {}) {

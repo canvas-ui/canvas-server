@@ -10,6 +10,7 @@
   "author": "me@idnc.sk",
   "license": "ISC",
   "dependencies": {
+    "@huggingface/transformers": "^4.2.0",
     "debug": "^4.4.3",
     "fastembed": "^2.1.0"
   },

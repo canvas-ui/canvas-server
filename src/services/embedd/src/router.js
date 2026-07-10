@@ -38,10 +38,11 @@ export const DEFAULT_RULES = [
         chunk: true, maxLength: 512,
         match: { contentType: /^text\// },
     },
-    // Images — provider left as onnx (embedImage) but unimplemented until a CLIP
-    // model is wired; present so the space/dim contract is declared.
+    // Images — CLIP/SigLIP joint space (768-d). The `clip` provider fills this
+    // from images (embedImage) at index time and from the query text (embedQuery,
+    // same encoder family) at search time, so "red car" matches photos.
     {
-        space: 'image', provider: 'onnx', model: 'clip-vit-base-patch32', dim: 512,
+        space: 'image', provider: 'clip', model: 'Xenova/siglip-base-patch16-224', dim: 768,
         chunk: false,
         match: { contentType: /^image\// },
     },

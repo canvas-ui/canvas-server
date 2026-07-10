@@ -7,6 +7,7 @@ import Router from './router.js';
 import Queue from './queue.js';
 import OnnxProvider from './providers/onnx.js';
 import OllamaProvider from './providers/ollama.js';
+import ClipProvider from './providers/clip.js';
 import { chunkText } from './chunking.js';
 import { COMMENT_CHUNK_ID, TEXT_SPACE } from './constants.js';
 
@@ -47,6 +48,7 @@ export default class Embedd {
         this.#router = new Router({ rules: options.rules });
         this.#providers.set('onnx', new OnnxProvider({ cacheDir: options.onnxCacheDir || null }));
         this.#providers.set('ollama', new OllamaProvider({ host: options.ollamaHost }));
+        this.#providers.set('clip', new ClipProvider({ cacheDir: options.clipCacheDir || options.onnxCacheDir || null }));
         this.#queue = new Queue((job) => this.#handle(job));
         this.#queue.on('error', (e) => debug(`queue error: ${e.key}: ${e.error}`));
     }

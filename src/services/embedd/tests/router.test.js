@@ -30,11 +30,12 @@ test('router: text/* contentType -> text space', () => {
     assert.equal(rule.space, 'text');
 });
 
-test('router: image/* -> image space', () => {
+test('router: image/* -> image space (clip/SigLIP joint space, 768-d)', () => {
     const r = new Router();
     const rule = r.route({ modality: 'image', schema: 'data/abstraction/file', contentType: 'image/png' });
     assert.equal(rule.space, 'image');
-    assert.equal(rule.dim, 512);
+    assert.equal(rule.provider, 'clip');
+    assert.equal(rule.dim, 768);
     assert.equal(rule.chunk, false);
 });
 

@@ -16,8 +16,8 @@ import { WORKSPACE_DIRECTORIES } from '../../lib/constants.js';
  * a rule with `enabled: false` is skipped individually.
  *
  * Rule shape:
- *   { id, enabled?, description?, when: { event, schema?, path?, url?, from?,
- *     subject?, mime? }, then: [ { action, ... } ] }
+ *   { id, enabled?, description?, cascade?, when: { event, schema?, path?,
+ *     url?, from?, to?, subject?, mime?, attachment? }, then: [ { action, ... } ] }
  *
  * `when` keys AND together; a key's value may be an array (any-of / OR).
  * Every matching rule fires — there is no first-match-wins, which keeps the
@@ -123,8 +123,23 @@ const WHEN_CHECKS = {
     path: (c, matcher) => asArray(matcher).some((p) => c.inPath(p)),
     url: (c, matcher) => asArray(matcher).some((u) => matchUrl(c, u)),
     from: (c, matcher) => asArray(matcher).some((f) => matchText(c.from, f)),
+    // Any To/Cc recipient matches (substring or {equals|contains|startsWith|regex}).
+    to: (c, matcher) => asArray(matcher).some((m) => c.to.some((addr) => matchText(addr, m))),
     subject: (c, matcher) => asArray(matcher).some((s) => matchText(c.subject, s)),
     mime: (c, matcher) => asArray(matcher).some((m) => c.mimeMatches(m)),
+    // `attachment: true` = has any attachment; string/array = attachment mime
+    // pattern(s) (`application/pdf`, `image/*`, `*`); object = { mime?, filename? }.
+    attachment: (c, matcher) => {
+        if (matcher === true) { return c.hasAttachment(); }
+        if (typeof matcher === 'string' || Array.isArray(matcher)) {
+            return asArray(matcher).some((m) => c.hasAttachment(m));
+        }
+        if (!matcher || typeof matcher !== 'object') { return false; }
+        const mimeOk = matcher.mime === undefined || asArray(matcher.mime).some((m) => c.hasAttachment(m));
+        const nameOk = matcher.filename === undefined
+            || c.attachments.some((att) => asArray(matcher.filename).some((f) => matchText(att?.filename, f)));
+        return mimeOk && nameOk;
+    },
 };
 
 /**
@@ -165,7 +180,7 @@ export function matchRule(rule, eventName, c) {
     if (!when || typeof when !== 'object') { return false; }
 
     if (!WHEN_CHECKS.event(c, when.event, eventName)) { return false; }
-    for (const key of ['schema', 'path', 'url', 'from', 'subject', 'mime']) {
+    for (const key of ['schema', 'path', 'url', 'from', 'to', 'subject', 'mime', 'attachment']) {
         if (when[key] !== undefined && !WHEN_CHECKS[key](c, when[key])) { return false; }
     }
 

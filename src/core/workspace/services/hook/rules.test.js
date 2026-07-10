@@ -74,6 +74,70 @@ describe('rule matching', () => {
         const c = classify(tabPayload('https://example.com'));
         assert.equal(matchRule({ enabled: false, when: { event: 'document.inserted' }, then: [] }, 'document.inserted', c), false);
     });
+
+    test('to matcher: any To/Cc recipient, string/array/object semantics', () => {
+        const payload = {
+            document: {
+                id: 104, schema: 'data/abstraction/email',
+                data: {
+                    from: 'supplier@vendor.tld',
+                    to: [{ address: 'Invoice@My-Company.tld', name: 'Invoices' }],
+                    cc: ['faktury@my-company.tld'],
+                    subject: 'Invoice 2026-042',
+                },
+            },
+            context: { path: '/inbox' },
+        };
+        const c = classify(payload);
+        const rule = (when) => ({ when: { event: 'document.inserted', ...when }, then: [] });
+        assert.equal(matchRule(rule({ to: 'invoice@my-company.tld' }), 'document.inserted', c), true);
+        assert.equal(matchRule(rule({ to: 'faktury@my-company.tld' }), 'document.inserted', c), true); // Cc counts
+        assert.equal(matchRule(rule({ to: ['sales@', 'invoice@'] }), 'document.inserted', c), true);
+        assert.equal(matchRule(rule({ to: 'nobody@my-company.tld' }), 'document.inserted', c), false);
+        assert.equal(matchRule(rule({ to: { startsWith: 'invoice@' } }), 'document.inserted', c), true);
+    });
+
+    test('attachment matcher: true / mime pattern / { mime, filename }', () => {
+        const withPdf = {
+            document: {
+                id: 105, schema: 'data/abstraction/email',
+                data: {
+                    from: 'supplier@vendor.tld',
+                    to: ['invoice@my-company.tld'],
+                    subject: 'Invoice',
+                    attachments: [
+                        { filename: 'logo.png', contentType: 'image/png' },
+                        { filename: 'invoice-2026-042.pdf', contentType: 'application/pdf' },
+                    ],
+                },
+            },
+            context: { path: '/inbox' },
+        };
+        const c = classify(withPdf);
+        const rule = (when) => ({ when: { event: 'document.inserted', ...when }, then: [] });
+        assert.equal(matchRule(rule({ attachment: true }), 'document.inserted', c), true);
+        assert.equal(matchRule(rule({ attachment: 'application/pdf' }), 'document.inserted', c), true);
+        assert.equal(matchRule(rule({ attachment: '*' }), 'document.inserted', c), true);
+        assert.equal(matchRule(rule({ attachment: ['text/csv', 'application/pdf'] }), 'document.inserted', c), true);
+        assert.equal(matchRule(rule({ attachment: 'text/csv' }), 'document.inserted', c), false);
+        assert.equal(matchRule(rule({ attachment: { mime: 'application/pdf', filename: 'invoice' } }), 'document.inserted', c), true);
+        assert.equal(matchRule(rule({ attachment: { mime: 'application/pdf', filename: 'receipt' } }), 'document.inserted', c), false);
+
+        // the full invoices use-case: to-alias AND pdf attachment
+        const invoiceRule = {
+            when: {
+                event: 'document.inserted', schema: 'email',
+                to: ['invoice@my-company.tld', 'faktury@my-company.tld'],
+                attachment: 'application/pdf',
+            },
+            then: [],
+        };
+        assert.equal(matchRule(invoiceRule, 'document.inserted', c), true);
+
+        const noAttachments = classify(emailPayload('supplier@vendor.tld', 'Invoice'));
+        assert.equal(matchRule(rule({ attachment: true }), 'document.inserted', noAttachments), false);
+        assert.equal(matchRule(rule({ attachment: 'application/pdf' }), 'document.inserted', noAttachments), false);
+    });
 });
 
 describe('rule loading', () => {

@@ -120,10 +120,13 @@ document every predicate is false.
   `urlMatches(substring|RegExp)`
 - Content: `isText`, `isImage`, `isAudio`, `isVideo`, `isPdf`, `isBlob`,
   `mimeMatches('image/*'|RegExp)`, `embeddingModality()`
+- Email: `sentTo('invoice@corp.tld')` (substring/RegExp over To+Cc addresses),
+  `hasAttachment()` / `hasAttachment('application/pdf'|'image/*'|'*')`
 - Location: `inPath('/to-sort')` (segment-aware prefix over the paths the doc
   landed in)
 - Fields: `url`, `parsedUrl`, `host`, `from` (normalized email address),
-  `subject`, `mime`, `paths`, `schema`, `doc`
+  `to` (normalized To+Cc addresses), `subject`, `attachments`, `mime`,
+  `paths`, `schema`, `doc`
 
 ## Declarative rules (canvas.hook-rules/v1)
 
@@ -160,7 +163,27 @@ entries).
 | `path` | prefix match against the paths the document landed in |
 | `url` | string = case-insensitive substring; object = `{ host, prefix, contains, regex }` |
 | `from`, `subject` | string = case-insensitive substring; object = `{ equals, contains, startsWith, regex }` |
+| `to` | same string/object semantics as `from`, matched against every To/Cc recipient address |
 | `mime` | exact (`application/pdf`) or glob (`image/*`) |
+| `attachment` | `true` = has any attachment; string/array = attachment mime pattern(s) (`application/pdf`, `image/*`, `*`); object = `{ mime?, filename? }` (filename uses the `from`-style string/object semantics) |
+
+Example — the invoices case (also shipped in `example-rules.json`):
+
+```json
+{
+  "id": "invoice-mail-processor",
+  "when": {
+    "event": "document.inserted",
+    "schema": "email",
+    "to": ["invoice@my-company.tld", "faktury@my-company.tld"],
+    "attachment": "application/pdf"
+  },
+  "then": [
+    { "action": "link", "paths": ["/finance/invoices/inbox"], "tags": ["custom/finance/invoice"] },
+    { "action": "script", "path": "scripts/process-invoice.sh", "args": ["{{doc.id}}"] }
+  ]
+}
+```
 
 Rules only match events that carry the full document (`document.*`); id-only
 events (`tree.*`) never match.
@@ -220,6 +243,42 @@ eventId>`, `depth: <triggering depth> + 1`. Dispatch enforces two guards:
 
 Additionally: events with `payload.source === 'hook'` (custom `emit()`s) are
 never re-dispatched, and `link`/`tag` rule actions use `emitEvent:false`.
+
+## Notifications — channels & the webhook API
+
+`ctx.notify()` and the `notify` rule action deliver through the messaging
+service. Channel resolution: explicit `{ channel }` → your `defaultChannel` →
+first bound channel → in-app `canvas` (web-UI toast + toolbox notifications
+area) → server log. Channels are per-user bindings:
+
+- `GET /rest/v2/messaging/bindings` — current bindings + available channels.
+- `PUT /rest/v2/messaging/bindings` — update:
+
+```json
+{
+  "channels": {
+    "webhook": { "recipient": "https://hooks.slack.com/services/T000/B000/xxxx" }
+  },
+  "defaultChannel": "webhook"
+}
+```
+
+(`"webhook": null` unbinds; agent tokens are rejected — bindings are a
+user-level control plane.)
+
+The **`webhook` channel** POSTs `{ "text": "<message>" }` as JSON to the bound
+URL — directly compatible with Slack/Teams/Discord/Mattermost incoming
+webhooks and trivial to receive in anything custom. Contract: http(s) URLs
+only, credentials-in-URL rejected, 10 s timeout, non-2xx counts as failure
+(notify falls back per the chain above). It needs no server-side
+configuration; the URL is the only credential — treat it as a secret.
+Deliberate posture for self-hosted deployments: private-range/LAN receiver
+URLs are allowed.
+
+Usage from automation: `await ctx.notify('invoice received', { channel: 'webhook' })`,
+rule action `{ "action": "notify", "message": "…", "channel": "webhook" }`, or
+agent/script `output: { notify: { channel: "webhook" } }` — or bind it as
+`defaultChannel` and omit the channel everywhere.
 
 ## Observability — run log & explain
 

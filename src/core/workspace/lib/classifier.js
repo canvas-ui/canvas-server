@@ -54,6 +54,23 @@ function normalizeAddress(from) {
     return address ? String(address).toLowerCase() : null;
 }
 
+// Email `data.to`/`cc` are arrays of the same union (or absent).
+function normalizeAddressList(list) {
+    if (!Array.isArray(list)) { return []; }
+    return list.map(normalizeAddress).filter(Boolean);
+}
+
+/** Match a mime string against an exact type, a `type/*` glob or a RegExp. */
+function mimeMatch(mime, pattern) {
+    if (!mime || !pattern) { return false; }
+    const regex = toPattern(pattern);
+    if (regex) { return regex.test(mime); }
+    const value = String(pattern).toLowerCase();
+    if (value === '*' || value === '*/*') { return true; }
+    if (value.endsWith('/*')) { return mime.startsWith(value.slice(0, -1)); }
+    return mime === value;
+}
+
 // Event payloads carry `context`/`directory` specs whose path lives in either
 // `path` (string) or `paths` (array), depending on the emitting call.
 function extractPaths(spec) {
@@ -75,7 +92,11 @@ class Classification {
         this.parsedUrl = parseUrl(this.url);
         this.host = this.parsedUrl ? this.parsedUrl.hostname.toLowerCase().replace(/^www\./, '') : null;
         this.from = normalizeAddress(doc?.data?.from);
+        // Recipients: To + Cc, normalized lowercase addresses ("sent to
+        // invoice@..." must also match mails where the alias is in Cc).
+        this.to = [...normalizeAddressList(doc?.data?.to), ...normalizeAddressList(doc?.data?.cc)];
         this.subject = typeof doc?.data?.subject === 'string' ? doc.data.subject : null;
+        this.attachments = Array.isArray(doc?.data?.attachments) ? doc.data.attachments : [];
         this.paths = [...new Set([...extractPaths(payload?.context), ...extractPaths(payload?.directory)])];
     }
 
@@ -103,12 +124,26 @@ class Classification {
 
     /** Match mime against an exact type, a `type/*` glob or a RegExp. */
     mimeMatches(pattern) {
-        if (!this.mime || !pattern) { return false; }
-        const regex = toPattern(pattern);
-        if (regex) { return regex.test(this.mime); }
-        const value = String(pattern).toLowerCase();
-        if (value.endsWith('/*')) { return this.mime.startsWith(value.slice(0, -1)); }
-        return this.mime === value;
+        return mimeMatch(this.mime, pattern);
+    }
+
+    // ── Email predicates ────────────────────────────────────────────────────
+    /** Any To/Cc recipient address contains the given substring (or matches a RegExp). */
+    sentTo(addressOrPattern) {
+        if (!addressOrPattern || this.to.length === 0) { return false; }
+        const regex = toPattern(addressOrPattern);
+        if (regex) { return this.to.some((addr) => regex.test(addr)); }
+        const needle = String(addressOrPattern).toLowerCase();
+        return this.to.some((addr) => addr.includes(needle));
+    }
+    /**
+     * Document carries attachments; with a pattern, at least one attachment's
+     * contentType matches it (exact, `type/*` glob, `*` for any, or RegExp).
+     */
+    hasAttachment(mimePattern = null) {
+        if (this.attachments.length === 0) { return false; }
+        if (!mimePattern) { return true; }
+        return this.attachments.some((att) => mimeMatch(att?.contentType?.toLowerCase?.() || null, mimePattern));
     }
 
     // ── URL predicates ──────────────────────────────────────────────────────

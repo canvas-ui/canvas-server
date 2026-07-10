@@ -83,7 +83,7 @@ export default async function hook(ctx) {
 | `get(id)` / `list(spec)` / `find({query})` | Fetch by id / list / full-text+hybrid search. |
 | `link(id, ['/path', …])` | Link a document into context paths. |
 | `agent(slug, prompt, {raw?})` | Prompt one of the user's agents (auto-starts it), returns its text reply. The prompt is wrapped in a standard automation envelope (event, doc summary, "reply with the final result only") — pass `{ raw: true }` to skip it. Agents only get canvas_* tools if previously bound via `PUT /rest/v2/agents/<slug>/access`. |
-| `notify(message, {channel?})` | Message the workspace owner via the messaging service. Bound channel (slack/whatsapp/…) wins; unbound users get the in-app `canvas` channel — a web-UI toast plus the toolbox notifications area. |
+| `notify(message, {channel?})` | Message the workspace owner via the messaging service. Bound channel (slack/whatsapp/`webhook` — POSTs `{text}` JSON to a URL you bind via `PUT /rest/v2/messaging/bindings`, Slack/Teams incoming-webhook compatible) wins; unbound users get the in-app `canvas` channel — a web-UI toast plus the toolbox notifications area. |
 | `emit(name, payload)` | Emit a custom workspace event, stamped `source:'hook'` (never re-triggers hooks). |
 | `event` / `workspace` / `db` / `tree` | Event envelope and escape hatches (db/tree are null while the workspace is inactive). |
 
@@ -102,9 +102,11 @@ c.inPath('/to-sort')                // segment-aware path prefix
 
 Predicates: `isTab/isEmail/isFile/isNote/isTodo/isMessage/isSchema(name)`,
 `isLink/isYoutube/isArxiv/isImageUrl/hostMatches/urlMatches`,
-`isText/isImage/isAudio/isVideo/isPdf/isBlob/mimeMatches`, `inPath(prefix)`.
-Fields: `url`, `parsedUrl`, `host`, `from`, `subject`, `mime`, `paths`,
-`schema`, `doc`. All predicates are false for a null/unknown document.
+`isText/isImage/isAudio/isVideo/isPdf/isBlob/mimeMatches`,
+`sentTo(addr)` (To+Cc), `hasAttachment(mimePattern?)`, `inPath(prefix)`.
+Fields: `url`, `parsedUrl`, `host`, `from`, `to`, `subject`, `attachments`,
+`mime`, `paths`, `schema`, `doc`. All predicates are false for a null/unknown
+document.
 
 ## Declarative rules
 
@@ -127,7 +129,9 @@ Simple match→action automations go into `rules.json` (or files under `rules/`)
 ```
 
 `when` keys AND together (`event` required; `schema`, `path`, `url`, `from`,
-`subject`, `mime`); an array value means OR. A rule-level `"cascade": true`
+`to` — any To/Cc recipient, `subject`, `mime`, `attachment` — `true` for any,
+a mime pattern like `"application/pdf"`, or `{mime, filename}`); an array
+value means OR. A rule-level `"cascade": true`
 opts the rule into automation-caused events (see Cascade opt-in above);
 without it, rules never see documents created by other rules/hooks/agents. `from`/`subject` accept a
 substring or `{equals|contains|startsWith|regex}`; `url` a substring or

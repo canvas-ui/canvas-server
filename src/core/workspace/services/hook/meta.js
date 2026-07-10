@@ -165,9 +165,10 @@ export const CLASSIFIER_SURFACE = Object.freeze({
         'isTab()', 'isEmail()', 'isFile()', 'isNote()', 'isTodo()', 'isMessage()', "isSchema('tab')",
         'isLink()', 'isYoutube()', 'isArxiv()', 'isImageUrl()', "hostMatches('youtube.com')", "urlMatches('substring'|RegExp)",
         'isText()', 'isImage()', 'isAudio()', 'isVideo()', 'isPdf()', 'isBlob()', "mimeMatches('image/*')",
+        "sentTo('invoice@corp.tld')", "hasAttachment('application/pdf'?)",
         "inPath('/to-sort')",
     ],
-    fields: ['url', 'parsedUrl', 'host', 'from', 'subject', 'mime', 'paths', 'schema', 'doc'],
+    fields: ['url', 'parsedUrl', 'host', 'from', 'to', 'subject', 'attachments', 'mime', 'paths', 'schema', 'doc'],
 });
 
 // Hook context API — every key available on the `ctx` object a hook receives.

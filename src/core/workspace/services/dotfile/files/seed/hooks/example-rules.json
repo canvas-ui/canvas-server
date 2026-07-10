@@ -1,6 +1,6 @@
 {
   "$schema": "canvas.hook-rules/v1",
-  "$comment": "Declarative hook rules — the no-code companion to JS hooks. Rename to rules.json — strip the example- prefix — (or drop files into hooks/rules/*.json) to activate. `when` keys AND together; give a key an array for OR. Every matching rule fires. Matchers: event (required), schema, path (prefix), url (substring or {host,prefix,contains,regex}), from, subject (substring or {equals,contains,startsWith,regex}), mime ('image/*' globs). Actions: link, tag, agent, notify, script, emit. `{{doc.data.subject}}`-style templates work in agent prompts, notify messages and script args.",
+  "$comment": "Declarative hook rules — the no-code companion to JS hooks. Rename to rules.json — strip the example- prefix — (or drop files into hooks/rules/*.json) to activate. `when` keys AND together; give a key an array for OR. Every matching rule fires. Matchers: event (required), schema, path (prefix), url (substring or {host,prefix,contains,regex}), from, to (any To/Cc recipient), subject (substring or {equals,contains,startsWith,regex}), mime ('image/*' globs), attachment (true = any; 'application/pdf' / ['image/*'] = attachment mime; {mime,filename} for both). Actions: link, unlink, tag, delete, destroy, agent, notify, script, emit. `{{doc.data.subject}}`-style templates work in agent prompts, notify messages and script args.",
   "rules": [
     {
       "id": "youtube-to-media",
@@ -54,6 +54,21 @@
       },
       "then": [
         { "action": "link", "paths": ["/to-read"], "tags": ["custom/format/pdf"] }
+      ]
+    },
+    {
+      "id": "invoice-mail-processor",
+      "enabled": false,
+      "description": "PDF invoices sent to the invoice aliases get filed and processed",
+      "when": {
+        "event": "document.inserted",
+        "schema": "email",
+        "to": ["invoice@my-company.tld", "faktury@my-company.tld"],
+        "attachment": "application/pdf"
+      },
+      "then": [
+        { "action": "link", "paths": ["/finance/invoices/inbox"], "tags": ["custom/finance/invoice"] },
+        { "action": "script", "path": "scripts/process-invoice.sh", "args": ["{{doc.id}}"] }
       ]
     },
     {

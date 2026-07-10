@@ -105,7 +105,16 @@ export default class Embedd {
         if (rule) {
             const provider = this.#providers.get(rule.provider);
             if (!provider) { throw new Error(`unknown provider '${rule.provider}'`); }
-            let rows = await this.#embedInput(provider, rule, input);
+            let rows;
+            try {
+                rows = await this.#embedInput(provider, rule, input);
+            } catch (err) {
+                // A provider that can't handle this input yet (e.g. image/CLIP is not
+                // wired) must NOT abort the job — the doc's comment still needs its
+                // text vector. Treat as 0 content rows (seen, no presence).
+                debug(`primary embed failed ${job.wsId}:${job.docId} in '${rule.space}': ${err.message}`);
+                rows = [];
+            }
             // If content routes to the text space, bundle the comment chunk into the
             // same upsert (one storeVectors per space — a second text upsert would
             // delete+replace and wipe the content chunks).

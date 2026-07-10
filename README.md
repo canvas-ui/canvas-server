@@ -64,6 +64,13 @@ synced, email arrived), plus the shell scripts they spawn. See the
 **[Workspace Hooks guide](docs/hooks.md)** for the event catalog, hook context
 API, classifier, rules format and shipped examples.
 
+Every execution lands in a per-workspace run log — inspect it with
+`canvas ws <name> hooks runs [--failed]`, debug matchers with
+`hooks explain <docId>`, apply a new rule to your archive with
+`hooks backfill --rule <id> --dry-run`, and re-deliver a logged run with
+`hooks replay <runId>` (all also available in the web UI's Automation panel
+and via REST — see the guide).
+
 Hooks, rules and scripts live in a per-workspace **git repository**, editable
 from the web UI/CLI or by cloning it directly:
 

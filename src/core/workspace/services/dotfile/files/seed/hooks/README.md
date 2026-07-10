@@ -170,7 +170,9 @@ only match `document.*` events that carry a document (batch fan-out included).
    the Runs tab in the settings UI, `GET /rest/v2/workspaces/<id>/hooks/runs`,
    or `{WORKSPACE_ROOT}/var/hooks/runs.jsonl` directly. Use
    `POST …/hooks/explain` (or the CLI `hooks explain <docId>`) to see which
-   rules would fire for a document and why.
+   rules would fire for a document and why; `hooks backfill --rule <id>
+   [--dry-run]` applies a rule to existing documents, `hooks replay <runId>`
+   re-delivers a logged run.
 4. **A 1s dedup window** drops identical event payloads; don't rely on
    duplicate deliveries.
 5. **Full permissions, no sandbox.** Hooks and scripts run as the server

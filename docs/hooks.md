@@ -292,7 +292,19 @@ the run), but everything the handler writes is provenance-stamped normally.
   non-empty username — git requires one, so embed it in the URL — password =
   a canvas API token). `git clone` it, edit `hooks/` + `scripts/`,
   push — the server force-checkouts on receive and hooks hot-reload.
-- CLI: `canvas ws hooks list|get|set|edit|push|clone|delete`.
+- CLI (`canvas ws <name> hooks <action>`):
+  - Files: `list`, `get <path>`, `set <path>`, `edit <path>`, `delete <path>`,
+    `clone`, `pull`, `push`.
+  - Observability: `runs [--failed] [--handler <x>] [--event <y>]
+    [--limit <n>]` — recent executions, newest first;
+    `explain <docId> [--event document.inserted] [--paths /a,/b]` — which
+    rules/hooks would fire for a document, matcher by matcher.
+  - Bulk / re-delivery: `backfill --rule <id>|--hook <path> [--dry-run]
+    [--schema email] [--limit 100] [--event document.inserted]` — apply one
+    rule/hook to existing documents (always `--dry-run` first — it shows the
+    per-document matcher breakdown without executing);
+    `replay <runId>` — re-deliver a logged run's envelope to its handler
+    (run ids come from `hooks runs`).
 - Seeds: every example ships disabled with an `example-` prefix —
   `youtube-downloader`, the pair `pinterest-downloader`+`image-categorizer`
   (vision agent sorts images out of /to-sort; stage 2 exports `cascade = true`

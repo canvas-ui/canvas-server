@@ -50,8 +50,18 @@ export default async function hook(ctx) {
   wizard uses. The workhorses:
   - `document.inserted` / `document.updated` — payload
     `{ id, document, context, directory }` with the **full parsed document**.
+  - `document.linked` / `document.unlinked` — a document was filed into /
+    removed from tree path(s); carries the **full document** plus the
+    memberships that changed (unlike the id-only `document.removed`).
   - `document.inserted.batch` / `.updated.batch` — `{ ids, count, context,
     directory }`, once per bulk op (imap sync, browser-extension batch sync).
+  - Every payload also carries provenance: `eventId` (unique per emit),
+    `origin` (`user` | `hook` | `rule` | `agent` | …), `causedBy` (the parent
+    eventId for automated writes) and `depth` (cascade depth).
+- **Cascade opt-in:** by default a hook never receives events **caused by
+  automation** (origin ≠ `user` — e.g. a note another hook inserted). Add
+  `export const cascade = true;` to receive them. A hard depth ceiling
+  (`hooks.maxDepth`, default 2) terminates any chain regardless.
 - **Batch fan-out:** batch inserts are ALSO fanned out by the engine as
   per-document `document.inserted` dispatches (full doc loaded, `batch: true`
   and `batchCount` stamped), sequentially. So: per-document logic → singular
@@ -67,7 +77,7 @@ export default async function hook(ctx) {
 | `payload` / `payloads` | Event payload; `payloads` holds the whole burst under debounce. |
 | `classify(target?)` | Classification of the event document (default), another payload, or a raw doc. Never throws. |
 | `logger` | Server logger (`debug/info/warn/error`). Output goes to the canvas-server log. |
-| `insert(doc, {context?, directory?, features?})` | Insert a document. **Emits a normal `source:'db'` event** — see loop warning below. |
+| `insert(doc, {context?, directory?, features?})` | Insert a document. The resulting event is stamped `origin:'hook'` (+ `causedBy`/`depth`), so it never re-triggers hooks/rules unless they opted into cascading. |
 | `update(id, doc, opts?)` / `remove(id, opts?)` / `deleteDocument(id)` | Update in place / unlink from paths / hard-delete from the index (backend bytes untouched). |
 | `destroy(idOrDoc)` | Delete the document **everywhere**: bytes on every deletable location (stored:// blob, workspace file, imap EXPUNGE; read-only locations degrade to a reference drop), then purge from the index. Irreversible. |
 | `get(id)` / `list(spec)` / `find({query})` | Fetch by id / list / full-text+hybrid search. |
@@ -117,7 +127,9 @@ Simple match→action automations go into `rules.json` (or files under `rules/`)
 ```
 
 `when` keys AND together (`event` required; `schema`, `path`, `url`, `from`,
-`subject`, `mime`); an array value means OR. `from`/`subject` accept a
+`subject`, `mime`); an array value means OR. A rule-level `"cascade": true`
+opts the rule into automation-caused events (see Cascade opt-in above);
+without it, rules never see documents created by other rules/hooks/agents. `from`/`subject` accept a
 substring or `{equals|contains|startsWith|regex}`; `url` a substring or
 `{host|prefix|contains|regex}`. Every matching rule fires (no first-match-wins).
 Actions: `link`, `unlink` (remove from paths), `tag`, `delete` (purge from
@@ -129,8 +141,8 @@ every deletable location, then purge), `agent`, `notify`, `script` (path under
 `{ note: { path, title? }, file: { path, backend?: 'home'|'data', append?,
 insert? }, notify: true }` — save as note, write to a file under `home/`
 (or the workspace:data blob store; `insert` additionally indexes it as a File
-doc at that tree path), and/or message you (careful: an inserted note/File
-emits a normal `document.inserted`, so a rule matching its own output loops).
+doc at that tree path), and/or message you. Inserted notes/Files carry
+`origin:'rule'`, so they can't re-trigger rules that didn't opt into cascade.
 Strings support
 `{{doc.data.subject}}`-style templates over `{doc, payload, event, workspace,
 rule}`; objects/arrays like `{{doc.locations}}` are inserted as JSON. Rules
@@ -138,12 +150,13 @@ only match `document.*` events that carry a document (batch fan-out included).
 
 ## Rules of the road
 
-1. **Loop prevention is partial.** Events produced by hook helpers `emit`,
-   `link` (rules) are marked `source:'hook'` and never re-dispatch. But
-   `ctx.insert`/`ctx.update` go through the normal write path and emit ordinary
-   events: **a hook that inserts a document matching its own trigger loops
-   forever.** Always guard — e.g. the arxiv summarizer inserts a *note* (notes
-   have no URL, so `isArxiv()` can't re-match).
+1. **Loops are cut off by construction.** Every write a hook/rule makes is
+   stamped with provenance (`origin:'hook'|'rule'`, `causedBy`, `depth+1`).
+   Handlers ignore automation-caused events unless they opt in (`export const
+   cascade = true` / rule `"cascade": true`), and a depth ceiling
+   (`hooks.maxDepth`, default 2) hard-stops any chain. Design multi-step
+   pipelines deliberately: step 2 must opt into cascade, and chains longer
+   than the ceiling won't run.
 2. **Stay disabled until done.** Generated skeletons and examples carry an
    inactive prefix on purpose; strip it only when TODOs are resolved. When
    experimenting, prefer a `disabled-` copy + rename over editing a live hook.

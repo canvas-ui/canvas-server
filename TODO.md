@@ -2,7 +2,7 @@
 
 ## WebUI cosmetics
 
-We **need** to replace those bluish ie6 like document list/document icons with something more colorfull and nicer, people associate those blue links/icons with 200x and since our UI is black-and-white, a color is not some extra but a very important part of the UI => we will introduce more vibrant colors covering larger sections of our buttons and header areas in the near future and use colors as visual cues for our context/directory paths once we start supporting the to-be vertically and horizontally scrollable multi-context multi-focus layout
+We will need tointroduce more vibrant colors covering larger sections of our buttons and header areas in the near future and use colors as visual cues for our context/directory paths once we start supporting the to-be vertically and horizontally scrollable multi-context multi-focus layout
 
 ### Content
 - (deffered) Content area section should support tabs 
@@ -29,49 +29,6 @@ A future
   keep: fetch-url.sh + stored. Proxy = preview without commitment; ingest = preview with
   retention.
 
-
----
-
-## Workspace Hooks
-
-One of the major functionalities are workspace hooks
-
-### Usecase #1: Plain ol' hooks
-
-Note: We do not autoindex/autoingest/auto-process hidden files (dotfiles => files starting with a dot), regardless where they are placed
-
-1. User syncs/indexes a link from his browser(browser tab - data/abstraction/tab schema document)
-2. A hook from gets triggered, parses the data.url and finds out the link is a youtube video, 
-3. spins up a bash script from WORKSPACE_ROOT/git/scripts and downloads that video into WORKSPACE_ROOT/home/Videos/some-name.mp4 using ytdl or 
-3.1 to a temporary location (WORKSPACE_ROOT/var/tmp?) then inserts it to ws:data or some other backend 
-3.2 it creates a synapse between 
-3.2 it also inserts it into a virtual context tree /to-sort
-4. A document.inserted hook gets triggered, path is /to-sort, data is a file/blob, a categorizer agent gets triggered, fetches doc synapses and tries to categorize the newly added document into one of the existing tree paths (or - if configured - creates a new one, fallbacks to /to-sort/unsure or whatever the user configured) 
-
-I already need a simillar implementation for picture URLs/photos and arxiv papers, I may want to trigger an agent to summarize each arxiv paper I index and store that summary as a note linking it to the paper
-
-Another hook example, emails from foo@bar.baz that contain subject "DC Migration" are to be linked under /projects/dc-migration, emais from bar@baf.baz to /path/to-read and /path/something/else and tagged custom/tag/urgent - sky is the limit
-
-### Usecase #2: Hooks + Agents
-
-We already partly covered this use-case above  
-A bunch of browser tabs get synced into the /to-sort virtual context or directory tree, triggering a documents.inserted hook. Hook checks the path and triggers a categorizer agent to organize those tabs, fetches the current workspace tree paths array, optionaly uses a web tool to analyze those pages if url title or url does not provide enough context and links those tabs to respective context paths, removing them from to-sort once done.
-
-document.inserted into /projects/dc-migration triggers an agent to read that email(with optional prompt/instructions) to evaluate whether to notify me over slack or teams or by sending an in-app notification ("please let me know if any emails about foo bar and baz arrive, also notify me when I get any comm regarding that intune ts case")
-
-### Usecase #3: Agentic workloads
-
-I bind my "Lucy" secretary agents to my "mbag" context. Switching my context url(focus) to /projects/dc-migration/fmo will update all my context-bound apps (browsers will load relevant tabs, obsidian will show relecant notes etc), since Lucy is also allowed to access my context, asking "Do we have any new emails?" or "can you tell me to what server ldap master was migrated to" - should trigger a targetted in-context search of all emails or a query across all documents pre-filted for the current context url for a standard RAG reply
-
-I'd try to do as much of the logic with code, clasifier can have isText(), isImage(), isBlob(), isPdf(), isWebsite or isLink() etc methods (not sure whether to implement this on the Workspace layer or within synapsd, since this is related to the actual data I'd say stored or workspace, we'd just store whatever data we need in the db but open to suggestions here)
-
-### Agent runtime integration
-
-SKILLS.md or an MCP surface mirroring canvas-cli for agent access setup is a
-  clean idea: the PUT /agents/:id/access flow is exactly one call, so a skill/tool
-  wrapping "bind agent X to workspace Y path Z" would make hook-triggered agents
-
---
 
 ## MVP Scope
 

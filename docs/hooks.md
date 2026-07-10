@@ -29,6 +29,8 @@ Hooks receive the canonical synapsd events re-emitted on the workspace
 | `document.inserted` | `id`, `document` (full parsed doc), `context`, `directory`; for batch inserts also `batch: true`, `batchCount` |
 | `document.updated` | same |
 | `document.inserted.batch` / `document.updated.batch` | `{ ids, count, context, directory }` — one event per bulk op (imap sync, browser-extension tab sync); fetch docs via `get(id)` + `classify(doc)` when you need them. |
+| `document.linked` | `id`, `document` (full), `memberships: { context, directory, features }` — the doc was filed into tree path(s). Unlike the membership-only `document.updated` a link also emits, this one carries the document, so rules can match content ("email linked under /projects/x → triage") |
+| `document.unlinked` | `id`, `document` (full), `contextArray`, `directoryArray`, `featureArray` — removed from path(s), still indexed |
 | `document.removed` / `document.deleted` (+ `.batch`) | ids |
 | `tree.path.inserted/moved/copied/removed/locked/unlocked` | `{ path, treeId }` |
 | `tree.created/renamed/deleted`, `tree.document.*` | tree/doc ids |
@@ -39,8 +41,12 @@ The machine-readable catalog (names, payload shapes, whether the payload
 carries a full document) is served by `GET /workspaces/:id/hooks/meta` and
 defined in `src/core/workspace/services/hook/meta.js` (`HOOK_EVENTS`).
 
-Payloads originating from hooks are stamped `source: 'hook'` and are never
-re-dispatched; a 1s window dedupes identical events.
+Every event payload carries provenance: `eventId` (unique per emit), `origin`
+(`user` by default; `hook` / `rule` / `agent` / `backfill` / `replay` for
+automated writes), `causedBy` (the triggering event's `eventId`) and `depth`
+(automation cascade depth). Payloads originating from hooks are additionally
+stamped `source: 'hook'`; a 1s window dedupes duplicate deliveries (keyed by
+`eventId`).
 
 ### Batch fan-out
 
@@ -184,8 +190,9 @@ Executed sequentially; an action error is logged and the rest continue.
   the result as a File document at that tree path.
 - `notify: true | { channel }` — send the text to the workspace owner.
 
-Caution: a note/File inserted via `output` emits a normal
-`document.inserted` — a rule matching its own output loops.
+A note/File inserted via `output` carries `origin:'rule'`, so it only reaches
+rules/hooks that opted into cascading — a rule matching its own output no
+longer loops.
 
 String fields in `agent.prompt`, `notify.message` and `script.args` support
 `{{path}}` templates over `{ doc, payload, event, workspace: { id, name } }`,
@@ -193,16 +200,24 @@ e.g. `{{doc.data.subject}}`, `{{doc.data.body}}` / `{{doc.data.bodyHtml}}`
 (emails). Any document path works; objects/arrays such as `{{doc.locations}}`
 are inserted as JSON. Missing paths render empty.
 
-## Loop prevention — and one pitfall
+## Loop prevention (provenance + cascade control)
 
-- Events with `payload.source === 'hook'` are never dispatched to hooks/rules.
-- `emit()` and the `emit` rule action stamp `source:'hook'`.
-- `link`/`tag` rule actions use `emitEvent:false`.
-- **Pitfall:** the JS-hook `insert`/`update` helpers go through `workspace.put`,
-  which emits a regular `document.inserted` (`source:'db'`). A hook that
-  inserts a document matching its own trigger will loop. Make the inserted doc
-  un-matchable (e.g. the arxiv summarizer stores a note with no URL) or guard
-  on schema/path.
+Every write made from a hook/rule context (`insert`, `update`, `remove`,
+`link`, `deleteDocument`, `destroy`, rule actions, agent/script `output`) is
+stamped with provenance: `origin: 'hook' | 'rule'`, `causedBy: <triggering
+eventId>`, `depth: <triggering depth> + 1`. Dispatch enforces two guards:
+
+- **Cascade opt-in.** Events with an automated origin (anything but `user`)
+  are not delivered to handlers by default. A JS hook opts in with
+  `export const cascade = true`; a rule with `"cascade": true`. Use this
+  deliberately for multi-step pipelines (insert → categorize).
+- **Depth ceiling.** Events at `depth >= hooks.maxDepth` (default 2, workspace
+  config `hooks.maxDepth`, env `CANVAS_HOOKS_MAX_DEPTH`) are dropped before
+  reaching any handler — even cascade-opted ones. Loops terminate by
+  construction; the drop is logged at warn level with origin + causedBy.
+
+Additionally: events with `payload.source === 'hook'` (custom `emit()`s) are
+never re-dispatched, and `link`/`tag` rule actions use `emitEvent:false`.
 
 ## Creating hooks (wizard)
 

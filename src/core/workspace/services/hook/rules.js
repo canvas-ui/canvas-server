@@ -246,7 +246,7 @@ const ACTIONS = {
     // Link the document to tree paths, optionally with feature tags. Paths
     // default to the context tree; 'dir:/path' targets the directory tree.
     // emitEvent:false so the resulting membership change can't re-trigger rules.
-    async link(action, { workspace, doc, logger }) {
+    async link(action, { workspace, doc, logger, provenance }) {
         if (!doc?.id) { return; }
         for (const rawPath of asArray(action.paths || action.path || []).filter(Boolean)) {
             const target = parseLinkTarget(rawPath);
@@ -257,43 +257,45 @@ const ACTIONS = {
                 ...selector,
                 features: action.tags || [],
                 emitEvent: false,
+                provenance,
             });
             logger.debug(`rule link: ${doc.id} -> ${target.tree}:${target.path}`);
         }
     },
 
     // Tag the document in place (on the paths it already landed in).
-    async tag(action, { workspace, doc, payload, logger }) {
+    async tag(action, { workspace, doc, payload, logger, provenance }) {
         if (!doc?.id) { return; }
         const tags = asArray(action.tags || []).filter(Boolean);
         if (!tags.length) { return; }
         // Re-link on the context path(s) the document already landed in.
         const paths = payload?.context?.paths ?? payload?.context?.path ?? '/';
-        await workspace.link(doc.id, { context: paths, features: tags, emitEvent: false });
+        await workspace.link(doc.id, { context: paths, features: tags, emitEvent: false, provenance });
         logger.debug(`rule tag: ${doc.id} += ${tags.join(',')}`);
     },
 
     // Remove the document from tree path(s) — the inverse of `link`. The doc
     // stays in the index and on its other paths.
-    async unlink(action, { workspace, doc, logger }) {
+    async unlink(action, { workspace, doc, logger, provenance }) {
         if (!doc?.id) { return; }
         for (const rawPath of asArray(action.paths || action.path || []).filter(Boolean)) {
             const target = parseLinkTarget(rawPath);
             const selector = target.tree === 'directory'
                 ? { directory: target.path }
                 : { context: workspace.getContextTreeSelector(target.path) };
-            // unlink emits an id-only document.removed — rules never match
-            // id-only events, so no loop guard needed here.
-            await workspace.unlink(doc.id, selector);
+            // The resulting document.removed / document.unlinked events carry
+            // origin:'rule' + depth, so cascade defaults keep them from
+            // re-triggering non-opted-in automation.
+            await workspace.unlink(doc.id, selector, { provenance });
             logger.debug(`rule unlink: ${doc.id} -x- ${target.tree}:${target.path}`);
         }
     },
 
     // Purge the document from the index (all paths, all bitmaps). Bytes on
     // storage backends (blobs, files, mail on the server) are NOT touched.
-    async delete(action, { workspace, doc, logger }) {
+    async delete(action, { workspace, doc, logger, provenance }) {
         if (!doc?.id) { return; }
-        await workspace.delete(doc.id);
+        await workspace.delete(doc.id, { provenance });
         logger.debug(`rule delete: ${doc.id} purged from index`);
     },
 
@@ -301,17 +303,18 @@ const ACTIONS = {
     // backend can delete (stored:// blob, workspace file rm, imap EXPUNGE —
     // read-only locations degrade to a reference drop), then purge it from the
     // index. Irreversible.
-    async destroy(action, { workspace, doc, logger }) {
+    async destroy(action, { workspace, doc, logger, provenance }) {
         if (!doc?.id) { return; }
         const res = await workspace.destroyDocument(doc);
-        if (!res?.docDeleted) { await workspace.delete(doc.id).catch(() => {}); }
+        if (!res?.docDeleted) { await workspace.delete(doc.id, { provenance }).catch(() => {}); }
         logger.debug(`rule destroy: ${doc.id} (${res?.deleted?.length || 0} locations deleted, ${res?.droppedRefs?.length || 0} refs dropped)`);
     },
 
     // Prompt an agent; optionally consume its reply via action.output
     // (see handleActionOutput: note / file / notify).
-    // NOTE: an inserted note/file emits a normal document.inserted — a rule
-    // that matches its own output loops.
+    // The inserted note/file emits document.inserted with origin:'rule', so it
+    // only reaches rules/hooks that opted in with cascade:true (and never past
+    // the maxDepth ceiling) — a rule matching its own output no longer loops.
     async agent(action, { context, scope, workspace, logger }) {
         if (!action.slug || !action.prompt) { return; }
         const reply = await context.agent(action.slug, interpolate(action.prompt, scope), action.options || {});
@@ -410,6 +413,14 @@ export async function executeRuleActions(rule, context, logger) {
         workspace: { id: workspace.id, name: workspace.name },
         rule: { id: rule.id, description: rule.description },
     };
+    // Writes this rule makes are automation caused by the triggering event.
+    // Actions routed through the hook context (agent output, script output,
+    // notify) inherit the same stamp from the context's own helpers.
+    const provenance = {
+        origin: 'rule',
+        causedBy: payload?.eventId ?? null,
+        depth: (Number.isInteger(payload?.depth) ? payload.depth : 0) + 1,
+    };
 
     for (const action of rule.then) {
         const handler = ACTIONS[action?.action];
@@ -418,7 +429,7 @@ export async function executeRuleActions(rule, context, logger) {
             continue;
         }
         try {
-            await handler(action, { workspace, doc, payload, context, scope, logger });
+            await handler(action, { workspace, doc, payload, context, scope, logger, provenance });
         } catch (err) {
             logger.debug(`rule ${rule.id || '?'} action ${action.action} failed: ${err.message}`);
         }

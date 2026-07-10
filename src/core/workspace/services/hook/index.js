@@ -12,6 +12,17 @@ import { isDisabledFile } from './naming.js';
 
 const logger = createLogger('hook-service');
 
+// Automation cascade ceiling: an event at this depth or beyond is never
+// dispatched to hooks/rules, even ones that opted into cascading — the loop
+// terminates by construction. Per-workspace override: config `hooks.maxDepth`;
+// process-wide override: CANVAS_HOOKS_MAX_DEPTH.
+const DEFAULT_MAX_DEPTH = Math.max(1, Number(process.env.CANVAS_HOOKS_MAX_DEPTH) || 2);
+
+// Any origin other than 'user' means the write was produced by automation
+// (hook/rule/agent/backfill/replay). Handlers ignore automated events unless
+// they opt in (JS: `export const cascade = true`; rule: `"cascade": true`).
+const isAutomatedOrigin = (origin) => Boolean(origin) && origin !== 'user';
+
 /**
  * HookService
  *
@@ -121,6 +132,17 @@ class HookService extends EventEmitter {
             return;
         }
 
+        // Cascade ceiling: automation-caused events beyond maxDepth never reach
+        // any handler — this is the hard loop terminator (the opt-in `cascade`
+        // flag below only governs depth 1..maxDepth-1).
+        const depth = Number.isInteger(payload?.depth) ? payload.depth : 0;
+        const maxDepth = Number(workspace.config?.hooks?.maxDepth) || DEFAULT_MAX_DEPTH;
+        if (depth >= maxDepth) {
+            logger.warn(`Hook cascade depth ${depth} >= maxDepth ${maxDepth} — dropping ${eventName} (origin=${payload?.origin}, causedBy=${payload?.causedBy}) in workspace ${workspaceId}`);
+            return;
+        }
+        const automated = isAutomatedOrigin(payload?.origin);
+
         const promises = [];
         for (const hook of this.#hooks.values()) {
             if (this.#shouldRunHook(hook, eventName)) {
@@ -128,8 +150,8 @@ class HookService extends EventEmitter {
             }
         }
 
-        promises.push(this.#runWorkspaceHook(workspace, eventName, payload));
-        promises.push(this.#runWorkspaceRules(workspace, eventName, payload));
+        promises.push(this.#runWorkspaceHook(workspace, eventName, payload, automated));
+        promises.push(this.#runWorkspaceRules(workspace, eventName, payload, automated));
 
         // Batch fan-out: batch events additionally re-dispatch as per-document
         // singular events (full document loaded, batch:true stamped), so plain
@@ -137,7 +159,7 @@ class HookService extends EventEmitter {
         // batch-ingested documents (imap sync, browser-extension batch sync).
         const singularEvent = HookService.#BATCH_FANOUT[eventName];
         if (singularEvent && Array.isArray(payload?.ids) && payload.ids.length > 0) {
-            promises.push(this.#fanOutBatch(workspace, singularEvent, payload));
+            promises.push(this.#fanOutBatch(workspace, singularEvent, payload, automated));
         }
 
         await Promise.allSettled(promises);
@@ -151,7 +173,7 @@ class HookService extends EventEmitter {
     // Load each batched document and run the workspace's singular hooks/rules
     // for it, sequentially — a 50-message imap batch must not spawn 50
     // concurrent hook chains (agents, scripts).
-    async #fanOutBatch(workspace, eventName, batchPayload) {
+    async #fanOutBatch(workspace, eventName, batchPayload, automated = false) {
         for (const id of batchPayload.ids) {
             let document = null;
             try { document = await workspace.get(id); }
@@ -167,10 +189,16 @@ class HookService extends EventEmitter {
                 batchCount: batchPayload.count ?? batchPayload.ids.length,
                 ...(batchPayload.workspaceId ? { workspaceId: batchPayload.workspaceId } : {}),
                 ...(batchPayload.source ? { source: batchPayload.source } : {}),
+                // Provenance rides through the fan-out unchanged: the per-doc
+                // dispatch is the same event, not a new automation step.
+                ...(batchPayload.eventId ? { eventId: batchPayload.eventId } : {}),
+                ...(batchPayload.origin ? { origin: batchPayload.origin } : {}),
+                ...(batchPayload.causedBy ? { causedBy: batchPayload.causedBy } : {}),
+                ...(Number.isInteger(batchPayload.depth) ? { depth: batchPayload.depth } : {}),
             };
             await Promise.allSettled([
-                this.#runWorkspaceHook(workspace, eventName, payload),
-                this.#runWorkspaceRules(workspace, eventName, payload),
+                this.#runWorkspaceHook(workspace, eventName, payload, automated),
+                this.#runWorkspaceRules(workspace, eventName, payload, automated),
             ]);
         }
     }
@@ -193,20 +221,20 @@ class HookService extends EventEmitter {
         }
     }
 
-    async #runWorkspaceHook(workspace, eventName, payload) {
+    async #runWorkspaceHook(workspace, eventName, payload, automated = false) {
         const hooksRoot = workspace.hooksPath || path.join(workspace.rootPath, 'hooks');
         const hookFiles = this.#resolveHookFiles(hooksRoot, eventName);
         if (hookFiles.length === 0) { return; }
 
         await Promise.allSettled(
-            hookFiles.map((hookPath) => this.#dispatchHookFile(hookPath, workspace, eventName, payload))
+            hookFiles.map((hookPath) => this.#dispatchHookFile(hookPath, workspace, eventName, payload, automated))
         );
     }
 
     // Declarative rules: rules.json + rules/*.json evaluated against the
     // event's classified document. Runs alongside JS hooks with no precedence;
     // every matching rule fires (no first-match-wins).
-    async #runWorkspaceRules(workspace, eventName, payload) {
+    async #runWorkspaceRules(workspace, eventName, payload, automated = false) {
         const hooksRoot = workspace.hooksPath || path.join(workspace.rootPath, 'hooks');
         const ruleFiles = resolveRuleFiles(hooksRoot);
         if (ruleFiles.length === 0) { return; }
@@ -216,8 +244,12 @@ class HookService extends EventEmitter {
 
         for (const filePath of ruleFiles) {
             for (const rule of loadRuleFile(filePath, this.#ruleFileCache, logger)) {
+                if (automated && rule.cascade !== true) {
+                    logger.debug(`Rule ${rule.id || '?'} skipped: automated event (origin=${payload?.origin}) and rule has no cascade:true`);
+                    continue;
+                }
                 if (!matchRule(rule, eventName, classification)) { continue; }
-                context = context || this.#buildHookContext(workspace, eventName, payload);
+                context = context || this.#buildHookContext(workspace, eventName, payload, 'rule');
                 logger.debug(`Rule ${rule.id || '?'} matched ${eventName} in workspace ${workspace.id}`);
                 await executeRuleActions(rule, context, logger);
             }
@@ -272,13 +304,16 @@ class HookService extends EventEmitter {
                 throw new Error(`Hook "${hookPath}" does not export a function`);
             }
             const debounce = Number(hookModule.debounce) > 0 ? Number(hookModule.debounce) : 0;
-            cached = { mtimeMs: stat.mtimeMs, run, debounce };
+            // `export const cascade = true` opts the hook into automation-caused
+            // events (origin hook/rule/agent/...), bounded by the maxDepth stop.
+            const cascade = hookModule.cascade === true;
+            cached = { mtimeMs: stat.mtimeMs, run, debounce, cascade };
             this.#hookModuleCache.set(hookPath, cached);
         }
         return cached;
     }
 
-    async #dispatchHookFile(hookPath, workspace, eventName, payload) {
+    async #dispatchHookFile(hookPath, workspace, eventName, payload, automated = false) {
         let loaded;
         try {
             loaded = await this.#loadHookRun(hookPath);
@@ -287,6 +322,11 @@ class HookService extends EventEmitter {
             return;
         }
         if (!loaded) { return; }
+
+        if (automated && !loaded.cascade) {
+            logger.debug(`Hook ${hookPath} skipped: automated event (origin=${payload?.origin}) and no \`export const cascade = true\``);
+            return;
+        }
 
         if (loaded.debounce > 0) {
             this.#scheduleDebounced(hookPath, workspace, eventName, payload, loaded);
@@ -326,13 +366,24 @@ class HookService extends EventEmitter {
         }
     }
 
-    #buildHookContext(workspace, eventName, payload) {
+    #buildHookContext(workspace, eventName, payload, origin = 'hook') {
         const event = {
             name: eventName,
             workspaceId: workspace.id,
             payload,
             timestamp: new Date().toISOString(),
         };
+
+        // Every write made from this context is an automation step caused by
+        // the triggering event: stamp origin + causedBy + depth+1 so the
+        // resulting events are recognizable (and cascade-guarded) downstream.
+        // An explicit `provenance` in the caller's options wins.
+        const childProvenance = {
+            origin,
+            causedBy: payload?.eventId ?? null,
+            depth: (Number.isInteger(payload?.depth) ? payload.depth : 0) + 1,
+        };
+        const withProvenance = (options = {}) => ({ provenance: childProvenance, ...options });
 
         const db = workspace.isActive ? workspace.db : null;
         const tree = workspace.isActive ? workspace.getDefaultContextTree() : null;
@@ -341,9 +392,10 @@ class HookService extends EventEmitter {
                 ...(nextPayload && typeof nextPayload === 'object' ? nextPayload : { value: nextPayload }),
                 workspaceId: workspace.id,
                 source: 'hook',
+                ...childProvenance,
             });
         };
-        const put = async (document, options = {}) => workspace.put(document, options);
+        const put = async (document, options = {}) => workspace.put(document, withProvenance(options));
 
         return {
             event,
@@ -356,9 +408,11 @@ class HookService extends EventEmitter {
             logger,
             emit,
             insert: put,
-            update: async (id, document, options = {}) => workspace.put({ ...document, id }, options),
-            remove: async (id, options = {}) => workspace.unlink(id, options),
-            deleteDocument: async (id) => workspace.delete(id),
+            update: async (id, document, options = {}) => workspace.put({ ...document, id }, withProvenance(options)),
+            // unlink takes (id, selector, options) — provenance rides in the
+            // options arg (spread into db.unlink), not the selector.
+            remove: async (id, options = {}) => workspace.unlink(id, options, { provenance: childProvenance }),
+            deleteDocument: async (id) => workspace.delete(id, { provenance: childProvenance }),
             // Destroy = delete bytes on every deletable location (stored://
             // blob, workspace file, imap EXPUNGE; read-only locations degrade
             // to a reference drop), then purge the doc from the index.
@@ -366,7 +420,7 @@ class HookService extends EventEmitter {
                 const doc = typeof idOrDoc === 'object' && idOrDoc !== null ? idOrDoc : await workspace.get(idOrDoc);
                 if (!doc?.id) { return null; }
                 const res = await workspace.destroyDocument(doc);
-                if (!res?.docDeleted) { await workspace.delete(doc.id).catch(() => {}); }
+                if (!res?.docDeleted) { await workspace.delete(doc.id, { provenance: childProvenance }).catch(() => {}); }
                 return res;
             },
             get: async (id, options = { parse: true }) => workspace.get(id, options),
@@ -396,7 +450,7 @@ class HookService extends EventEmitter {
             link: async (documentId, contexts = []) => {
                 const targets = Array.isArray(contexts) ? contexts : [contexts];
                 for (const context of targets.filter(Boolean)) {
-                    await workspace.link(documentId, { context, emitEvent: true });
+                    await workspace.link(documentId, { context, emitEvent: true, provenance: childProvenance });
                 }
             },
         };
@@ -455,6 +509,10 @@ class HookService extends EventEmitter {
     }
 
     #buildDispatchKey(eventName, payload = {}, workspaceId) {
+        // eventId is unique per emit — the precise dedup key (two rapid but
+        // distinct updates of the same doc no longer falsely dedup). The
+        // id-based key remains for payloads that predate the envelope field.
+        if (payload.eventId) { return `${workspaceId}:${eventName}:${payload.eventId}`; }
         const ids = payload.ids || payload.documentIds || payload.id || payload.documentId || payload.document?.id || '';
         const normalizedIds = Array.isArray(ids) ? ids.join(',') : String(ids || '');
         if (!normalizedIds) { return null; }

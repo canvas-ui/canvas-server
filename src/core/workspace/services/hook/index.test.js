@@ -268,6 +268,26 @@ describe('HookService batch fan-out', () => {
         delete globalThis.__batchHookRuns;
     });
 
+    test('fan-out inherits provenance from the batch payload', async () => {
+        fs.writeFileSync(path.join(workspace.hooksPath, 'rules.json'), JSON.stringify({ rules: [{
+            id: 'boss-mail-cascade',
+            cascade: true,
+            when: { event: 'document.inserted', schema: 'email', from: 'boss@corp.tld' },
+            then: [{ action: 'link', paths: ['/work/urgent'] }],
+        }] }));
+
+        workspace.emit('document.inserted.batch', {
+            ids: [1], count: 1, context: null, source: 'db',
+            eventId: 'evt-batch-1', origin: 'hook', causedBy: 'evt-root', depth: 1,
+        });
+        await new Promise(resolve => setTimeout(resolve, 50));
+
+        // cascade rule fired; the write it made carries depth+1 and causedBy
+        // pointing at the batch event.
+        assert.equal(linkCalls.length, 1);
+        assert.deepEqual(linkCalls[0].opts.provenance, { origin: 'rule', causedBy: 'evt-batch-1', depth: 2 });
+    });
+
     test('doc-less singular compat emission (batch:true) is skipped', async () => {
         fs.writeFileSync(path.join(workspace.hooksPath, 'document.inserted.js'),
             'export default async (ctx) => { globalThis.__batchCompatRuns.push(ctx.payload); };');
@@ -279,5 +299,121 @@ describe('HookService batch fan-out', () => {
 
         assert.equal(runs.length, 0);
         delete globalThis.__batchCompatRuns;
+    });
+});
+
+describe('HookService provenance + cascade control', () => {
+    let rootPath;
+    let workspace;
+    let service;
+    let linkCalls;
+
+    const tabDoc = (id) => ({ id, schema: 'data/abstraction/tab', data: { url: 'https://youtube.com/watch?v=x' } });
+    const emitTab = (id, extra = {}) => workspace.emit('document.inserted', {
+        id, document: tabDoc(id), context: { paths: ['/inbox'] }, source: 'db', ...extra,
+    });
+    const RULE = {
+        id: 'yt',
+        when: { event: 'document.inserted', schema: 'tab', url: { host: 'youtube.com' } },
+        then: [{ action: 'link', paths: ['/media'] }],
+    };
+
+    beforeEach(() => {
+        rootPath = fs.mkdtempSync(path.join(os.tmpdir(), 'hook-prov-'));
+        workspace = createWorkspace('workspace-prov', rootPath);
+        fs.mkdirSync(workspace.hooksPath, { recursive: true });
+        linkCalls = [];
+        workspace.getContextTreeSelector = (p) => ({ type: 'context', path: p });
+        workspace.link = async (id, opts) => linkCalls.push({ id, opts });
+        service = new HookService({ workspaceManager: { getWorkspace: async () => workspace } });
+        service.trackWorkspace(workspace);
+    });
+
+    afterEach(() => {
+        service.untrackWorkspace(workspace.id);
+        fs.rmSync(rootPath, { recursive: true, force: true });
+        delete process.env.CANVAS_HOOKS_MAX_DEPTH;
+    });
+
+    const writeRules = (rules) =>
+        fs.writeFileSync(path.join(workspace.hooksPath, 'rules.json'), JSON.stringify({ rules }));
+
+    test('automated-origin event skips a plain rule', async () => {
+        writeRules([RULE]);
+        emitTab(1, { eventId: 'e1', origin: 'hook', causedBy: 'e0', depth: 1 });
+        await new Promise(resolve => setTimeout(resolve, 30));
+        assert.equal(linkCalls.length, 0);
+    });
+
+    test('automated-origin event runs a cascade:true rule and stamps provenance on its writes', async () => {
+        writeRules([{ ...RULE, cascade: true }]);
+        emitTab(2, { eventId: 'e2', origin: 'rule', causedBy: 'e0', depth: 1 });
+        await new Promise(resolve => setTimeout(resolve, 30));
+        assert.equal(linkCalls.length, 1);
+        assert.deepEqual(linkCalls[0].opts.provenance, { origin: 'rule', causedBy: 'e2', depth: 2 });
+    });
+
+    test('user-origin event still runs plain rules; rule writes carry origin rule + depth 1', async () => {
+        writeRules([RULE]);
+        emitTab(3, { eventId: 'e3', origin: 'user' });
+        await new Promise(resolve => setTimeout(resolve, 30));
+        assert.equal(linkCalls.length, 1);
+        assert.deepEqual(linkCalls[0].opts.provenance, { origin: 'rule', causedBy: 'e3', depth: 1 });
+    });
+
+    test('depth ceiling drops the event even for cascade rules', async () => {
+        writeRules([{ ...RULE, cascade: true }]);
+        emitTab(4, { eventId: 'e4', origin: 'rule', causedBy: 'e3', depth: 2 });
+        await new Promise(resolve => setTimeout(resolve, 30));
+        assert.equal(linkCalls.length, 0);
+    });
+
+    test('automated-origin event skips a plain JS hook but runs one exporting cascade=true', async () => {
+        const hookDir = path.join(workspace.hooksPath, 'document.inserted');
+        fs.mkdirSync(hookDir, { recursive: true });
+        fs.writeFileSync(path.join(hookDir, 'plain.js'),
+            'export default async () => { globalThis.__provPlain.push(1); };');
+        fs.writeFileSync(path.join(hookDir, 'cascading.js'),
+            'export const cascade = true;\nexport default async () => { globalThis.__provCascade.push(1); };');
+        globalThis.__provPlain = [];
+        globalThis.__provCascade = [];
+
+        emitTab(5, { eventId: 'e5', origin: 'hook', causedBy: 'e0', depth: 1 });
+        await new Promise(resolve => setTimeout(resolve, 60));
+
+        assert.equal(globalThis.__provPlain.length, 0);
+        assert.equal(globalThis.__provCascade.length, 1);
+        delete globalThis.__provPlain;
+        delete globalThis.__provCascade;
+    });
+
+    test('ctx.insert stamps origin/causedBy/depth on the write options', async () => {
+        const putCalls = [];
+        workspace.put = async (doc, options) => { putCalls.push({ doc, options }); return { id: 99 }; };
+        const hookDir = path.join(workspace.hooksPath, 'document.inserted');
+        fs.mkdirSync(hookDir, { recursive: true });
+        fs.writeFileSync(path.join(hookDir, 'inserter.js'), `
+export default async ({ insert }) => {
+    await insert({ schema: 'data/abstraction/note', data: { title: 't', content: 'c' } }, { context: '/notes' });
+};`);
+
+        emitTab(6, { eventId: 'e6', origin: 'user' });
+        await new Promise(resolve => setTimeout(resolve, 60));
+
+        assert.equal(putCalls.length, 1);
+        assert.equal(putCalls[0].options.context, '/notes');
+        assert.deepEqual(putCalls[0].options.provenance, { origin: 'hook', causedBy: 'e6', depth: 1 });
+    });
+
+    test('dedup keys on eventId: same eventId dedups, distinct eventIds for the same doc both run', async () => {
+        writeRules([RULE]);
+        emitTab(7, { eventId: 'same' });
+        emitTab(7, { eventId: 'same' });
+        await new Promise(resolve => setTimeout(resolve, 30));
+        assert.equal(linkCalls.length, 1);
+
+        emitTab(7, { eventId: 'other' });
+        await new Promise(resolve => setTimeout(resolve, 30));
+        assert.equal(linkCalls.length, 2);
     });
 });

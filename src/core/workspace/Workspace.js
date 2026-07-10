@@ -370,21 +370,23 @@ class Workspace extends EventEmitter {
         }
     }
 
-    async put(record, { context = '/', directory = null, features = [], attributes, emitEvent = true, allowBackendsWrite = false } = {}) {
+    async put(record, { context = '/', directory = null, features = [], attributes, emitEvent = true, allowBackendsWrite = false, provenance = null } = {}) {
         this.#assertBackendsWriteAllowed(directory, allowBackendsWrite);
         return await this.#getActiveDb().put(record, {
             paths: Workspace.#buildPaths(context, directory),
             features: this.#normalizeFeatureInput(features, attributes),
             emitEvent,
+            ...(provenance ? { provenance } : {}),
         });
     }
 
-    async link(id, { context = '/', directory = null, features = [], attributes, emitEvent = true, allowBackendsWrite = false } = {}) {
+    async link(id, { context = '/', directory = null, features = [], attributes, emitEvent = true, allowBackendsWrite = false, provenance = null } = {}) {
         this.#assertBackendsWriteAllowed(directory, allowBackendsWrite);
         return await this.#getActiveDb().link(id, {
             paths: Workspace.#buildPaths(context, directory),
             features: this.#normalizeFeatureInput(features, attributes),
             emitEvent,
+            ...(provenance ? { provenance } : {}),
         });
     }
 
@@ -397,8 +399,8 @@ class Workspace extends EventEmitter {
         });
     }
 
-    async delete(id) {
-        return await this.#getActiveDb().delete(parseDocumentId(id, 'Document ID'));
+    async delete(id, options = {}) {
+        return await this.#getActiveDb().delete(parseDocumentId(id, 'Document ID'), options);
     }
 
     async get(id, options = { parse: true }) {

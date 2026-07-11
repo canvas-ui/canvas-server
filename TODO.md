@@ -2,7 +2,13 @@
 
 ## WebUI cosmetics
 
-We will need tointroduce more vibrant colors covering larger sections of our buttons and header areas in the near future and use colors as visual cues for our context/directory paths once we start supporting the to-be vertically and horizontally scrollable multi-context multi-focus layout
+- Uploads to workspaces other than "Universe dont seem to work"
+OK the issue seems to be refresh,
+Ah, no, it seems to be some initialization issue(stored?cacache) - no, refresh indeed
+- "Incoming" should not be an option for workspace:data (blob store) in workspaces > workspace > settings > Data Backends, disabling it also not an option, enabled by default
+- Picking a color + icon always resets the state of the form, one currently can not do both in one go 
+- link-to menu should also have an option to add a folder(long press/touch or context menu)
+- We will need to introduce more vibrant colors covering larger sections of our buttons and header areas in the near future and use colors as visual cues for our context/directory paths once we start supporting the to-be vertically and horizontally scrollable multi-context multi-focus layout
 
 ### Content
 - (deffered) Content area section should support tabs 

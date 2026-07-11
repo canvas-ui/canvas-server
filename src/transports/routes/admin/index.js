@@ -360,6 +360,32 @@ export default async function adminRoutes(fastify, options) {
     }
   });
 
+  // Rebuild per-MIME-type presence bitmaps (data/mime/*) from stored documents.
+  // Backfills a corpus indexed before mime bitmaps existed (e.g. blobs/files).
+  // Synchronous, in-process, idempotent.
+  fastify.post('/workspaces/:workspaceId/reindex-mime', {
+    onRequest: [fastify.authenticate, requireAdmin],
+    schema: { params: { type: 'object', required: ['workspaceId'], properties: { workspaceId: { type: 'string' } } } }
+  }, async (request, reply) => {
+    try {
+      const identifier = request.params.workspaceId;
+      const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(identifier);
+      const workspaceId = isUUID ? identifier : fastify.workspaceManager.resolveWorkspaceId(request.user.id, identifier);
+      const ws = workspaceId ? await fastify.workspaceManager.getWorkspace(workspaceId, request.user.id) : null;
+      if (!ws?.isActive) {
+        const response = new ResponseObject().badRequest('Workspace not found or not active');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+      const result = await ws.db.reindexMimeBitmaps();
+      const response = new ResponseObject().success(result, `MIME bitmaps rebuilt: ${result.ticked}/${result.scanned} docs across ${result.keys} type(s)`);
+      return reply.code(response.statusCode).send(response.getResponse());
+    } catch (error) {
+      fastify.log.error(error);
+      const response = new ResponseObject().serverError(error.message || 'Failed to reindex mime bitmaps');
+      return reply.code(response.statusCode).send(response.getResponse());
+    }
+  });
+
   // Full-text (Lance/BM25) reindex: backfill every document not yet in the FTS
   // index — needed for corpora indexed before FTS existed or left in start()'s
   // un-indexed tail. Idempotent (skips already-indexed). Runs in-process, so no

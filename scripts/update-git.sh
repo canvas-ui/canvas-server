@@ -168,14 +168,23 @@ run_as_canvas_user "/usr/bin/git fetch origin $TARGET_BRANCH"
 run_as_canvas_user "/usr/bin/git reset --hard origin/$TARGET_BRANCH"
 
 log_message "Updating submodules..."
-run_as_canvas_user "/usr/bin/git submodule update --init --remote"
+# Pinned checkout (NOT --remote): use the submodule commits the parent repo
+# recorded, which is exactly what package-lock.json was generated against.
+# Bumping submodules to newer tips happens locally via `npm run update-submodules`
+# (which also regenerates + commits the lockfile), so parent pointers and the
+# lockfile always move together. --remote here would pull newer tips than the
+# lockfile knows and break `npm ci`.
+run_as_canvas_user "/usr/bin/git submodule update --init"
 
 WEB_DIST="$CANVAS_ROOT/src/ui/web/dist"
 log_message "Removing stale web dist..."
 rm -rf "$WEB_DIST"
 
 log_message "Installing dependencies..."
-run_as_canvas_user "/usr/bin/npm install" || { log_message "npm install failed"; exit 1; }
+# npm ci = strict, reproducible install from the committed package-lock.json
+# (fails on lockfile/package.json drift instead of silently re-resolving a
+# different, possibly-broken tree). Requires package-lock.json to be tracked.
+run_as_canvas_user "/usr/bin/npm ci" || { log_message "npm ci failed"; exit 1; }
 
 log_message "Rebuilding web UI..."
 run_as_canvas_user "/usr/bin/npm run build" || { log_message "web build failed"; exit 1; }

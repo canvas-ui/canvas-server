@@ -1,5 +1,22 @@
 # TODO List
 
+## Workspace/SynapsD tree refactor
+
+We should change our workspace tree logic 
+- We should pre-create 2 trees as is the case today
+  - Context tree (type context/ctx)
+  - Directory tree (type directory/dir)
+    - webui bug: It should be possible to click to the "root" folder in a directory tree and  insert data into it, currently we switch to context tree on click
+- Change: All backends should live in their own 3rd tree dedicated exclusively to the backends(with full CRUD semantics where the backend allows that => stored may need to support fetching the whole tree from a local or remote backend - like s3) - structure should be the same, we'd just move .backend into a "backends" tree (type directory)
+  - Sync populates the index and the backend tree, user freely decides which documents to move to his cherrished context or directory tree
+  - Agentic memory running synapsd as its own memory backend will create multiple semantic context-type trees for anchor based memory so the logic above should live on the Workspace level, synapsd should be as generic as possible(where it needs to be)
+
+The ordering in our webui should therefor be
+- Context tree(icon only)
+- Context layers(icon only)
+- Directory tree(icon only)
+- Backends tree(type dir, icon only)
+
 ## WebUI cosmetics
 
 - Uploads to workspaces other than "Universe dont seem to work"
@@ -9,18 +26,32 @@ Ah, no, it seems to be some initialization issue(stored?cacache) - no, refresh i
 - Picking a color + icon always resets the state of the form, one currently can not do both in one go 
 - link-to menu should also have an option to add a folder(long press/touch or context menu)
 - We will need to introduce more vibrant colors covering larger sections of our buttons and header areas in the near future and use colors as visual cues for our context/directory paths once we start supporting the to-be vertically and horizontally scrollable multi-context multi-focus layout
+- content area "grid" view should have nice mosaic pattern, we are not in 200x
 
 ### Content
 - (deffered) Content area section should support tabs 
 
 ### Workspaces
-- Workspace name should pre prepended with the workspace icon, tab should have a bottom border of the color of the workspace or layer
+- Workspace name should pre prepended with the workspace icon, tab should have a bottom border of the color of the workspace or layer, lets use css to ensure white-on-white use-case is covered
 
 ### Contexts
 - Load icon + color from bound path, defaults/fallbacks to icon + color of the bound workspace
 
----
+## Remote workspaces
 
+Open a remote workspace functionality does not work, either the share tokens do not work or the api endpoints do not work, regardless, workspaces are not really required to sit locally on the server, we will soon implement our canvas-edge runtime which will autoregister to a canvas-server instance and will presumably run locally at the user - we should handle that scenario transparently (maybe a think middleware that would keep all integration talkint to the same rest api but handle proxying to remote workspaces transparently)
+Question is what protocol(s) to support, we currently use http+ws
+
+## Workspace runtime
+
+Future non-MVP direction, bundle workspace(synapsd, stored, embedd) in a single bun binary runnable from a folder in a standalone fashion(`ws`, would start a pm2 based daemon and use the same `ws` binary as the CLI), minimal REST+WS endpoints (only token auth), optional tauri UI frontend with a tray app
+- Prerequisites: `canvas-edge` for the minimal API + autoregistration to a remote canvas-server
+
+## Related with the workspace runtime, canvas-agent runtime
+
+Non-MVP, `ag` or `hi`, minimal bun or tauri runtime you can start from a folder directly(I'm included to tauri, you rename `hi` to `lucy`, put it into `~/Agents/Lucy` folder, double-click and you get a nice miminal toolbox-like UI with a button for voice-input and a dynamic mcpui/agui canvas), agent already includes / runs its own workspace so synapsd and all the rag goodies are built-in, `canvas-edge` will help it to (auto-)register if needed, great for local inference, the original idea of the whole project was small self-contained "workspaces", we can run both in a docker container/sandbox
+
+## Server
 
 CORS proxy or "fetch-through" proxy
 New `src/transports/routes/pdf-proxy.js`  endpoint for `/proxy/pdf` 

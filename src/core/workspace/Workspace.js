@@ -149,7 +149,34 @@ class Workspace extends EventEmitter {
      */
     async getStats() {
         if (!this.isActive || !this.#db) return null;
-        return await this.#db.getStats();
+        const stats = await this.#db.getStats();
+        // Embedding progress: the embedd queue is shared across workspaces, but its
+        // pending count + this workspace's per-space embeddedDocs (semantic.vectorSpaces)
+        // let the UI show a re-embed in flight and how far it's got.
+        if (this.#embedd?.status) {
+            try {
+                const es = await this.#embedd.status();
+                stats.embedder = { queue: es.queue };
+            } catch (_) { /* best effort */ }
+        }
+        return stats;
+    }
+
+    /**
+     * Live-tune search knobs (persisted to workspace.json `semantic`, applied to
+     * the running DB without a restart). Currently the image relevance floor.
+     * @param {{imageMaxDistance?: number|null}} tuning
+     */
+    async setSearchTuning(tuning = {}) {
+        const current = this.#configStore.get('semantic', {}) || {};
+        const next = { ...current };
+        if (Object.prototype.hasOwnProperty.call(tuning, 'imageMaxDistance')) {
+            next.imageMaxDistance = tuning.imageMaxDistance;
+        }
+        this.#configStore.set('semantic', next);
+        const applied = this.#db?.setSearchTuning ? this.#db.setSearchTuning(tuning) : null;
+        this.emit('semantic.changed', { id: this.id, semantic: next });
+        return { semantic: next, applied };
     }
 
     get homePath() {
@@ -271,7 +298,12 @@ class Workspace extends EventEmitter {
                 // synapsd owns no model; if the embedd service is present, hand it
                 // the query embedder so dense/hybrid search works. Absent → FTS.
                 semantic: this.#embedd
-                    ? { embedQuery: (text, space) => this.#embedd.embedQuery(text, space) }
+                    ? {
+                        embedQuery: (text, space) => this.#embedd.embedQuery(text, space),
+                        // Workspace-level search tuning (persisted in workspace.json
+                        // under `semantic`). Undefined → synapsd default (0.9).
+                        imageMaxDistance: (this.#configStore.get('semantic', {}) || {}).imageMaxDistance,
+                    }
                     : undefined,
             });
             await this.#db.start();

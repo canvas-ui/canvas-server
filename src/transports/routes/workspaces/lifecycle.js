@@ -105,6 +105,35 @@ export default async function workspaceLifecycleRoutes(fastify, options) {
     }
   });
 
+  // Live-tune search knobs (image relevance floor). Persisted to workspace.json
+  // and applied to the running DB without a restart. { imageMaxDistance: number|null }.
+  fastify.put('/db/tuning', {
+    onRequest: [fastify.authenticate, requireWorkspaceAdmin()],
+    schema: {
+      params: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } },
+      body: {
+        type: 'object',
+        properties: { imageMaxDistance: { type: ['number', 'null'] } },
+        additionalProperties: false,
+      },
+    },
+  }, async (request, reply) => {
+    try {
+      const workspace = request.workspace;
+      if (!workspace.isActive) {
+        const r = new ResponseObject().badRequest('Workspace is not active');
+        return reply.code(r.statusCode).send(r.getResponse());
+      }
+      const result = await workspace.setSearchTuning(request.body || {});
+      const r = new ResponseObject().success(result, 'Search tuning updated');
+      return reply.code(r.statusCode).send(r.getResponse());
+    } catch (error) {
+      fastify.log.error(error);
+      const r = new ResponseObject().serverError('Failed to update search tuning');
+      return reply.code(r.statusCode).send(r.getResponse());
+    }
+  });
+
   // Start workspace
   fastify.post('/start', {
     onRequest: [fastify.authenticate, requireWorkspaceAdmin()],

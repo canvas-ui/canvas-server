@@ -6,35 +6,35 @@ import {
   getBackendFileContext,
   getBackendFileContextFromStoredLocation,
   getBackendChannelContext,
-  isBackendsContextSpec,
+  isLegacyBackendsPath,
   normalizeBackendsTreePath,
 } from './backend-documents.js';
 
 test('builds email backend paths with driver, account, and folder', () => {
   assert.equal(
     getBackendEmailContext('imap', 'foo@bar.tld', 'Inbox'),
-    '/.backends/imap/foo@bar.tld/inbox'
+    '/imap/foo@bar.tld/inbox'
   );
 });
 
 test('builds channel backend paths with driver, account, and channel (no kind segment)', () => {
   assert.equal(
     getBackendChannelContext('slack', 'acme-workspace', 'dev-backend'),
-    '/.backends/slack/acme-workspace/dev-backend'
+    '/slack/acme-workspace/dev-backend'
   );
 });
 
 test('builds file backend paths from explicit provenance (no kind segment)', () => {
   assert.equal(
     getBackendFileContext('s3', 'prod-archive', 'somebucket', 'logs/2026/03/app.log'),
-    '/.backends/s3/prod-archive/somebucket/logs/2026/03/app.log'
+    '/s3/prod-archive/somebucket/logs/2026/03/app.log'
   );
 });
 
 test('preserves colon in backend addresses', () => {
   assert.equal(
     getBackendFileContext('file', 'workspace:home', null, 'foo/bar'),
-    '/.backends/file/workspace:home/foo/bar'
+    '/file/workspace:home/foo/bar'
   );
 });
 
@@ -51,7 +51,7 @@ test('builds file backend paths from stored locations using parent directory', (
         path: 'docs/spec.md',
       },
     }),
-    '/.backends/file/workspace:home/docs'
+    '/file/workspace:home/docs'
   );
 });
 
@@ -68,20 +68,22 @@ test('places root-level files at the backend address with no subpath', () => {
         path: 'readme.md',
       },
     }),
-    '/.backends/file/workspace:home'
+    '/file/workspace:home'
   );
 });
 
-test('isBackendsContextSpec matches root and descendants only', () => {
-  assert.equal(isBackendsContextSpec('/.backends'), true);
-  assert.equal(isBackendsContextSpec('/.backends/imap/foo@bar.tld'), true);
-  assert.equal(isBackendsContextSpec('/.backends-not'), false);
-  assert.equal(isBackendsContextSpec('/foo'), false);
-  assert.equal(isBackendsContextSpec('/.other'), false);
+test('isLegacyBackendsPath matches only old /.backends-prefixed paths', () => {
+  assert.equal(isLegacyBackendsPath('/.backends'), true);
+  assert.equal(isLegacyBackendsPath('/.backends/imap/foo@bar.tld'), true);
+  assert.equal(isLegacyBackendsPath('/.backends-not'), false);
+  assert.equal(isLegacyBackendsPath('/imap/foo@bar.tld'), false);
+  assert.equal(isLegacyBackendsPath('/foo'), false);
 });
 
-test('normalizeBackendsTreePath prefixes unprefixed paths', () => {
-  assert.equal(normalizeBackendsTreePath('/'), '/.backends');
-  assert.equal(normalizeBackendsTreePath('imap/foo'), '/.backends/imap/foo');
-  assert.equal(normalizeBackendsTreePath('/.backends/imap/foo'), '/.backends/imap/foo');
+test('normalizeBackendsTreePath is tree-relative and strips the legacy prefix', () => {
+  assert.equal(normalizeBackendsTreePath('/'), '/');
+  assert.equal(normalizeBackendsTreePath('imap/foo'), '/imap/foo');
+  assert.equal(normalizeBackendsTreePath('/imap/foo'), '/imap/foo');
+  assert.equal(normalizeBackendsTreePath('/.backends'), '/');
+  assert.equal(normalizeBackendsTreePath('/.backends/imap/foo'), '/imap/foo');
 });

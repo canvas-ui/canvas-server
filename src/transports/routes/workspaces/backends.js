@@ -3,11 +3,12 @@
 import ResponseObject from '../../ResponseObject.js';
 import { requireWorkspaceRead, requireWorkspaceWrite } from '../../middleware/workspace-acl.js';
 
-// Unified backend/connector API — mirrors the /.backends/<driver>/<address>
-// tree. One surface over storage backends (file/cacache/s3) and message
-// connectors (imap accounts). Driver dispatch + capabilities live on the
-// Workspace facade (see Workspace.listBackends / syncBackend / …). Retires the
-// data-backends vs services/imap split and the resync-node band-aid.
+// Unified backend/connector API — mirrors the backends tree's
+// /<driver>/<address> nodes. One surface over storage backends
+// (file/cacache/s3) and message connectors (imap accounts). Driver dispatch +
+// capabilities live on the Workspace facade (see Workspace.listBackends /
+// syncBackend / …). Retires the data-backends vs services/imap split and the
+// resync-node band-aid.
 export default async function workspaceBackendRoutes(fastify) {
     const ok = (reply, payload, count) => {
         const response = count != null
@@ -90,6 +91,34 @@ export default async function workspaceBackendRoutes(fastify) {
         try {
             const removed = await request.workspace.removeBackend(arg(request.params.driver), arg(request.params.address));
             return ok(reply, { removed });
+        } catch (error) { return fail(request, reply, error); }
+    });
+
+    // Documents mirrored under a backend address, filtered by linkage into
+    // other trees. ?linked=false → present ONLY on the backend, never filed
+    // into any context/directory tree (safe-to-purge candidates);
+    // ?linked=true → the inverse; omitted → everything under the address.
+    fastify.get('/:driver/:address/documents', {
+        onRequest: [fastify.authenticate, requireWorkspaceRead()],
+        schema: {
+            querystring: {
+                type: 'object',
+                properties: {
+                    linked: { type: 'boolean' },
+                    limit: { type: 'integer', minimum: 0, default: 200 },
+                    offset: { type: 'integer', minimum: 0, default: 0 },
+                },
+            },
+        },
+    }, async (request, reply) => {
+        try {
+            const { linked = null, limit, offset } = request.query || {};
+            const result = await request.workspace.listBackendDocuments(
+                arg(request.params.driver), arg(request.params.address),
+                { linked, limit, offset },
+            );
+            const response = new ResponseObject().found(result.documents, 'OK', 200, result.count, result.totalCount);
+            return reply.code(response.statusCode).send(response.getResponse());
         } catch (error) { return fail(request, reply, error); }
     });
 

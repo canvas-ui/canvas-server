@@ -8,7 +8,7 @@ import { simpleParser } from 'mailparser';
 import ImapBackend from './ImapBackend.js';
 import Email from '../../../../services/synapsd/src/schemas/abstractions/Email.js';
 import { parseLocationUrl } from '../../../../services/synapsd/src/utils/path-helpers.js';
-import { getBackendEmailContext, normalizeSegment, legacyBitmapKey, BACKENDS_ROOT_CONTEXT } from '../../../../utils/backend-documents.js';
+import { getBackendEmailContext, normalizeSegment, legacyBitmapKey } from '../../../../utils/backend-documents.js';
 
 /*
  * WorkspaceMailIndex (ImapService)
@@ -16,7 +16,7 @@ import { getBackendEmailContext, normalizeSegment, legacyBitmapKey, BACKENDS_ROO
  * Per-workspace IMAP connector: manages mailbox accounts (config/stored.json),
  * runs incremental sync + poll, and ingests messages as Email documents (raw
  * .eml + attachment blobs persisted under data/email/, indexed into the
- * directory tree's /.backends/imap/<account>/<folder> subtree).
+ * backends tree's /imap/<account>/<folder> subtree).
  *
  * Fully self-owned: it instantiates and owns its ImapBackend instances directly
  * (its own registry + event wiring + lifecycle) — it does NOT ride the stored
@@ -51,16 +51,19 @@ export class WorkspaceMailIndex extends EventEmitter {
     #getBackendsTreeSelector;
     #getDb;
     #persistBlob;
-    // Optional backend-node enable-lock hooks (lock /.backends/imap/<account>
-    // while a mailbox on that account is enabled).
+    // Optional backend-node enable-lock hooks (lock /imap/<account> in the
+    // backends tree while a mailbox on that account is enabled).
     #lockBackendNode;
     #unlockBackendNode;
+    // One-shot: re-file already-indexed emails into the backends tree after the
+    // legacy /.backends subtree migration (no network fetch).
+    #refileBackendsTreeOnStart;
 
     #started = false;
     #backends = new Map(); // name -> ImapBackend
     #backendStatus = new Map();
 
-    constructor({ rootPath, workspaceId, logger, put, putMany = null, getBackendsTreeSelector, getDb, persistBlob, lockBackendNode = null, unlockBackendNode = null }) {
+    constructor({ rootPath, workspaceId, logger, put, putMany = null, getBackendsTreeSelector, getDb, persistBlob, lockBackendNode = null, unlockBackendNode = null, refileBackendsTree = false }) {
         super({ wildcard: true, delimiter: '.', maxListeners: 100 });
         if (!rootPath) throw new Error('rootPath is required');
         if (!put || !getBackendsTreeSelector || !getDb || !persistBlob) {
@@ -76,6 +79,7 @@ export class WorkspaceMailIndex extends EventEmitter {
         this.#persistBlob = persistBlob;
         this.#lockBackendNode = lockBackendNode;
         this.#unlockBackendNode = unlockBackendNode;
+        this.#refileBackendsTreeOnStart = refileBackendsTree === true;
     }
 
     get isRunning() { return this.#started; }
@@ -86,6 +90,10 @@ export class WorkspaceMailIndex extends EventEmitter {
         try {
             await this.#registerStoredConfigBackends();
             await this.#migrateLegacyAccountBitmaps();
+            if (this.#refileBackendsTreeOnStart) {
+                await this.#refileBackendsTree();
+                this.#refileBackendsTreeOnStart = false;
+            }
             await this.#startStoredConfigSources();
         } catch (error) {
             this.#logger.warn({ workspaceId: this.#workspaceId, error: error.message }, 'IMAP service unavailable');
@@ -141,16 +149,16 @@ export class WorkspaceMailIndex extends EventEmitter {
         this.#applyAccountNodeLock(name, backend.config, false);
     }
 
-    // Enable-lock on the shared account node /.backends/imap/<account>. Holder
-    // is the mailbox backend name (imap:<id>): lockedBy is an array, so two
-    // mailboxes on one account each hold their own entry and the node unlocks
-    // only when the last one releases. Fire-and-forget: lock state is a guard
-    // rail, never worth failing a sync over.
+    // Enable-lock on the shared account node /imap/<account> in the backends
+    // tree. Holder is the mailbox backend name (imap:<id>): lockedBy is an
+    // array, so two mailboxes on one account each hold their own entry and the
+    // node unlocks only when the last one releases. Fire-and-forget: lock state
+    // is a guard rail, never worth failing a sync over.
     #applyAccountNodeLock(name, config = {}, locked) {
         const hook = locked ? this.#lockBackendNode : this.#unlockBackendNode;
         if (!hook) return;
         const account = this.#safeAccount(config.account || config.user);
-        const nodePath = `${BACKENDS_ROOT_CONTEXT}/${IMAP_BACKEND_PREFIX}/${normalizeSegment(account)}`;
+        const nodePath = `/${IMAP_BACKEND_PREFIX}/${normalizeSegment(account)}`;
         Promise.resolve(hook(nodePath, name)).catch((err) =>
             this.#logger.warn({ workspaceId: this.#workspaceId, backend: name, error: err.message }, 'IMAP account node lock update failed'));
     }
@@ -197,12 +205,60 @@ export class WorkspaceMailIndex extends EventEmitter {
         return { payload, emailDoc, features };
     }
 
-    // Ingested email is filed ONLY under the directory tree's
-    // /.backends/imap/<account>/<folder> — context:null keeps it out of the
-    // context root (no "all emails dumped into /").
+    // Ingested email is filed ONLY under the backends tree's
+    // /imap/<account>/<folder> — context:null keeps it out of the context root
+    // (no "all emails dumped into /"; the tree's linkContextRoot:false setting
+    // enforces the same for directory-only inserts).
     #directoryFor(account, folder) {
         const backendContext = getBackendEmailContext('imap', account, folder || 'inbox');
         return this.#getBackendsTreeSelector(backendContext);
+    }
+
+    /**
+     * One-shot post-migration re-file: the legacy /.backends subtree was
+     * dropped from the directory tree, so already-indexed emails have no
+     * backends-tree membership. Rebuild it from data the index already holds —
+     * the per-account feature bitmap (data/backend/imap/<account>) plus each
+     * doc's data.folder — without touching the network or the UID cursors.
+     */
+    async #refileBackendsTree() {
+        const db = this.#getDb();
+        if (typeof db?.linkMany !== 'function') return;
+
+        const config = await this.readStoredConfig().catch(() => ({ backends: {} }));
+        const accounts = new Set();
+        for (const backendConfig of Object.values(config.backends || {})) {
+            if (backendConfig?.driver !== 'imap') continue;
+            accounts.add(this.#safeAccount(backendConfig.account || backendConfig.user));
+        }
+
+        for (const account of accounts) {
+            try {
+                const bitmap = await db.bitmapIndex.getBitmap(`data/backend/imap/${account}`, false);
+                const ids = bitmap ? bitmap.toArray() : [];
+                if (ids.length === 0) continue;
+
+                const fetched = await db.getDocumentsByIdArray(ids, { parse: false });
+                const docs = Array.isArray(fetched) ? fetched : (fetched?.data ?? []);
+                const byFolder = new Map();
+                for (const doc of docs.filter(Boolean)) {
+                    const folder = doc?.data?.folder?.path || doc?.data?.folder?.name || IMAP_DEFAULT_FOLDER;
+                    const key = String(folder);
+                    if (!byFolder.has(key)) byFolder.set(key, []);
+                    byFolder.get(key).push(doc.id);
+                }
+                for (const [folder, docIds] of byFolder) {
+                    await db.linkMany(docIds, {
+                        context: null,
+                        directory: this.#directoryFor(account, folder),
+                        emitEvent: false,
+                    });
+                }
+                this.#logger.info({ workspaceId: this.#workspaceId, account, documents: ids.length, folders: byFolder.size }, 'Re-filed indexed emails into the backends tree');
+            } catch (error) {
+                this.#logger.warn({ workspaceId: this.#workspaceId, account, error: error.message }, 'Backends-tree email re-file failed');
+            }
+        }
     }
 
     // Ingest one fetched message into an Email document. Entry point for any
@@ -630,7 +686,7 @@ export class WorkspaceMailIndex extends EventEmitter {
     }
 
     // Resync every enabled mailbox on an account, addressed by its normalized
-    // /.backends/imap/<account> tree segment. The tree segment was built with
+    // /imap/<account> tree segment. The tree segment was built with
     // normalizeSegment(accountId), so we normalize each mailbox's account the
     // same way to match. MVP resyncs the whole account (folder ignored).
     async resyncAccount(accountSegment) {

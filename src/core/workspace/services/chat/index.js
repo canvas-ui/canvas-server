@@ -248,6 +248,7 @@ class ChatService extends EventEmitter {
                                 const accountId = message.team || config.team || config.workspace || workspaceId;
                                 const contextSpec = getBackendChannelContext('slack', accountId, channelName || channelId);
                                 const docId = await workspace.put(chatDoc, {
+                                    context: null,
                                     directory: workspace.getBackendsTreeSelector(contextSpec),
                                     emitEvent: false,
                                     allowBackendsWrite: true,
@@ -331,6 +332,7 @@ class ChatService extends EventEmitter {
                             if (workspace) {
                                 const contextSpec = getBackendChannelContext('teams', userPrincipalName || teamId, channel.displayName || channel.id);
                                 const docId = await workspace.put(chatDoc, {
+                                    context: null,
                                     directory: workspace.getBackendsTreeSelector(contextSpec),
                                     emitEvent: false,
                                     allowBackendsWrite: true,

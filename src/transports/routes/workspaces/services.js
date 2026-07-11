@@ -54,6 +54,13 @@ export default async function workspaceServicesRoutes(fastify, options) {
 
             for (const [backendName, config] of Object.entries(updates)) {
                 if (!config || typeof config !== 'object' || Array.isArray(config)) continue;
+                if ('exclude' in config) {
+                    if (!Array.isArray(config.exclude) || config.exclude.some((p) => typeof p !== 'string')) {
+                        const response = new ResponseObject().badRequest('exclude must be an array of glob pattern strings');
+                        return reply.code(response.statusCode).send(response.getResponse());
+                    }
+                    config.exclude = config.exclude.map((p) => p.trim()).filter(Boolean).slice(0, 200);
+                }
                 await workspace.setDataBackendConfig(backendName, config);
                 if (backendName === 'workspace:home' && typeof config.enabled === 'boolean') {
                     if (config.enabled) {

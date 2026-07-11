@@ -1,7 +1,14 @@
 'use strict';
 
 import ResponseObject from '../../ResponseObject.js';
-import { isBackendsContextSpec } from '../../../utils/backend-documents.js';
+
+// The dedicated backends tree mirrors backend storage 1:1 — generic tree-path
+// writes don't belong there (backend container ops go through /:id/backends).
+function isBackendsTree(workspace, tree) {
+  if (!tree || tree.type !== 'directory') { return false; }
+  try { return workspace.getBackendsTree()?.id === tree.id; }
+  catch { return false; }
+}
 
 export default async function workspaceTreeRoutes(fastify) {
   async function getWorkspaceInstance(request, reply) {
@@ -185,11 +192,11 @@ export default async function workspaceTreeRoutes(fastify) {
 
   async function copyAcrossTrees(workspace, sourceTree, targetTree, fromPath, targetPath, recursive = false, move = false) {
     const normalizedTargetPath = normalizeTreePath(targetPath);
-    if (targetTree.type === 'directory' && isBackendsContextSpec(normalizedTargetPath)) {
-      return { data: null, count: 0, error: 'Backends staging tree (/.backends) is read-only' };
+    if (isBackendsTree(workspace, targetTree)) {
+      return { data: null, count: 0, error: 'Backends tree is read-only' };
     }
-    if (move && sourceTree.type === 'directory' && isBackendsContextSpec(fromPath)) {
-      return { data: null, count: 0, error: 'Backends staging tree (/.backends) is read-only' };
+    if (move && isBackendsTree(workspace, sourceTree)) {
+      return { data: null, count: 0, error: 'Backends tree is read-only (copy documents out instead of moving)' };
     }
     if (!pathNodeView(targetTree, normalizedTargetPath)) {
       return { data: null, count: 0, error: `Target path not found: ${normalizedTargetPath}` };
@@ -301,10 +308,10 @@ export default async function workspaceTreeRoutes(fastify) {
       const resolved = await getTreeInstance(request, reply);
       if (!resolved) return;
       const path = pathFromSplat(request);
-      // The backends staging tree mirrors backend storage 1:1 — user-created
-      // canvases (or folders) don't belong there.
-      if (resolved.tree.type === 'directory' && isBackendsContextSpec(path)) {
-        const responseObject = new ResponseObject().badRequest('Backends staging tree (/.backends) is read-only');
+      // The backends tree mirrors backend storage 1:1 — user-created canvases
+      // (or folders) don't belong there; folder ops go through /:id/backends.
+      if (isBackendsTree(resolved.workspace, resolved.tree)) {
+        const responseObject = new ResponseObject().badRequest('Backends tree is read-only');
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());
       }
       const result = await insertTreePath(resolved.tree, path, request.body || {});
@@ -435,17 +442,17 @@ export default async function workspaceTreeRoutes(fastify) {
         type: 'object',
         properties: {
           recursive: { type: 'boolean', default: false },
-          // Opt-in cascade-purge. Only honored for the /.backends subtree of a
-          // directory tree: drops the folder AND deletes the documents under it
-          // from the index ("Remove and purge"). Default (false) is plain
-          // "Remove" — folder/membership dropped, documents kept (an agent/user
-          // may have already filed the keepers elsewhere; backends re-sync the
-          // rest if re-enabled). Ignored elsewhere.
+          // Opt-in cascade-purge. Only honored inside the backends tree: drops
+          // the folder AND deletes the documents under it from the index
+          // ("Remove and purge"). Default (false) is plain "Remove" —
+          // folder/membership dropped, documents kept (an agent/user may have
+          // already filed the keepers elsewhere; backends re-sync the rest if
+          // re-enabled). Ignored elsewhere.
           purge: { type: 'boolean', default: false },
           // Opt-in backend deletion ("Remove, purge and destroy"). Only honored
-          // for /.backends paths: additionally deletes the mirrored resources ON
-          // the backend (rw backends only; read-only/foreign locations degrade
-          // to a reference drop). Implies purge.
+          // inside the backends tree: additionally deletes the mirrored
+          // resources ON the backend (rw backends only; read-only/foreign
+          // locations degrade to a reference drop). Implies purge.
           destroy: { type: 'boolean', default: false },
         },
       },
@@ -455,7 +462,7 @@ export default async function workspaceTreeRoutes(fastify) {
       const resolved = await getTreeInstance(request, reply);
       if (!resolved) return;
       const path = pathFromSplat(request);
-      const isBackendsPath = resolved.tree.type === 'directory' && isBackendsContextSpec(path);
+      const isBackendsPath = isBackendsTree(resolved.workspace, resolved.tree);
       const destroy = request.query.destroy === true && isBackendsPath;
       const purge = (request.query.purge === true || destroy) && isBackendsPath;
       const result = destroy

@@ -12,7 +12,7 @@ import { createLogger } from '../../utils/log.js';
 // Includes
 import Db from '../../services/synapsd/src/index.js';
 import { parseDocumentId, parseDocumentIdArray } from '../../utils/documentId.js';
-import { isBackendsContextSpec, normalizeBackendsTreePath, normalizeSegment } from '../../utils/backend-documents.js';
+import { BACKENDS_TREE_NAME, LEGACY_BACKENDS_PATH, normalizeBackendsTreePath, normalizeSegment } from '../../utils/backend-documents.js';
 import { parseLocationUrl } from '../../services/synapsd/src/utils/path-helpers.js';
 
 // Sub-modules
@@ -38,12 +38,15 @@ class Workspace extends EventEmitter {
     // Tree names
     static CONTEXT_TREE_NAME = 'context';
     static DIRECTORY_TREE_NAME = 'directory';
+    // Dedicated backend-mirror tree (type directory, linkContextRoot:false).
+    // Paths inside it are /<driver>/<resource-address>/<resource-path>.
+    static BACKENDS_TREE_NAME = BACKENDS_TREE_NAME;
     // Tree types (used by the db layer)
     static CONTEXT_TYPE = 'context';
     static DIRECTORY_TYPE = 'directory';
-    // Backend-mirrored staging path within the directory tree
-    // (/.backends/<driver>/<resource-address>/<resource-path>)
-    static BACKENDS_PATH = '/.backends';
+    // Pre-backends-tree staging subtree inside the directory tree; only used by
+    // the one-shot startup migration.
+    static LEGACY_BACKENDS_PATH = LEGACY_BACKENDS_PATH;
     // Default cosine-distance floor for the dense side of vector/hybrid search.
     // synapsd applies no floor by default (pure mechanism); Workspace sets the
     // product policy: drop kNN neighbours past this cosine distance so the dense
@@ -54,8 +57,8 @@ class Workspace extends EventEmitter {
     // near-centroid embeddings of empty/trivial content (~0.40+), which match any
     // query. Callers may override via an explicit maxDistance (pass 2 to disable).
     static DEFAULT_MAX_COSINE_DISTANCE = 0.35;
-    static BACKENDS_LOCK_ID = 'system:backends';
-    // Per-backend enable-lock holder prefix on /.backends/<driver>/<address>
+    // Per-backend enable-lock holder prefix on /<driver>/<address> in the
+    // backends tree
     static BACKEND_NODE_LOCK_PREFIX = 'system:backend:';
 
     #rootPath = null;
@@ -65,6 +68,9 @@ class Workspace extends EventEmitter {
     #db = null;
     #storedIndex = null;
     #mailIndex = null;
+    // Set when the legacy /.backends subtree was dropped this start — triggers a
+    // one-time backend resync/re-file to repopulate the backends tree.
+    #legacyBackendsMigrated = false;
     #mailRuntimeBinding = null;
     #tokens = null;
     #status = WORKSPACE_STATUS_CODES.INACTIVE;
@@ -319,6 +325,8 @@ class Workspace extends EventEmitter {
             await this.#db.start();
             await this.#ensureContextTree();
             await this.#ensureDirectoryTree();
+            await this.#ensureBackendsTree();
+            await this.#migrateLegacyBackendsSubtree();
             this.#bindRuntimeEvents();
             this.#registerEmbedd();
             // Mark ACTIVE before booting stored/mail indices: their initial sync
@@ -327,6 +335,12 @@ class Workspace extends EventEmitter {
             this.#setStatus(WORKSPACE_STATUS_CODES.ACTIVE);
             if (this.isServiceEnabled('home') || this.isDataBackendEnabled(WorkspaceStoredIndex.HOME_STORED_BACKEND)) {
                 await this.#startStoredIndex();
+                if (this.#legacyBackendsMigrated) {
+                    // Repopulate the freshly-created backends tree from the file
+                    // backends (checksum-cached: no re-hash of unchanged files,
+                    // no blob re-download — membership re-tick only).
+                    this.#storedIndex.resyncInBackground();
+                }
             }
 
             this.emit('started', { id: this.id });
@@ -393,8 +407,39 @@ class Workspace extends EventEmitter {
         ];
     }
 
+    static #isTreeQualified(value) {
+        return Boolean(value && typeof value === 'object' && !Array.isArray(value) && (value.tree ?? value.treeId));
+    }
+
+    // Write-target spec for db.put/link/unlink. The ctx:/dir: paths grammar can
+    // only address the DEFAULT trees, so tree-qualified selectors (e.g. the
+    // backends tree) must be passed through as selector objects instead.
+    static #buildWriteSpec(context, directory) {
+        if (Workspace.#isTreeQualified(context) || Workspace.#isTreeQualified(directory)) {
+            const toSelector = (value) => {
+                if (value == null) { return null; }
+                if (typeof value === 'object' && !Array.isArray(value)) { return value; }
+                return { path: value };
+            };
+            return { context: toSelector(context), directory: toSelector(directory) };
+        }
+        return { paths: Workspace.#buildPaths(context, directory) };
+    }
+
     #normalizeQuerySpec(spec = {}) {
         const { attributes, features = null, context, directory, limit = 200, ...rest } = spec;
+        // Tree-qualified selectors survive as selector objects (parseSpec keeps
+        // the tree id per entry); the paths string grammar targets default trees.
+        if (Workspace.#isTreeQualified(context) || Workspace.#isTreeQualified(directory)) {
+            return {
+                limit,
+                ...rest,
+                ...(context != null ? { context } : {}),
+                ...(directory != null ? { directory } : {}),
+                ...(features != null ? { features } : {}),
+                ...(features == null && attributes != null ? { features: attributes } : {}),
+            };
+        }
         const paths = Workspace.#buildPaths(context, directory);
         return {
             limit,
@@ -407,15 +452,24 @@ class Workspace extends EventEmitter {
 
     #assertBackendsWriteAllowed(directory, allowBackendsWrite = false) {
         if (allowBackendsWrite || directory == null) { return; }
-        if (Workspace.#extractPaths(directory).some((path) => isBackendsContextSpec(path))) {
-            throw new Error('Backends staging tree (/.backends) is read-only');
+        if (this.#isBackendsTreeSelector(directory)) {
+            throw new Error('Backends tree is read-only through the generic document API');
         }
+    }
+
+    // Does a directory selector target the backends tree? (by tree id or name)
+    #isBackendsTreeSelector(directory) {
+        if (!Workspace.#isTreeQualified(directory)) { return false; }
+        const backends = this.#db?.getTree(Workspace.BACKENDS_TREE_NAME);
+        if (!backends) { return false; }
+        const target = this.#db.getTree(directory.tree ?? directory.treeId);
+        return target?.id === backends.id;
     }
 
     async put(record, { context = '/', directory = null, features = [], attributes, emitEvent = true, allowBackendsWrite = false, provenance = null } = {}) {
         this.#assertBackendsWriteAllowed(directory, allowBackendsWrite);
         return await this.#getActiveDb().put(record, {
-            paths: Workspace.#buildPaths(context, directory),
+            ...Workspace.#buildWriteSpec(context, directory),
             features: this.#normalizeFeatureInput(features, attributes),
             emitEvent,
             ...(provenance ? { provenance } : {}),
@@ -425,7 +479,7 @@ class Workspace extends EventEmitter {
     async link(id, { context = '/', directory = null, features = [], attributes, emitEvent = true, allowBackendsWrite = false, provenance = null } = {}) {
         this.#assertBackendsWriteAllowed(directory, allowBackendsWrite);
         return await this.#getActiveDb().link(id, {
-            paths: Workspace.#buildPaths(context, directory),
+            ...Workspace.#buildWriteSpec(context, directory),
             features: this.#normalizeFeatureInput(features, attributes),
             emitEvent,
             ...(provenance ? { provenance } : {}),
@@ -435,14 +489,18 @@ class Workspace extends EventEmitter {
     async unlink(id, { context = null, directory = null, features = [], attributes } = {}, options = {}) {
         this.#assertBackendsWriteAllowed(directory, options.allowBackendsWrite === true);
         return await this.#getActiveDb().unlink(id, {
-            paths: Workspace.#buildPaths(context, directory),
+            ...Workspace.#buildWriteSpec(context, directory),
             features: this.#normalizeFeatureInput(features, attributes),
             ...options,
         });
     }
 
     async delete(id, options = {}) {
-        return await this.#getActiveDb().delete(parseDocumentId(id, 'Document ID'), options);
+        const docId = parseDocumentId(id, 'Document ID');
+        const managedBlobs = await this.#collectManagedOnlyBlobUrls([docId]);
+        const result = await this.#getActiveDb().delete(docId, options);
+        if (result) { await this.#cascadeManagedBlobDeletion(managedBlobs); }
+        return result;
     }
 
     async get(id, options = { parse: true }) {
@@ -451,7 +509,7 @@ class Workspace extends EventEmitter {
 
     async has(id, { context = null, directory = null, features = [], attributes } = {}) {
         return await this.#getActiveDb().has(parseDocumentId(id, 'Document ID'), {
-            paths: Workspace.#buildPaths(context, directory),
+            ...Workspace.#buildWriteSpec(context, directory),
             features: this.#normalizeFeatureInput(features, attributes),
         });
     }
@@ -459,7 +517,7 @@ class Workspace extends EventEmitter {
     async putMany(records, { context = '/', directory = null, features = [], attributes, allowBackendsWrite = false } = {}) {
         this.#assertBackendsWriteAllowed(directory, allowBackendsWrite);
         return await this.#getActiveDb().putMany(records, {
-            paths: Workspace.#buildPaths(context, directory),
+            ...Workspace.#buildWriteSpec(context, directory),
             features: this.#normalizeFeatureInput(features, attributes),
         });
     }
@@ -589,7 +647,7 @@ class Workspace extends EventEmitter {
     async linkMany(ids, { context = '/', directory = null, features = [], attributes, emitEvent = true, allowBackendsWrite = false } = {}) {
         this.#assertBackendsWriteAllowed(directory, allowBackendsWrite);
         return await this.#getActiveDb().linkMany(parseDocumentIdArray(ids, 'Document ID array'), {
-            paths: Workspace.#buildPaths(context, directory),
+            ...Workspace.#buildWriteSpec(context, directory),
             features: this.#normalizeFeatureInput(features, attributes),
             emitEvent,
         });
@@ -598,14 +656,61 @@ class Workspace extends EventEmitter {
     async unlinkMany(ids, { context = null, directory = null, features = [], attributes } = {}, options = {}) {
         this.#assertBackendsWriteAllowed(directory, options.allowBackendsWrite === true);
         return await this.#getActiveDb().unlinkMany(parseDocumentIdArray(ids, 'Document ID array'), {
-            paths: Workspace.#buildPaths(context, directory),
+            ...Workspace.#buildWriteSpec(context, directory),
             features: this.#normalizeFeatureInput(features, attributes),
             ...options,
         });
     }
 
     async deleteMany(ids, options = {}) {
-        return await this.#getActiveDb().deleteMany(parseDocumentIdArray(ids, 'Document ID array'), options);
+        const docIds = parseDocumentIdArray(ids, 'Document ID array');
+        const managedBlobs = await this.#collectManagedOnlyBlobUrls(docIds);
+        const result = await this.#getActiveDb().deleteMany(docIds, options);
+        const deletedIds = new Set((result?.successful ?? []).map((entry) => entry?.id ?? entry));
+        await this.#cascadeManagedBlobDeletion(managedBlobs, deletedIds);
+        return result;
+    }
+
+    /**
+     * Plain index-delete blob cascade. A document whose EVERY location lives on
+     * a managed stored backend (workspace:data — opaque, non-browseable by
+     * design) would orphan its blobs on a plain delete; collect those URLs
+     * before the delete and remove the bytes after it succeeds. Documents with
+     * any user-owned location (workspace:home file, imap message, device) are
+     * never touched — a plain delete only drops their index entry.
+     */
+    async #collectManagedOnlyBlobUrls(ids) {
+        const managedBackends = new Set(Object.entries(this.dataBackends || {})
+            .filter(([, cfg]) => cfg?.managed === true && cfg?.readOnly !== true && cfg?.enabled !== false)
+            .map(([name]) => name));
+        const byId = new Map();
+        if (managedBackends.size === 0 || ids.length === 0) { return byId; }
+
+        const fetched = await this.getDocumentsByIdArray(ids, { parse: false }).catch(() => null);
+        const docs = Array.isArray(fetched) ? fetched : (fetched?.data ?? []);
+        for (const doc of docs.filter(Boolean)) {
+            const urls = (doc.locations || []).map((l) => l?.url).filter(Boolean);
+            if (urls.length === 0) { continue; }
+            const allManaged = urls.every((url) => {
+                const parsed = parseLocationUrl(url);
+                return parsed?.scheme === 'stored' && managedBackends.has(parsed.backend);
+            });
+            if (allManaged) { byId.set(doc.id, urls); }
+        }
+        return byId;
+    }
+
+    async #cascadeManagedBlobDeletion(byId, deletedIds = null) {
+        if (!byId || byId.size === 0) { return; }
+        if (!this.#storedIndex?.isRunning) { await this.#startStoredIndex().catch(() => null); }
+        if (!this.#storedIndex?.isRunning) { return; }
+        for (const [docId, urls] of byId) {
+            if (deletedIds && !deletedIds.has(docId)) { continue; }
+            for (const url of urls) {
+                await this.#storedIndex.deleteStoredUrl(url).catch((err) =>
+                    this.#logger.warn({ workspaceId: this.id, docId, url, error: err.message }, 'Blob cascade: failed to delete managed blob'));
+            }
+        }
     }
 
     /**
@@ -887,11 +992,24 @@ class Workspace extends EventEmitter {
     }
 
     async renameTree(nameOrId, newName) {
+        this.#assertTreeNotReserved(nameOrId, 'rename');
         return await this.#getActiveDb().renameTree(nameOrId, newName);
     }
 
     async destroyTree(nameOrId) {
+        this.#assertTreeNotReserved(nameOrId, 'delete');
         return await this.#getActiveDb().deleteTree(nameOrId);
+    }
+
+    // The three pre-created trees (and any tree flagged settings.protected) are
+    // structural — services and clients address them by name.
+    #assertTreeNotReserved(nameOrId, action) {
+        const tree = this.#getActiveDb().getTree(nameOrId);
+        if (!tree) { return; }
+        const reserved = [Workspace.CONTEXT_TREE_NAME, Workspace.DIRECTORY_TREE_NAME, Workspace.BACKENDS_TREE_NAME];
+        if (reserved.includes(tree.name) || tree.settings?.protected === true) {
+            throw new Error(`Cannot ${action} reserved tree "${tree.name}"`);
+        }
     }
 
     getContextTree(nameOrId = null) {
@@ -910,20 +1028,20 @@ class Workspace extends EventEmitter {
     getDefaultDirectoryTree() { return this.getDirectoryTree(); }
 
     /**
-     * Remove a folder from the /.backends directory subtree AND cascade-purge the
-     * documents that lived under it from the index. Backend-ingested docs are
-     * re-synced if the user re-enables the backend, so this lets a user discard
-     * the leftovers of a backend they removed without orphaning index entries.
+     * Remove a folder from the backends tree AND cascade-purge the documents
+     * that lived under it from the index. Backend-ingested docs are re-synced
+     * if the user re-enables the backend, so this lets a user discard the
+     * leftovers of a backend they removed without orphaning index entries.
      * Bytes on the backend are NOT touched — see destroyBackendsTreePath for that.
      *
-     * Only valid for /.backends/* paths (the backends root itself is protected).
-     * Doc ids are snapshotted BEFORE removePath — once the folder (and its
-     * membership bitmaps) are gone the subtree can no longer be resolved.
+     * The backends tree root itself is protected. Doc ids are snapshotted
+     * BEFORE removePath — once the folder (and its membership bitmaps) are gone
+     * the subtree can no longer be resolved.
      */
     async removeBackendsTreePath(path, { recursive = false } = {}) {
-        const tree = this.getDirectoryTree(Workspace.DIRECTORY_TREE_NAME);
+        const tree = this.getBackendsTree();
         const normalizedPath = normalizeBackendsTreePath(path);
-        if (normalizedPath === Workspace.BACKENDS_PATH) {
+        if (normalizedPath === '/') {
             throw new Error('Cannot remove the backends root directory');
         }
 
@@ -955,11 +1073,11 @@ class Workspace extends EventEmitter {
      */
     async destroyBackendsTreePath(path, { recursive = false } = {}) {
         if (!this.#storedIndex?.isRunning) await this.#startStoredIndex();
-        const tree = this.getDirectoryTree(Workspace.DIRECTORY_TREE_NAME);
+        const tree = this.getBackendsTree();
         const normalizedPath = normalizeBackendsTreePath(path);
-        const segments = normalizedPath.split('/').filter(Boolean); // ['.backends', driver, address, ...rest]
-        if (segments.length < 3) {
-            throw new Error('destroy requires a backend resource path (/.backends/<driver>/<resource-address>/...)');
+        const segments = normalizedPath.split('/').filter(Boolean); // [driver, address, ...rest]
+        if (segments.length < 2) {
+            throw new Error('destroy requires a backend resource path (/<driver>/<resource-address>/...)');
         }
         const node = tree.getLayerForPath(normalizedPath);
         if (!node) { return { data: null, count: 0, error: `Path not found: ${normalizedPath}` }; }
@@ -967,7 +1085,7 @@ class Workspace extends EventEmitter {
             throw new Error(`Path is locked: a backend mapped to ${normalizedPath} is enabled`);
         }
 
-        const [, driver, address, ...rest] = segments;
+        const [driver, address, ...rest] = segments;
         const scope = driver === 'imap'
             ? { kind: 'imap', account: address.toLowerCase(), folder: rest.join('/').toLowerCase() || null }
             : { kind: 'stored', backend: this.#storedIndex.resolveBackendForTreePath(normalizedPath) };
@@ -1024,19 +1142,19 @@ class Workspace extends EventEmitter {
 
     /**
      * Backend-node enable-lock: while a backend is enabled, its mirror node
-     * /.backends/<driver>/<resource-address> is structurally locked (no
+     * /<driver>/<resource-address> (backends tree) is structurally locked (no
      * remove/rename/move). Holder-scoped: each backend adds its own
      * system:backend:<holder> entry, so shared nodes (two mailboxes on one
      * account) stay locked until the last holder releases.
      */
     async lockBackendTreeNode(backendPath, holder) {
-        const tree = this.getDirectoryTree(Workspace.DIRECTORY_TREE_NAME);
+        const tree = this.getBackendsTree();
         await tree.insertPath(backendPath, { ignoreLocks: true });
         await tree.lockPath(backendPath, `${Workspace.BACKEND_NODE_LOCK_PREFIX}${holder}`);
     }
 
     async unlockBackendTreeNode(backendPath, holder) {
-        const tree = this.getDirectoryTree(Workspace.DIRECTORY_TREE_NAME);
+        const tree = this.getBackendsTree();
         if (typeof tree.pathExists === 'function' && !tree.pathExists(backendPath)) { return; }
         await tree.unlockPath(backendPath, `${Workspace.BACKEND_NODE_LOCK_PREFIX}${holder}`, { system: true })
             .catch(() => {});
@@ -1054,7 +1172,11 @@ class Workspace extends EventEmitter {
         const normalizedPath = Array.isArray(path)
             ? path.map((value) => normalizeBackendsTreePath(value))
             : normalizeBackendsTreePath(path);
-        return this.getDirectoryTreeSelector(normalizedPath, Workspace.DIRECTORY_TREE_NAME);
+        return this.getDirectoryTreeSelector(normalizedPath, Workspace.BACKENDS_TREE_NAME);
+    }
+
+    getBackendsTree() {
+        return this.getDirectoryTree(Workspace.BACKENDS_TREE_NAME);
     }
 
     async getDocumentsByIdArray(ids, options = { parse: true }) {
@@ -1190,6 +1312,11 @@ class Workspace extends EventEmitter {
                 lastScanAt: runtime.lastScanAt || null,
                 lastError: runtime.lastError || null,
                 cacheStats: runtime.cacheStats || null,
+                // Full exclusion set applied to watch + resync (defaults ∪ user
+                // `exclude`) so the settings UI can show both.
+                effectiveExclusions: this.#storedIndex?.isRunning
+                    ? this.#storedIndex.getEffectiveExclusions(name)
+                    : undefined,
             }];
         }));
     }
@@ -1210,7 +1337,7 @@ class Workspace extends EventEmitter {
 
     /**
      * Resync a backend addressed by its /.backends mirror node path
-     * (/.backends/<driver>/<address>/…). Dispatches by driver because
+     * (/<driver>/<address>/… in the backends tree). Dispatches by driver because
      * "backend" is overloaded: file/s3/etc. are stored data backends keyed by
      * name, while imap accounts are mailbox connectors keyed by mailbox id.
      * The context-menu resync in the tree routes through here. MVP resyncs the
@@ -1218,7 +1345,7 @@ class Workspace extends EventEmitter {
      */
     // ─────────────────────────────────────────────────────────────────────────
     // Unified backend/connector facade — one surface over every "thing mounted
-    // under /.backends/<driver>/<address>": storage backends (file/cacache/s3,
+    // under /<driver>/<address> in the backends tree": storage backends (file/cacache/s3,
     // via WorkspaceStoredIndex) and message connectors (imap accounts, via
     // WorkspaceMailIndex). The /:id/backends routes mirror the tree; driver
     // dispatch + capabilities live here so the URL never carries an internal id.
@@ -1261,8 +1388,9 @@ class Workspace extends EventEmitter {
                 managed: status.managed === true,
                 supported: status.supported !== false,
                 watch: status.watch === true,
-                indexIncoming: status.indexIncoming === true,
                 resync: Boolean(status.resync),
+                exclude: Array.isArray(status.exclude) ? status.exclude : [],
+                effectiveExclusions: Array.isArray(status.effectiveExclusions) ? status.effectiveExclusions : undefined,
             },
         };
     }
@@ -1310,7 +1438,7 @@ class Workspace extends EventEmitter {
     }
 
     // Group per-folder imap mailboxes by account into one instance each. The
-    // account segment matches the /.backends/imap/<account> tree node.
+    // account segment matches the backends tree /imap/<account> node.
     async #listImapBackends() {
         const mailboxes = await this.listImapMailboxes();
         const byAccount = new Map();
@@ -1325,6 +1453,17 @@ class Workspace extends EventEmitter {
 
     async listBackends() {
         return [...this.#listStorageBackends(), ...(await this.#listImapBackends())];
+    }
+
+    /**
+     * Documents mirrored under a backend address in the backends tree,
+     * optionally filtered by linkage: linked=false → present ONLY on the
+     * backend, never filed into any other tree (safe-to-purge candidates);
+     * linked=true → the inverse; linked=null → everything under the address.
+     */
+    async listBackendDocuments(driver, address, { linked = null, limit = null, offset = 0, parse = true } = {}) {
+        const path = `/${normalizeSegment(driver)}/${normalizeSegment(address)}`;
+        return await this.#getActiveDb().listTreeDocuments(Workspace.BACKENDS_TREE_NAME, { path, linked, limit, offset, parse });
     }
 
     async listBackendsByDriver(driver) {
@@ -1454,7 +1593,7 @@ class Workspace extends EventEmitter {
 
     async #directoryTreeForBackends() {
         if (!this.#storedIndex?.isRunning) await this.#startStoredIndex();
-        return this.getDirectoryTree(Workspace.DIRECTORY_TREE_NAME);
+        return this.getBackendsTree();
     }
 
     async createBackendFolder(driver, address, name) {
@@ -1590,6 +1729,10 @@ class Workspace extends EventEmitter {
             persistBlob: (buffer) => this.#storedIndex.persistBlob(buffer),
             lockBackendNode: (path, holder) => this.lockBackendTreeNode(path, holder),
             unlockBackendNode: (path, holder) => this.unlockBackendTreeNode(path, holder),
+            // Legacy /.backends subtree was dropped this start: re-file already
+            // indexed emails into the backends tree from their metadata (no
+            // network fetch).
+            refileBackendsTree: this.#legacyBackendsMigrated,
         });
     }
 
@@ -1671,24 +1814,56 @@ class Workspace extends EventEmitter {
 
     async #ensureDirectoryTree() {
         if (this.#db.getTree(Workspace.DIRECTORY_TREE_NAME)) {
-            const tree = this.#db.getTree(Workspace.DIRECTORY_TREE_NAME);
-            await this.#ensureBackendsTreeRoot(tree);
-            return tree;
+            return this.#db.getTree(Workspace.DIRECTORY_TREE_NAME);
         }
 
         await this.#db.createTree(Workspace.DIRECTORY_TREE_NAME, Workspace.DIRECTORY_TYPE);
-        const tree = this.#db.getTree(Workspace.DIRECTORY_TREE_NAME);
-        await this.#ensureBackendsTreeRoot(tree);
-        return tree;
+        return this.#db.getTree(Workspace.DIRECTORY_TREE_NAME);
     }
 
-    async #ensureBackendsTreeRoot(tree) {
-        // Seed + lock the /.backends root (idempotent every start). Only the root
-        // node is protected from structural ops; system:* locks do not cascade,
-        // so backend subfolders stay deletable (remove/purge/destroy).
-        await tree.insertPath(Workspace.BACKENDS_PATH, { ignoreLocks: true });
-        if (typeof tree.lockPath !== 'function') return;
-        await tree.lockPath(Workspace.BACKENDS_PATH, Workspace.BACKENDS_LOCK_ID);
+    async #ensureBackendsTree() {
+        const existing = this.#db.getTree(Workspace.BACKENDS_TREE_NAME);
+        if (existing) {
+            if (existing.type !== Workspace.DIRECTORY_TYPE) {
+                throw new Error(`Tree "${Workspace.BACKENDS_TREE_NAME}" exists but is not a directory tree — rename it to free the reserved name`);
+            }
+            return existing;
+        }
+
+        // linkContextRoot:false keeps backend mirrors out of the user's context
+        // root until explicitly filed; protected guards rename/destroy.
+        await this.#db.createTree(Workspace.BACKENDS_TREE_NAME, Workspace.DIRECTORY_TYPE, {
+            isDefault: false,
+            settings: { linkContextRoot: false, protected: true },
+        });
+        return this.#db.getTree(Workspace.BACKENDS_TREE_NAME);
+    }
+
+    /**
+     * One-shot migration: drop the legacy /.backends subtree from the directory
+     * tree (nodes + memberships, reverse index cleaned by removePath). Documents
+     * stay indexed with their context memberships and feature bitmaps intact;
+     * the backends tree is repopulated by the file-backend resync and the mail
+     * service re-file triggered further down in start() via the returned flag.
+     */
+    async #migrateLegacyBackendsSubtree() {
+        const dirTree = this.#db.getTree(Workspace.DIRECTORY_TREE_NAME);
+        if (!dirTree || dirTree.type !== Workspace.DIRECTORY_TYPE) return;
+        if (typeof dirTree.pathExists !== 'function' || !dirTree.pathExists(Workspace.LEGACY_BACKENDS_PATH)) return;
+
+        const bitmap = await dirTree.findRecursive(Workspace.LEGACY_BACKENDS_PATH).catch(() => null);
+        const documentCount = bitmap?.size || 0;
+        const result = await dirTree.removePath(Workspace.LEGACY_BACKENDS_PATH, true, { ignoreLocks: true });
+        if (result?.error) {
+            this.#logger.warn({ workspaceId: this.id, error: result.error }, 'Legacy /.backends migration failed; will retry next start');
+            return;
+        }
+        this.#legacyBackendsMigrated = true;
+        this.#logger.info({
+            workspaceId: this.id,
+            documentCount,
+            removedNodes: result?.data?.removedNodeIds?.length || 0,
+        }, 'Migrated legacy /.backends subtree out of the directory tree; backends tree repopulates via resync');
     }
 
     // ─────────────────────────────────────────────────────────────────────────

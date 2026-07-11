@@ -143,7 +143,7 @@ export default async function workspaceRoutes(fastify, options) {
     onRequest: [resolveWorkspaceAddress]
   });
   // Unified backend/connector API (storage backends + message connectors),
-  // mirroring the /.backends/<driver>/<address> tree.
+  // mirroring the backends tree /<driver>/<address> nodes.
   fastify.register(import('./backends.js'), {
     prefix: '/:id/backends',
     onRequest: [resolveWorkspaceAddress]

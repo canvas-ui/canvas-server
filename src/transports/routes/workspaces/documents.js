@@ -3,12 +3,6 @@
 import ResponseObject from '../../ResponseObject.js';
 import { parseDocumentId, parseDocumentIdArray } from '../../../utils/documentId.js';
 import { mergeDeviceFeatureTags } from '../../../utils/device-features.js';
-import {
-  DIRECTORY_TREE_NAME,
-  BACKENDS_ROOT_CONTEXT,
-  isBackendsContextSpec,
-  shouldExcludeBackends,
-} from '../../../utils/backend-documents.js';
 
 // Human filename for a location URL: basename of the key after scheme://backend/.
 function locationFilename(url) {
@@ -80,16 +74,6 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       : { context: workspace.getContextTreeSelector(path, treeNameOrId), directory: null };
   }
 
-  function buildReadOptions(contextSelector, includeBackends, options = {}) {
-    if (!shouldExcludeBackends(contextSelector?.path, includeBackends)) {
-      return options;
-    }
-    return { ...options, excludeTree: { tree: DIRECTORY_TREE_NAME, path: BACKENDS_ROOT_CONTEXT } };
-  }
-
-  // Effective opt-in for /.backends reads (default excludes the staging tree).
-  const includeBackendsFlag = (query = {}) => query.includeBackends === true;
-
   function sendLinkResult(reply, result) {
     if (!result || !Array.isArray(result.failed)) {
       return null;
@@ -108,17 +92,18 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     return reply.code(responseObject.statusCode).send(responseObject.getResponse());
   }
 
-  // selector.path may be a single path or an array of paths (multi-path insert).
-  const anyBackends = (path) => Array.isArray(path) ? path.some(isBackendsContextSpec) : isBackendsContextSpec(path);
-
+  // Generic document writes must not target the backends tree — its content
+  // mirrors backend storage (populated by sync workers only).
   function rejectBackendsWrite(reply, workspace, selector) {
-    if (!selector || !anyBackends(selector.path)) return false;
+    if (!selector?.tree) return false;
+    let isBackends = false;
     try {
-      if (selector.tree && workspace.getTree(selector.tree)?.type !== 'directory') return false;
+      isBackends = workspace.getBackendsTree()?.id === workspace.getTree(selector.tree)?.id;
     } catch (_) {
       return false;
     }
-    const responseObject = new ResponseObject().badRequest('Backends staging tree (/.backends) is read-only');
+    if (!isBackends) return false;
+    const responseObject = new ResponseObject().badRequest('Backends tree is read-only');
     reply.code(responseObject.statusCode).send(responseObject.getResponse());
     return true;
   }
@@ -245,7 +230,6 @@ export default async function workspaceDocumentRoutes(fastify, options) {
           // Calibration aid: attach raw (unfloored) image kNN cosine distances for
           // the query to the response (`.debug.imageDistances`), to pick a floor.
           debug: { type: 'boolean' },
-          includeBackends: { type: 'boolean', default: false },
           // 'workspace' drops the path bucket entirely → list every document in
           // the DB (synapsd default). 'path' (default) scopes to context/tree.
           scope: { type: 'string', enum: ['path', 'workspace'], default: 'path' },
@@ -257,12 +241,12 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return;
 
-      // Whole-workspace scope = no path selector. Null selector still excludes
-      // the /.backends staging tree by default (buildReadOptions), opt in via includeBackends.
+      // Whole-workspace scope = no path selector. Backend mirrors live in their
+      // own tree (linkContextRoot:false), so root/context queries never see
+      // them unless a user filed them somewhere.
       const { context: ctxSelector, directory: dirSelector } = request.query.scope === 'workspace'
         ? { context: null, directory: null }
         : resolveScopeSelectors(workspace, request.query, '/');
-      const activeSelector = dirSelector || ctxSelector;
 
       // Collect the (possibly stacked) text queries. `q` may be a string or an
       // array (repeated param); `search` is a legacy single alias.
@@ -277,12 +261,10 @@ export default async function workspaceDocumentRoutes(fastify, options) {
         directory: dirSelector,
         attributes: buildAttributes(request.query),
         filters: request.query.filters,
-        ...buildReadOptions(activeSelector, includeBackendsFlag(request.query), {
-          limit: request.query.limit,
-          offset: request.query.offset,
-          page: request.query.page,
-          order: request.query.order,
-        }),
+        limit: request.query.limit,
+        offset: request.query.offset,
+        page: request.query.page,
+        order: request.query.order,
       };
 
       const { minDistance, maxDistance } = request.query;
@@ -370,9 +352,9 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       const enforcedFeatures = enforceClientTags(request, features);
 
       const treeSpec = {
-        context: insertTreeType === 'directory'
-          ? (anyBackends(insertSelector?.path) ? null : workspace.getContextTreeSelector('/'))
-          : insertSelector,
+        // Directory-only inserts: synapsd ticks the default context root
+        // automatically unless the tree opts out (settings.linkContextRoot).
+        context: insertTreeType === 'directory' ? null : insertSelector,
         directory: insertTreeType === 'directory' ? insertSelector : null,
         features: enforcedFeatures,
       };
@@ -458,7 +440,6 @@ export default async function workspaceDocumentRoutes(fastify, options) {
           ...attributesQueryProps,
           ...filtersQueryProps,
           ...paginationQueryProps,
-          includeBackends: { type: 'boolean', default: false },
         },
       },
     },
@@ -467,7 +448,6 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return;
       const { context: ctxSel, directory: dirSel } = resolveScopeSelectors(workspace, request.query, '/');
-      const activeSelector = dirSel || ctxSel;
       const attrs = buildAttributes(request.query) || {};
       const allOf = [`data/abstraction/${request.params.abstraction}`, ...(attrs.allOf || [])];
 
@@ -476,12 +456,10 @@ export default async function workspaceDocumentRoutes(fastify, options) {
         directory: dirSel,
         attributes: { ...attrs, allOf },
         filters: request.query.filters,
-        ...buildReadOptions(activeSelector, includeBackendsFlag(request.query), {
-          limit: request.query.limit,
-          offset: request.query.offset,
-          page: request.query.page,
-          order: request.query.order,
-        }),
+        limit: request.query.limit,
+        offset: request.query.offset,
+        page: request.query.page,
+        order: request.query.order,
       });
 
       if (documents.error) {
@@ -629,7 +607,6 @@ export default async function workspaceDocumentRoutes(fastify, options) {
           ...contextQueryProps,
           ...attributesQueryProps,
           ...filtersQueryProps,
-          includeBackends: { type: 'boolean', default: false },
         },
       },
     },
@@ -638,7 +615,6 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return;
       const { context: ctxSel, directory: dirSel } = resolveScopeSelectors(workspace, request.query, '/');
-      const activeSelector = dirSel || ctxSel;
 
       const attributes = buildAttributes(request.query);
       const matches = await workspace.list({
@@ -646,7 +622,8 @@ export default async function workspaceDocumentRoutes(fastify, options) {
         directory: dirSel,
         attributes,
         filters: request.query.filters,
-        ...buildReadOptions(activeSelector, includeBackendsFlag(request.query), { parse: false, limit: 0 }),
+        parse: false,
+        limit: 0,
       });
 
       if (matches.error) {

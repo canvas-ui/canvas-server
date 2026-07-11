@@ -77,7 +77,9 @@ export default async function workspaceTreesRoutes(fastify) {
       const responseObject = new ResponseObject().success(tree, 'Tree renamed successfully');
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
     } catch (error) {
-      const responseObject = new ResponseObject().serverError(error.message || 'Failed to rename tree');
+      const responseObject = /reserved tree/i.test(error.message || '')
+        ? new ResponseObject().conflict(error.message)
+        : new ResponseObject().serverError(error.message || 'Failed to rename tree');
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
     }
   });
@@ -92,7 +94,9 @@ export default async function workspaceTreesRoutes(fastify) {
       const responseObject = new ResponseObject().deleted(true, 'Tree deleted successfully');
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
     } catch (error) {
-      const responseObject = new ResponseObject().serverError(error.message || 'Failed to delete tree');
+      const responseObject = /reserved tree/i.test(error.message || '')
+        ? new ResponseObject().conflict(error.message)
+        : new ResponseObject().serverError(error.message || 'Failed to delete tree');
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
     }
   });

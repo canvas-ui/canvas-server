@@ -34,6 +34,10 @@ describe('workspace unified backend routes', () => {
             async testBackend(driver, address) { record('testBackend')(driver, address); return { ok: true }; },
             async listBackendContainers(driver, address) { record('listBackendContainers')(driver, address); return [{ name: 'INBOX' }]; },
             async syncBackendContainer(driver, address, name) { record('syncBackendContainer')(driver, address, name); return { name, synced: true }; },
+            async listBackendDocuments(driver, address, options) {
+                record('listBackendDocuments')(driver, address, options);
+                return { documents: [{ id: 101 }], count: 1, totalCount: 3 };
+            },
         };
 
         app = Fastify();
@@ -87,6 +91,21 @@ describe('workspace unified backend routes', () => {
         const res = await post('/workspaces/universe/backends/file/workspace%3Ahome/sync');
         assert.equal(res.statusCode, 200);
         assert.deepEqual(called('syncBackend'), ['file', 'workspace:home']);
+    });
+
+    test('GET /:driver/:address/documents forwards the linked filter + paging', async () => {
+        const res = await get('/workspaces/universe/backends/imap/me%40host.tld/documents?linked=false&limit=50&offset=10');
+        assert.equal(res.statusCode, 200);
+        assert.deepEqual(called('listBackendDocuments'), ['imap', 'me@host.tld', { linked: false, limit: 50, offset: 10 }]);
+        assert.equal(res.json().count, 1);
+        assert.equal(res.json().totalCount, 3);
+        assert.equal(res.json().payload[0].id, 101);
+    });
+
+    test('GET /:driver/:address/documents defaults linked to null', async () => {
+        const res = await get('/workspaces/universe/backends/file/workspace%3Ahome/documents');
+        assert.equal(res.statusCode, 200);
+        assert.deepEqual(called('listBackendDocuments'), ['file', 'workspace:home', { linked: null, limit: 200, offset: 0 }]);
     });
 
     test('POST /:driver/:address/test', async () => {

@@ -7,11 +7,13 @@ import Stored from '../../../services/stored/src/index.js';
 import { extract as extractBlobMetadata } from '../../../services/stored/src/extractors/index.js';
 import { parseLocationUrl } from '../../../services/synapsd/src/utils/path-helpers.js';
 import { mimeFromLocations } from './classifier.js';
-import { BACKENDS_ROOT_CONTEXT, DIRECTORY_TREE_NAME, isBackendsContextSpec, legacyBitmapKey } from '../../../utils/backend-documents.js';
+import { BACKENDS_TREE_NAME, legacyBitmapKey } from '../../../utils/backend-documents.js';
+import { DEFAULT_SYNC_EXCLUSIONS } from './constants.js';
 
 /*
  * WorkspaceStoredIndex — watches a workspace home directory and syncs file
- * metadata into the workspace DB as backend-staged documents (/.backends).
+ * metadata into the workspace DB as backend mirrors in the dedicated backends
+ * tree (/<driver>/<address>/<source-dirs>).
  *
  * Fully decoupled from Workspace: takes explicit dependencies so it can be
  * instantiated standalone in any bun/node runtime.
@@ -54,7 +56,7 @@ export class WorkspaceStoredIndex {
     #unlink;
     #getBackendsTreeSelector;
     #getDb;
-    // Optional backend-node enable-lock hooks (lock /.backends/<driver>/<addr>
+    // Optional backend-node enable-lock hooks (lock /<driver>/<addr> in the backends tree
     // while the backend is enabled; see Workspace.lockBackendTreeNode).
     #lockBackendNode;
     #unlockBackendNode;
@@ -162,7 +164,7 @@ export class WorkspaceStoredIndex {
 
     // ── Container (folder) mutation on a writable file backend ────────────────
     // The backend does the fs op; the Workspace facade updates the tree mirror.
-    // The mirror tree root for a backend (/.backends/<driver>/<address>).
+    // The mirror tree root for a backend (/<driver>/<address> in the backends tree).
     getBackendTreeRoot(backendName) {
         return this.#getBackendRootPath(backendName);
     }
@@ -283,7 +285,7 @@ export class WorkspaceStoredIndex {
      * the UI flip `enabled` / `watch` without a workspace restart.
      *   - enabled: register & start (and resync if supported) / unregister
      *   - watch: start/stop chokidar on the live backend
-     * Other fields just update the cached config (read by #shouldIndexBackend
+     * Other fields just update the cached config (read by #getBackendRootPath
      * et al.) and take effect on the next event.
      */
     async applyBackendConfig(name, fullConfig = {}, patch = {}) {
@@ -297,13 +299,7 @@ export class WorkspaceStoredIndex {
         if ('enabled' in patch) {
             const live = this.#stored.getBackend(name);
             if (patch.enabled && !live && isLocal) {
-                this.#stored.addBackend(name, {
-                    ...fullConfig,
-                    root: this.#resolveBackendRoot(name, fullConfig),
-                    provider: fullConfig.provider || 'fs',
-                    account: fullConfig.account || 'workspace',
-                    container: fullConfig.container || (name === HOME_STORED_BACKEND ? 'home' : 'data'),
-                });
+                this.#stored.addBackend(name, this.#backendRegistrationConfig(name, fullConfig));
                 this.#backendStatus.set(name, { lastScanAt: null, lastError: null });
                 await this.#applyBackendNodeLock(name, true);
                 if (fullConfig.resync) {
@@ -331,6 +327,18 @@ export class WorkspaceStoredIndex {
                 }
             }
         }
+
+        // New exclusion patterns require rebuilding the backend's matcher
+        // (chokidar + list/scan share it): re-register the live backend. A
+        // follow-up resync applies exclusions retroactively (unlink-only).
+        if ('exclude' in patch) {
+            const live = this.#stored.getBackend(name);
+            if (live && isLocal && fullConfig.enabled) {
+                await live.stop?.().catch(() => {});
+                this.#stored.removeBackend?.(name);
+                this.#stored.addBackend(name, this.#backendRegistrationConfig(name, fullConfig));
+            }
+        }
     }
 
     async #registerConfiguredBackends() {
@@ -338,17 +346,36 @@ export class WorkspaceStoredIndex {
             if (!config?.enabled || config.supported === false || !LOCAL_DRIVERS.has(config.driver)) continue;
             if (backendName === CACHE_BACKEND) continue;
 
-            this.#stored.addBackend(backendName, {
-                ...config,
-                root: this.#resolveBackendRoot(backendName, config),
-                provider: config.provider || 'fs',
-                account: config.account || 'workspace',
-                container: config.container || (backendName === HOME_STORED_BACKEND ? 'home' : 'data'),
-            });
+            this.#stored.addBackend(backendName, this.#backendRegistrationConfig(backendName, config));
             this.#backendStatus.set(backendName, { lastScanAt: null, lastError: null });
             await this.#applyBackendNodeLock(backendName, true);
             await this.#migrateLegacyBackendBitmap(backendName);
         }
+    }
+
+    // Shared registration config: resolved root + effective exclusions (defaults
+    // ∪ per-backend user patterns) wired into the driver's shared ignore matcher.
+    #backendRegistrationConfig(backendName, config = {}) {
+        return {
+            ...config,
+            root: this.#resolveBackendRoot(backendName, config),
+            ignored: this.#effectiveExclusions(config),
+            provider: config.provider || 'fs',
+            account: config.account || 'workspace',
+            container: config.container || (backendName === HOME_STORED_BACKEND ? 'home' : 'data'),
+        };
+    }
+
+    #effectiveExclusions(config = {}) {
+        if (config.driver !== 'file') return undefined;
+        const user = Array.isArray(config.exclude) ? config.exclude.filter((p) => typeof p === 'string' && p.trim()) : [];
+        return [...DEFAULT_SYNC_EXCLUSIONS, ...user];
+    }
+
+    /** Effective exclusion patterns for a backend (defaults + user), for the API. */
+    getEffectiveExclusions(backendName) {
+        const config = this.#dataBackends[backendName];
+        return config ? (this.#effectiveExclusions(config) ?? []) : [];
     }
 
     // Bitmap keys squashed ':' (and '@') to '_' before synapsd widened its
@@ -383,18 +410,38 @@ export class WorkspaceStoredIndex {
         if (!this.#isConfiguredLocalBackend(backendName)) return { backend: null, transient: false };
         const config = this.#dataBackends[backendName];
         this.#stored.addBackend(backendName, {
-            ...config,
-            root: this.#resolveBackendRoot(backendName, config),
-            provider: config.provider || 'fs',
-            account: config.account || 'workspace',
-            container: config.container || (backendName === HOME_STORED_BACKEND ? 'home' : 'data'),
+            ...this.#backendRegistrationConfig(backendName, config),
+            // Byte-ops only — never start a watcher on a transiently-registered
+            // (disabled) backend.
+            watch: false,
         });
         return { backend: this.#stored.getBackend(backendName), transient: true };
     }
 
-    // Enable-lock: while a backend is enabled its /.backends/<driver>/<address>
-    // mirror node is structurally locked (can't be removed/renamed). Released on
-    // disable/remove — NOT on stop() (the config still says enabled).
+    /**
+     * Delete the bytes behind a single stored:// URL (blob-cascade seam for
+     * plain index-deletes of managed-store-only documents). Refuses read-only
+     * and unknown backends; registers a disabled local backend transiently.
+     */
+    async deleteStoredUrl(url) {
+        if (!this.#stored) throw new Error('WorkspaceStoredIndex is not running');
+        const parsed = parseLocationUrl(url);
+        if (parsed?.scheme !== 'stored') throw new Error(`Not a stored:// URL: ${url}`);
+        const { backend, transient } = this.#ensureByteOpsBackend(parsed.backend);
+        try {
+            if (!backend || !backend.canDelete || this.#dataBackends[parsed.backend]?.readOnly === true) {
+                return { ok: false, reason: 'backend is read-only or not configured' };
+            }
+            return await this.#stored.deleteByUrl(url);
+        } finally {
+            if (transient) this.#stored.removeBackend?.(parsed.backend);
+        }
+    }
+
+    // Enable-lock: while a backend is enabled its /<driver>/<address> mirror
+    // node in the backends tree is structurally locked (can't be removed/
+    // renamed). Released on disable/remove — NOT on stop() (the config still
+    // says enabled).
     async #applyBackendNodeLock(backendName, enabled) {
         const root = this.#getBackendRootPath(backendName);
         if (!root) return;
@@ -541,16 +588,17 @@ export class WorkspaceStoredIndex {
         const existingDocument = await db.getByChecksumString(primaryChecksum).catch(() => null);
         const documentData = this.#buildDocument(storedFile, checksumArray, backends, existingDocument, meta);
         const features = this.#buildFeatures(backends);
-        // Stale-path cleanup is scoped to the /.backends subtree: the directory
-        // tree also holds user-filed placements which must never be unlinked here.
+        // Stale-path cleanup is scoped to the backends tree: user-filed
+        // placements live in other trees and must never be unlinked here.
         const currentBackendPaths = existingDocument?.id
-            ? (await db.listDocumentTreePaths(existingDocument.id, DIRECTORY_TREE_NAME).catch(() => []))
-                .filter((p) => isBackendsContextSpec(p))
+            ? await db.listDocumentTreePaths(existingDocument.id, BACKENDS_TREE_NAME).catch(() => [])
             : [];
 
         const docId = await this.#put(
             existingDocument?.id ? { ...documentData, id: existingDocument.id } : documentData,
-            { directory: this.#getBackendsTreeSelector(backendPaths), features },
+            // context:null keeps backend mirrors out of the context root — they
+            // surface there only when a user files them explicitly.
+            { context: null, directory: this.#getBackendsTreeSelector(backendPaths), features },
         );
 
         await this.#removeStalePaths(docId, currentBackendPaths, backendPaths);
@@ -589,10 +637,9 @@ export class WorkspaceStoredIndex {
             .map((l) => parseLocationUrl(l.url))
             .filter(Boolean)
             .map((p) => ({ backend: p.backend, key: p.key }));
-        const currentBackendPaths = (await db.listDocumentTreePaths(doc.id, DIRECTORY_TREE_NAME).catch(() => []))
-            .filter((p) => isBackendsContextSpec(p));
+        const currentBackendPaths = await db.listDocumentTreePaths(doc.id, BACKENDS_TREE_NAME).catch(() => []);
 
-        await this.#put({ id: doc.id, locations: remaining }, {});
+        await this.#put({ id: doc.id, locations: remaining }, { context: null });
         await this.#removeStalePaths(doc.id, currentBackendPaths, this.#buildBackendPaths(survivors));
         return doc.id;
     }
@@ -814,13 +861,13 @@ export class WorkspaceStoredIndex {
             if (options.keepDocument === true) {
                 // Caller chose to keep the index entry with no retrievable bytes
                 // (locations: []) — metadata/checksums stay searchable.
-                await this.#put(doc);
+                await this.#put(doc, { context: null });
             } else {
                 await db.delete(doc.id);
                 result.docDeleted = true;
             }
         } else if (doc?.id != null) {
-            await this.#put(doc); // persist trimmed locations (update in place)
+            await this.#put(doc, { context: null }); // persist trimmed locations (update in place)
         }
         return result;
     }
@@ -859,13 +906,10 @@ export class WorkspaceStoredIndex {
         return Array.from(new Set(
             backends
                 .filter(Boolean)
-                .filter((backend) => this.#shouldIndexBackend(backend.backend))
                 .map((backend) => {
                     const root = this.#getBackendRootPath(backend.backend);
                     if (!root) return null;
                     const filePath = backend?.source?.path || backend?.key || '';
-                    const mode = this.#dataBackends[backend.backend]?.incomingPathMode || 'sourceDirectories';
-                    if (mode !== 'sourceDirectories') return root;
                     const dir = filePath ? path.dirname(filePath) : null;
                     const suffix = (dir && dir !== '.') ? `/${dir}` : '';
                     return `${root}${suffix}`;
@@ -968,26 +1012,32 @@ export class WorkspaceStoredIndex {
         return configuredRoot || this.#dataPath;
     }
 
-    #shouldIndexBackend(backendName) {
-        return this.#dataBackends[backendName]?.indexIncoming === true;
-    }
-
     /**
      * Stable tree node for a backend under the strict mirror schema:
-     *   /.backends/<driver>/<resource-address>
+     *   /<driver>/<resource-address> (in the dedicated backends tree)
      * The resource address is the backend name (e.g. 'workspace:home'); remote
      * drivers (s3, …) may extend this with container/bucket segments later.
+     *
+     * Mirrored backends are the enumerable, non-managed ones: managed blob
+     * stores (workspace:data, stored.cache) are opaque by design — their
+     * documents are filed by the connector that persisted them (e.g. mail under
+     * /imap/...). Config presence, not `enabled`, gates the path so the
+     * disable-then-destroy flow can still resolve a disabled backend's subtree.
      */
     #getBackendRootPath(backendName) {
         const config = this.#dataBackends[backendName];
-        if (!config?.indexIncoming) return null;
+        if (!config || config.supported === false) return null;
+        if (config.managed === true || backendName === CACHE_BACKEND) return null;
         const driver = String(config.driver || 'file').toLowerCase();
+        const live = this.#stored?.getBackend(backendName);
+        const canEnumerate = live ? live.capabilities?.canEnumerate === true : driver === 'file';
+        if (!canEnumerate) return null;
         const address = String(backendName || '').replace(/[^a-z0-9._:@-]+/gi, '-').toLowerCase();
-        return `${BACKENDS_ROOT_CONTEXT}/${driver}/${address}`;
+        return `/${driver}/${address}`;
     }
 
     /**
-     * Inverse of #getBackendRootPath: map a /.backends tree path back to the
+     * Inverse of #getBackendRootPath: map a backends-tree path back to the
      * configured backend it mirrors (prefix match). Returns the backend name or
      * null when no configured backend owns the path (e.g. imap subtrees — those
      * are the mail service's, resolved separately).

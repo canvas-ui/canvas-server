@@ -1,19 +1,25 @@
 'use strict';
 
 /**
- * Backend-mirrored staging subtree of the directory tree.
+ * Backend-mirror path helpers for the dedicated "backends" tree.
  *
- * All backend-ingested documents are filed under a strict schema:
- *   /.backends/<driver>/<resource-address>/<resource-path>
+ * All backend-ingested documents are filed in the per-workspace backends tree
+ * (type directory, settings.linkContextRoot=false) under a strict schema:
+ *   /<driver>/<resource-address>/<resource-path>
  * e.g.
- *   /.backends/file/workspace:home/<source-dirs>
- *   /.backends/imap/me@idnc.sk/inbox
- *   /.backends/slack/<account>/<channel>
- *   /.backends/s3/<address>/<bucket>/<path>
+ *   /file/workspace:home/<source-dirs>
+ *   /imap/me@idnc.sk/inbox
+ *   /slack/<account>/<channel>
+ *   /s3/<address>/<bucket>/<path>
+ *
+ * Historically these lived inside the default directory tree under /.backends;
+ * LEGACY_BACKENDS_PATH exists only for the one-shot startup migration and for
+ * normalizing old client-supplied paths.
  */
 
-export const BACKENDS_ROOT_CONTEXT = '/.backends';
+export const BACKENDS_TREE_NAME = 'backends';
 export const DIRECTORY_TREE_NAME = 'directory';
+export const LEGACY_BACKENDS_PATH = '/.backends';
 
 export function normalizeSegment(value, fallback = 'unknown') {
   const segment = String(value || '')
@@ -53,30 +59,25 @@ function normalizeContextSpec(contextSpec) {
   return `/${value.replace(/^\/+/, '').replace(/\/+/g, '/')}`.replace(/\/$/, '');
 }
 
-export function isBackendsContextSpec(contextSpec) {
-  const normalized = normalizeContextSpec(contextSpec);
-  return normalized === BACKENDS_ROOT_CONTEXT || normalized?.startsWith(`${BACKENDS_ROOT_CONTEXT}/`) || false;
-}
-
-export function shouldExcludeBackends(contextSpec, includeBackends = false) {
-  if (includeBackends) { return false; }
-  const normalized = normalizeContextSpec(contextSpec);
-  return normalized === null || normalized === '/' || normalized === '';
+/** Old-style /.backends-prefixed path (pre backends-tree). */
+export function isLegacyBackendsPath(pathOrContext) {
+  const normalized = normalizeContextSpec(pathOrContext);
+  return normalized === LEGACY_BACKENDS_PATH || normalized?.startsWith(`${LEGACY_BACKENDS_PATH}/`) || false;
 }
 
 /**
- * Normalize a path for use within the directory tree's /.backends folder.
- * Ensures the returned path is prefixed with /.backends.
+ * Normalize a path for use within the backends tree. Paths are tree-relative
+ * (/<driver>/<address>/...); a legacy /.backends prefix from old clients is
+ * stripped for compatibility.
  */
 export function normalizeBackendsTreePath(pathOrContext) {
   const normalized = normalizeContextSpec(pathOrContext);
-  if (normalized === null || normalized === '/') { return BACKENDS_ROOT_CONTEXT; }
-  // Already prefixed — return as-is
-  if (normalized === BACKENDS_ROOT_CONTEXT || normalized.startsWith(`${BACKENDS_ROOT_CONTEXT}/`)) {
-    return normalized;
+  if (normalized === null || normalized === '/') { return '/'; }
+  if (normalized === LEGACY_BACKENDS_PATH) { return '/'; }
+  if (normalized.startsWith(`${LEGACY_BACKENDS_PATH}/`)) {
+    return normalized.slice(LEGACY_BACKENDS_PATH.length);
   }
-  // Prefix with /.backends
-  return `${BACKENDS_ROOT_CONTEXT}${normalized}`;
+  return normalized;
 }
 
 function buildBackendContext(driver, ...segments) {
@@ -84,7 +85,7 @@ function buildBackendContext(driver, ...segments) {
     .map((segment) => normalizeSegment(segment))
     .filter(Boolean);
 
-  return `${BACKENDS_ROOT_CONTEXT}/${normalizeSegment(driver)}/${normalizedSegments.join('/')}`;
+  return `/${normalizeSegment(driver)}/${normalizedSegments.join('/')}`;
 }
 
 export function getBackendEmailContext(driver, accountId, folderName = 'inbox') {

@@ -26,27 +26,46 @@ Couple of notes
 
 ## WebUI cosmetics
 
+- Publicly shared canvases are not accessible without auth
 - Uploads to workspaces other than "Universe dont seem to work"
 OK the issue seems to be refresh,
 Ah, no, it seems to be some initialization issue(stored?cacache) - no, refresh indeed
-- "Incoming" should not be an option for workspace:data (blob store) in workspaces > workspace > settings > Data Backends, disabling it also not an option, enabled by default
+Possible fixes(need to be checked)
+1. Include `path` in the refresh event from `submitDocuments()` / `linkExistingDocuments()`.
+2. Invalidate cache for the **target path**, not only `selectedPath` (or invalidate all paths for that workspace+tree).
+3. Align `handleImportDocuments` with paste (always dispatch refresh).
+4. Optional: bypass cache on post-upload fetch (`force: true` flag).
+
+- "Incoming" should not be an option for workspace:data (blob store) in workspaces > workspace > settings > Data Backends, disabling it also not an option, enabled by default and always-enabled
+
+Possible cause:
+API **always** returns a boolean
+UI then shows the toggle whenever `indexIncoming !== undefined` — which is always, because it's coerced to `true`/`false`:
+
+For `workspace:data`:
+- `canToggle` is true (only `stored.cache` is excluded from toggling)
+- Toggle appears even though incoming is meaningless for cacache
+- User can flip it **on**, which is wrong
+
 - Picking a color + icon always resets the state of the form, one currently can not do both in one go 
-- link-to menu should also have an option to add a folder(long press/touch or context menu)
+
+- link-to menu should also have an option to add a folder(long press/touch or context menu) - maybe a z-index bug
+
 - We will need to introduce more vibrant colors covering larger sections of our buttons and header areas in the near future and use colors as visual cues for our context/directory paths once we start supporting the to-be vertically and horizontally scrollable multi-context multi-focus layout
   - Also: **workspaces list edit form** (`/workspaces`) only has color, no icon, we should wire it in (and store it in the workspace config(workspace.json))
 - content area "grid" view should have nice mosaic pattern, we are not in 200x
 - `/workspaces/universe/settings` should be url-navigatable too, iow, each tab should get its own url => /workspaces/universe/settings/general etc
 - We should add locations into our metadata modal
 
-
-### Content
-- (deffered) Content area section should support tabs 
-
 ### Workspaces
 - Workspace name should pre prepended with the workspace icon, tab should have a bottom border of the color of the workspace or layer, lets use css to ensure white-on-white use-case is covered
+- We should be able to reorganize both, workspaces and contexts (both are shown in order they are stored in the respective JSON index file, we can either shuffle the file in an atomic way or introduce a order variable - the current canvas-server index tries to sit on two chairs at once, no worries, we'll sort it out once we extract workspaces/agents/roles into separate runtimes)
 
 ### Contexts
 - Load icon + color from bound path, defaults/fallbacks to icon + color of the bound workspace
+
+### Content area
+- (deffered) Content area section should support tabs 
 
 ## Remote workspaces
 

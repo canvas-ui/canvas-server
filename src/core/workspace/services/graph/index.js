@@ -189,6 +189,7 @@ class GraphService extends EventEmitter {
                     if (workspace) {
                         const contextSpec = getBackendEmailContext('graph', userPrincipalName, 'inbox');
                         const docId = await workspace.put(emailDoc, {
+                            context: null,
                             directory: workspace.getBackendsTreeSelector(contextSpec),
                             emitEvent: false,
                             allowBackendsWrite: true,

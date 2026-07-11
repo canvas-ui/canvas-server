@@ -29,6 +29,26 @@ const WORKSPACE_DIRECTORIES = {
 
 const WORKSPACE_GIT_BARE_DIR = 'bare.git';
 
+// Default sync exclusions for enumerable file backends (workspace:home).
+// Merged with the per-backend `exclude` list from workspace config; applied
+// identically to the live watcher and to list()/scan() resyncs. Patterns
+// ending in /** also prune the directory itself (see stored FileBackend).
+const DEFAULT_SYNC_EXCLUSIONS = [
+    '**/.*',            // dotfiles (also covers .git, .cache, browser profiles…)
+    '**/.*/**',         // …and everything below dotdirs
+    '**/node_modules/**',
+    '**/__pycache__/**',
+    '**/bower_components/**',
+    '**/vendor/bundle/**', // ruby gems
+    '**/target/debug/**',  // cargo
+    '**/target/release/**',
+    '**/*.swp',
+    '**/*.tmp',
+    '**/Cache/**',
+    '**/Caches/**',
+    '**/CachedData/**',
+];
+
 const WORKSPACE_DATA_BACKENDS = {
     'workspace:home': {
         enabled: true,
@@ -37,8 +57,8 @@ const WORKSPACE_DATA_BACKENDS = {
         root: '{WORKSPACE_ROOT}/home',
         watch: true,
         resync: true,
-        indexIncoming: true,
-        incomingPathMode: 'sourceDirectories',
+        // User-defined glob exclusions, merged on top of DEFAULT_SYNC_EXCLUSIONS.
+        exclude: [],
         // readOnly: true blocks byte-deletion on the backend (Destroy degrades
         // to reference-drop) even when the driver itself supports delete.
         readOnly: false,
@@ -55,7 +75,6 @@ const WORKSPACE_DATA_BACKENDS = {
         managed: true,
         watch: false,
         resync: false,
-        indexIncoming: false,
         readOnly: false,
     },
     'stored.cache': {
@@ -126,6 +145,7 @@ const WORKSPACE_CONFIG_TEMPLATE = {
 };
 
 export {
+    DEFAULT_SYNC_EXCLUSIONS,
     WORKSPACE_DEFAULT_HOST,
     WORKSPACE_CONFIG_FILENAME,
     WORKSPACE_DIRECTORIES,

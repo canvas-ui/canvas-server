@@ -33,6 +33,8 @@ Ah, no, it seems to be some initialization issue(stored?cacache) - no, refresh i
 - link-to menu should also have an option to add a folder(long press/touch or context menu)
 - We will need to introduce more vibrant colors covering larger sections of our buttons and header areas in the near future and use colors as visual cues for our context/directory paths once we start supporting the to-be vertically and horizontally scrollable multi-context multi-focus layout
 - content area "grid" view should have nice mosaic pattern, we are not in 200x
+- `/workspaces/universe/settings` should be url-navigatable too, iow, each tab should get its own url => /workspaces/universe/settings/general etc
+
 
 ### Content
 - (deffered) Content area section should support tabs 

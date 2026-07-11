@@ -96,6 +96,8 @@ The same repo carries your dotfiles (see the dotfile routes under
 
 - [API Documentation](docs/API.md)
 
+Document search: `GET /rest/v2/workspaces/:id/documents?q=<term>` (repeat `q=` to refine — each term AND-narrows across text + photos, the last ranks). Add `&debug=true` to include raw image-kNN cosine distances in `.debug.imageDistances`, for tuning the per-workspace image relevance floor (`imageMaxDistance`, editable in Settings → DB).
+
 ## Logs
 
 Server logs are written to stdout and to:

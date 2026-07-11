@@ -18,12 +18,23 @@
  * session are the exact thing that faulted the in-process attempt.
  */
 
+import os from 'node:os';
 import { AutoTokenizer, AutoProcessor, SiglipTextModel, SiglipVisionModel, RawImage, env } from '@huggingface/transformers';
 
 const MODEL = process.env.CANVAS_CLIP_MODEL || 'Xenova/siglip-base-patch16-224';
 // q8 keeps the download small and inference fast; retrieval quality is fine.
 // Set CANVAS_CLIP_DTYPE=fp32 for maximum quality.
 const DTYPE = process.env.CANVAS_CLIP_DTYPE || 'q8';
+
+// ORT must be told its thread count EXPLICITLY. Left to default, onnxruntime-node
+// spins one intra-op thread per visible core and pins each to a CPU via
+// pthread_setaffinity_np — which fails (EINVAL) under a cgroup-limited VPS whose
+// visible cores exceed its quota, spamming errors and thrashing (why more vCPU
+// gave no gain). An explicit count disables the affinity pinning entirely.
+// Bounded default (embedd runs one inference at a time, so a handful of intra-op
+// threads is plenty); override with CANVAS_EMBED_THREADS.
+const THREADS = Math.max(1, Number(process.env.CANVAS_EMBED_THREADS) || Math.min(4, os.cpus().length || 4));
+const SESSION_OPTIONS = { intraOpNumThreads: THREADS, interOpNumThreads: 1 };
 
 let modelsPromise = null;
 function models() {
@@ -32,9 +43,9 @@ function models() {
             if (process.env.CANVAS_CLIP_CACHE) { env.cacheDir = process.env.CANVAS_CLIP_CACHE; }
             const [tokenizer, textModel, processor, visionModel] = await Promise.all([
                 AutoTokenizer.from_pretrained(MODEL),
-                SiglipTextModel.from_pretrained(MODEL, { dtype: DTYPE }),
+                SiglipTextModel.from_pretrained(MODEL, { dtype: DTYPE, session_options: SESSION_OPTIONS }),
                 AutoProcessor.from_pretrained(MODEL),
-                SiglipVisionModel.from_pretrained(MODEL, { dtype: DTYPE }),
+                SiglipVisionModel.from_pretrained(MODEL, { dtype: DTYPE, session_options: SESSION_OPTIONS }),
             ]);
             return { tokenizer, textModel, processor, visionModel };
         })();

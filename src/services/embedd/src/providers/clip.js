@@ -61,8 +61,26 @@ export default class ClipProvider {
     #request(kind, payload) {
         const child = this.#ensureWorker();
         const id = this.#seq++;
+        // The worker runs one ORT inference at a time; a wedged worker (or a
+        // dropped IPC reply) would otherwise leave this promise unsettled forever
+        // and hang the awaiting search/embed. Time it out and respawn a clean
+        // worker so the next call recovers. Generous default to cover a cold
+        // first-call model load; override with CANVAS_CLIP_TIMEOUT_MS.
+        const timeoutMs = Math.max(1000, Number(process.env.CANVAS_CLIP_TIMEOUT_MS) || 60000);
         return new Promise((resolve, reject) => {
-            this.#pending.set(id, { resolve, reject });
+            const timer = setTimeout(() => {
+                if (!this.#pending.has(id)) { return; }
+                this.#pending.delete(id);
+                // Kill the (likely wedged) worker; #ensureWorker respawns lazily.
+                try { child.kill(); } catch (_) { /* ignore */ }
+                if (this.#child === child) { this.#child = null; }
+                reject(new Error(`clip worker timeout after ${timeoutMs}ms (${kind})`));
+            }, timeoutMs);
+            if (typeof timer.unref === 'function') { timer.unref(); }
+            this.#pending.set(id, {
+                resolve: (v) => { clearTimeout(timer); resolve(v); },
+                reject: (e) => { clearTimeout(timer); reject(e); },
+            });
             child.send({ id, kind, payload });
         });
     }

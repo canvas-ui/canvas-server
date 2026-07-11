@@ -428,11 +428,55 @@ export default async function adminRoutes(fastify, options) {
         const response = new ResponseObject().badRequest(result.error);
         return reply.code(response.statusCode).send(response.getResponse());
       }
+      // A reindex re-embeds every doc (delete + re-add), churning the vector
+      // tables. Compact + prune old versions once the queue drains — fire and
+      // forget so the request returns immediately (embedding is async anyway).
+      if (reindex) {
+        embedd.drained()
+          .then(() => ws.db.optimizeVectors(space || null))
+          .then(() => fastify.log.info(`reindex-embeddings: vector index compacted for ${identifier}${space ? ` (${space})` : ''}`))
+          .catch((e) => fastify.log.warn(`reindex-embeddings: post-drain optimize failed for ${identifier}: ${e.message}`));
+      }
       const response = new ResponseObject().success(result, `Embedding reconcile: ${result.enqueued} doc(s) enqueued (draining off-thread)`);
       return reply.code(response.statusCode).send(response.getResponse());
     } catch (error) {
       fastify.log.error(error);
       const response = new ResponseObject().serverError(error.message || 'Failed to reconcile embeddings');
+      return reply.code(response.statusCode).send(response.getResponse());
+    }
+  });
+
+  // Compact + prune Lance tables and (re)build ANN indexes. `space`:
+  //   'fts'          → the full-text (BM25) table
+  //   'text'|'image' → that dense-vector table
+  //   omitted        → every table. Synchronous, in-process; safe on the live
+  // server (no lock conflict). Idempotent.
+  fastify.post('/workspaces/:workspaceId/optimize', {
+    onRequest: [fastify.authenticate, requireAdmin],
+    schema: {
+      params: { type: 'object', required: ['workspaceId'], properties: { workspaceId: { type: 'string' } } },
+      body: { type: 'object', properties: { space: { type: 'string' } }, additionalProperties: false },
+    }
+  }, async (request, reply) => {
+    try {
+      const identifier = request.params.workspaceId;
+      const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(identifier);
+      const workspaceId = isUUID ? identifier : fastify.workspaceManager.resolveWorkspaceId(request.user.id, identifier);
+      const ws = workspaceId ? await fastify.workspaceManager.getWorkspace(workspaceId, request.user.id) : null;
+      if (!ws?.isActive) {
+        const response = new ResponseObject().badRequest('Workspace not found or not active');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+      const { space = null } = request.body || {};
+      const result = {};
+      if (!space || space === 'fts') { result.fts = await ws.db.optimizeLance(); }
+      if (!space) { result.vectors = await ws.db.optimizeVectors(); }
+      else if (space === 'text' || space === 'image') { result.vectors = await ws.db.optimizeVectors(space); }
+      const response = new ResponseObject().success(result, `Optimize complete${space ? ` (${space})` : ''}`);
+      return reply.code(response.statusCode).send(response.getResponse());
+    } catch (error) {
+      fastify.log.error(error);
+      const response = new ResponseObject().serverError(error.message || 'Failed to optimize indexes');
       return reply.code(response.statusCode).send(response.getResponse());
     }
   });

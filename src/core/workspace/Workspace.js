@@ -311,7 +311,7 @@ class Workspace extends EventEmitter {
                     ? {
                         embedQuery: (text, space) => this.#embedd.embedQuery(text, space),
                         // Workspace-level search tuning (persisted in workspace.json
-                        // under `semantic`). Undefined → synapsd default (0.9).
+                        // under `semantic`). Undefined → synapsd default (0.97).
                         imageMaxDistance: (this.#configStore.get('semantic', {}) || {}).imageMaxDistance,
                     }
                     : undefined,

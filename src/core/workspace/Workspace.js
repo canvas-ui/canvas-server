@@ -497,9 +497,13 @@ class Workspace extends EventEmitter {
 
         const schema = doc.schema;
         const updatedAt = doc.updatedAt || new Date().toISOString();
-        const contentType = doc.metadata?.contentType || null;
         const chunkOpts = doc.indexOptions?.embeddingOptions?.chunking || {};
         const classification = classifyDocument(doc);
+        // Use the classifier's mime (filename-derived when the stored contentType
+        // is missing/generic) — the raw metadata.contentType can be the useless
+        // 'application/json' default for fs-indexed images, which the embed router
+        // (routes on image/*) would reject.
+        const contentType = classification.mime || doc.metadata?.contentType || null;
         // User-authored comment rides along on every return shape (even skip/image),
         // so the embedd worker can give any commented doc a dedicated text vector.
         const comment = doc.hasComment ? doc.comment.trim() : '';

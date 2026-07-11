@@ -6,6 +6,7 @@ import { createReadStream } from 'fs';
 import Stored from '../../../services/stored/src/index.js';
 import { extract as extractBlobMetadata } from '../../../services/stored/src/extractors/index.js';
 import { parseLocationUrl } from '../../../services/synapsd/src/utils/path-helpers.js';
+import { mimeFromLocations } from './classifier.js';
 import { BACKENDS_ROOT_CONTEXT, DIRECTORY_TREE_NAME, isBackendsContextSpec, legacyBitmapKey } from '../../../utils/backend-documents.js';
 
 /*
@@ -847,7 +848,12 @@ export class WorkspaceStoredIndex {
     // anything else is derivable from the URL via `stored`.
     #buildDocument(storedFile = {}, checksumArray = [], backends = [], existingDocument = null, meta = null) {
         const size = Number.isFinite(storedFile.size) ? storedFile.size : existingDocument?.metadata?.size;
-        const mime = storedFile.mimeType || existingDocument?.metadata?.contentType;
+        const locations = this.#buildDocumentLocations(backends);
+        // Fall back to a filename-derived mime when `stored` didn't detect one
+        // (filesystem-indexed files often have no sniffed mime) — otherwise the
+        // File doc defaults to 'application/json' and images never get classified
+        // or embedded.
+        const mime = storedFile.mimeType || existingDocument?.metadata?.contentType || mimeFromLocations(locations);
 
         const metadata = { ...(existingDocument?.metadata || {}) };
         if (Number.isFinite(size)) metadata.size = size; else delete metadata.size;
@@ -867,7 +873,7 @@ export class WorkspaceStoredIndex {
             schema: 'data/abstraction/file',
             checksumArray: checksumArray.length > 0 ? checksumArray : (existingDocument?.checksumArray || []),
             data: {},
-            locations: this.#buildDocumentLocations(backends),
+            locations,
             metadata,
         };
 

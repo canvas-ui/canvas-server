@@ -28,6 +28,39 @@ export const SCHEMAS = Object.freeze({
 });
 
 const YOUTUBE_RE = /(?:youtube\.com\/watch\?|youtu\.be\/|youtube\.com\/shorts\/)/i;
+
+// Filename-extension → mime, for file blobs whose contentType was never captured
+// at ingest (e.g. filesystem-indexed files on fs:home) and so fell back to the
+// BaseDocument default 'application/json'. Focused on the types embedding cares
+// about (image/*, text/*) plus a few common ones. Lowercase extension keys.
+const EXT_MIME = Object.freeze({
+    jpg: 'image/jpeg', jpeg: 'image/jpeg', jpe: 'image/jpeg', png: 'image/png',
+    gif: 'image/gif', webp: 'image/webp', avif: 'image/avif', bmp: 'image/bmp',
+    tif: 'image/tiff', tiff: 'image/tiff', heic: 'image/heic', heif: 'image/heif',
+    svg: 'image/svg+xml',
+    txt: 'text/plain', text: 'text/plain', md: 'text/markdown', markdown: 'text/markdown',
+    csv: 'text/csv', tsv: 'text/tab-separated-values', log: 'text/plain',
+    html: 'text/html', htm: 'text/html', xml: 'text/xml',
+    json: 'application/json', pdf: 'application/pdf',
+});
+
+// The `application/json` default is meaningless for a blob (a file's identity is
+// its bytes, not inline JSON), so treat it as "mime not captured".
+export function isGenericMime(mime) {
+    return !mime || mime === 'application/json';
+}
+
+/** Best-effort mime from a document's location filenames/URLs (extension-based). */
+export function mimeFromLocations(locations) {
+    if (!Array.isArray(locations)) { return null; }
+    for (const loc of locations) {
+        const name = (loc?.metadata?.filename || loc?.url || '').toString();
+        const m = name.toLowerCase().match(/\.([a-z0-9]+)(?:[?#].*)?$/);
+        const mime = m && EXT_MIME[m[1]];
+        if (mime) { return mime; }
+    }
+    return null;
+}
 const ARXIV_RE = /arxiv\.org\/(?:abs|pdf)\//i;
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'avif', 'bmp', 'ico']);
 
@@ -88,6 +121,14 @@ class Classification {
         this.doc = doc || null;
         this.schema = typeof doc?.schema === 'string' ? doc.schema.toLowerCase() : null;
         this.mime = doc?.metadata?.contentType || null;
+        // A file blob's identity is its bytes, not inline JSON — so a missing or
+        // generic 'application/json' mime means it was never captured. Recover the
+        // real type from the location filename so filesystem-indexed images/text
+        // (fs:home, no stored mime) still classify + embed correctly.
+        if (this.isFile() && isGenericMime(this.mime)) {
+            const derived = mimeFromLocations(doc?.locations);
+            if (derived) { this.mime = derived; }
+        }
         this.url = typeof doc?.data?.url === 'string' ? doc.data.url : null;
         this.parsedUrl = parseUrl(this.url);
         this.host = this.parsedUrl ? this.parsedUrl.hostname.toLowerCase().replace(/^www\./, '') : null;

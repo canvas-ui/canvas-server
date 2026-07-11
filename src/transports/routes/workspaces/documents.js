@@ -242,6 +242,9 @@ export default async function workspaceDocumentRoutes(fastify, options) {
           // search — drops weak (far) kNN hits before fusion. 0..2 (0 = identical).
           minDistance: { type: 'number' },
           maxDistance: { type: 'number' },
+          // Calibration aid: attach raw (unfloored) image kNN cosine distances for
+          // the query to the response (`.debug.imageDistances`), to pick a floor.
+          debug: { type: 'boolean' },
           includeBackends: { type: 'boolean', default: false },
           // 'workspace' drops the path bucket entirely → list every document in
           // the DB (synapsd default). 'path' (default) scopes to context/tree.
@@ -292,9 +295,10 @@ export default async function workspaceDocumentRoutes(fastify, options) {
           mode: request.query.mode,
           minDistance,
           maxDistance,
+          debug: request.query.debug,
         });
       } else if (queries.length === 1) {
-        documents = await workspace.search({ query: queries[0], mode: request.query.mode, minDistance, maxDistance, ...spec });
+        documents = await workspace.search({ query: queries[0], mode: request.query.mode, minDistance, maxDistance, debug: request.query.debug, ...spec });
       } else {
         documents = await workspace.list(spec);
       }
@@ -306,6 +310,8 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       }
 
       const responseObject = new ResponseObject().found(documents, isSearch ? 'Search results retrieved successfully' : 'Documents retrieved successfully', 200, documents.count, documents.totalCount);
+      // Arrays lose non-index props in JSON — lift the calibration debug across.
+      if (documents.debug) { responseObject.debug = documents.debug; }
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
     } catch (error) {
       fastify.log.error(error);

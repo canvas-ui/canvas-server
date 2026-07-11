@@ -8,6 +8,9 @@ export default class ResponseObject {
         this.payload = null;
         this.count = null;
         this.totalCount = null;
+        // Optional diagnostic payload (e.g. search calibration data); only
+        // serialized when set, so existing responses are unchanged.
+        this.debug = null;
     }
 
     // Static factories — allows `ResponseObject.error(msg)` without `new`
@@ -173,6 +176,7 @@ export default class ResponseObject {
             payload: this.payload,
             count: this.count,
             totalCount: this.totalCount,
+            ...(this.debug != null ? { debug: this.debug } : {}),
         };
     }
 }

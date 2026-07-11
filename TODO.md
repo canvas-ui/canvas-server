@@ -3,13 +3,13 @@
 ## Workspace/SynapsD tree refactor
 
 We should change our workspace tree logic 
-- We should pre-create 2 trees as is the case today
+- We should still pre-create 2 trees
   - Context tree (type context/ctx)
   - Directory tree (type directory/dir)
-    - webui bug: It should be possible to click to the "root" folder in a directory tree and  insert data into it, currently we switch to context tree on click
-- Change: All backends should live in their own 3rd tree dedicated exclusively to the backends(with full CRUD semantics where the backend allows that => stored may need to support fetching the whole tree from a local or remote backend - like s3) - structure should be the same, we'd just move .backend into a "backends" tree (type directory)
-  - Sync populates the index and the backend tree, user freely decides which documents to move to his cherrished context or directory tree
-  - Agentic memory running synapsd as its own memory backend will create multiple semantic context-type trees for anchor based memory so the logic above should live on the Workspace level, synapsd should be as generic as possible(where it needs to be)
+    - webui bug: It should be possible to click the "root" folder in a directory tree and  insert data into it, currently we switch to context tree on click
+- Change: All backends should live in their own, separate, 3rd tree dedicated exclusively to the backends(with full CRUD semantics where the backend allows that => oure `stored` module may need to support fetching the whole tree from a local or remote backend - like s3) - tree structure related to the backend part(file/workspace:home/real/in-workspace/path or imap/user@domain.tld/Inbox etc) should be the same, we'd just move .backend into a "backends" tree (type directory)
+  - Inbound sync(imap, slack/teams/whatsapp) populates the index and the backend tree, user freely decides which documents to link into his cherrished context or directory trees
+  - Agentic memory running synapsd as its own memory backend will create multiple semantic context-type trees for anchor based memory so where appropriate, we should keep the logic on the Workspace level, synapsd should be as generic as possible(where it needs to be)
 
 The ordering in our webui should therefor be
 - Context tree(icon only)
@@ -18,9 +18,10 @@ The ordering in our webui should therefor be
 - Backends tree(type dir, icon only)
 
 Couple of notes
-- The ".incoming" handler/logic is I guess obsolete, we index documents from backends in a separate tree so no tree polution, we should be able to fetch all documents that are indexed in a tree (or not indexed - iow deamed not important and safe to purge from a backend - lets say a imap mailbox)
-- workspace:home toggle for read-only is very important, one may not want to enable CRUD semantics over the web if the roaming workspaces home folder is exported via samba
-- we need to be careful with documents stored only in workspace:data, removing those from index if workspace:data is the only location should also remove them from workspace:data since this cacache blob store is not browseable(by design)
+- The ".incoming" handler/logic is I guess obsolete, we index documents from backends in a separate tree so no tree polution, - We should be able to fetch all documents that are indexed in a tree (or not indexed - iow deamed not important and safe to purge from a backend - lets say a imap mailbox)
+- workspace:home toggle for read-only is very important, one may not want to enable CRUD semantics for the webui/rest api if the roaming workspaces home folder is exported via samba
+- we need to be careful with documents stored only in workspace:data, removing those from index if workspace:data is the only location should also remove them from workspace:data since this cacache blob store is not browseable(by design), this was probably already mitigated
+- Sync workers should have a in-workspace (Workspaces > Workspace > Settings > Services || Data Backends) configurable exclusions, I'd start with workspace:home (we are not a spam filter) - users may copy their codebases or whole home drives into the "roaming" workspace home - all dotfiles and gem/node_modules/pycache and browser cache folders should be excluded(excluding dotfiles already solves a lot of those, but lets make sure we never ingest 10k files from node_modules or simillar or a local kernel git repo (I used those to stress-test the system hence why this should be a configurable option in the webui))
 
 
 ## WebUI cosmetics
@@ -35,6 +36,7 @@ Ah, no, it seems to be some initialization issue(stored?cacache) - no, refresh i
   - Also: **workspaces list edit form** (`/workspaces`) only has color, no icon, we should wire it in (and store it in the workspace config(workspace.json))
 - content area "grid" view should have nice mosaic pattern, we are not in 200x
 - `/workspaces/universe/settings` should be url-navigatable too, iow, each tab should get its own url => /workspaces/universe/settings/general etc
+- We should add locations into our metadata modal
 
 
 ### Content

@@ -17,6 +17,12 @@ The ordering in our webui should therefor be
 - Directory tree(icon only)
 - Backends tree(type dir, icon only)
 
+Couple of notes
+- The ".incoming" handler/logic is I guess obsolete, we index documents from backends in a separate tree so no tree polution, we should be able to fetch all documents that are indexed in a tree (or not indexed - iow deamed not important and safe to purge from a backend - lets say a imap mailbox)
+- workspace:home toggle for read-only is very important, one may not want to enable CRUD semantics over the web if the roaming workspaces home folder is exported via samba
+- we need to be careful with documents stored only in workspace:data, removing those from index if workspace:data is the only location should also remove them from workspace:data since this cacache blob store is not browseable(by design)
+
+
 ## WebUI cosmetics
 
 - Uploads to workspaces other than "Universe dont seem to work"
@@ -46,6 +52,16 @@ Question is what protocol(s) to support, we currently use http+ws
 
 Future non-MVP direction, bundle workspace(synapsd, stored, embedd) in a single bun binary runnable from a folder in a standalone fashion(`ws`, would start a pm2 based daemon and use the same `ws` binary as the CLI), minimal REST+WS endpoints (only token auth), optional tauri UI frontend with a tray app
 - Prerequisites: `canvas-edge` for the minimal API + autoregistration to a remote canvas-server
+
+### Refactor `embedd` (coupled to the workspace runtime)
+
+Today `embedd` is a single **per-server singleton**: one shared model runtime + ONE serial queue + one server-wide router. Consequences to fix as part of the runtime split:
+- **Queue is global + serial** — the "Embedding queue" count in workspace settings is server-wide (re-indexing a 3-doc workspace can show 800 pending from other workspaces). Each workspace runtime should own its own queue.
+- **Embeddable schemas/mimes are router-driven and server-wide, NOT per-workspace-configurable.** Reconcile uses `router.candidateSchemas(sp)` and the live path routes by the shared `DEFAULT_RULES` — synapsd's per-workspace `embeddableSchemas` is only a gap-ledger fallback. So "text-embeddable schemas" and "image-embeddable schema+mime" can only become real workspace settings once the router is per-workspace (make the router rules the configurable surface). Until then the UI should stay read-only/informational (done: labelled "Text-embeddable schemas" + "Image-embeddable: data/abstraction/file · image/*").
+- **Model cache**: per-workspace embedd with a cache **search path** (workspace-local dir → server-shared cache fallback) so containerized/standalone workspaces don't re-download models.
+- **Throughput**: image (CLIP) runs in a **single forked child, serialized** (`clip-worker.js` request chain) → photo embedding is strictly one-at-a-time and CPU-bound (fp32 default is slow; q8 ~2-4x faster). Real fix = a small **worker pool** (~nCPUs-2) with ORT intra-op threads **capped** per child so pool × threads ≈ nCPUs (naive nCPUs-2 pool would oversubscribe — ORT already grabs all cores per single inference).
+- **Model dtype configurable**: `CANVAS_CLIP_DTYPE` (fp32/q8/…) is env-only today. Make it a proper config option — globally for now (server-wide embedd), per-workspace once the runtime is split. Low priority (boilerplate vs value).
+- **Text embedding is broader than the UI implies**: we embed notes + emails + **text-file blobs** (`data/abstraction/file` with `text/*` mime), driven by the router's `DEFAULT_RULES`, not just `data/abstraction/note` (which is only synapsd's gap fallback default). The settings UI should reflect the router's real routing (done: `getStats().embedder.routing` surfaces per-space schema+mime rules; read-only until the router is per-workspace).
 
 ## Related with the workspace runtime, canvas-agent runtime
 

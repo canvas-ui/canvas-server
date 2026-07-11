@@ -156,7 +156,17 @@ class Workspace extends EventEmitter {
         if (this.#embedd?.status) {
             try {
                 const es = await this.#embedd.status();
-                stats.embedder = { queue: es.queue };
+                // Actual routing (what really embeds where) from the embedd router
+                // rules — notes/emails + text-file blobs → text, image/* → image.
+                // Surfaced so the UI shows reality, not synapsd's note-only gap default.
+                const routing = {};
+                for (const r of (this.#embedd.router?.rules || [])) {
+                    const m = r.match || {};
+                    const desc = m.schema != null ? String(m.schema)
+                        : (m.contentType != null ? `mime ${String(m.contentType)}` : 'any');
+                    (routing[r.space] ||= []).push(desc);
+                }
+                stats.embedder = { queue: es.queue, routing };
             } catch (_) { /* best effort */ }
         }
         return stats;

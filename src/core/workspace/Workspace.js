@@ -515,8 +515,23 @@ class Workspace extends EventEmitter {
             if (!classification.isBlob() || !contentType) { return { skip: true, schema, updatedAt, contentType, comment }; }
             const modality = classification.embeddingModality();
             if (!modality) { return { skip: true, schema, updatedAt, contentType, comment }; }
-            const resolved = await this.resolveDocument(doc).catch(() => null);
-            if (!resolved?.buffer) { return { skip: true, schema, updatedAt, contentType, comment }; }
+            let resolveError = null;
+            const resolved = await this.resolveDocument(doc).catch((e) => { resolveError = e; return null; });
+            if (!resolved?.buffer) {
+                // We classified this as an embeddable blob but its bytes are
+                // unreachable — usually stale/dead locations (e.g. a removed backend
+                // like the legacy fs:home). Surface it instead of silently skipping,
+                // so resync location cleanup can be triggered.
+                this.#logger.warn({
+                    workspaceId: this.id,
+                    docId: doc.id,
+                    modality,
+                    contentType,
+                    locations: (doc.locations || []).map((l) => l.url),
+                    error: resolveError?.message,
+                }, 'embed: could not resolve blob bytes (stale/unreachable locations)');
+                return { skip: true, schema, updatedAt, contentType, comment };
+            }
             return modality === 'image'
                 ? { modality, schema, updatedAt, bytes: resolved.buffer, contentType, comment }
                 : { modality, schema, updatedAt, text: resolved.buffer.toString('utf8'), contentType, chunkOpts, comment };

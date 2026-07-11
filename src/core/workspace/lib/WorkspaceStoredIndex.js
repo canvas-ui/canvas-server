@@ -229,6 +229,13 @@ export class WorkspaceStoredIndex {
                 await this.#upsertDocument(file);
             }
             await this.#purgeOrphanedPaths(backendName, files);
+            // Global stale-local-path cleanup: drop locations whose backend was
+            // renamed/removed (dead-backend refs like the legacy fs:home). Gated to
+            // the home resync so the all-file-docs scan runs once, not per backend.
+            if (backendName === HOME_STORED_BACKEND) {
+                await this.#purgeDeadBackendLocations().catch((error) =>
+                    this.#logger.warn({ workspaceId: this.#workspaceId, error: error.message }, 'Dead-backend location purge failed'));
+            }
             this.#backendStatus.set(backendName, {
                 ...(this.#backendStatus.get(backendName) || {}),
                 lastScanAt: new Date().toISOString(),
@@ -468,6 +475,49 @@ export class WorkspaceStoredIndex {
                 .map((l) => l.url);
             await this.#reconcileRemovedLocations(doc, removedUrls);
         }
+    }
+
+    /**
+     * Remove locations that point at a backend which no longer exists in config —
+     * e.g. a renamed/removed local backend (the legacy `fs:home`, now
+     * `workspace:home`). Per-backend orphan purge (#purgeOrphanedPaths) only ever
+     * visits LIVE backends, so a doc referencing ONLY a dead backend is never
+     * swept — its stale local paths linger and get fed to consumers (the embedder
+     * skipped such a `fs:home` .jpg). This global sweep catches them.
+     *
+     * Safety: only local-grammar URLs are considered — `stored://` (authority IS
+     * the backend) and `file://` (authority is a path placeholder, so we trust the
+     * explicit metadata.backend). Remote copies (s3://, imap://, http://) are left
+     * untouched. A backend that is merely DISABLED keeps its config, so
+     * #isConfiguredLocalBackend stays true and its paths are preserved — only a
+     * fully-removed backend (config gone) is treated as dead. If a doc loses its
+     * last location, #reconcileRemovedLocations purges the doc.
+     */
+    async #purgeDeadBackendLocations() {
+        const db = this.#getDb();
+        const fileDocs = await db.list({ features: { allOf: ['data/abstraction/file'] } }).catch(() => []);
+        let swept = 0;
+        for (const doc of fileDocs) {
+            if (!Array.isArray(doc.locations) || doc.locations.length === 0) { continue; }
+            const deadUrls = [];
+            for (const loc of doc.locations) {
+                const parsed = parseLocationUrl(loc.url);
+                if (!parsed) { continue; }
+                let backend = null;
+                if (parsed.scheme === 'stored') { backend = parsed.backend; }
+                else if (parsed.scheme === 'file') { backend = loc.metadata?.backend || null; }
+                else { continue; } // remote scheme — not a local path, leave alone
+                if (backend && !this.#isConfiguredLocalBackend(backend)) { deadUrls.push(loc.url); }
+            }
+            if (deadUrls.length > 0) {
+                await this.#reconcileRemovedLocations(doc, deadUrls);
+                swept++;
+            }
+        }
+        if (swept > 0) {
+            this.#logger.info({ workspaceId: this.#workspaceId, docs: swept }, 'Resync: purged dead-backend locations');
+        }
+        return swept;
     }
 
     async #upsertDocument(storedFile = {}) {

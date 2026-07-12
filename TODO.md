@@ -2,9 +2,8 @@
 
 ## WebUI cosmetics
 
-Modal has a "import documents" context option, it should have the browser default
-
-- Lets refactor our webui for a better mobile/PWA on mobile UX
+- Modal has a "import documents" context option, it should have the browser default
+- Lets refactor our webui for a better mobile/PWA on mobile UX, we have many overflows on tiny screens
 - Uploads to workspaces other than "Universe dont seem to work"
 OK the issue seems to be refresh,
 Ah, no, it seems to be some initialization issue(stored?cacache) - no, refresh indeed

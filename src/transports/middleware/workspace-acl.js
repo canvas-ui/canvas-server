@@ -33,9 +33,15 @@ const logger = createLogger('canvas-server:middleware:workspace-acl');
 /**
  * Create workspace access validation middleware
  * @param {string} requiredPermission - Required permission ('read', 'write', 'admin')
+ * @param {Object} [options]
+ * @param {boolean} [options.allowIndexFallback=false] - Grant owner access from
+ *   the workspace index when the workspace cannot be instantiated (missing or
+ *   legacy directory). Only for config-level routes (PATCH/DELETE /:id) whose
+ *   handlers never call Workspace instance methods — request.workspace is the
+ *   plain index entry in that case.
  * @returns {Function} Fastify middleware function
  */
-export function createWorkspaceACLMiddleware(requiredPermission = 'read') {
+export function createWorkspaceACLMiddleware(requiredPermission = 'read', { allowIndexFallback = false } = {}) {
   return async function validateWorkspaceAccess(request, reply) {
     try {
       logger.debug(`Validating workspace access for permission: ${requiredPermission}`);
@@ -132,6 +138,24 @@ export function createWorkspaceACLMiddleware(requiredPermission = 'read') {
           description: 'Workspace owner'
         };
         return; // Continue to route handler
+      }
+
+      // 4b. Config-level fallback: the owner check above instantiates the
+      // workspace, which throws for broken/legacy dirs (status not_found).
+      // Ownership is still provable from the index, and config routes only
+      // need the index entry.
+      if (allowIndexFallback && userId) {
+        const entry = request.server.workspaceManager.getWorkspaceIndexEntry(workspaceId, userId);
+        if (entry) {
+          logger.debug(`Owner access granted via index entry for workspace ${workspaceId} (not instantiable)`);
+          request.workspace = entry;
+          request.workspaceAccess = {
+            permissions: ['read', 'write', 'admin'],
+            isOwner: true,
+            description: 'Workspace owner (index entry)'
+          };
+          return; // Continue to route handler
+        }
       }
 
       // 5. Try token-based access (only for API tokens, not JWT tokens)
@@ -476,9 +500,9 @@ async function loadWorkspaceForUserAccess(workspaceManager, workspaceEntry, user
 /**
  * Convenience middleware factories for common permissions
  */
-export const requireWorkspaceRead = () => createWorkspaceACLMiddleware('read');
-export const requireWorkspaceWrite = () => createWorkspaceACLMiddleware('write');
-export const requireWorkspaceAdmin = () => createWorkspaceACLMiddleware('admin');
+export const requireWorkspaceRead = (options) => createWorkspaceACLMiddleware('read', options);
+export const requireWorkspaceWrite = (options) => createWorkspaceACLMiddleware('write', options);
+export const requireWorkspaceAdmin = (options) => createWorkspaceACLMiddleware('admin', options);
 
 export default {
   createWorkspaceACLMiddleware,

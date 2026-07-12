@@ -316,7 +316,9 @@ export default async function workspaceRoutes(fastify, options) {
 
   // Update workspace
   fastify.patch('/:id', {
-    onRequest: [fastify.authenticate, resolveWorkspaceAddress, requireWorkspaceAdmin()],
+    // allowIndexFallback: config PATCH must work for workspaces that can't be
+    // instantiated (broken/legacy dir) — ownership is checked via the index.
+    onRequest: [fastify.authenticate, resolveWorkspaceAddress, requireWorkspaceAdmin({ allowIndexFallback: true })],
     schema: {
       params: {
         type: 'object',
@@ -376,7 +378,8 @@ export default async function workspaceRoutes(fastify, options) {
 
   // Delete workspace
   fastify.delete('/:id', {
-    onRequest: [fastify.authenticate, resolveWorkspaceAddress, requireWorkspaceAdmin()],
+    // allowIndexFallback: broken workspaces (missing dir) must stay deletable.
+    onRequest: [fastify.authenticate, resolveWorkspaceAddress, requireWorkspaceAdmin({ allowIndexFallback: true })],
     schema: {
       params: {
         type: 'object',

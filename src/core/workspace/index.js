@@ -396,6 +396,27 @@ class WorkspaceManager extends EventEmitter {
         return true;
     }
 
+    /**
+     * Raw index entry lookup — no Workspace instantiation. Lets config-level
+     * operations (PATCH/DELETE) work on workspaces that cannot be instantiated
+     * (missing/legacy directory, status not_found).
+     * @param {string} workspaceId - Workspace ID or name
+     * @param {string|null} userId - When set, entry must be owned by this user
+     * @returns {Object|null} Index entry (plain config object) or null
+     */
+    getWorkspaceIndexEntry(workspaceId, userId = null) {
+        // #findInIndex matches by id only — resolve names the same way
+        // tryOwnerAccess does before giving up.
+        let entry = this.#findInIndex(workspaceId);
+        if (!entry && userId) {
+            const resolvedId = this.resolveWorkspaceId(userId, workspaceId);
+            if (resolvedId) entry = this.#findInIndex(resolvedId);
+        }
+        if (!entry) return null;
+        if (userId && entry.owner !== userId) return null;
+        return entry;
+    }
+
     async getWorkspace(workspaceId, userId) {
         if (!this.#initialized) throw new Error('Not initialized');
 
@@ -414,6 +435,14 @@ class WorkspaceManager extends EventEmitter {
 
         // 3. Instantiate
         try {
+            // A missing config file would produce a hollow instance (owner/id
+            // undefined from an empty Conf store) that poisons the cache and
+            // breaks every downstream call — treat as not instantiable.
+            if (!entry.configPath || !existsSync(entry.configPath)) {
+                console.error(`Workspace ${workspaceId} config missing at ${entry.configPath} — not instantiable`);
+                return null;
+            }
+
             const conf = new Conf({
                 configName: path.basename(entry.configPath, '.json'),
                 cwd: path.dirname(entry.configPath),

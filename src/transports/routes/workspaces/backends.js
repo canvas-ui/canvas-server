@@ -132,6 +132,17 @@ export default async function workspaceBackendRoutes(fastify) {
         } catch (error) { return fail(request, reply, error); }
     });
 
+    // On-demand disk usage of a local storage backend (walks the backend root —
+    // potentially slow on large trees, hence user-triggered, never automatic).
+    fastify.get('/:driver/:address/usage', {
+        onRequest: [fastify.authenticate, requireWorkspaceRead()],
+    }, async (request, reply) => {
+        try {
+            const usage = await request.workspace.getBackendDiskUsage(arg(request.params.driver), arg(request.params.address));
+            return ok(reply, usage);
+        } catch (error) { return fail(request, reply, error); }
+    });
+
     // Test connection (capability-gated on the facade).
     fastify.post('/:driver/:address/test', {
         onRequest: [fastify.authenticate, requireWorkspaceWrite()],

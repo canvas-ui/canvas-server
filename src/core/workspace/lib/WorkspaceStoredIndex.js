@@ -3,6 +3,7 @@
 import path from 'path';
 import fs from 'fs/promises';
 import { createReadStream } from 'fs';
+import getFolderSize from 'get-folder-size';
 import Stored from '../../../services/stored/src/index.js';
 import { extract as extractBlobMetadata } from '../../../services/stored/src/extractors/index.js';
 import { parseLocationUrl } from '../../../services/synapsd/src/utils/path-helpers.js';
@@ -252,6 +253,29 @@ export class WorkspaceStoredIndex {
                 resyncing: false,
             });
         }
+    }
+
+    /**
+     * On-demand disk usage for a local backend. Uses get-folder-size (cross-
+     * platform, hardlink/inode-aware — stored's commit() hardlinks, so a naive
+     * walk double-counts; `loose` skips unreadable entries). Potentially slow on
+     * large trees (a whole home dir), which is why it only runs when explicitly
+     * requested; the result is cached on the backend status so list/status
+     * reads can show the last computed value.
+     */
+    async getBackendDiskUsage(backendName) {
+        const config = this.#dataBackends[backendName];
+        const isLocal = !!config && (LOCAL_DRIVERS.has(config.driver) || backendName === CACHE_BACKEND);
+        if (!isLocal) throw new Error(`Backend "${backendName}" has no local disk usage`);
+
+        const root = this.#resolveBackendRoot(backendName, config);
+        const bytes = await getFolderSize.loose(root);
+        const usage = { backend: backendName, bytes, computedAt: new Date().toISOString() };
+        this.#backendStatus.set(backendName, {
+            ...(this.#backendStatus.get(backendName) || {}),
+            diskUsage: usage,
+        });
+        return usage;
     }
 
     /**

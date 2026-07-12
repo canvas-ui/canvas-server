@@ -75,6 +75,33 @@ export default async function workspaceLifecycleRoutes(fastify, options) {
     }
   });
 
+  // On-demand on-disk size of the whole workspace root with a per-top-level
+  // directory breakdown (db, data, home, cache, …). Potentially slow on large
+  // workspaces (full tree walk), hence user-triggered — the export/sync
+  // planning number.
+  fastify.get('/usage', {
+    onRequest: [fastify.authenticate, requireWorkspaceRead()],
+    schema: {
+      params: {
+        type: 'object',
+        required: ['id'],
+        properties: {
+          id: { type: 'string' }
+        }
+      }
+    }
+  }, async (request, reply) => {
+    try {
+      const usage = await request.workspace.getDiskUsage();
+      const responseObject = new ResponseObject().found(usage, 'Workspace disk usage computed successfully');
+      return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+    } catch (error) {
+      fastify.log.error(error);
+      const responseObject = new ResponseObject().serverError('Failed to compute workspace disk usage');
+      return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+    }
+  });
+
   // Get database stats (SynapsD internals: FTS + dense-vector + embedder/queue).
   // Lives under the /db namespace — future dump/snapshot routes belong here too.
   fastify.get('/db/stats', {

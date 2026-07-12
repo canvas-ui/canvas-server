@@ -9,24 +9,10 @@ Possible fixes(need to be checked)
 1. Include `path` in the refresh event from `submitDocuments()` / `linkExistingDocuments()`.
 2. Invalidate cache for the **target path**, not only `selectedPath` (or invalidate all paths for that workspace+tree).
 3. Align `handleImportDocuments` with paste (always dispatch refresh).
-4. Optional: bypass cache on post-upload fetch (`force: true` flag).
-
-- "Incoming" should not be an option for workspace:data (blob store) in workspaces > workspace > settings > Data Backends, disabling it also not an option, enabled by default and always-enabled
-
-Possible cause:
-API **always** returns a boolean
-UI then shows the toggle whenever `indexIncoming !== undefined` — which is always, because it's coerced to `true`/`false`:
-
-For `workspace:data`:
-- `canToggle` is true (only `stored.cache` is excluded from toggling)
-- Toggle appears even though incoming is meaningless for cacache
-- User can flip it **on**, which is wrong
 
 - Picking a color + icon always resets the state of the form, one currently can not do both in one go 
-
 - link-to menu should also have an option to add a folder(long press/touch or context menu) - maybe a z-index bug
-
-- We will need to introduce more vibrant colors covering larger sections of our buttons and header areas in the near future and use colors as visual cues for our context/directory paths once we start supporting the to-be vertically and horizontally scrollable multi-context multi-focus layout
+- We will need to introduce more vibrant colors covering larger sections of our buttons/header areas in the near future and use colors as visual cues for our context/directory paths once we start supporting the to-be vertically and horizontally scrollable multi-context multi-focus layout
   - Also: **workspaces list edit form** (`/workspaces`) only has color, no icon, we should wire it in (and store it in the workspace config(workspace.json))
 - content area "grid" view should have nice mosaic pattern, we are not in 200x
 - `/workspaces/universe/settings` should be url-navigatable too, iow, each tab should get its own url => /workspaces/universe/settings/general etc

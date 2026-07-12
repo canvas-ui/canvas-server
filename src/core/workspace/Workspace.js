@@ -4,6 +4,7 @@
 import EventEmitter from 'eventemitter2';
 import * as fsPromises from 'fs/promises';
 import path from 'path';
+import getFolderSize from 'get-folder-size';
 import Conf from 'conf';
 import { v4 as uuidv4 } from 'uuid';
 // Logging
@@ -1395,6 +1396,9 @@ class Workspace extends EventEmitter {
             status: state,
             lastSyncAt: status.lastScanAt || null,
             lastError: status.lastError || null,
+            // Last on-demand disk usage ({bytes, files, computedAt}) if computed
+            // this runtime — see getBackendDiskUsage.
+            usage: status.diskUsage || null,
             capabilities: this.#backendCapabilities(driver, status),
             config: {
                 root: status.root || null,
@@ -1496,6 +1500,36 @@ class Workspace extends EventEmitter {
         if (!name) throw new Error('Storage backend name is required');
         await this.setDataBackendConfig(name, config);
         return this.getBackend(driver, name);
+    }
+
+    /** On-demand on-disk size of a local storage backend (slow walk — user-triggered). */
+    async getBackendDiskUsage(driver, address) {
+        if (driver === 'imap') throw new Error('IMAP backends have no local disk usage');
+        if (!this.#storedIndex?.isRunning) await this.#startStoredIndex();
+        return await this.#storedIndex.getBackendDiskUsage(address);
+    }
+
+    /**
+     * On-demand on-disk size of the WHOLE workspace root with a per-top-level
+     * directory breakdown (db, data, home, cache, …) — the number an export or
+     * sync needs to plan around. Total is measured on the root in one pass
+     * (hardlink/inode-aware via get-folder-size); the breakdown is per subtree,
+     * so cross-directory hardlinks can make its sum slightly exceed the total.
+     */
+    async getDiskUsage() {
+        const root = this.#rootPath;
+        const [bytes, entries] = await Promise.all([
+            getFolderSize.loose(root),
+            fsPromises.readdir(root, { withFileTypes: true }).catch(() => []),
+        ]);
+        const breakdown = {};
+        for (const entry of entries) {
+            const target = path.join(root, entry.name);
+            breakdown[entry.name] = entry.isDirectory()
+                ? await getFolderSize.loose(target)
+                : ((await fsPromises.stat(target).catch(() => null))?.size ?? 0);
+        }
+        return { workspaceId: this.id, bytes, breakdown, computedAt: new Date().toISOString() };
     }
 
     async updateBackend(driver, address, patch = {}) {

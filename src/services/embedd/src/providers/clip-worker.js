@@ -22,9 +22,13 @@ import os from 'node:os';
 import { AutoTokenizer, AutoProcessor, SiglipTextModel, SiglipVisionModel, RawImage, env } from '@huggingface/transformers';
 
 const MODEL = process.env.CANVAS_CLIP_MODEL || 'Xenova/siglip-base-patch16-224';
-// q8 keeps the download small and inference fast; retrieval quality is fine.
-// Set CANVAS_CLIP_DTYPE=fp32 for maximum quality.
-const DTYPE = process.env.CANVAS_CLIP_DTYPE || 'q8';
+// fp32 for retrieval quality: SigLIP's cross-modal match band is narrow
+// (matches ~0.85–0.95 cosine distance vs noise ~0.94+), and q8 quantization
+// error eats into exactly that margin. Set CANVAS_CLIP_DTYPE=q8 for a smaller
+// download + faster inference on constrained hosts. NOTE: changing dtype shifts
+// embeddings — re-embed the image space after switching or stored vectors won't
+// line up with query vectors.
+const DTYPE = process.env.CANVAS_CLIP_DTYPE || 'fp32';
 
 // ORT must be told its thread count EXPLICITLY. Left to default, onnxruntime-node
 // spins one intra-op thread per visible core and pins each to a CPU via
@@ -108,8 +112,16 @@ async function handle(msg) {
     }
 }
 
-// Serialize requests — one ORT run at a time.
-let chain = Promise.resolve();
-process.on('message', (msg) => { chain = chain.then(() => handle(msg)); });
+// Serialize per session, not globally: the in-process fault was concurrent runs
+// on a SHARED session, but text (tokenizer+textModel) and image (processor+
+// visionModel) are disjoint sessions. Keeping them on separate chains means a
+// search's query embedding ('text') never waits behind the ingest queue's image
+// embeds — that head-of-line blocking showed up as sporadic multi-second (up to
+// timeout) search latency during bulk ingest.
+const chains = { text: Promise.resolve(), image: Promise.resolve() };
+process.on('message', (msg) => {
+    const lane = msg?.kind === 'image' ? 'image' : 'text';
+    chains[lane] = chains[lane].then(() => handle(msg));
+});
 
 process.send({ ready: true });

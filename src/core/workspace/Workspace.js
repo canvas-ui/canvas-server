@@ -83,6 +83,7 @@ class Workspace extends EventEmitter {
     #roleManager = null;
     #embedd = null;            // shared embedding service (optional; server-managed)
     #embeddRegistered = false;
+    #embedStoreCount = 0;      // storeVectors calls since the last mid-ingest compaction
 
     constructor(options) {
         super({
@@ -182,14 +183,17 @@ class Workspace extends EventEmitter {
 
     /**
      * Live-tune search knobs (persisted to workspace.json `semantic`, applied to
-     * the running DB without a restart). Currently the image relevance floor.
-     * @param {{imageMaxDistance?: number|null}} tuning
+     * the running DB without a restart): image relevance floor + RRF fusion weights.
+     * @param {{imageMaxDistance?: number|null, searchWeights?: {fts?:number, dense?:number, image?:number}}} tuning
      */
     async setSearchTuning(tuning = {}) {
         const current = this.#configStore.get('semantic', {}) || {};
         const next = { ...current };
         if (Object.prototype.hasOwnProperty.call(tuning, 'imageMaxDistance')) {
             next.imageMaxDistance = tuning.imageMaxDistance;
+        }
+        if (tuning.searchWeights && typeof tuning.searchWeights === 'object') {
+            next.searchWeights = { ...(current.searchWeights || {}), ...tuning.searchWeights };
         }
         this.#configStore.set('semantic', next);
         const applied = this.#db?.setSearchTuning ? this.#db.setSearchTuning(tuning) : null;
@@ -343,8 +347,9 @@ class Workspace extends EventEmitter {
                     ? {
                         embedQuery: (text, space) => this.#embedd.embedQuery(text, space),
                         // Workspace-level search tuning (persisted in workspace.json
-                        // under `semantic`). Undefined → synapsd default (0.97).
+                        // under `semantic`). Undefined → synapsd defaults.
                         imageMaxDistance: (this.#configStore.get('semantic', {}) || {}).imageMaxDistance,
+                        searchWeights: (this.#configStore.get('semantic', {}) || {}).searchWeights,
                     }
                     : undefined,
             });
@@ -355,6 +360,18 @@ class Workspace extends EventEmitter {
             await this.#migrateLegacyBackendsSubtree();
             this.#bindRuntimeEvents();
             this.#registerEmbedd();
+            // Resume interrupted embedding: the embedd queue is in-memory, so a
+            // restart mid-ingest strands docs in the durable bitmap ledger until
+            // something re-drives them. Reconcile is a cheap idempotent bitmap
+            // read when there is no gap — safe to fire on every start.
+            if (this.#embedd?.reconcile) {
+                this.#embedd.reconcile(this.id).then((r) => {
+                    if (r?.enqueued > 0) {
+                        this.#logger.info({ workspaceId: this.id, enqueued: r.enqueued }, 'Embedding reconcile resumed pending docs');
+                    }
+                }).catch((err) =>
+                    this.#logger.warn({ workspaceId: this.id, error: err.message }, 'Start-time embedding reconcile failed'));
+            }
             // Mark ACTIVE before booting stored/mail indices: their initial sync
             // (IMAP scan → ingestMessage → #put → #getActiveDb) needs isActive,
             // otherwise every fetched message rejects with "Workspace not active".
@@ -556,11 +573,41 @@ class Workspace extends EventEmitter {
     // pushes them back here. These two methods are the workspace-level adapter
     // the embedd service registers with (storeVectors + resolveInput).
 
+    // Mid-ingest maintenance cadence: every N vector upserts, compact the Lance
+    // tables + refresh the ANN index. Each upsert is its own delete+add commit,
+    // so a bulk import otherwise accumulates thousands of tiny fragments that
+    // every query must brute-force scan — search latency grows with ingest
+    // progress until it times out. Runs inside the (sequential) embedd queue
+    // handler, so it never races other vector writes.
+    static #EMBED_OPTIMIZE_EVERY = Math.max(50, Number(process.env.CANVAS_EMBED_OPTIMIZE_EVERY) || 500);
+
     /** Vector sink: persist embedd-computed chunk vectors into a synapsd space. */
     async storeDocumentEmbeddings(docId, schema, updatedAt, chunks, opts = {}) {
-        return await this.#getActiveDb().storeDocumentEmbeddings(
+        const res = await this.#getActiveDb().storeDocumentEmbeddings(
             parseDocumentId(docId, 'Document ID'), schema, updatedAt, chunks, opts,
         );
+        if (++this.#embedStoreCount >= Workspace.#EMBED_OPTIMIZE_EVERY) {
+            this.#embedStoreCount = 0;
+            await this.#optimizeSearchIndexes('mid-ingest');
+        }
+        return res;
+    }
+
+    /**
+     * Compact Lance fragments, prune old versions and (re)build ANN indexes for
+     * all vector spaces + the FTS table. Best-effort: FTS compaction can lose a
+     * commit race against concurrent document puts (chokidar ingest) — that
+     * attempt aborts harmlessly and the next cadence retries.
+     */
+    async #optimizeSearchIndexes(reason) {
+        const db = this.#getActiveDb();
+        try {
+            await db.optimizeVectors();
+            await db.optimizeLance();
+            this.#logger.info({ workspaceId: this.id, reason }, 'Search indexes optimized');
+        } catch (error) {
+            this.#logger.warn({ workspaceId: this.id, reason, error: error.message }, 'Search index optimize failed');
+        }
     }
 
     /** Ledger read: docIds that match `schemas` but have no embedding for `space`. */
@@ -584,6 +631,15 @@ class Workspace extends EventEmitter {
                 this.storeDocumentEmbeddings(docId, schema, updatedAt, chunks, opts),
             getUnembedded: (space, schemas) => this.getUnembeddedDocIds(space, schemas),
             clearSpace: (space) => this.clearSpace(space),
+            onQueueDrained: () => {
+                // The shared queue drains after every trickle (a single note
+                // save); a full compact + HNSW rebuild per save would dwarf the
+                // ingest itself. Only optimize once enough upserts accumulated —
+                // queries tolerate a few dozen fragments fine.
+                if (this.#embedStoreCount < 50) { return; }
+                this.#embedStoreCount = 0;
+                return this.#optimizeSearchIndexes('queue-drained');
+            },
         });
         // Live enqueue: new + content-updated docs. Blob ingestion also lands as
         // document.inserted (WorkspaceStoredIndex creates docs), so this covers

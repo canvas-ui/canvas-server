@@ -91,6 +91,17 @@ class ModelWorker {
                 reject(err);
             });
 
+            this.#worker.on('exit', (code) => {
+                debug(`ONNX worker exited (code ${code})`);
+                const err = new Error(`ONNX worker exited (code ${code})`);
+                for (const [, entry] of this.#pending) { entry.reject(err); }
+                this.#pending.clear();
+                // Allow a lazy respawn on the next request.
+                this.#worker = null;
+                this.#readyPromise = null;
+                reject(err);
+            });
+
             this.#worker.postMessage({
                 type: 'init',
                 model: this.model,
@@ -103,9 +114,28 @@ class ModelWorker {
     }
 
     #send(texts, mode) {
+        // A wedged worker (or dropped reply) would otherwise leave this promise
+        // unsettled forever — and rank() awaits the query embedding, so one lost
+        // reply hangs EVERY subsequent search with nothing in the log. Mirror the
+        // CLIP provider: time out, terminate, respawn lazily on the next call.
+        // Generous default to cover a cold first-call model load/download.
+        const timeoutMs = Math.max(1000, Number(process.env.CANVAS_EMBED_TIMEOUT_MS) || 120000);
         return new Promise((resolve, reject) => {
             const jobId = this.#nextJobId++;
-            this.#pending.set(jobId, { resolve, reject });
+            const timer = setTimeout(() => {
+                if (!this.#pending.has(jobId)) { return; }
+                this.#pending.delete(jobId);
+                debug(`ONNX embed timeout after ${timeoutMs}ms (mode=${mode}); terminating worker`);
+                // terminate() fires 'exit', which rejects any other pending jobs
+                // and resets #worker/#readyPromise for a lazy respawn.
+                this.#worker?.terminate().catch(() => {});
+                reject(new Error(`ONNX embed timeout after ${timeoutMs}ms`));
+            }, timeoutMs);
+            if (typeof timer.unref === 'function') { timer.unref(); }
+            this.#pending.set(jobId, {
+                resolve: (v) => { clearTimeout(timer); resolve(v); },
+                reject: (e) => { clearTimeout(timer); reject(e); },
+            });
             this.#worker.postMessage({ type: 'embed', jobId, texts, mode });
         });
     }

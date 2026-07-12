@@ -157,15 +157,27 @@ export default async function workspaceLifecycleRoutes(fastify, options) {
     }
   });
 
-  // Live-tune search knobs (image relevance floor). Persisted to workspace.json
-  // and applied to the running DB without a restart. { imageMaxDistance: number|null }.
+  // Live-tune search knobs (image relevance floor + hybrid RRF fusion weights).
+  // Persisted to workspace.json and applied to the running DB without a restart.
+  // { imageMaxDistance?: number|null, searchWeights?: { fts?, dense?, image? } }.
   fastify.put('/db/tuning', {
     onRequest: [fastify.authenticate, requireWorkspaceAdmin()],
     schema: {
       params: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } },
       body: {
         type: 'object',
-        properties: { imageMaxDistance: { type: ['number', 'null'] } },
+        properties: {
+          imageMaxDistance: { type: ['number', 'null'] },
+          searchWeights: {
+            type: 'object',
+            properties: {
+              fts: { type: 'number', minimum: 0 },
+              dense: { type: 'number', minimum: 0 },
+              image: { type: 'number', minimum: 0 },
+            },
+            additionalProperties: false,
+          },
+        },
         additionalProperties: false,
       },
     },

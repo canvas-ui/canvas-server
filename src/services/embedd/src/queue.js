@@ -21,10 +21,18 @@ export default class Queue extends EventEmitter {
     #queued = new Set();
     #running = false;
     #stopped = false;
+    #batchSize;
 
-    constructor(handler) {
+    /**
+     * @param {(jobs: any[]) => Promise<void>} handler receives a BATCH of jobs
+     *   (1..batchSize). The handler owns per-job error isolation; a throw drops
+     *   the whole batch (surfaced on 'error' with the batch's keys).
+     * @param {{batchSize?: number}} [opts]
+     */
+    constructor(handler, { batchSize = 1 } = {}) {
         super();
         this.#handler = handler;
+        this.#batchSize = Math.max(1, batchSize);
     }
 
     get size() { return this.#queue.length; }
@@ -55,14 +63,15 @@ export default class Queue extends EventEmitter {
         let processed = 0;
         try {
             while (this.#queue.length > 0 && !this.#stopped) {
-                const { key, job } = this.#queue.shift();
-                this.#queued.delete(key);
+                const batch = this.#queue.splice(0, this.#batchSize);
+                for (const { key } of batch) { this.#queued.delete(key); }
                 try {
-                    await this.#handler(job);
-                    processed++;
+                    await this.#handler(batch.map((b) => b.job));
+                    processed += batch.length;
                 } catch (e) {
-                    debug(`job ${key} failed: ${e.message}`);
-                    this.emit('error', { key, job, error: e.message });
+                    const keys = batch.map((b) => b.key).join(',');
+                    debug(`batch [${keys}] failed: ${e.message}`);
+                    this.emit('error', { key: keys, jobs: batch.map((b) => b.job), error: e.message });
                 }
             }
         } finally {

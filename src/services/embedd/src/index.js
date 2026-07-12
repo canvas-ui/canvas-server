@@ -35,6 +35,7 @@ import { COMMENT_CHUNK_ID, TEXT_SPACE } from './constants.js';
  *   } | null                    // null => skip (doc gone / not embeddable)
  *   storeVectors(docId, schema, updatedAt, chunks, { space }) -> Promise<void>
  *     chunks: { chunkId, text?, vector }[]
+ *   onQueueDrained?() -> Promise<void>   // optional: queue fully drained (compact/index hook)
  */
 export default class Embedd {
 
@@ -49,8 +50,25 @@ export default class Embedd {
         this.#providers.set('onnx', new OnnxProvider({ cacheDir: options.onnxCacheDir || null }));
         this.#providers.set('ollama', new OllamaProvider({ host: options.ollamaHost }));
         this.#providers.set('clip', new ClipProvider({ cacheDir: options.clipCacheDir || options.onnxCacheDir || null }));
-        this.#queue = new Queue((job) => this.#handle(job));
-        this.#queue.on('error', (e) => debug(`queue error: ${e.key}: ${e.error}`));
+        // Batched drain: images resolved in one batch share a single provider
+        // call (one IPC round-trip + one batched ORT run for up to N images)
+        // instead of one call per doc — the dominant ingest cost for photo sets.
+        const batchSize = Math.max(1, Number(process.env.CANVAS_EMBED_BATCH) || 8);
+        this.#queue = new Queue((jobs) => this.#handleBatch(jobs), { batchSize });
+        this.#queue.on('error', (e) => console.warn(`embedd: job ${e.key} failed (doc keeps no vectors until reconcile): ${e.error}`));
+        // Bulk ingests leave the Lance tables shredded (one delete+add commit per
+        // doc) with no ANN index; notify workspaces on drain so they can compact
+        // + index without waiting for a manual admin optimize. Best-effort.
+        this.#queue.on('drained', async () => {
+            // Sequential on purpose: compaction + ANN rebuild is CPU-heavy native
+            // work inside this process — running every workspace's maintenance in
+            // parallel right after a drain visibly degrades live queries.
+            for (const [wsId, ws] of this.#workspaces) {
+                if (typeof ws.onQueueDrained !== 'function') { continue; }
+                try { await ws.onQueueDrained(); }
+                catch (e) { debug(`onQueueDrained failed for ${wsId}: ${e.message}`); }
+            }
+        });
     }
 
     get router() { return this.#router; }
@@ -84,19 +102,71 @@ export default class Embedd {
         for (const id of docIds) { this.enqueue(wsId, id); }
     }
 
-    async #handle(job) {
-        const ws = this.#workspaces.get(job.wsId);
-        if (!ws) { return; }
+    /**
+     * Drain one batch: resolve every job's input, embed all image-modality
+     * inputs per rule in ONE provider call, then finish each doc individually
+     * (store vectors, comment chunk, seen ticks). Per-doc errors are isolated —
+     * one broken doc never fails its batch-mates.
+     */
+    async #handleBatch(jobs) {
+        // 1) Resolve inputs.
+        const items = [];   // { job, ws, input, rule }
+        for (const job of jobs) {
+            const ws = this.#workspaces.get(job.wsId);
+            if (!ws) { continue; }
+            try {
+                const input = await ws.resolveInput(job.docId);
+                if (!input) { continue; }   // doc gone → do not record as seen
+                const rule = input.skip ? null : this.#router.route(input);
+                items.push({ job, ws, input, rule });
+            } catch (e) {
+                console.warn(`embedd: resolveInput failed for ${job.wsId}:${job.docId} (doc keeps no vectors until reconcile): ${e.message}`);
+            }
+        }
 
-        const input = await ws.resolveInput(job.docId);
-        if (!input) { return; }   // doc gone → do not record as seen
+        // 2) Batch-embed images, grouped by rule (provider/space/model).
+        const rowsByItem = new Map();
+        const imageGroups = new Map();
+        for (const it of items) {
+            if (!it.rule || it.input.modality !== 'image' || !it.input.bytes) { continue; }
+            const key = `${it.rule.provider}/${it.rule.space}/${it.rule.model}`;
+            if (!imageGroups.has(key)) { imageGroups.set(key, { rule: it.rule, list: [] }); }
+            imageGroups.get(key).list.push(it);
+        }
+        for (const { rule, list } of imageGroups.values()) {
+            const provider = this.#providers.get(rule.provider);
+            if (!provider) { continue; }   // #finish surfaces the unknown-provider error per doc
+            try {
+                const { vectors } = await provider.embedImage(list.map((it) => it.input.bytes), rule);
+                list.forEach((it, i) => {
+                    const vec = vectors?.[i];
+                    rowsByItem.set(it, Array.isArray(vec) ? [{ chunkId: 0, vector: vec }] : []);
+                });
+            } catch (e) {
+                // Whole-batch inference failure (e.g. one corrupt image poisons
+                // the ORT run) → fall back to per-doc embedding in #finish.
+                debug(`batch image embed failed (${list.length} docs), falling back to per-doc: ${e.message}`);
+            }
+        }
 
+        // 3) Finish docs sequentially (bounded main-thread/LMDB pressure).
+        for (const it of items) {
+            try {
+                await this.#finish(it, rowsByItem.get(it));
+            } catch (e) {
+                console.warn(`embedd: job ${it.job.wsId}:${it.job.docId} failed (doc keeps no vectors until reconcile): ${e.message}`);
+            }
+        }
+    }
+
+    // Store/comment/seen pipeline for one resolved doc. `precomputedRows` skips
+    // the primary embed (batch image path); undefined → embed here.
+    async #finish({ job, ws, input, rule }, precomputedRows) {
         const { schema, updatedAt } = input;
         // The doc appears in the gap of EVERY space that lists its schema as a
         // candidate (files are candidates for both text+image). It resolves to at
         // most one; the rest must still be marked seen so reconcile converges.
         const candidateSpaces = this.#router.candidateSpaces(schema);
-        const rule = input.skip ? null : this.#router.route(input);
         const comment = typeof input.comment === 'string' ? input.comment.trim() : '';
 
         // Spaces we've written real vectors to (so the seen-[] pass below skips them
@@ -107,9 +177,9 @@ export default class Embedd {
         if (rule) {
             const provider = this.#providers.get(rule.provider);
             if (!provider) { throw new Error(`unknown provider '${rule.provider}'`); }
-            let rows;
+            let rows = precomputedRows;
             try {
-                rows = await this.#embedInput(provider, rule, input);
+                rows = rows ?? await this.#embedInput(provider, rule, input);
             } catch (err) {
                 // A provider that can't handle this input yet (e.g. image/CLIP is not
                 // wired) must NOT abort the job — the doc's comment still needs its

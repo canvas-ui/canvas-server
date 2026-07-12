@@ -1,32 +1,7 @@
 # TODO List
 
-## Workspace/SynapsD tree refactor
-
-We should change our workspace tree logic 
-- We should still pre-create 2 trees
-  - Context tree (type context/ctx)
-  - Directory tree (type directory/dir)
-    - webui bug: It should be possible to click the "root" folder in a directory tree and  insert data into it, currently we switch to context tree on click
-- Change: All backends should live in their own, separate, 3rd tree dedicated exclusively to the backends(with full CRUD semantics where the backend allows that => oure `stored` module may need to support fetching the whole tree from a local or remote backend - like s3) - tree structure related to the backend part(file/workspace:home/real/in-workspace/path or imap/user@domain.tld/Inbox etc) should be the same, we'd just move .backend into a "backends" tree (type directory)
-  - Inbound sync(imap, slack/teams/whatsapp) populates the index and the backend tree, user freely decides which documents to link into his cherrished context or directory trees
-  - Agentic memory running synapsd as its own memory backend will create multiple semantic context-type trees for anchor based memory so where appropriate, we should keep the logic on the Workspace level, synapsd should be as generic as possible(where it needs to be)
-
-The ordering in our webui should therefor be
-- Context tree(icon only)
-- Context layers(icon only)
-- Directory tree(icon only)
-- Backends tree(type dir, icon only)
-
-Couple of notes
-- The ".incoming" handler/logic is I guess obsolete, we index documents from backends in a separate tree so no tree polution, - We should be able to fetch all documents that are indexed in a tree (or not indexed - iow deamed not important and safe to purge from a backend - lets say a imap mailbox)
-- workspace:home toggle for read-only is very important, one may not want to enable CRUD semantics for the webui/rest api if the roaming workspaces home folder is exported via samba
-- we need to be careful with documents stored only in workspace:data, removing those from index if workspace:data is the only location should also remove them from workspace:data since this cacache blob store is not browseable(by design), this was probably already mitigated
-- Sync workers should have a in-workspace (Workspaces > Workspace > Settings > Services || Data Backends) configurable exclusions, I'd start with workspace:home (we are not a spam filter) - users may copy their codebases or whole home drives into the "roaming" workspace home - all dotfiles and gem/node_modules/pycache and browser cache folders should be excluded(excluding dotfiles already solves a lot of those, but lets make sure we never ingest 10k files from node_modules or simillar or a local kernel git repo (I used those to stress-test the system hence why this should be a configurable option in the webui))
-
-
 ## WebUI cosmetics
 
-- Publicly shared canvases are not accessible without auth
 - Uploads to workspaces other than "Universe dont seem to work"
 OK the issue seems to be refresh,
 Ah, no, it seems to be some initialization issue(stored?cacache) - no, refresh indeed
@@ -67,9 +42,10 @@ For `workspace:data`:
 ### Content area
 - (deffered) Content area section should support tabs 
 
-## Remote workspaces
+## Share functionality + remote workspaces
 
-Open a remote workspace functionality does not work, either the share tokens do not work or the api endpoints do not work, regardless, workspaces are not really required to sit locally on the server, we will soon implement our canvas-edge runtime which will autoregister to a canvas-server instance and will presumably run locally at the user - we should handle that scenario transparently (maybe a think middleware that would keep all integration talkint to the same rest api but handle proxying to remote workspaces transparently)
+- Publicly shared canvases are not accessible without auth
+- Open a remote workspace functionality does not work, either the share tokens do not work or the api endpoints do not work, regardless, workspaces are not really required to sit locally on the server, we will soon implement our canvas-edge runtime which will autoregister to a canvas-server instance and will presumably run locally at the user - we should handle that scenario transparently (maybe a think middleware that would keep all integration talkint to the same rest api but handle proxying to remote workspaces transparently)
 Question is what protocol(s) to support, we currently use http+ws
 
 ## Workspace runtime

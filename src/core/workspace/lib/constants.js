@@ -67,6 +67,8 @@ const WORKSPACE_DATA_BACKENDS = {
     // target for users without an external object store: dump blobs, care only
     // about the synapsd virtual tree. Bytes are checksum-keyed + deduped +
     // integrity-checked; locations written as stored://workspace:data/<key>.
+    // Structural (always-on): the blob target every connector persists into.
+    // No readOnly knob — the store is managed and never exported/edited directly.
     'workspace:data': {
         enabled: true,
         supported: true,
@@ -75,7 +77,6 @@ const WORKSPACE_DATA_BACKENDS = {
         managed: true,
         watch: false,
         resync: false,
-        readOnly: false,
     },
     'stored.cache': {
         enabled: true,

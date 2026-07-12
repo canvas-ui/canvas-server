@@ -227,7 +227,21 @@ class Workspace extends EventEmitter {
         return this.services[serviceName]?.enabled === true;
     }
 
+    // Structural local stores every workspace depends on: workspace:data is the
+    // managed blob target (persistBlob/stored:// addressing), stored.cache backs
+    // thumbnails/derived artifacts. Neither can be disabled, and as managed
+    // (non-browseable, never exported) stores the readOnly knob is meaningless.
+    static #ALWAYS_ON_BACKENDS = new Set([WorkspaceStoredIndex.DATA_BLOB_BACKEND, WorkspaceStoredIndex.CACHE_BACKEND]);
+
     async setDataBackendConfig(backendName, patch) {
+        if (Workspace.#ALWAYS_ON_BACKENDS.has(backendName)) {
+            if (patch?.enabled === false) {
+                throw new Error(`Data backend "${backendName}" is structural and cannot be disabled`);
+            }
+            if (patch && 'readOnly' in patch) {
+                throw new Error(`Data backend "${backendName}" is a managed store — read-only does not apply`);
+            }
+        }
         const dataBackends = this.dataBackends;
         const next = { ...dataBackends[backendName], ...patch };
         dataBackends[backendName] = next;

@@ -12,6 +12,7 @@ import { v4 as uuidv4 } from 'uuid';
 
 // Logging
 import { createLogger } from '../../utils/log.js';
+import { compareByUserOrder } from '../../utils/list-order.js';
 
 // Includes
 import Workspace from './Workspace.js';
@@ -385,7 +386,10 @@ class WorkspaceManager extends EventEmitter {
                 results.push(item);
             }
         }
-        return results;
+        // User-defined order at the source so every consumer (web lists,
+        // Link To pickers, CLI, ...) sees the same ordering: explicit `order`
+        // first, unordered last, stable tiebreak on createdAt then name.
+        return results.sort(compareByUserOrder);
     }
 
     async hasWorkspace(workspaceId, userId) {

@@ -190,51 +190,111 @@ export default async function workspaceTreeRoutes(fastify) {
       : { context: { tree: tree.id, path }, directory: null };
   }
 
+  function joinTreePath(parent, name) {
+    return parent === '/' ? `/${name}` : `${parent}/${name}`;
+  }
+
+  // Walk a buildJsonTree() result down to the node at `path` (segments are
+  // node names). Needed for subtree copies — pathNodeView only returns the
+  // single layer, not its children.
+  function findJsonTreeNode(root, path) {
+    const segments = normalizeTreePath(path).split('/').filter(Boolean);
+    let node = root;
+    for (const segment of segments) {
+      node = (node?.children || []).find((child) => child?.name === segment);
+      if (!node) { return null; }
+    }
+    return node;
+  }
+
+  // Cross-tree "paste a folder" (e.g. backends → context tree). Not an
+  // on-disk copy: creates the tree path(s) in the target tree and links the
+  // source documents (id arrays) to them. With `recursive` the whole source
+  // subtree structure is mirrored.
   async function copyAcrossTrees(workspace, sourceTree, targetTree, fromPath, targetPath, recursive = false, move = false) {
     const normalizedTargetPath = normalizeTreePath(targetPath);
+    const normalizedFromPath = normalizeTreePath(fromPath);
     if (isBackendsTree(workspace, targetTree)) {
       return { data: null, count: 0, error: 'Backends tree is read-only' };
     }
     if (move && isBackendsTree(workspace, sourceTree)) {
       return { data: null, count: 0, error: 'Backends tree is read-only (copy documents out instead of moving)' };
     }
-    if (!pathNodeView(targetTree, normalizedTargetPath)) {
-      return { data: null, count: 0, error: `Target path not found: ${normalizedTargetPath}` };
+    const sourceNode = pathNodeView(sourceTree, normalizedFromPath);
+    if (!sourceNode?.id) {
+      return { data: null, count: 0, error: `Path not found: ${normalizedFromPath}` };
     }
 
-    const docs = await workspace.list({
-      ...treeSelectorFor(sourceTree, fromPath),
-      limit: 0,
-      parse: false,
-    });
-    if (docs.error) {
-      return { data: null, count: 0, error: docs.error };
+    // Pasting onto an existing target node copies the source folder UNDER it
+    // (`<target>/<sourceName>`); a non-existing target is taken as the full
+    // destination path. Missing paths are created below.
+    let finalPath = normalizedTargetPath;
+    const sourceLeafName = leafNameOf(normalizedFromPath);
+    if (pathNodeView(targetTree, normalizedTargetPath) && sourceLeafName) {
+      finalPath = joinTreePath(normalizedTargetPath, sourceLeafName);
     }
 
-    const documentIds = docs.map((doc) => doc?.id).filter((id) => typeof id === 'number');
-    if (documentIds.length > 0) {
-      const linked = await workspace.linkMany(documentIds, treeSelectorFor(targetTree, normalizedTargetPath));
-      if (linked.failed?.length) {
-        return { data: linked, count: linked.successful?.length || 0, error: 'Some documents could not be linked to the target tree' };
-      }
-      if (move) {
-        const unlinked = await workspace.unlinkMany(documentIds, treeSelectorFor(sourceTree, fromPath), [], { recursive });
-        if (unlinked.failed?.length) {
-          return { data: unlinked, count: unlinked.successful?.length || 0, error: 'Copied, but some source memberships could not be removed' };
+    // Source→target path pairs; recursive mirrors the whole subtree so the
+    // folder structure survives the copy.
+    const jobs = [{ src: normalizedFromPath, dst: finalPath }];
+    if (recursive) {
+      const subtree = findJsonTreeNode(sourceTree.buildJsonTree(), normalizedFromPath);
+      const walk = (node, srcBase, dstBase) => {
+        for (const child of node?.children || []) {
+          if (!child?.name) { continue; }
+          const src = joinTreePath(srcBase, child.name);
+          const dst = joinTreePath(dstBase, child.name);
+          jobs.push({ src, dst });
+          walk(child, src, dst);
         }
+      };
+      if (subtree) { walk(subtree, normalizedFromPath, finalPath); }
+    }
+
+    // Per path: ensure it exists in the target tree, then link the source
+    // documents. Listing at a path includes descendants, so a doc under a
+    // subfolder is linked at each ancestor too — the deepest link wins the
+    // final placement and the extra links are idempotent subsets.
+    const allIds = new Set();
+    const failures = [];
+    for (const job of jobs) {
+      await insertTreePath(targetTree, job.dst, {});
+      const docs = await workspace.list({
+        ...treeSelectorFor(sourceTree, job.src),
+        limit: 0,
+        parse: false,
+      });
+      if (docs.error) {
+        failures.push(`${job.src}: ${docs.error}`);
+        continue;
+      }
+      const documentIds = docs.map((doc) => doc?.id).filter((id) => typeof id === 'number');
+      if (documentIds.length === 0) { continue; }
+      const linked = await workspace.linkMany(documentIds, treeSelectorFor(targetTree, job.dst));
+      if (linked.failed?.length) {
+        failures.push(`${job.dst}: ${linked.failed.length} document(s) could not be linked`);
+      }
+      documentIds.forEach((id) => allIds.add(id));
+    }
+
+    if (move && allIds.size > 0) {
+      const unlinked = await workspace.unlinkMany([...allIds], treeSelectorFor(sourceTree, normalizedFromPath), [], { recursive });
+      if (unlinked.failed?.length) {
+        failures.push(`source unlink: ${unlinked.failed.length} failure(s)`);
       }
     }
 
     return {
       data: {
-        pathFrom: fromPath,
-        pathTo: normalizedTargetPath,
+        pathFrom: normalizedFromPath,
+        pathTo: finalPath,
         sourceTree: sourceTree.name,
         targetTree: targetTree.name,
-        documentIds,
+        pathsCreated: jobs.length,
+        documentIds: [...allIds],
       },
-      count: documentIds.length,
-      error: null,
+      count: allIds.size,
+      error: failures.length ? failures.join('; ') : null,
     };
   }
 

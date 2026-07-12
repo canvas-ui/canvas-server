@@ -11,6 +11,7 @@ const logger = createLogger('context-manager:index');
 // Includes
 import Context from './lib/Context.js';
 import { accessDenied, contextNotFound, workspaceNotReady } from './lib/errors.js';
+import { compareByUserOrder } from '../../utils/list-order.js';
 
 // Constants
 const DEFAULT_WORKSPACE_ID = 'universe';
@@ -462,7 +463,9 @@ class ContextManager extends EventEmitter {
                 }
             }
 
-            return userContextsArray;
+            // User-defined order at the source — same contract as workspaces
+            // (explicit `order` first, unordered last).
+            return userContextsArray.sort(compareByUserOrder);
         } catch (error) {
             return [];
         }

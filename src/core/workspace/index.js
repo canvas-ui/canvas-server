@@ -481,6 +481,7 @@ class WorkspaceManager extends EventEmitter {
             owner: userId,
             color: options.color || randomcolor(),
             icon: options.icon || null,
+            order: Number.isFinite(options.order) ? options.order : null,
             homeScreen: options.homeScreen || {},
             type: options.type || 'workspace',
             status: WORKSPACE_STATUS_CODES.AVAILABLE,

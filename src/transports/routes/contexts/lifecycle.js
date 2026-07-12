@@ -293,6 +293,7 @@ export default async function lifecycleRoutes(fastify, options) {
         properties: {
           name: { type: 'string' },
           description: { type: 'string' },
+          order: { type: 'number' },
           metadata: { type: 'object' },
           acl: { type: 'object' },
           restApi: { type: 'object' }

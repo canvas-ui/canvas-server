@@ -37,7 +37,6 @@ class Context extends EventEmitter {
     #path;
     #pathArray;
     #userId;
-    #color;
 
     // Access Control List: maps userId to accessLevel (e.g., {"user@example.com": "documentRead"})
     #acl;
@@ -66,6 +65,7 @@ class Context extends EventEmitter {
     #createdAt;
     #updatedAt;
     #isLocked;
+    #order; // User-defined list position (null = unordered, sorts last)
 
     // Additional properties
     #pendingUrl;
@@ -109,7 +109,7 @@ class Context extends EventEmitter {
         this.#tree = rawTree.type === 'directory'
             ? this.#workspace.getDirectoryTree(this.#treeId)
             : this.#workspace.getContextTree(this.#treeId);
-        this.#color = this.#workspace.color;
+        this.#order = Number.isFinite(options.order) ? options.order : null;
 
         // Context manager references
         if (!options.contextManager) { throw new Error('Context manager instance is required'); }
@@ -227,7 +227,13 @@ class Context extends EventEmitter {
     get workspaceId() { return this.#workspace.id; }
     get workspaceName() { return this.#workspace.name; }
     get treeId() { return this.#treeId; }
-    get color() { return this.#color; }
+    get color() { return this.#deriveStyle().color; }
+    get icon() { return this.#deriveStyle().icon; }
+    get order() { return this.#order; }
+    set order(value) {
+        this.#order = Number.isFinite(value) ? value : null;
+        this.#updatedAt = new Date().toISOString();
+    }
     get pendingUrl() { return this.#pendingUrl; }
     get bitmapArrays() {
         return {
@@ -249,6 +255,28 @@ class Context extends EventEmitter {
     /**
      * Helper Methods
      */
+
+    /**
+     * Context icon/color follow the tree layer at the bound path (metadata.ui
+     * takes precedence over the layer's legacy top-level color), falling back
+     * to the bound workspace's style. Computed on read so layer style edits
+     * show up without a context URL change.
+     * @returns {{color: string|null, icon: string|null}}
+     */
+    #deriveStyle() {
+        let color = this.#workspace?.color ?? null;
+        let icon = this.#workspace?.icon ?? null;
+        try {
+            if (this.#tree && this.#path && this.#path !== '/') {
+                const layer = this.#tree.getLayerForPath(this.#path);
+                if (layer) {
+                    color = layer.metadata?.ui?.color ?? layer.color ?? color;
+                    icon = layer.metadata?.ui?.icon ?? icon;
+                }
+            }
+        } catch (_) { /* tree not ready / layer gone — keep workspace style */ }
+        return { color, icon };
+    }
 
     /**
      * Convert context array to path string for SynapsD query operations
@@ -905,7 +933,6 @@ class Context extends EventEmitter {
                 this.#tree = this.#workspace.getDefaultContextTree();
                 this.#treeId = this.#tree?.id || null;
             }
-            this.#color = this.#workspace.color;
 
             // Set up event forwarding for the new workspace
             this.#setupWorkspaceEventForwarding();
@@ -1291,7 +1318,9 @@ class Context extends EventEmitter {
             workspaceName: this.#workspace?.name,
             workspaceActive: this.#workspace?.isActive ?? false,
             treeId: this.#treeId,
-            color: this.#color,
+            color: this.color,
+            icon: this.icon,
+            order: this.#order,
             acl: this.#acl,
             createdAt: this.#createdAt,
             updatedAt: this.#updatedAt,

@@ -436,6 +436,17 @@ export default async function pubCanvasRoutes(fastify) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
+      // Content-addressed ETag with revalidation — doc ids are GC'd and reused,
+      // so a blind max-age can serve a stale (different document's) thumbnail
+      // for a recycled id. A match is a cheap 304.
+      const checksum = Array.isArray(doc.checksumArray) ? doc.checksumArray[0] : null;
+      const etag = checksum ? `"${checksum}:${request.query.size}"` : null;
+      reply.header('Cache-Control', 'public, no-cache');
+      if (etag) {
+        reply.header('ETag', etag);
+        if (request.headers['if-none-match'] === etag) { return reply.code(304).send(); }
+      }
+
       const thumb = await ctx.workspace.getDocumentThumbnail(doc, request.query.size);
       if (!thumb) {
         const response = new ResponseObject().notFound('No thumbnail available for this document');
@@ -444,7 +455,6 @@ export default async function pubCanvasRoutes(fastify) {
 
       reply.header('Content-Type', thumb.mime);
       reply.header('Content-Length', thumb.buffer.length);
-      reply.header('Cache-Control', 'public, max-age=86400');
       return reply.send(thumb.buffer);
     } catch (error) {
       fastify.log.error({ err: error }, 'Failed to build public canvas document thumbnail');

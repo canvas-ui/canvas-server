@@ -118,6 +118,11 @@ export class WorkspaceStoredIndex {
         try {
             this.#stored = new Stored({
                 root: path.join(this.#rootPath, '.stored'),
+                // The internal cache (remote-resource copies, thumbnails, other
+                // derived artifacts) lives in the workspace cache dir — the same
+                // location the stored.cache settings entry points at — instead
+                // of the hidden .stored/cache default.
+                cache: { path: this.#cachePath },
                 checksums: ['sha256'],
                 primaryChecksum: 'sha256',
                 // Inline metadata extraction at ingest (EXIF/GPS/dimensions/media).
@@ -654,6 +659,7 @@ export class WorkspaceStoredIndex {
 
         if (remaining.length === 0) {
             await db.delete(doc.id);
+            await this.purgeThumbnails([doc]).catch(() => {});
             return null;
         }
 
@@ -739,9 +745,11 @@ export class WorkspaceStoredIndex {
     static THUMBNAIL_SIZES = [128, 256, 512, 1024];
 
     /**
-     * On-demand thumbnail for an image document, cached in the stored.cache
-     * cacache store keyed `thumb:<checksum>:<size>` — derived artifacts never
-     * touch the main index and the cache is purgeable at any time.
+     * On-demand thumbnail for an image document, cached in Stored's internal
+     * cacache store ({WORKSPACE_ROOT}/cache — the stored.cache settings entry)
+     * keyed `thumb:<checksum>:<size>` — derived artifacts never touch the main
+     * index and the cache is purgeable at any time (purgeThumbnails on
+     * delete/destroy, clearThumbnailCache for a full wipe).
      * @param {object} doc image File document (metadata.contentType image/*)
      * @param {number} [size] longest-edge px, clamped to THUMBNAIL_SIZES
      * @returns {Promise<{buffer: Buffer, mime: string}|null>} null when not an
@@ -781,6 +789,46 @@ export class WorkspaceStoredIndex {
         await cache.put(cacheKey, buffer, { source: checksum, size: edge }).catch((err) =>
             this.#logger.warn({ workspaceId: this.#workspaceId, error: err.message }, 'Thumbnail cache write failed'));
         return { buffer, mime: 'image/webp' };
+    }
+
+    /**
+     * Drop cached thumbnails (all sizes) for the given documents or primary
+     * checksum strings. Called from the delete/destroy paths so derived
+     * artifacts never outlive their source blobs — otherwise a stale entry
+     * lingers in stored.cache forever. Best-effort: cacache.rm.entry on a
+     * missing key is a no-op.
+     */
+    async purgeThumbnails(docsOrChecksums = []) {
+        if (!this.#stored) return;
+        const cache = this.#stored.cache;
+        for (const item of docsOrChecksums) {
+            const checksum = typeof item === 'string'
+                ? item
+                : (Array.isArray(item?.checksumArray) ? item.checksumArray[0] : null);
+            if (!checksum) continue;
+            for (const edge of WorkspaceStoredIndex.THUMBNAIL_SIZES) {
+                await cache.delete(`thumb:${checksum}:${edge}`).catch(() => {});
+            }
+        }
+    }
+
+    /**
+     * Remove EVERY cached thumbnail (thumb:* entries in stored.cache). The
+     * cache is a derived artifact store — thumbnails regenerate on demand, so
+     * clearing is always safe. Other cache content (non-thumb keys) is left
+     * untouched.
+     */
+    async clearThumbnailCache() {
+        if (!this.#stored) throw new Error('WorkspaceStoredIndex is not running');
+        const cache = this.#stored.cache;
+        let removed = 0;
+        for await (const entry of cache.listStream()) {
+            if (typeof entry?.key === 'string' && entry.key.startsWith('thumb:')) {
+                await cache.delete(entry.key).catch(() => {});
+                removed++;
+            }
+        }
+        return { removed };
     }
 
     /**
@@ -880,6 +928,12 @@ export class WorkspaceStoredIndex {
 
         doc.locations = kept;
         result.kept = kept.map((l) => l.url);
+
+        // Bytes were removed (or the doc is about to go) — the cached thumbnails
+        // derive from those bytes and must not outlive them.
+        if (result.deleted.length > 0 || kept.length === 0) {
+            await this.purgeThumbnails([doc]).catch(() => {});
+        }
 
         if (kept.length === 0 && doc?.id != null) {
             if (options.keepDocument === true) {

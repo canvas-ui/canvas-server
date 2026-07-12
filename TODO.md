@@ -2,6 +2,9 @@
 
 ## WebUI cosmetics
 
+Modal has a "import documents" context option, it should have the browser default
+
+- Lets refactor our webui for a better mobile/PWA on mobile UX
 - Uploads to workspaces other than "Universe dont seem to work"
 OK the issue seems to be refresh,
 Ah, no, it seems to be some initialization issue(stored?cacache) - no, refresh indeed
@@ -28,9 +31,8 @@ Possible fixes(need to be checked)
 ### Content area
 - (deffered) Content area section should support tabs 
 
-## Share functionality + remote workspaces
+## Remote workspaces
 
-- Publicly shared canvases are not accessible without auth
 - Open a remote workspace functionality does not work, either the share tokens do not work or the api endpoints do not work, regardless, workspaces are not really required to sit locally on the server, we will soon implement our canvas-edge runtime which will autoregister to a canvas-server instance and will presumably run locally at the user - we should handle that scenario transparently (maybe a think middleware that would keep all integration talkint to the same rest api but handle proxying to remote workspaces transparently)
 Question is what protocol(s) to support, we currently use http+ws
 

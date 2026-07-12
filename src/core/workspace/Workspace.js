@@ -512,9 +512,12 @@ class Workspace extends EventEmitter {
 
     async delete(id, options = {}) {
         const docId = parseDocumentId(id, 'Document ID');
-        const managedBlobs = await this.#collectManagedOnlyBlobUrls([docId]);
+        const { managedBlobs, checksums } = await this.#collectDeletionArtifacts([docId]);
         const result = await this.#getActiveDb().delete(docId, options);
-        if (result) { await this.#cascadeManagedBlobDeletion(managedBlobs); }
+        if (result) {
+            await this.#cascadeManagedBlobDeletion(managedBlobs);
+            await this.#purgeDeletedDocThumbnails(checksums);
+        }
         return result;
     }
 
@@ -679,40 +682,68 @@ class Workspace extends EventEmitter {
 
     async deleteMany(ids, options = {}) {
         const docIds = parseDocumentIdArray(ids, 'Document ID array');
-        const managedBlobs = await this.#collectManagedOnlyBlobUrls(docIds);
+        const { managedBlobs, checksums } = await this.#collectDeletionArtifacts(docIds);
         const result = await this.#getActiveDb().deleteMany(docIds, options);
         const deletedIds = new Set((result?.successful ?? []).map((entry) => entry?.id ?? entry));
         await this.#cascadeManagedBlobDeletion(managedBlobs, deletedIds);
+        await this.#purgeDeletedDocThumbnails(checksums, deletedIds);
         return result;
     }
 
     /**
-     * Plain index-delete blob cascade. A document whose EVERY location lives on
-     * a managed stored backend (workspace:data — opaque, non-browseable by
-     * design) would orphan its blobs on a plain delete; collect those URLs
-     * before the delete and remove the bytes after it succeeds. Documents with
-     * any user-owned location (workspace:home file, imap message, device) are
-     * never touched — a plain delete only drops their index entry.
+     * Pre-delete snapshot for a plain index-delete's side effects:
+     * - managedBlobs: documents whose EVERY location lives on a managed stored
+     *   backend (workspace:data — opaque, non-browseable by design) would
+     *   orphan their blobs; the URLs are collected so the bytes can be removed
+     *   after the delete succeeds. Documents with any user-owned location
+     *   (workspace:home file, imap message, device) are never touched.
+     * - checksums: primary checksum per doc, so cached thumbnails (derived
+     *   artifacts keyed thumb:<checksum>:<size>) can be dropped too.
      */
-    async #collectManagedOnlyBlobUrls(ids) {
+    async #collectDeletionArtifacts(ids) {
         const managedBackends = new Set(Object.entries(this.dataBackends || {})
             .filter(([, cfg]) => cfg?.managed === true && cfg?.readOnly !== true && cfg?.enabled !== false)
             .map(([name]) => name));
-        const byId = new Map();
-        if (managedBackends.size === 0 || ids.length === 0) { return byId; }
+        const managedBlobs = new Map();
+        const checksums = new Map();
+        if (ids.length === 0) { return { managedBlobs, checksums }; }
 
         const fetched = await this.getDocumentsByIdArray(ids, { parse: false }).catch(() => null);
         const docs = Array.isArray(fetched) ? fetched : (fetched?.data ?? []);
         for (const doc of docs.filter(Boolean)) {
+            if (Array.isArray(doc.checksumArray) && doc.checksumArray[0]) {
+                checksums.set(doc.id, doc.checksumArray[0]);
+            }
             const urls = (doc.locations || []).map((l) => l?.url).filter(Boolean);
-            if (urls.length === 0) { continue; }
+            if (urls.length === 0 || managedBackends.size === 0) { continue; }
             const allManaged = urls.every((url) => {
                 const parsed = parseLocationUrl(url);
                 return parsed?.scheme === 'stored' && managedBackends.has(parsed.backend);
             });
-            if (allManaged) { byId.set(doc.id, urls); }
+            if (allManaged) { managedBlobs.set(doc.id, urls); }
         }
-        return byId;
+        return { managedBlobs, checksums };
+    }
+
+    // Cache hygiene, not correctness (thumbnails are content-addressed): drop
+    // deleted docs' cached thumbnails so derived artifacts don't accumulate.
+    // Skipped when the stored index isn't running — not worth booting it for.
+    async #purgeDeletedDocThumbnails(checksums, deletedIds = null) {
+        if (!checksums || checksums.size === 0 || !this.#storedIndex?.isRunning) { return; }
+        const targets = [];
+        for (const [docId, checksum] of checksums) {
+            if (deletedIds && !deletedIds.has(docId)) { continue; }
+            targets.push(checksum);
+        }
+        if (targets.length > 0) {
+            await this.#storedIndex.purgeThumbnails(targets).catch(() => {});
+        }
+    }
+
+    /** Wipe every cached thumbnail (regenerated on demand). */
+    async clearThumbnailCache() {
+        if (!this.#storedIndex?.isRunning) await this.#startStoredIndex();
+        return await this.#storedIndex.clearThumbnailCache();
     }
 
     async #cascadeManagedBlobDeletion(byId, deletedIds = null) {

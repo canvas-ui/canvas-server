@@ -905,13 +905,23 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       const doc = await workspace.get(documentId);
       if (!doc) { const r = new ResponseObject().notFound('Document not found'); return reply.code(r.statusCode).send(r.getResponse()); }
 
+      // Content-addressed ETag. The URL is keyed by doc id and ids are GC'd and
+      // REUSED, so a plain max-age would let a browser serve the previous
+      // document's thumbnail for a recycled id. no-cache forces revalidation —
+      // a match is a cheap 304 (one LMDB doc read, no sharp/cacache touch).
+      const checksum = Array.isArray(doc.checksumArray) ? doc.checksumArray[0] : null;
+      const etag = checksum ? `"${checksum}:${request.query.size}"` : null;
+      reply.header('Cache-Control', 'private, no-cache');
+      if (etag) {
+        reply.header('ETag', etag);
+        if (request.headers['if-none-match'] === etag) { return reply.code(304).send(); }
+      }
+
       const thumb = await workspace.getDocumentThumbnail(doc, request.query.size);
       if (!thumb) { const r = new ResponseObject().notFound('No thumbnail available for this document'); return reply.code(r.statusCode).send(r.getResponse()); }
 
       reply.header('Content-Type', thumb.mime);
       reply.header('Content-Length', thumb.buffer.length);
-      // Derived artifact keyed by content checksum — safe to cache client-side.
-      reply.header('Cache-Control', 'private, max-age=86400');
       return reply.send(thumb.buffer);
     } catch (error) {
       fastify.log.error(error);

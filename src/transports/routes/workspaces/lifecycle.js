@@ -102,6 +102,31 @@ export default async function workspaceLifecycleRoutes(fastify, options) {
     }
   });
 
+  // Wipe the on-demand thumbnail cache (thumb:* entries in stored.cache).
+  // Always safe: thumbnails are derived artifacts regenerated on demand.
+  fastify.delete('/thumbnails', {
+    onRequest: [fastify.authenticate, requireWorkspaceWrite()],
+    schema: {
+      params: {
+        type: 'object',
+        required: ['id'],
+        properties: {
+          id: { type: 'string' }
+        }
+      }
+    }
+  }, async (request, reply) => {
+    try {
+      const result = await request.workspace.clearThumbnailCache();
+      const responseObject = new ResponseObject().success(result, `Thumbnail cache cleared (${result.removed} entries)`);
+      return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+    } catch (error) {
+      fastify.log.error(error);
+      const responseObject = new ResponseObject().serverError('Failed to clear thumbnail cache');
+      return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+    }
+  });
+
   // Get database stats (SynapsD internals: FTS + dense-vector + embedder/queue).
   // Lives under the /db namespace — future dump/snapshot routes belong here too.
   fastify.get('/db/stats', {

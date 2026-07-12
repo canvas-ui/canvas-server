@@ -75,6 +75,7 @@ class Workspace extends EventEmitter {
     #mailRuntimeBinding = null;
     #tokens = null;
     #status = WORKSPACE_STATUS_CODES.INACTIVE;
+    #startPromise = null;
     #runtimeListeners = [];
 
     // Managers (injected)
@@ -311,9 +312,19 @@ class Workspace extends EventEmitter {
     // Lifecycle
     // ─────────────────────────────────────────────────────────────────────────
 
+    // Concurrent callers (WebDAV auto-start fires one per parallel request)
+    // must share ONE in-flight start: isActive only flips near the end, so an
+    // unserialized second call would re-run the whole sequence against a fresh
+    // #db whose tree registry isn't loaded yet — duplicating the pre-created
+    // trees ("context" et al.) in LMDB.
     async start() {
         if (this.isActive) return this;
+        if (this.#startPromise) return this.#startPromise;
+        this.#startPromise = this.#doStart().finally(() => { this.#startPromise = null; });
+        return this.#startPromise;
+    }
 
+    async #doStart() {
         this.#logger.debug({ workspaceId: this.id }, 'Starting workspace');
         try {
             await Promise.all([
@@ -1050,11 +1061,20 @@ class Workspace extends EventEmitter {
     // The three pre-created trees (and any tree flagged settings.protected) are
     // structural — services and clients address them by name.
     #assertTreeNotReserved(nameOrId, action) {
-        const tree = this.#getActiveDb().getTree(nameOrId);
+        const db = this.#getActiveDb();
+        const tree = db.getTree(nameOrId);
         if (!tree) { return; }
-        const reserved = [Workspace.CONTEXT_TREE_NAME, Workspace.DIRECTORY_TREE_NAME, Workspace.BACKENDS_TREE_NAME];
-        if (reserved.includes(tree.name) || tree.settings?.protected === true) {
+        if (tree.settings?.protected === true) {
             throw new Error(`Cannot ${action} reserved tree "${tree.name}"`);
+        }
+        // Reserved = the canonical instance each structural name resolves to.
+        // A stray duplicate carrying a reserved name (leftover from a start
+        // race) stays deletable by id — only the tree that name-resolution
+        // actually lands on is load-bearing.
+        for (const name of [Workspace.CONTEXT_TREE_NAME, Workspace.DIRECTORY_TREE_NAME, Workspace.BACKENDS_TREE_NAME]) {
+            if (db.getTree(name)?.id === tree.id) {
+                throw new Error(`Cannot ${action} reserved tree "${tree.name}"`);
+            }
         }
     }
 

@@ -258,7 +258,11 @@ export default async function workspaceDocumentRoutes(fastify, options) {
 
       const spec = {
         context: ctxSelector,
-        directory: dirSelector,
+        // Directory membership is node-exact (docs tick only their leaf node),
+        // so a folder listing stays exact but a search must scope to the whole
+        // subtree — otherwise searching the backends/directory tree at an
+        // ancestor folder matches nothing.
+        directory: isSearch && dirSelector ? { ...dirSelector, recursive: true } : dirSelector,
         attributes: buildAttributes(request.query),
         filters: request.query.filters,
         limit: request.query.limit,

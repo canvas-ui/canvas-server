@@ -34,10 +34,6 @@
     "csstype": "3.2.3",
     "fast-jwt": "6.2.4",
     "fast-uri": "3.1.2",
-    "tar": "7.5.16",
-    "fastembed": {
-      "tar": "7.5.16"
-    },
     "@mariozechner/pi-ai": {
       "@anthropic-ai/sdk": "0.104.1"
     },

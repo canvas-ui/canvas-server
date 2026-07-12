@@ -588,8 +588,19 @@ class Workspace extends EventEmitter {
         // Live enqueue: new + content-updated docs. Blob ingestion also lands as
         // document.inserted (WorkspaceStoredIndex creates docs), so this covers
         // stored files too — no separate object:add subscription needed.
+        //
+        // Batch ops (tab ingestion, 100+ uploads, fs/directory bulk ingest) are
+        // the common case — they emit `.batch` events with an id array. We
+        // subscribe to both the singular and `.batch` variants: some bulk
+        // emitters (putManyDirectoryPaths) fire only the singular event with
+        // `ids`, regular putMany fires both, and linkMany fires only `.batch`.
+        // The queue dedups by `${wsId}:${id}`, so the one overlap (putMany
+        // emitting both) is a harmless no-op — no path is missed or embedded
+        // twice.
         this.on('document.inserted', this.#onDocEventForEmbed);
         this.on('document.updated', this.#onDocEventForEmbed);
+        this.on('document.inserted.batch', this.#onDocEventForEmbed);
+        this.on('document.updated.batch', this.#onDocEventForEmbed);
         this.#embeddRegistered = true;
     }
 
@@ -597,16 +608,21 @@ class Workspace extends EventEmitter {
         if (!this.#embedd || !this.#embeddRegistered) { return; }
         this.off('document.inserted', this.#onDocEventForEmbed);
         this.off('document.updated', this.#onDocEventForEmbed);
+        this.off('document.inserted.batch', this.#onDocEventForEmbed);
+        this.off('document.updated.batch', this.#onDocEventForEmbed);
         this.#embedd.unregisterWorkspace(this.id);
         this.#embeddRegistered = false;
     }
 
+    // Handles both single (`{ id }`) and batch (`{ ids: [...] }`) payloads;
+    // enqueueMany routes through the same deduped queue as enqueue.
     #onDocEventForEmbed = (payload) => {
         if (!this.#embedd) { return; }
         const ids = Array.isArray(payload?.ids)
             ? payload.ids
             : (payload?.id != null ? [payload.id] : []);
-        for (const id of ids) { this.#embedd.enqueue(this.id, id); }
+        if (ids.length === 0) { return; }
+        this.#embedd.enqueueMany(this.id, ids);
     };
 
     /**

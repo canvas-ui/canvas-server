@@ -1001,6 +1001,17 @@ class Workspace extends EventEmitter {
         return await this.#getActiveDb().searchRefined(queries, baseSpec, opts);
     }
 
+    // Compound query: OR/AND of independent refinement chains ("lines"). `spec`
+    // supplies the shared structured scope, each line its own query chain (+
+    // optional per-line filters). See SynapsD.searchCompound for semantics.
+    async searchCompound(lines = [], spec = {}, options = {}) {
+        const baseSpec = this.#normalizeQuerySpec(this.#composeCanvasQuerySpec(spec));
+        delete baseSpec.query; delete baseSpec.search; delete baseSpec.q;
+        const opts = { ...options, baseSpec };
+        if (opts.maxDistance === undefined) { opts.maxDistance = Workspace.DEFAULT_MAX_COSINE_DISTANCE; }
+        return await this.#getActiveDb().searchCompound(lines, opts);
+    }
+
     /**
      * If the read targets a path whose leaf is a canvas layer, AND-compose the
      * canvas's stored querySpec (features + filters) into the spec before

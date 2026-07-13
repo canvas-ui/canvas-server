@@ -312,6 +312,107 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     }
   });
 
+  // ── Compound search ───────────────────────────────────────────────────────
+  // OR/AND of independent refinement chains ("lines"). JSON body (agent-friendly,
+  // testable); the GET `?q=` stack stays for a single chain. Each line is an
+  // ordered query chain (chained scoping: each query narrows the previous
+  // survivors) with optional per-line filters; lines combine by set semantics
+  // (`op`: 'or' = union, 'and' = intersection), ranked via per-line RRF fusion.
+  // Response carries `.lines` (per-line match counts) so an empty AND
+  // intersection is explainable in the UI.
+
+  fastify.post('/search', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      params: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } },
+      body: {
+        type: 'object',
+        required: ['lines'],
+        additionalProperties: false,
+        properties: {
+          lines: {
+            type: 'array',
+            minItems: 1,
+            maxItems: 16,
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                queries: { type: 'array', items: { type: 'string' }, default: [] },
+                filters: { type: 'array', items: { type: 'string' } },
+                features: { type: 'array', items: { type: 'string' } },
+              },
+            },
+          },
+          op: { type: 'string', enum: ['or', 'and'], default: 'or' },
+          ...contextQueryProps,
+          ...attributesQueryProps,
+          ...filtersQueryProps,
+          limit: { type: 'integer', default: 200 },
+          offset: { type: 'integer' },
+          mode: { type: 'string', enum: ['fts', 'vector', 'hybrid'] },
+          minDistance: { type: 'number' },
+          maxDistance: { type: 'number' },
+          scope: { type: 'string', enum: ['path', 'workspace'], default: 'path' },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    try {
+      const workspace = await getWorkspaceInstance(request, reply);
+      if (!workspace) return;
+
+      const body = request.body;
+      const { context: ctxSelector, directory: dirSelector } = body.scope === 'workspace'
+        ? { context: null, directory: null }
+        : resolveScopeSelectors(workspace, body, '/');
+
+      const lines = (body.lines || [])
+        .map((l) => ({
+          queries: (l.queries || []).filter((s) => typeof s === 'string' && s.trim().length > 0),
+          ...(l.filters ? { filters: l.filters } : {}),
+          ...(l.features ? { features: l.features } : {}),
+        }))
+        .filter((l) => l.queries.length > 0 || l.filters || l.features);
+      if (lines.length === 0) {
+        const responseObject = new ResponseObject().badRequest('Compound search requires at least one non-empty line');
+        return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+      }
+
+      const spec = {
+        context: ctxSelector,
+        // Search must scope to the whole subtree (see GET handler).
+        directory: dirSelector ? { ...dirSelector, recursive: true } : dirSelector,
+        attributes: buildAttributes(body),
+        filters: body.filters,
+      };
+
+      const documents = await workspace.searchCompound(lines, spec, {
+        op: body.op,
+        limit: body.limit,
+        offset: body.offset,
+        mode: body.mode,
+        minDistance: body.minDistance,
+        maxDistance: body.maxDistance,
+      });
+
+      if (documents.error) {
+        fastify.log.error(`SynapsD error: ${documents.error}`);
+        const responseObject = new ResponseObject().error('Failed to search documents due to a database error.', documents.error);
+        return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+      }
+
+      const responseObject = new ResponseObject().found(documents, 'Search results retrieved successfully', 200, documents.count, documents.totalCount);
+      // Arrays lose non-index props in JSON — lift per-line counts across.
+      if (documents.lines) { responseObject.lines = documents.lines; }
+      return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+    } catch (error) {
+      fastify.log.error(error);
+      const responseObject = new ResponseObject().serverError('Failed to search documents');
+      return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+    }
+  });
+
   // ── Insert documents ────────────────────────────────────────────────────
 
   fastify.post('/', {

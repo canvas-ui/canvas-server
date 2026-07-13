@@ -11,6 +11,8 @@ export default class ResponseObject {
         // Optional diagnostic payload (e.g. search calibration data); only
         // serialized when set, so existing responses are unchanged.
         this.debug = null;
+        // Optional per-line match counts (compound search); same opt-in rule.
+        this.lines = null;
     }
 
     // Static factories — allows `ResponseObject.error(msg)` without `new`
@@ -177,6 +179,7 @@ export default class ResponseObject {
             count: this.count,
             totalCount: this.totalCount,
             ...(this.debug != null ? { debug: this.debug } : {}),
+            ...(this.lines != null ? { lines: this.lines } : {}),
         };
     }
 }

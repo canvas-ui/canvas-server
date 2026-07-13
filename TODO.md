@@ -2,6 +2,14 @@
 
 ## WebUI cosmetics
 
+### Add timeline view to the main content area
+
+- side-to-side MC like view, timeline on the left, document list on the right, togge button for mobile view
+
+### Add map view to the main content area 
+
+- side-to-side MC like view, timeline on the left, document list on the right, togge button for mobile view
+
 ### Content area
 - (deffered) Content area section should support tabs 
 

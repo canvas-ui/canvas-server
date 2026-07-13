@@ -1061,6 +1061,7 @@ class Workspace extends EventEmitter {
         let features = spec.features ?? spec.attributes ?? null;
         let filters = Array.isArray(spec.filters) ? [...spec.filters] : (spec.filters ? [spec.filters] : []);
         let query = spec.query ?? spec.search ?? spec.q ?? null;
+        let sort = null;
         let nextScope = spec[scopeKey];
         let touched = false;
 
@@ -1072,6 +1073,10 @@ class Workspace extends EventEmitter {
             features = Workspace.#composeCanvasFeatures(features, qs.features);
             filters = Workspace.#composeCanvasFilters(filters, qs.filters);
             query = Workspace.#composeCanvasQuery(query, qs.query ?? qs.search ?? qs.q);
+            // A canvas's saved sort is the view's default order; last canvas on
+            // the path wins. The caller (request) overrides it when it sends its
+            // own sortBy — see the injection guard below.
+            if (qs.sort && qs.sort.sortBy) { sort = qs.sort; }
             if (tree.type === Workspace.DIRECTORY_TYPE) {
                 nextScope = Workspace.#withCanvasParentPath(nextScope, path);
             }
@@ -1080,12 +1085,14 @@ class Workspace extends EventEmitter {
 
         if (!touched) { return spec; }
 
+        const callerHasSort = spec.sortBy !== undefined && spec.sortBy !== null && spec.sortBy !== '';
         return {
             ...spec,
             [scopeKey]: nextScope,
             ...(features !== undefined ? { features } : {}),
             filters,
             ...(query ? { query } : {}),
+            ...(sort && !callerHasSort ? { sortBy: sort.sortBy, order: sort.order || spec.order || 'asc' } : {}),
         };
     }
 

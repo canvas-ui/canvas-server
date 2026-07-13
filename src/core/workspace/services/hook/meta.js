@@ -66,7 +66,7 @@ export const HOOK_ACTIONS = Object.freeze([
             '    for (const targetPath of targetPaths) {',
             '        await workspace.link(doc.id, {',
             '            context: workspace.getContextTreeSelector(targetPath),',
-            "            features: [], // TODO: optional tags, e.g. ['custom/tag/urgent']",
+            "            features: [], // TODO: optional tags, e.g. ['tag/urgent']",
             '            emitEvent: false, // do not re-trigger hooks',
             '        });',
             '        logger.debug(`linked ${doc.id} -> ${targetPath}`);',

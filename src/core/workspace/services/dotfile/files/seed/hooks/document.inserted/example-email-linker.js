@@ -7,7 +7,7 @@
 
 const RULES = [
   { from: 'foo@bar.baz', subject: 'dc migration', paths: ['/projects/dc-migration'] },
-  { from: 'bar@baf.baz', paths: ['/to-read', '/something/else'], tags: ['custom/tag/urgent'] },
+  { from: 'bar@baf.baz', paths: ['/to-read', '/something/else'], tags: ['tag/urgent'] },
 ];
 
 function matches(rule, c) {

@@ -203,6 +203,11 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     page: { type: 'integer' },
     // Document lists default to newest first; search results stay ranked.
     order: { type: 'string', enum: ['asc', 'desc'], default: 'desc' },
+    // Sort a listing by a named timeline (e.g. 'content' = EXIF capture date,
+    // 'crud:created'/'crud:updated'); order applies to the timeline value.
+    // Docs with no value on that timeline trail the sorted ones. List-only —
+    // search results stay relevance-ranked.
+    sortBy: { type: 'string' },
   };
 
   // ── List documents ──────────────────────────────────────────────────────
@@ -269,6 +274,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
         offset: request.query.offset,
         page: request.query.page,
         order: request.query.order,
+        sortBy: request.query.sortBy,
       };
 
       const { minDistance, maxDistance } = request.query;
@@ -464,6 +470,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
         offset: request.query.offset,
         page: request.query.page,
         order: request.query.order,
+        sortBy: request.query.sortBy,
       });
 
       if (documents.error) {

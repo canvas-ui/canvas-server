@@ -19,6 +19,7 @@ import { parseLocationUrl } from '../../services/synapsd/src/utils/path-helpers.
 // Sub-modules
 import { WorkspaceTokens } from './lib/WorkspaceTokens.js';
 import { classifyDocument } from './lib/classifier.js';
+import { extract as extractBlobMetadata } from '../../services/stored/src/extractors/index.js';
 import { WorkspaceStoredIndex } from './lib/WorkspaceStoredIndex.js';
 import { WorkspaceMailIndex } from './services/imap/index.js';
 
@@ -733,9 +734,12 @@ class Workspace extends EventEmitter {
                 }, 'embed: could not resolve blob bytes (stale/unreachable locations)');
                 return { skip: true, schema, updatedAt, contentType, comment };
             }
-            return modality === 'image'
-                ? { modality, schema, updatedAt, bytes: resolved.buffer, contentType, comment }
-                : { modality, schema, updatedAt, text: resolved.buffer.toString('utf8'), contentType, chunkOpts, comment };
+            if (modality === 'image') {
+                const enrichedAt = await this.#enrichImageDocMetadata(doc, resolved.buffer, contentType)
+                    .catch((e) => { this.#logger.warn({ workspaceId: this.id, docId: doc.id, error: e.message }, 'embed: image metadata enrichment failed'); return null; });
+                return { modality, schema, updatedAt: enrichedAt || updatedAt, bytes: resolved.buffer, contentType, comment };
+            }
+            return { modality, schema, updatedAt, text: resolved.buffer.toString('utf8'), contentType, chunkOpts, comment };
         }
 
         // JSON abstraction (note, etc.) → the text the doc exposes for embedding.
@@ -743,6 +747,40 @@ class Workspace extends EventEmitter {
         const text = Array.isArray(data) ? data.join('\n').trim() : (typeof data === 'string' ? data.trim() : '');
         if (!text) { return { skip: true, schema, updatedAt, contentType, comment }; }
         return { modality: 'text', schema, updatedAt, text, contentType, chunkOpts, comment };
+    }
+
+    /**
+     * EXIF/GPS/dimensions enrichment at embed time. Stored-backend ingest
+     * extracts this inline (WorkspaceStoredIndex); photos that never pass
+     * through it (file://-indexed via `ws add`, docs ingested before extraction
+     * existed) hit this seam instead — the embed pipeline is the one place every
+     * image's bytes already flow through. Extracted keys merge into
+     * doc.metadata and an EXIF capture date lands on the 'content' timeline
+     * (same convention as stored ingest), so photos are filterable by when they
+     * were taken rather than when they were indexed.
+     * Returns the post-update updatedAt, or null when nothing was written.
+     */
+    async #enrichImageDocMetadata(doc, buffer, contentType) {
+        const meta = doc.metadata || {};
+        if (meta.exif || meta.geo || meta.dimensions) { return null; }
+        const extracted = await extractBlobMetadata({ data: buffer }, { mimeType: contentType, key: `doc:${doc.id}` });
+        const patch = {};
+        for (const k of ['geo', 'exif', 'dimensions', 'media']) {
+            if (extracted[k] && typeof extracted[k] === 'object') { patch[k] = extracted[k]; }
+        }
+        if (Object.keys(patch).length === 0) { return null; }
+
+        const update = { id: doc.id, metadata: patch, updatedAt: new Date().toISOString() };
+        const capturedAt = extracted.exif?.capturedAt;
+        const prior = Array.isArray(doc.timelines) ? doc.timelines : [];
+        if (capturedAt && !prior.some((t) => (t.timeline || t.name) === 'content')) {
+            update.timelines = [...prior, { timeline: 'content', start: capturedAt }];
+        }
+        // emitEvent:false — this runs inside the embed pipeline; a
+        // document.updated event here would re-enqueue the doc and CLIP-embed
+        // every photo a second time.
+        await this.#getActiveDb().put(update, { emitEvent: false });
+        return update.updatedAt;
     }
 
     async linkMany(ids, { context = '/', directory = null, features = [], attributes, emitEvent = true, allowBackendsWrite = false } = {}) {

@@ -48,6 +48,9 @@ export default async function documentRoutes(fastify, options) {
           page: { type: 'integer' },
           // Document lists default to newest first; search results stay ranked.
           order: { type: 'string', enum: ['asc', 'desc'], default: 'desc' },
+          // Sort a listing by a named timeline (e.g. 'content' = EXIF capture
+          // date, 'crud:created'); order applies to the timeline value.
+          sortBy: { type: 'string' },
           q: { type: 'string' },
           search: { type: 'string' },
           mode: { type: 'string', enum: ['fts', 'vector', 'hybrid'] },
@@ -73,6 +76,7 @@ export default async function documentRoutes(fastify, options) {
         offset: request.query.offset,
         page: request.query.page,
         order: request.query.order,
+        sortBy: request.query.sortBy,
       };
 
       const searchQuery = request.query.q || request.query.search;

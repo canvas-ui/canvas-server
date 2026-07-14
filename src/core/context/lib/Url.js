@@ -150,8 +150,12 @@ class Url {
         if (!path) return '';
 
         // Remove invalid characters; spaces are allowed in path segments (layer names support them).
+        // Keep Unicode letters/numbers/marks so accented folder names ("Náš Domček")
+        // survive — an ASCII-only class here stripped them to "N Domek" before the
+        // downstream sanitizer ran. Allowed set mirrors sanitizeLayerName
+        // (BaseLayer.#sanitizeName: \p{L}\p{N}\p{M} .+_@-) plus '/' as the separator.
         // Final per-segment sanitization is handled by ContextTree.#normalizePath → sanitizeLayerName.
-        let cleaned = path.replace(/[^a-zA-Z0-9/_ .-]/g, '');
+        let cleaned = path.replace(/[^\p{L}\p{N}\p{M}/ .+_@-]/gu, '');
 
         // Normalize multiple consecutive slashes to single slash
         cleaned = cleaned.replace(/\/+/g, '/');

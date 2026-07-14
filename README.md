@@ -1,13 +1,10 @@
 # There are many productivity tools, but this one is ~~yours~~ mine
 
-..and yes, it has [pi](https://pi.dev/) integrated  
+..and yes, it has [pi](https://pi.dev/) integrated(..for now)
    **Thank you for your contribution to the Universe!**
 
 ## Canvas Server
 Server runtime for the Canvas project.
-
-
-Canvas comes with [pi](https://pi.dev/) integrated ...for now at least ;)
 
 Data from all sources is indexed and abstracted away from its physical location. Users construct virtual context or directory trees on top of that data. Storage backends (local, NAS, S3) are managed transparently - writes hit local cache first, then sync to backends based on rules.
 

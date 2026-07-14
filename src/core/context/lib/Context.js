@@ -1248,7 +1248,11 @@ class Context extends EventEmitter {
         if (filters !== undefined) { this.#filters = Array.isArray(filters) ? filters : []; }
         this.#updatedAt = new Date().toISOString();
         await this.#contextManager.saveContext(this.#userId, this);
-        this.emit('context.updated', { id: this.#id, features: this.#features, filters: this.#filters });
+        // Self-sufficient "binding changed" event: bound apps (browser ext,
+        // agents) subscribed to `context:<id>` refetch the new document set.
+        // `url` is included so the web's url-gated handler refetches even when
+        // this fires without the manager's full-record update.
+        this.emit('context.updated', { id: this.#id, url: this.#url, features: this.#features, filters: this.#filters });
         return { features: this.#features, filters: this.#filters };
     }
 

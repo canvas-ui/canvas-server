@@ -1027,6 +1027,12 @@ class Workspace extends EventEmitter {
      */
     #composeCanvasQuerySpec(spec) {
         if (!spec || typeof spec !== 'object') { return spec; }
+        // Live canvas filter preview: when the client fully drives the filters
+        // (toolbox-on-canvas), it opts out of folding the canvas's STORED
+        // querySpec so its edits — including REMOVING a saved filter — take
+        // effect. Without this the stored spec is always AND-composed, so
+        // loosening a filter would never preview until Save.
+        if (spec.applyCanvasQuerySpec === false) { return spec; }
         let out = this.#composeCanvasForScope(spec, 'context');
         out = this.#composeCanvasForScope(out, 'directory');
         return out;

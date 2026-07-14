@@ -45,9 +45,11 @@ class Context extends EventEmitter {
     #serverContextArray; // server/os/linux, server/version/1.0.0, server/datetime/, server/ip/192.168.1.1
     #clientContextArray; // client/os/linux, client/app/firefox, client/datetime/, client/user/john.doe
 
-    // Query state
+    // Query state — the context's STORED binding, applied server-side to every
+    // read so bound clients inherit the view. `#features` = {allOf,anyOf,noneOf}
+    // | null; `#filters` = token array (timeline `t:…`, geo `geo:bbox:…`).
     #contextBitmapArray = [];
-    #attributes = [];
+    #features = null;
     #filters = [];
 
     // Rules for auto-linking
@@ -66,6 +68,7 @@ class Context extends EventEmitter {
     #updatedAt;
     #isLocked;
     #order; // User-defined list position (null = unordered, sorts last)
+    #metadata = {}; // Opaque per-context UI/state blob (e.g. toolbox filter state)
 
     // Additional properties
     #pendingUrl;
@@ -128,6 +131,12 @@ class Context extends EventEmitter {
 
         // Rules
         this.#rules = options.rules || [];
+
+        // Stored query binding — restored on load (contextOptions spreads the
+        // persisted toJSON), so a saved filter survives a reload.
+        this.#features = options.features ?? null;
+        this.#filters = Array.isArray(options.filters) ? options.filters : [];
+        this.#metadata = (options.metadata && typeof options.metadata === 'object') ? options.metadata : {};
 
         // Set up event forwarding from workspace
         this.#setupWorkspaceEventForwarding();
@@ -240,7 +249,7 @@ class Context extends EventEmitter {
             server: this.#serverContextArray,
             client: this.#clientContextArray,
             context: this.#contextBitmapArray,
-            attributes: this.#attributes,
+            features: this.#features,
             filters: this.#filters,
         };
     }
@@ -248,8 +257,10 @@ class Context extends EventEmitter {
     get serverContextArray() { return this.#serverContextArray; }
     get clientContextArray() { return this.#clientContextArray; }
     get contextBitmapArray() { return this.#contextBitmapArray; }
-    get attributes() { return this.#attributes; }
+    get features() { return this.#features; }
     get filters() { return this.#filters; }
+    get metadata() { return this.#metadata; }
+    set metadata(m) { this.#metadata = (m && typeof m === 'object') ? m : {}; }
     get rules() { return [...this.#rules]; }
 
     /**
@@ -944,35 +955,6 @@ class Context extends EventEmitter {
     }
 
     /**
-     * Bitmaps
-     */
-
-    setAttributes(attributeArray) {
-        if (!Array.isArray(attributeArray)) { attributeArray = [attributeArray]; }
-        this.#attributes = attributeArray;
-        this.emit('context.updated', { id: this.#id, attributes: this.#attributes });
-    }
-
-    appendAttributes(attributeArray) {
-        if (!Array.isArray(attributeArray)) { attributeArray = [attributeArray]; }
-        this.#attributes.push(...attributeArray);
-        this.emit('context.updated', { id: this.#id, attributes: this.#attributes });
-    }
-
-    removeAttributes(attributeArray) {
-        if (!Array.isArray(attributeArray)) { attributeArray = [attributeArray]; }
-        this.#attributes = this.#attributes.filter((a) => !attributeArray.includes(a));
-        this.emit('context.updated', { id: this.#id, attributes: this.#attributes });
-    }
-
-    clearAttributes() {
-        this.#attributes = [];
-        this.emit('context.updated', { id: this.#id, attributes: this.#attributes });
-    }
-
-
-
-    /**
      * Rules API
      */
 
@@ -1031,7 +1013,7 @@ class Context extends EventEmitter {
 
         const result = await workspace.put(document, {
             context: contextSelector,
-            features: [...this.#attributes, ...features],
+            features: [...features],
             emitEvent: options.emitEvent,
         });
 
@@ -1066,7 +1048,7 @@ class Context extends EventEmitter {
 
         const result = await workspace.putMany(documentArray, {
             context: contextSelector,
-            features: [...this.#attributes, ...features],
+            features: [...features],
             emitEvent: options.emitEvent,
         });
 
@@ -1157,7 +1139,7 @@ class Context extends EventEmitter {
 
         const result = await workspace.linkMany(numericDocumentIdArray, {
             context: contextSelector,
-            features: [...this.#attributes, ...features],
+            features: [...features],
             emitEvent: options.emitEvent,
         });
 
@@ -1255,24 +1237,51 @@ class Context extends EventEmitter {
         });
     }
 
+    /**
+     * Persist this context's stored query binding — the server-enforced filters
+     * every bound client inherits. `features` = {allOf,anyOf,noneOf} | array |
+     * null; `filters` = token array (timeline `t:…`, geo `geo:bbox:…`). Emits
+     * context.updated so live clients refetch. Pass `null`/`[]` to clear.
+     */
+    async setQuery({ features, filters } = {}) {
+        if (features !== undefined) { this.#features = features ?? null; }
+        if (filters !== undefined) { this.#filters = Array.isArray(filters) ? filters : []; }
+        this.#updatedAt = new Date().toISOString();
+        await this.#contextManager.saveContext(this.#userId, this);
+        this.emit('context.updated', { id: this.#id, features: this.#features, filters: this.#filters });
+        return { features: this.#features, filters: this.#filters };
+    }
+
+    // Fold this context's STORED binding into the caller's query — unless the
+    // caller drives filters itself (`applyContextSpec === false`, live preview).
+    // Bound clients pass nothing → they inherit the context's saved view.
+    #bindQuery(callerFeatures, callerFilters, applyContextSpec) {
+        if (applyContextSpec === false) { return { features: callerFeatures, filters: callerFilters }; }
+        return {
+            features: this.#mergeFeatures(callerFeatures, this.#features),
+            filters: this.#mergeFilters(callerFilters, this.#filters),
+        };
+    }
+
     async list(accessingUserId, spec = {}) {
         if (!this.checkPermission(accessingUserId, 'documentRead')) {
             throw accessDenied('Access denied: User requires documentRead permission.');
         }
         const workspace = this.#requireWorkspace();
 
-        const { attributes, features = null, filters, options = {}, ...rest } = spec;
+        const { attributes, features = null, filters, options = {}, applyContextSpec, ...rest } = spec;
         const contextSelector = this.#buildContextSelector(this.#buildMergedContextArray(options));
-        const composed = this.#composeWithCanvasSpec({
-            features: features ?? attributes,
-            filters,
-        });
+        const bound = this.#bindQuery(features ?? attributes, filters, applyContextSpec);
+        const composed = this.#composeWithCanvasSpec(bound);
         return await workspace.list({
             context: contextSelector,
             features: composed.features,
             filters: composed.filters,
             ...options,
             ...rest,
+            // Bypass canvas folding in lockstep with the context bypass (only
+            // relevant when a context points at a canvas leaf).
+            applyCanvasQuerySpec: applyContextSpec,
         });
     }
 
@@ -1282,12 +1291,10 @@ class Context extends EventEmitter {
         }
         const workspace = this.#requireWorkspace();
 
-        const { query, attributes, features = null, filters, options = {}, ...rest } = spec;
+        const { query, attributes, features = null, filters, options = {}, applyContextSpec, ...rest } = spec;
         const contextSelector = this.#buildContextSelector(this.#buildMergedContextArray(options));
-        const composed = this.#composeWithCanvasSpec({
-            features: features ?? attributes,
-            filters,
-        });
+        const bound = this.#bindQuery(features ?? attributes, filters, applyContextSpec);
+        const composed = this.#composeWithCanvasSpec(bound);
         return await workspace.search({
             query,
             context: contextSelector,
@@ -1295,6 +1302,7 @@ class Context extends EventEmitter {
             filters: composed.filters,
             ...options,
             ...rest,
+            applyCanvasQuerySpec: applyContextSpec,
         });
     }
 
@@ -1328,8 +1336,9 @@ class Context extends EventEmitter {
             serverContextArray: this.#serverContextArray,
             clientContextArray: this.#clientContextArray,
             contextBitmapArray: this.#contextBitmapArray,
-            attributes: this.#attributes,
+            features: this.#features,
             filters: this.#filters,
+            metadata: this.#metadata,
             pendingUrl: this.#pendingUrl || null,
             rules: this.#rules,
         };

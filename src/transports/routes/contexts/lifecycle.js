@@ -296,7 +296,10 @@ export default async function lifecycleRoutes(fastify, options) {
           order: { type: 'number' },
           metadata: { type: 'object' },
           acl: { type: 'object' },
-          restApi: { type: 'object' }
+          restApi: { type: 'object' },
+          // Stored query binding (server-enforced filters bound clients inherit).
+          features: { type: 'object' },
+          filters: { type: 'array', items: { type: 'string' } }
         }
       }
     }

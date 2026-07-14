@@ -484,10 +484,15 @@ class ContextManager extends EventEmitter {
 
         if (updates.name !== undefined) context.name = updates.name || null;
         if (updates.order !== undefined) context.order = updates.order;
+        if (updates.metadata !== undefined) context.metadata = updates.metadata;
         if (updates.acl !== undefined) await context.updateACL(updates.acl);
         if (updates.rules !== undefined) {
             for (const rule of (context.rules || [])) await context.removeRule(rule.id);
             for (const rule of updates.rules) await context.addRule(rule);
+        }
+        // Stored query binding — the server-enforced filters bound clients inherit.
+        if (updates.features !== undefined || updates.filters !== undefined) {
+            await context.setQuery({ features: updates.features, filters: updates.filters });
         }
 
         this.saveContext(userId, context);

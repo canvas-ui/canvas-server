@@ -54,6 +54,10 @@ export default async function documentRoutes(fastify, options) {
           q: { type: 'string' },
           search: { type: 'string' },
           mode: { type: 'string', enum: ['fts', 'vector', 'hybrid'] },
+          // When false, don't fold the context's STORED binding — the caller is
+          // driving filters itself (web live-preview). Bound clients omit it and
+          // inherit the context's saved view. Default true.
+          applyContextSpec: { type: 'boolean', default: true },
         },
       },
     },
@@ -80,7 +84,7 @@ export default async function documentRoutes(fastify, options) {
       };
 
       const searchQuery = request.query.q || request.query.search;
-      const spec = { attributes, filters, options };
+      const spec = { attributes, filters, options, applyContextSpec: request.query.applyContextSpec };
 
       const dbResult = searchQuery
         ? await context.search(request.user.id, { query: searchQuery, mode: request.query.mode, ...spec })

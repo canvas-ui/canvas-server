@@ -259,6 +259,10 @@ export default async function workspaceDocumentRoutes(fastify, options) {
           // 'workspace' drops the path bucket entirely → list every document in
           // the DB (synapsd default). 'path' (default) scopes to context/tree.
           scope: { type: 'string', enum: ['path', 'workspace'], default: 'path' },
+          // When false, do NOT fold a canvas leaf's stored querySpec into the
+          // read — the client is driving the filters itself (live canvas filter
+          // preview via the toolbox). Default true = normal canvas behavior.
+          applyCanvasSpec: { type: 'boolean', default: true },
         },
       },
     },
@@ -296,6 +300,8 @@ export default async function workspaceDocumentRoutes(fastify, options) {
         page: request.query.page,
         order: request.query.order,
         sortBy: request.query.sortBy,
+        // Client-driven canvas preview opts out of stored-querySpec folding.
+        applyCanvasQuerySpec: request.query.applyCanvasSpec,
       };
 
       const { minDistance, maxDistance } = request.query;

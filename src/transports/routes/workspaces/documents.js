@@ -3,6 +3,8 @@
 import ResponseObject from '../../ResponseObject.js';
 import { parseDocumentId, parseDocumentIdArray } from '../../../utils/documentId.js';
 import { mergeDeviceFeatureTags } from '../../../utils/device-features.js';
+import { parseByteRange } from '../../lib/http-range.js';
+import { resolveContentType } from '../../lib/mime.js';
 
 // Human filename for a location URL: basename of the key after scheme://backend/.
 function locationFilename(url) {
@@ -13,6 +15,25 @@ function locationFilename(url) {
   const base = key.split('/').filter(Boolean).pop();
   if (!base) return null;
   try { return decodeURIComponent(base); } catch { return base; }
+}
+
+// Short-lived, HttpOnly cookie that lets <video>/<audio> stream document bytes
+// directly (they can't send an Authorization header). Minted by /content-ticket,
+// accepted by /content. Scoped to the workspace's documents path, ~2 min TTL.
+const MEDIA_COOKIE = 'cvs_media';
+const MEDIA_TICKET_TTL = 3600; // seconds — covers a viewing session (seeks/resumes)
+
+function readCookie(request, name) {
+  const raw = request.headers.cookie;
+  if (!raw) return null;
+  for (const part of raw.split(';')) {
+    const eq = part.indexOf('=');
+    if (eq === -1) continue;
+    if (part.slice(0, eq).trim() !== name) continue;
+    const val = part.slice(eq + 1).trim();
+    try { return decodeURIComponent(val); } catch { return val; }
+  }
+  return null;
 }
 
 /**
@@ -942,10 +963,62 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     }
   });
 
+  // Content auth: the normal bearer chain, OR a short-lived media-ticket cookie
+  // (see /content-ticket) so <video>/<audio> can stream directly — those can't
+  // send an Authorization header. The cookie is signed, workspace-scoped and
+  // ~2 min-lived; the workspace ACL still runs via getWorkspaceInstance.
+  async function authenticateContent(request, reply) {
+    if (request.headers.authorization) {
+      try { await fastify.authenticate(request, reply); return; } catch { /* try the media ticket */ }
+    }
+    const token = readCookie(request, MEDIA_COOKIE);
+    if (token) {
+      try {
+        const payload = fastify.jwt.verify(token);
+        if (payload && payload.scope === 'media' && payload.ws === request.params.id && payload.sub) {
+          request.user = { id: payload.sub };
+          return;
+        }
+      } catch { /* fall through to 401 */ }
+    }
+    const r = new ResponseObject().unauthorized('Authentication required');
+    return reply.code(r.statusCode).send(r.getResponse());
+  }
+
+  // ── Mint a media-streaming ticket cookie (authed by bearer) ──────────────
+  fastify.post('/:docId/content-ticket', {
+    onRequest: [fastify.authenticate],
+    schema: { params: { type: 'object', required: ['id', 'docId'], properties: { id: { type: 'string' }, docId: { type: 'string' } } } },
+  }, async (request, reply) => {
+    const workspace = await getWorkspaceInstance(request, reply);
+    if (!workspace) return;
+    const token = fastify.jwt.sign(
+      { scope: 'media', ws: request.params.id, sub: request.user.id },
+      { expiresIn: `${MEDIA_TICKET_TTL}s` },
+    );
+    // Scope the cookie to this workspace's documents subtree, derived from this
+    // request's own path so it's independent of the API mount prefix.
+    const urlPath = request.url.split('?')[0];
+    const cut = urlPath.indexOf('/documents');
+    const cookiePath = cut >= 0 ? urlPath.slice(0, cut + '/documents'.length) : '/';
+    const cookie = [
+      `${MEDIA_COOKIE}=${encodeURIComponent(token)}`,
+      `Path=${cookiePath}`,
+      `Max-Age=${MEDIA_TICKET_TTL}`,
+      'HttpOnly',
+      'SameSite=Strict',
+      request.protocol === 'https' ? 'Secure' : null,
+    ].filter(Boolean).join('; ');
+    reply.header('Set-Cookie', cookie);
+    const r = new ResponseObject().success({ ttl: MEDIA_TICKET_TTL }, 'Media ticket issued');
+    return reply.code(r.statusCode).send(r.getResponse());
+  });
+
   // ── Get document content (stream bytes from first reachable location) ──
+  // Supports HTTP Range (206) for media seeking + resumable downloads.
 
   fastify.get('/:docId/content', {
-    onRequest: [fastify.authenticate],
+    onRequest: [authenticateContent],
     schema: {
       params: { type: 'object', required: ['id', 'docId'], properties: { id: { type: 'string' }, docId: { type: 'string' } } },
       querystring: { type: 'object', properties: { download: { type: 'string' }, url: { type: 'string' } } },
@@ -976,18 +1049,42 @@ export default async function workspaceDocumentRoutes(fastify, options) {
         }
       }
 
-      const resolved = await workspace.resolveDocument(doc, { stream: true, url: request.query.url });
-      if (!resolved) { const r = new ResponseObject().notFound('No reachable location'); return reply.code(r.statusCode).send(r.getResponse()); }
-
       // Attachment bytes carry their own contentType/size/filename — the doc's
       // metadata describes the primary content (e.g. the raw .eml), not them.
-      const mime = attachment?.contentType || (attachment ? 'application/octet-stream' : doc.metadata?.contentType) || 'application/octet-stream';
       const size = attachment ? attachment.size : doc.metadata?.size;
+      const total = Number.isFinite(size) ? Number(size) : null;
+
+      // Range only for whole-document bytes with a known size; attachments are
+      // served whole (their resolver doesn't window).
+      const rangeable = !attachment && total != null;
+      if (rangeable) reply.header('Accept-Ranges', 'bytes');
+
+      const parsed = (rangeable && request.headers.range)
+        ? parseByteRange(request.headers.range, total)
+        : null;
+      if (parsed === 'unsatisfiable') {
+        reply.header('Content-Range', `bytes */${total}`);
+        return reply.code(416).send();
+      }
+
+      const resolved = await workspace.resolveDocument(doc, { stream: true, url: request.query.url, range: parsed || undefined });
+      if (!resolved) { const r = new ResponseObject().notFound('No reachable location'); return reply.code(r.statusCode).send(r.getResponse()); }
+
       const filename = attachment?.filename || locationFilename(resolved.url) || `document-${documentId}`;
+      const mime = resolveContentType(attachment ? attachment.contentType : doc.metadata?.contentType, filename);
       reply.header('Content-Type', mime);
-      if (Number.isFinite(size)) reply.header('Content-Length', size);
       if (request.query.download !== undefined) {
         reply.header('Content-Disposition', `attachment; filename="${filename.replace(/"/g, '')}"`);
+      }
+
+      // Only answer 206 when the resolver actually served the window — a backend
+      // that can't range falls back to a full 200 (no length mismatch).
+      if (parsed && resolved.ranged) {
+        reply.code(206);
+        reply.header('Content-Range', `bytes ${parsed.start}-${parsed.end}/${total}`);
+        reply.header('Content-Length', parsed.end - parsed.start + 1);
+      } else if (total != null) {
+        reply.header('Content-Length', total);
       }
       return reply.send(resolved.stream || resolved.buffer);
     } catch (error) {

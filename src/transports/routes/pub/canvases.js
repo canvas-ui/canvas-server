@@ -2,6 +2,8 @@
 
 import ResponseObject from '../../ResponseObject.js';
 import { parseDocumentId } from '../../../utils/documentId.js';
+import { parseByteRange } from '../../lib/http-range.js';
+import { resolveContentType } from '../../lib/mime.js';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DEFAULT_PUBLIC_CANVAS_LIMIT = 5000;
@@ -373,18 +375,36 @@ export default async function pubCanvasRoutes(fastify) {
         }
       }
 
-      const resolved = await ctx.workspace.resolveDocument(doc, { stream: true, url: request.query.url });
+      const size = attachment ? attachment.size : doc.metadata?.size;
+      const total = Number.isFinite(size) ? Number(size) : null;
+
+      const rangeable = !attachment && total != null;
+      if (rangeable) reply.header('Accept-Ranges', 'bytes');
+      const parsed = (rangeable && request.headers.range)
+        ? parseByteRange(request.headers.range, total)
+        : null;
+      if (parsed === 'unsatisfiable') {
+        reply.header('Content-Range', `bytes */${total}`);
+        return reply.code(416).send();
+      }
+
+      const resolved = await ctx.workspace.resolveDocument(doc, { stream: true, url: request.query.url, range: parsed || undefined });
       if (!resolved) {
         const response = new ResponseObject().notFound('No reachable location');
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
-      const mime = attachment?.contentType || (attachment ? 'application/octet-stream' : doc.metadata?.contentType) || 'application/octet-stream';
-      const size = attachment ? attachment.size : doc.metadata?.size;
       const filename = attachment?.filename || locationFilename(resolved.url) || `document-${documentId}`;
+      const mime = resolveContentType(attachment ? attachment.contentType : doc.metadata?.contentType, filename);
       reply.header('Content-Type', mime);
-      if (Number.isFinite(size)) reply.header('Content-Length', size);
       reply.header('Content-Disposition', `${request.query.download !== undefined ? 'attachment' : 'inline'}; filename="${String(filename).replace(/"/g, '')}"`);
+      if (parsed && resolved.ranged) {
+        reply.code(206);
+        reply.header('Content-Range', `bytes ${parsed.start}-${parsed.end}/${total}`);
+        reply.header('Content-Length', parsed.end - parsed.start + 1);
+      } else if (total != null) {
+        reply.header('Content-Length', total);
+      }
       return reply.send(resolved.stream || resolved.buffer);
     } catch (error) {
       fastify.log.error({ err: error }, 'Failed to read public canvas document content');

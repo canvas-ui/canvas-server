@@ -895,8 +895,9 @@ class Workspace extends EventEmitter {
         for (const loc of candidates) {
             if (!loc?.url) continue;
             try {
-                const data = await this.#storedIndex.resolve(loc.url, options);
-                if (data != null) return { ...(options.stream ? { stream: data } : { buffer: data }), url: loc.url };
+                const res = await this.#storedIndex.resolve(loc.url, options);
+                const data = res?.data;
+                if (data != null) return { ...(options.stream ? { stream: data } : { buffer: data }), url: loc.url, ranged: !!res.ranged };
             } catch (err) {
                 lastError = err;
             }

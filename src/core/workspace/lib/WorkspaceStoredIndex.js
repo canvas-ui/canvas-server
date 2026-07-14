@@ -713,6 +713,10 @@ export class WorkspaceStoredIndex {
      * @param {{stream?: boolean}} [options]
      * @returns {Promise<Buffer|ReadStream|null>}
      */
+    // Returns `{ data, ranged }`: `data` is a Buffer (non-stream), a Readable
+    // (stream), or null on a miss; `ranged` is true only when a requested byte
+    // window (`options.range = { start, end }`, inclusive end) was actually
+    // served — so the HTTP layer only sends 206 when the bytes really are partial.
     async resolve(url, options = {}) {
         const parsed = parseLocationUrl(url);
         if (!parsed) throw new Error(`Unparseable location URL: ${url}`);
@@ -720,7 +724,12 @@ export class WorkspaceStoredIndex {
 
         if (scheme === 'stored') {
             if (!this.#stored) throw new Error('WorkspaceStoredIndex is not running');
-            return options.stream ? this.#stored.getStreamByUrl(url) : this.#stored.getByUrl(url);
+            if (!options.stream) return { data: await this.#stored.getByUrl(url), ranged: false };
+            if (options.range) {
+                const r = await this.#stored.getRangeStreamByUrl(url, options.range);
+                return { data: r?.stream ?? null, ranged: !!r?.ranged };
+            }
+            return { data: await this.#stored.getStreamByUrl(url), ranged: false };
         }
 
         if (scheme === 'file') {
@@ -732,7 +741,11 @@ export class WorkspaceStoredIndex {
                 if (abs !== root && !abs.startsWith(root + path.sep)) {
                     throw new Error(`Location escapes workspace root: ${url}`);
                 }
-                return options.stream ? createReadStream(abs) : fs.readFile(abs);
+                if (!options.stream) return { data: await fs.readFile(abs), ranged: false };
+                if (options.range) {
+                    return { data: createReadStream(abs, { start: options.range.start, end: options.range.end }), ranged: true };
+                }
+                return { data: createReadStream(abs), ranged: false };
             }
             throw new Error(`Device-proxy resolution not implemented for ${url}`);
         }

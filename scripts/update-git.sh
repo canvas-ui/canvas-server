@@ -14,17 +14,26 @@ TARGET_BRANCH="${TARGET_BRANCH:-}"
 LOG_FILE="${LOG_FILE:-}"
 REQUIRED_NODE_VERSION="${REQUIRED_NODE_VERSION:-}"
 LOCKFILE="${LOCKFILE:-}"
+MAINTENANCE_PAGE="${MAINTENANCE_PAGE:-}"
+MAINTENANCE_PORT="${MAINTENANCE_PORT:-}"
+MAINTENANCE_HOST="${MAINTENANCE_HOST:-}"
+MAINTENANCE_PID=
 
 usage() {
     cat <<EOF
-Usage: $0 [-b branch] [-c config.json] [-h]
+Usage: $0 [-b branch] [-c config.json] [-m] [-h]
   -b  Git branch (overrides config; default: dev)
   -c  Path to update.json (default: \$CANVAS_SERVER_HOME/config/update.json)
+  -m  Disable the "please stand by" maintenance page
   -h  This help
 
 Config file: copy server/config/update.example.json to config/update.json
 Env overrides: TARGET_BRANCH, CANVAS_ROOT, CANVAS_SERVER_HOME, HTTP_PROXY, HTTPS_PROXY, NO_PROXY
 Channel in JSON: "dev" -> branch dev, "prod" -> branch main (unless "branch" is set)
+
+While the update runs, a stand-by page is served on the API port (8001 by default,
+override with maintenancePort/MAINTENANCE_PORT) and is torn down right before
+canvas-server starts.
 EOF
 }
 
@@ -53,6 +62,9 @@ line('CANVAS_GROUP', c.canvasGroup);
 line('LOG_FILE', c.logFile);
 line('LOCKFILE', c.lockFile);
 line('REQUIRED_NODE_VERSION', c.requiredNodeVersion);
+if (c.maintenancePage === false) line('MAINTENANCE_PAGE', 'false');
+line('MAINTENANCE_PORT', c.maintenancePort);
+line('MAINTENANCE_HOST', c.maintenanceHost);
 const p = c.proxy || {};
 line('HTTP_PROXY', p.http || p.https);
 line('HTTPS_PROXY', p.https || p.http);
@@ -69,10 +81,11 @@ apply_proxy_env() {
     [[ -n "$noproxy" ]] && export no_proxy="$noproxy" NO_PROXY="$noproxy"
 }
 
-while getopts "b:c:h" opt; do
+while getopts "b:c:mh" opt; do
     case $opt in
         b) TARGET_BRANCH_CLI="$OPTARG" ;;
         c) UPDATE_CONFIG="$OPTARG" ;;
+        m) MAINTENANCE_PAGE_CLI=false ;;
         h) usage; exit 0 ;;
         *) usage; exit 1 ;;
     esac
@@ -90,7 +103,11 @@ TARGET_BRANCH="${TARGET_BRANCH:-dev}"
 LOG_FILE="${LOG_FILE:-/var/log/canvas-deploy.log}"
 REQUIRED_NODE_VERSION="${REQUIRED_NODE_VERSION:-20}"
 LOCKFILE="${LOCKFILE:-/var/run/canvas-update.lock}"
+MAINTENANCE_PAGE="${MAINTENANCE_PAGE:-true}"
+MAINTENANCE_PORT="${MAINTENANCE_PORT:-${CANVAS_API_PORT:-8001}}"
+MAINTENANCE_HOST="${MAINTENANCE_HOST:-${CANVAS_API_HOST:-0.0.0.0}}"
 [[ -n "$TARGET_BRANCH_CLI" ]] && TARGET_BRANCH="$TARGET_BRANCH_CLI"
+[[ -n "${MAINTENANCE_PAGE_CLI-}" ]] && MAINTENANCE_PAGE="$MAINTENANCE_PAGE_CLI"
 
 apply_proxy_env
 
@@ -117,6 +134,50 @@ check_node_version() {
         log_message "Error: Node.js >= $REQUIRED_NODE_VERSION required (have $current_version)"
         exit 1
     fi
+}
+
+start_maintenance_page() {
+    [[ "$MAINTENANCE_PAGE" == "false" ]] && return 0
+
+    local src="$(dirname "$(readlink -f "$0")")/maintenance-server.js"
+    [[ -f "$src" ]] || { log_message "No maintenance-server.js found, skipping stand-by page"; return 0; }
+
+    # Run from a copy outside the repo: the git reset below rewrites the working
+    # tree (and clean_node_modules walks it) while this process is alive.
+    MAINTENANCE_SCRIPT=$(mktemp /tmp/canvas-maintenance-XXXXXX.mjs)
+    cp "$src" "$MAINTENANCE_SCRIPT"
+
+    node "$MAINTENANCE_SCRIPT" --port "$MAINTENANCE_PORT" --host "$MAINTENANCE_HOST" --root "$CANVAS_ROOT" \
+        >>"$LOG_FILE" 2>&1 &
+    MAINTENANCE_PID=$!
+
+    sleep 1
+    if kill -0 "$MAINTENANCE_PID" 2>/dev/null; then
+        log_message "Maintenance page up on $MAINTENANCE_HOST:$MAINTENANCE_PORT (pid $MAINTENANCE_PID)"
+    else
+        # Almost always the old service still holding the port. Not fatal.
+        log_message "Maintenance page failed to start (port $MAINTENANCE_PORT busy?), continuing without it"
+        MAINTENANCE_PID=
+    fi
+}
+
+stop_maintenance_page() {
+    [[ -n "$MAINTENANCE_PID" ]] || { rm -f "${MAINTENANCE_SCRIPT:-}" 2>/dev/null; return 0; }
+
+    log_message "Taking down maintenance page (pid $MAINTENANCE_PID)..."
+    kill "$MAINTENANCE_PID" 2>/dev/null || true
+
+    # Wait for the port to actually be released before the real server claims it.
+    local i
+    for i in {1..10}; do
+        kill -0 "$MAINTENANCE_PID" 2>/dev/null || break
+        sleep 0.5
+    done
+    kill -9 "$MAINTENANCE_PID" 2>/dev/null || true
+    wait "$MAINTENANCE_PID" 2>/dev/null || true
+
+    MAINTENANCE_PID=
+    rm -f "${MAINTENANCE_SCRIPT:-}" 2>/dev/null || true
 }
 
 clean_node_modules() {
@@ -148,7 +209,7 @@ if [[ -e "$LOCKFILE" ]]; then
     exit 1
 fi
 
-trap 'rm -f "$LOCKFILE"' EXIT
+trap 'stop_maintenance_page; rm -f "$LOCKFILE"' EXIT
 touch "$LOCKFILE"
 
 log_message "Starting canvas-server update (branch=$TARGET_BRANCH, root=$CANVAS_ROOT)..."
@@ -157,6 +218,8 @@ log_message "Starting canvas-server update (branch=$TARGET_BRANCH, root=$CANVAS_
 
 log_message "Stopping canvas-server..."
 systemctl stop canvas-server 2>/dev/null || log_message "Service was not running"
+
+start_maintenance_page
 
 clean_node_modules
 
@@ -190,6 +253,9 @@ log_message "Rebuilding web UI..."
 run_as_canvas_user "/usr/bin/npm run build" || { log_message "web build failed"; exit 1; }
 
 [[ -f "$WEB_DIST/index.html" ]] || { log_message "Missing $WEB_DIST/index.html"; exit 1; }
+
+# Must happen before the real server starts — both want the same port.
+stop_maintenance_page
 
 log_message "Starting canvas-server..."
 systemctl start canvas-server || { log_message "Failed to start canvas-server"; exit 1; }

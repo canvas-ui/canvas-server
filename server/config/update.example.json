@@ -8,6 +8,9 @@
   "logFile": "/var/log/canvas-deploy.log",
   "lockFile": "/var/run/canvas-update.lock",
   "requiredNodeVersion": 20,
+  "maintenancePage": true,
+  "maintenancePort": 8001,
+  "maintenanceHost": "0.0.0.0",
   "proxy": {
     "http": "",
     "https": "",

@@ -24,6 +24,7 @@ import WorkspaceManager from './core/workspace/index.js';
 import Users from './core/user/index.js';
 import ContextManager from './core/context/index.js';
 import DeviceRegistry from './core/device/Registry.js';
+import UserConfigStore from './core/user/ConfigStore.js';
 import Roles from './core/role/index.js';
 import Agents from './core/agent/index.js';
 import Embedd from './services/embedd/src/index.js';
@@ -64,6 +65,7 @@ class Server extends EventEmitter {
     // Global services
     #authService;
     #deviceRegistry;
+    #userConfig;
     #apiServer;
 
     constructor(options = {}) {
@@ -165,6 +167,12 @@ class Server extends EventEmitter {
             logger: createLogger('device-registry'),
         });
 
+        this.#userConfig = new UserConfigStore({
+            userHomePath: env.user.home,
+            usersIndex: this.#users.indexStore,
+            logger: createLogger('user-config'),
+        });
+
         // Create admin user if needed
         if (env.admin?.email) {
             await this.#createAdminUser();
@@ -184,6 +192,7 @@ class Server extends EventEmitter {
                 agents: this.#agents,
                 authService: this.#authService,
                 deviceRegistry: this.#deviceRegistry,
+                userConfig: this.#userConfig,
                 messaging: this.#messaging,
                 chatRouter: this.#chatRouter,
                 voice: this.#voice,

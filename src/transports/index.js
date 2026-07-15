@@ -33,6 +33,7 @@ import adminRoutes from './routes/admin/index.js';
 import webdavRoutes from './routes/webdav.js';
 import contextWebdavRoutes from './routes/context-webdav.js';
 import menuRoutes from './routes/menu.js';
+import userRoutes from './routes/users.js';
 import roleRoutes from './routes/roles/index.js';
 import roleTemplateRoutes from './routes/role-templates/index.js';
 import messagingRoutes from './routes/messaging/index.js';
@@ -184,6 +185,7 @@ export async function createServer(options = {}) {
   if (options.agents) server.decorate('agents', options.agents);
   if (options.authService) server.decorate('authService', options.authService);
   if (options.deviceRegistry) server.decorate('deviceRegistry', options.deviceRegistry);
+  if (options.userConfig) server.decorate('userConfig', options.userConfig);
   if (options.messaging) server.decorate('messaging', options.messaging);
   if (options.chatRouter) server.decorate('chatRouter', options.chatRouter);
   if (options.voice) server.decorate('voice', options.voice);
@@ -330,6 +332,7 @@ export async function createServer(options = {}) {
   server.register(pingRoute);
   server.register(authRoutes, { prefix: '/rest/v2/auth' });
   server.register(menuRoutes, { prefix: '/rest/v2', onRequest: [server.authenticate] });
+  server.register(withoutAgentTokens(userRoutes), { prefix: '/rest/v2/users' });
   server.register(workspaceRoutes, { prefix: '/rest/v2/workspaces' });
   server.register(withoutAgentTokens(contextRoutes), { prefix: '/rest/v2/contexts' });
   server.register(agentRoutes, { prefix: '/rest/v2/agents' });

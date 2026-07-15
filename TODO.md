@@ -5,6 +5,17 @@
 ### Content area
 - (deffered) Content area section should support tabs 
 
+## Geotagging follow-ups
+
+Landed 2026-07-15: `metadata.geo = {lat, lon, alt?, accuracy?, source?}` with `source` = `device|exif|manual`, precedence **manual > exif > device** (rank, not write order → re-upserts idempotent). Owner: `src/core/workspace/lib/geo.js` (`pickGeo`). Opt-in device geotag toggle (default off) on note/todo create. Null-Island guard in synapsd `#indexDocumentGeo` (`Number(null) === 0` and is finite → `{lat:null,lon:null}` used to get indexed at 0,0 and answer bbox queries there).
+
+- [ ] **Nothing writes `source:'manual'` yet** — manual is the top rank precisely so a hand-fixed pin survives re-indexing, but the UI that would set it (drag-a-pin / edit geo in the doc modal) doesn't exist. The rank is in place ahead of the feature that needs it.
+- [ ] **No backfill of sentinel geo already in the S2 index** — the guard self-heals a doc only on re-put. Existing `{lat:null,lon:null}` docs stay indexed at 0,0 until touched. Candidate for the admin reindex endpoints.
+- [ ] Geotag toggle covers note/todo only — files/photos (FileForm/FileCardBody/share-target) still send no device geo. EXIF outranks it anyway, so this only matters for photos with no GPS.
+- [ ] `data/media/has-gps` feature is still watch-path-only (see also the extraction gaps in the blob metadata notes) — derive it server-side from `metadata.geo` on insert instead.
+- [ ] `alt` is inert — stored but nothing reads it (index + renderers use lat/lon only). Either surface it or drop the pretence.
+- [ ] Geolocation is a **secure-context** API: over plain http on a LAN IP the toggle greys out by design. If we want geotagging in LAN dev/testing, we need https (or test via localhost).
+
 ## Remote workspaces
 
 - Open a remote workspace functionality does not work, either the share tokens do not work or the api endpoints do not work, regardless, workspaces are not really required to sit locally on the server, we will soon implement our canvas-edge runtime which will autoregister to a canvas-server instance and will presumably run locally at the user - we should handle that scenario transparently (maybe a think middleware that would keep all integration talkint to the same rest api but handle proxying to remote workspaces transparently)

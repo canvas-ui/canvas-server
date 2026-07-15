@@ -59,25 +59,25 @@ function page() {
 <meta http-equiv="refresh" content="15">
 <title>Canvas is updating...</title>
 <style>
-  :root { color-scheme: dark; }
+  :root { color-scheme: light; }
   * { box-sizing: border-box; }
   body {
     margin: 0; min-height: 100vh; display: grid; place-items: center;
-    background: #0e1116; color: #e6edf3; text-align: center; padding: 2rem;
+    background: #f6f8fa; color: #1f2328; text-align: center; padding: 2rem;
     font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   }
   .card { max-width: 34rem; }
   .spinner {
     width: 2.5rem; height: 2.5rem; margin: 0 auto 2rem;
-    border: 3px solid #30363d; border-top-color: #58a6ff; border-radius: 50%;
+    border: 3px solid #d8dee4; border-top-color: #0969da; border-radius: 50%;
     animation: spin 1s linear infinite;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
   h1 { font-size: 1.6rem; margin: 0 0 .75rem; font-weight: 600; }
-  p { margin: 0 0 1.25rem; color: #8b949e; line-height: 1.6; }
-  #quip { color: #58a6ff; font-family: ui-monospace, SFMono-Regular, monospace; font-size: .9rem; min-height: 1.4em; }
-  .meta { margin-top: 2.5rem; font-size: .8rem; color: #6e7681; }
-  code { background: #161b22; padding: .15rem .4rem; border-radius: 4px; color: #e6edf3; }
+  p { margin: 0 0 1.25rem; color: #59636e; line-height: 1.6; }
+  #quip { color: #0969da; font-family: ui-monospace, SFMono-Regular, monospace; font-size: .9rem; min-height: 1.4em; }
+  .meta { margin-top: 2.5rem; font-size: .8rem; color: #818b98; }
+  code { background: #eaeef2; padding: .15rem .4rem; border-radius: 4px; color: #1f2328; }
   @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
 </style>
 </head>
@@ -85,7 +85,7 @@ function page() {
   <div class="card">
     <div class="spinner"></div>
     <h1>Canvas is being updated</h1>
-    <p>We're pulling in version <code>${version}</code> and rebuilding.<br>Please stand by — this page refreshes itself.</p>
+    <p>We're pulling in version <code>${version}</code> and rebuilding.<br>Please stand by - this page refreshes itself.</p>
     <p id="quip"></p>
     <div class="meta">Update started ${elapsed}s ago</div>
   </div>
@@ -127,6 +127,13 @@ server.on('error', (err) => {
     process.exit(1);
 });
 
-const shutdown = () => server.close(() => process.exit(0));
+const shutdown = () => {
+    server.close(() => process.exit(0));
+    // Browsers sitting on the refresh loop hold keep-alive sockets open, and
+    // server.close() alone waits for them, so drop them and free the port for
+    // the real server immediately.
+    server.closeAllConnections?.();
+    setTimeout(() => process.exit(0), 2000).unref();
+};
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);

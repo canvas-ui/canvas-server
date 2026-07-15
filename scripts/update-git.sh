@@ -254,7 +254,7 @@ run_as_canvas_user "/usr/bin/npm run build" || { log_message "web build failed";
 
 [[ -f "$WEB_DIST/index.html" ]] || { log_message "Missing $WEB_DIST/index.html"; exit 1; }
 
-# Must happen before the real server starts — both want the same port.
+# Must happen before the real server starts, both want the same port.
 stop_maintenance_page
 
 log_message "Starting canvas-server..."

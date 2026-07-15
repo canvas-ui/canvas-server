@@ -2,6 +2,7 @@
 
 import ResponseObject from '../../ResponseObject.js';
 import { requireWorkspaceRead, requireWorkspaceWrite } from '../../middleware/workspace-acl.js';
+import { getServerDevice } from '../../../core/device/ServerDevice.js';
 
 // Unified backend/connector API — mirrors the backends tree's
 // /<driver>/<address> nodes. One surface over storage backends
@@ -22,6 +23,8 @@ export default async function workspaceBackendRoutes(fastify) {
         return reply.code(response.statusCode).send(response.getResponse());
     };
     const arg = (v) => decodeURIComponent(String(v || ''));
+    // 'fs' is a UX alias for the local-folder driver; canonical name is 'file'.
+    const drv = (v) => { const d = arg(v); return d === 'fs' ? 'file' : d; };
 
     // List every backend across all drivers.
     fastify.get('/', {
@@ -38,7 +41,7 @@ export default async function workspaceBackendRoutes(fastify) {
         onRequest: [fastify.authenticate, requireWorkspaceRead()],
     }, async (request, reply) => {
         try {
-            const backends = await request.workspace.listBackendsByDriver(arg(request.params.driver));
+            const backends = await request.workspace.listBackendsByDriver(drv(request.params.driver));
             return ok(reply, backends, backends.length);
         } catch (error) { return fail(request, reply, error); }
     });
@@ -48,7 +51,34 @@ export default async function workspaceBackendRoutes(fastify) {
         onRequest: [fastify.authenticate, requireWorkspaceWrite()],
     }, async (request, reply) => {
         try {
-            const backend = await request.workspace.addBackend(arg(request.params.driver), request.body || {});
+            const driver = drv(request.params.driver);
+            const backend = await request.workspace.addBackend(driver, request.body || {});
+            // A local-folder mount pins content to THIS server's device — make
+            // sure that device exists in the user's registry (named,
+            // re-associable) and is bound into the workspace like any client
+            // device. Best-effort: the mount works without it.
+            if ((driver === 'file' || driver === 'fs') && backend?.config?.device?.id && fastify.deviceRegistry) {
+                try {
+                    const serverDevice = getServerDevice();
+                    const existing = await fastify.deviceRegistry.getDevice(request.user.id, serverDevice.deviceId);
+                    const record = existing
+                        ? await fastify.deviceRegistry.touchDevice(request.user.id, serverDevice.deviceId, {})
+                        : await fastify.deviceRegistry.upsertDevice(request.user.id, {
+                            deviceId: serverDevice.deviceId,
+                            name: serverDevice.name,
+                            description: serverDevice.description,
+                            hostname: serverDevice.hostname,
+                            fqdn: serverDevice.fqdn,
+                            platform: serverDevice.platform,
+                            arch: serverDevice.arch,
+                            type: serverDevice.type,
+                            username: serverDevice.username,
+                        });
+                    await fastify.deviceRegistry.ensureWorkspaceBinding(request.workspace, record);
+                } catch (deviceError) {
+                    request.log.warn({ err: deviceError }, 'Failed to register server device for local-folder backend');
+                }
+            }
             const response = new ResponseObject().created(backend);
             return reply.code(response.statusCode).send(response.getResponse());
         } catch (error) { return fail(request, reply, error); }
@@ -61,7 +91,7 @@ export default async function workspaceBackendRoutes(fastify) {
         onRequest: [fastify.authenticate, requireWorkspaceWrite()],
     }, async (request, reply) => {
         try {
-            const folders = await request.workspace.discoverBackendFolders(arg(request.params.driver), request.body || {});
+            const folders = await request.workspace.discoverBackendFolders(drv(request.params.driver), request.body || {});
             return ok(reply, folders, Array.isArray(folders) ? folders.length : undefined);
         } catch (error) { return fail(request, reply, error); }
     });
@@ -71,7 +101,7 @@ export default async function workspaceBackendRoutes(fastify) {
         onRequest: [fastify.authenticate, requireWorkspaceRead()],
     }, async (request, reply) => {
         try {
-            const backend = await request.workspace.getBackend(arg(request.params.driver), arg(request.params.address));
+            const backend = await request.workspace.getBackend(drv(request.params.driver), arg(request.params.address));
             return ok(reply, backend);
         } catch (error) { return fail(request, reply, error); }
     });
@@ -80,7 +110,7 @@ export default async function workspaceBackendRoutes(fastify) {
         onRequest: [fastify.authenticate, requireWorkspaceWrite()],
     }, async (request, reply) => {
         try {
-            const backend = await request.workspace.updateBackend(arg(request.params.driver), arg(request.params.address), request.body || {});
+            const backend = await request.workspace.updateBackend(drv(request.params.driver), arg(request.params.address), request.body || {});
             return ok(reply, backend);
         } catch (error) { return fail(request, reply, error); }
     });
@@ -89,7 +119,7 @@ export default async function workspaceBackendRoutes(fastify) {
         onRequest: [fastify.authenticate, requireWorkspaceWrite()],
     }, async (request, reply) => {
         try {
-            const removed = await request.workspace.removeBackend(arg(request.params.driver), arg(request.params.address));
+            const removed = await request.workspace.removeBackend(drv(request.params.driver), arg(request.params.address));
             return ok(reply, { removed });
         } catch (error) { return fail(request, reply, error); }
     });
@@ -114,7 +144,7 @@ export default async function workspaceBackendRoutes(fastify) {
         try {
             const { linked = null, limit, offset } = request.query || {};
             const result = await request.workspace.listBackendDocuments(
-                arg(request.params.driver), arg(request.params.address),
+                drv(request.params.driver), arg(request.params.address),
                 { linked, limit, offset },
             );
             const response = new ResponseObject().found(result.documents, 'OK', 200, result.count, result.totalCount);
@@ -127,7 +157,7 @@ export default async function workspaceBackendRoutes(fastify) {
         onRequest: [fastify.authenticate, requireWorkspaceWrite()],
     }, async (request, reply) => {
         try {
-            const result = await request.workspace.syncBackend(arg(request.params.driver), arg(request.params.address));
+            const result = await request.workspace.syncBackend(drv(request.params.driver), arg(request.params.address));
             return ok(reply, result);
         } catch (error) { return fail(request, reply, error); }
     });
@@ -138,7 +168,7 @@ export default async function workspaceBackendRoutes(fastify) {
         onRequest: [fastify.authenticate, requireWorkspaceRead()],
     }, async (request, reply) => {
         try {
-            const usage = await request.workspace.getBackendDiskUsage(arg(request.params.driver), arg(request.params.address));
+            const usage = await request.workspace.getBackendDiskUsage(drv(request.params.driver), arg(request.params.address));
             return ok(reply, usage);
         } catch (error) { return fail(request, reply, error); }
     });
@@ -148,7 +178,7 @@ export default async function workspaceBackendRoutes(fastify) {
         onRequest: [fastify.authenticate, requireWorkspaceWrite()],
     }, async (request, reply) => {
         try {
-            const result = await request.workspace.testBackend(arg(request.params.driver), arg(request.params.address));
+            const result = await request.workspace.testBackend(drv(request.params.driver), arg(request.params.address));
             return ok(reply, result);
         } catch (error) { return fail(request, reply, error); }
     });
@@ -160,7 +190,7 @@ export default async function workspaceBackendRoutes(fastify) {
     }, async (request, reply) => {
         try {
             const available = request.query?.available === '1' || request.query?.available === 'true';
-            const containers = await request.workspace.listBackendContainers(arg(request.params.driver), arg(request.params.address), { available });
+            const containers = await request.workspace.listBackendContainers(drv(request.params.driver), arg(request.params.address), { available });
             return ok(reply, containers, containers.length);
         } catch (error) { return fail(request, reply, error); }
     });
@@ -171,7 +201,7 @@ export default async function workspaceBackendRoutes(fastify) {
     }, async (request, reply) => {
         try {
             const folders = request.body?.folders || request.body?.names || [];
-            const result = await request.workspace.addBackendContainers(arg(request.params.driver), arg(request.params.address), folders);
+            const result = await request.workspace.addBackendContainers(drv(request.params.driver), arg(request.params.address), folders);
             const response = new ResponseObject().created(result);
             return reply.code(response.statusCode).send(response.getResponse());
         } catch (error) { return fail(request, reply, error); }
@@ -183,7 +213,7 @@ export default async function workspaceBackendRoutes(fastify) {
     }, async (request, reply) => {
         try {
             const result = await request.workspace.renameBackendFolder(
-                arg(request.params.driver), arg(request.params.address), arg(request.params.name), String(request.body?.name || ''),
+                drv(request.params.driver), arg(request.params.address), arg(request.params.name), String(request.body?.name || ''),
             );
             return ok(reply, result);
         } catch (error) { return fail(request, reply, error); }
@@ -193,7 +223,7 @@ export default async function workspaceBackendRoutes(fastify) {
         onRequest: [fastify.authenticate, requireWorkspaceWrite()],
     }, async (request, reply) => {
         try {
-            const removed = await request.workspace.removeBackendContainer(arg(request.params.driver), arg(request.params.address), arg(request.params.name));
+            const removed = await request.workspace.removeBackendContainer(drv(request.params.driver), arg(request.params.address), arg(request.params.name));
             return ok(reply, { removed });
         } catch (error) { return fail(request, reply, error); }
     });
@@ -203,7 +233,7 @@ export default async function workspaceBackendRoutes(fastify) {
     }, async (request, reply) => {
         try {
             const result = await request.workspace.syncBackendContainer(
-                arg(request.params.driver), arg(request.params.address), arg(request.params.name),
+                drv(request.params.driver), arg(request.params.address), arg(request.params.name),
             );
             return ok(reply, result);
         } catch (error) { return fail(request, reply, error); }

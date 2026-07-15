@@ -4,13 +4,14 @@
  * Backend-mirror path helpers for the dedicated "backends" tree.
  *
  * All backend-ingested documents are filed in the per-workspace backends tree
- * (type directory, settings.linkContextRoot=false) under a strict schema:
- *   /<driver>/<resource-address>/<resource-path>
- * e.g.
- *   /file/workspace:home/<source-dirs>
- *   /imap/me@idnc.sk/inbox
- *   /slack/<account>/<channel>
- *   /s3/<address>/<bucket>/<path>
+ * (type directory, settings.linkContextRoot=false) under an anchor-first
+ * schema — the first segment names what the data is anchored to:
+ *   /workspace/<store>/<source-dirs>        workspace-anchored (workspace:home → /workspace/home)
+ *   /device/<device>/<mount>/<source-dirs>  device-anchored fs mounts
+ *   /<driver>/<resource-address>/<path>     connectors/remotes, e.g.
+ *     /imap/me@idnc.sk/inbox
+ *     /slack/<account>/<channel>
+ *     /s3/<address>/<bucket>/<path>
  *
  * Historically these lived inside the default directory tree under /.backends;
  * LEGACY_BACKENDS_PATH exists only for the one-shot startup migration and for

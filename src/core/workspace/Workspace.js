@@ -20,8 +20,10 @@ import { parseLocationUrl } from '../../services/synapsd/src/utils/path-helpers.
 import { WorkspaceTokens } from './lib/WorkspaceTokens.js';
 import { classifyDocument } from './lib/classifier.js';
 import { extract as extractBlobMetadata } from '../../services/stored/src/extractors/index.js';
+import { pickGeo } from './lib/geo.js';
 import { WorkspaceStoredIndex } from './lib/WorkspaceStoredIndex.js';
 import { WorkspaceMailIndex } from './services/imap/index.js';
+import { getServerDevice } from '../device/ServerDevice.js';
 
 // Constants
 import {
@@ -73,6 +75,7 @@ class Workspace extends EventEmitter {
     // Set when the legacy /.backends subtree was dropped this start — triggers a
     // one-time backend resync/re-file to repopulate the backends tree.
     #legacyBackendsMigrated = false;
+    #backendsGrammarMigrated = false;
     #mailRuntimeBinding = null;
     #tokens = null;
     #status = WORKSPACE_STATUS_CODES.INACTIVE;
@@ -359,6 +362,7 @@ class Workspace extends EventEmitter {
             await this.#ensureDirectoryTree();
             await this.#ensureBackendsTree();
             await this.#migrateLegacyBackendsSubtree();
+            await this.#migrateBackendsTreeGrammar();
             this.#bindRuntimeEvents();
             this.#registerEmbedd();
             // Resume interrupted embedding: the embedd queue is in-memory, so a
@@ -379,11 +383,18 @@ class Workspace extends EventEmitter {
             this.#setStatus(WORKSPACE_STATUS_CODES.ACTIVE);
             if (this.isServiceEnabled('home') || this.isDataBackendEnabled(WorkspaceStoredIndex.HOME_STORED_BACKEND)) {
                 await this.#startStoredIndex();
-                if (this.#legacyBackendsMigrated) {
-                    // Repopulate the freshly-created backends tree from the file
-                    // backends (checksum-cached: no re-hash of unchanged files,
-                    // no blob re-download — membership re-tick only).
-                    this.#storedIndex.resyncInBackground();
+                if (this.#legacyBackendsMigrated || this.#backendsGrammarMigrated) {
+                    // Repopulate the freshly-created backends tree from EVERY
+                    // resyncable file backend — workspace:home and fs mounts
+                    // (checksum-cached: no re-hash of unchanged files, no blob
+                    // re-download — membership re-tick only).
+                    for (const [name, cfg] of Object.entries(this.dataBackends)) {
+                        if (cfg?.enabled && cfg.resync && cfg.supported !== false && cfg.driver === 'file') {
+                            try { this.#storedIndex.resyncInBackground(name); } catch (err) {
+                                this.#logger.warn({ workspaceId: this.id, backend: name, error: err.message }, 'Post-migration resync failed to start');
+                            }
+                        }
+                    }
                 }
             }
 
@@ -713,7 +724,9 @@ class Workspace extends EventEmitter {
         if (classification.isFile()) {
             // Byte blob: only text/image content is embeddable; everything else
             // (pdf, octet-stream, …) is a deliberate skip until a decoder/CLIP
-            // model exists. Bytes must be server-resident (device file:// throws).
+            // model exists. Bytes must be reachable from this instance: stored://,
+            // workspace files, or file://<deviceId> when the id is THIS device
+            // (foreign-device locations throw and fall through to skip).
             if (!classification.isBlob() || !contentType) { return { skip: true, schema, updatedAt, contentType, comment }; }
             const modality = classification.embeddingModality();
             if (!modality) { return { skip: true, schema, updatedAt, contentType, comment }; }
@@ -762,12 +775,21 @@ class Workspace extends EventEmitter {
      */
     async #enrichImageDocMetadata(doc, buffer, contentType) {
         const meta = doc.metadata || {};
-        if (meta.exif || meta.geo || meta.dimensions) { return null; }
+        // Bail only on keys that prove extraction already ran. A bare `geo` means
+        // device/manual geo arrived from a client without EXIF ever being read,
+        // so we still extract — the camera's fix outranks the uploader's location
+        // and pickGeo below decides, rather than this guard.
+        if (meta.exif || meta.dimensions) { return null; }
         const extracted = await extractBlobMetadata({ data: buffer }, { mimeType: contentType, key: `doc:${doc.id}` });
         const patch = {};
-        for (const k of ['geo', 'exif', 'dimensions', 'media']) {
+        for (const k of ['exif', 'dimensions', 'media']) {
             if (extracted[k] && typeof extracted[k] === 'object') { patch[k] = extracted[k]; }
         }
+        // metadata patches shallow-merge top-level keys (BaseDocument.update), so
+        // `geo` is replaced wholesale — resolve the winner first, and only write
+        // when it actually changes to avoid a no-op update.
+        const geo = pickGeo(meta.geo, extracted.geo, { incomingSource: 'exif' });
+        if (geo && JSON.stringify(geo) !== JSON.stringify(meta.geo)) { patch.geo = geo; }
         if (Object.keys(patch).length === 0) { return null; }
 
         const update = { id: doc.id, metadata: patch, updatedAt: new Date().toISOString() };
@@ -1580,6 +1602,9 @@ class Workspace extends EventEmitter {
             kind: 'storage',
             enabled: status.enabled !== false,
             status: state,
+            // Mirror node in the backends tree (/device/<device>/<mount> for
+            // device-scoped mounts) so clients never re-derive path grammar.
+            treePath: this.#storedIndex?.getBackendTreeRoot(name) || null,
             lastSyncAt: status.lastScanAt || null,
             lastError: status.lastError || null,
             // Last on-demand disk usage ({bytes, files, computedAt}) if computed
@@ -1588,6 +1613,11 @@ class Workspace extends EventEmitter {
             capabilities: this.#backendCapabilities(driver, status),
             config: {
                 root: status.root || null,
+                // Display name of a user-added mount ("Financial Reports");
+                // address stays the slug.
+                label: status.label || null,
+                // Authoring device snapshot for device-scoped mounts.
+                device: status.device || null,
                 readOnly: status.readOnly === true,
                 managed: status.managed === true,
                 supported: status.supported !== false,
@@ -1666,7 +1696,10 @@ class Workspace extends EventEmitter {
      * linked=true → the inverse; linked=null → everything under the address.
      */
     async listBackendDocuments(driver, address, { linked = null, limit = null, offset = 0, parse = true } = {}) {
-        const path = `/${normalizeSegment(driver)}/${normalizeSegment(address)}`;
+        // Storage backends may mirror deeper than /<driver>/<address> (device
+        // segment on fs mounts) — ask the index for the canonical node first.
+        const path = this.#storedIndex?.getBackendTreeRoot(address)
+            || `/${normalizeSegment(driver)}/${normalizeSegment(address)}`;
         return await this.#getActiveDb().listTreeDocuments(Workspace.BACKENDS_TREE_NAME, { path, linked, limit, offset, parse });
     }
 
@@ -1682,10 +1715,75 @@ class Workspace extends EventEmitter {
 
     async addBackend(driver, config = {}) {
         if (driver === 'imap') return this.saveImapMailbox(config);
+        if (driver === 'fs') driver = 'file'; // UX alias for the local-folder driver
+        if (driver === 'file') return this.#addFileBackend(config);
         const name = config.name || config.address;
         if (!name) throw new Error('Storage backend name is required');
         await this.setDataBackendConfig(name, config);
         return this.getBackend(driver, name);
+    }
+
+    /**
+     * Mount an arbitrary local folder as a file data backend. The mount name
+     * ("Financial Reports") is the human handle: its slug becomes the backend
+     * address (/device/<device>/financial-reports in the backends tree,
+     * stored://financial-reports/<key> locations); the display label and the
+     * authoring device ({id, name}) are snapshotted on the config so mirror
+     * paths stay stable across device renames.
+     */
+    async #addFileBackend(config = {}) {
+        const label = String(config.label || config.name || config.address || '').trim();
+        if (!label) throw new Error('Backend name is required (e.g. "Financial Reports")');
+        const name = normalizeSegment(label).replace(/\//g, '-');
+        if (this.dataBackends[name]) throw new Error(`Backend "${name}" already exists`);
+
+        const rawRoot = String(config.root || config.path || '').trim();
+        if (!rawRoot) throw new Error('Backend root path is required');
+        if (!path.isAbsolute(rawRoot)) throw new Error(`Backend root must be an absolute path: ${rawRoot}`);
+        let root;
+        try {
+            root = await fsPromises.realpath(rawRoot);
+        } catch {
+            throw new Error(`Backend root does not exist or is not accessible: ${rawRoot}`);
+        }
+        const stat = await fsPromises.stat(root);
+        if (!stat.isDirectory()) throw new Error(`Backend root is not a directory: ${root}`);
+        await fsPromises.access(root, fsPromises.constants.R_OK).catch(() => {
+            throw new Error(`Backend root is not readable: ${root}`);
+        });
+        // The workspace root is already covered by the managed backends
+        // (workspace:home et al.) — a nested mount would double-index it.
+        const workspaceRoot = path.resolve(this.#rootPath);
+        if (root === workspaceRoot || root.startsWith(workspaceRoot + path.sep)) {
+            throw new Error(`Backend root is inside the workspace root (${workspaceRoot}) — already indexed`);
+        }
+        for (const [existingName, existing] of Object.entries(this.dataBackends)) {
+            if (existing?.driver !== 'file' || !existing.root || existing.root.includes('{WORKSPACE_ROOT}')) continue;
+            const existingRoot = path.resolve(existing.root);
+            if (root === existingRoot || root.startsWith(existingRoot + path.sep) || existingRoot.startsWith(root + path.sep)) {
+                throw new Error(`Backend root overlaps existing backend "${existingName}" (${existingRoot})`);
+            }
+        }
+
+        const device = getServerDevice();
+        const exclude = Array.isArray(config.exclude)
+            ? config.exclude.filter((p) => typeof p === 'string' && p.trim())
+            : [];
+        await this.setDataBackendConfig(name, {
+            enabled: true,
+            supported: true,
+            driver: 'file',
+            label,
+            root,
+            watch: config.watch === true,
+            resync: true,
+            exclude,
+            readOnly: config.readOnly === true,
+            // Authoring device snapshot: id is the file:// URL authority for
+            // this mount's locations, name the mirror-path device segment.
+            device: { id: device.deviceId, name: device.name },
+        });
+        return this.getBackend('file', name);
     }
 
     /** On-demand on-disk size of a local storage backend (slow walk — user-triggered). */
@@ -1741,7 +1839,19 @@ class Workspace extends EventEmitter {
             return true;
         }
         // Managed storage defaults can't be deleted; disabling is the remove op.
+        // Disable first either way — it stops the watcher, unregisters the live
+        // backend and releases the mirror-node enable-lock.
+        const existing = this.dataBackends[address];
         await this.setDataBackendConfig(address, { enabled: false });
+        if (existing && existing.managed !== true && !(address in WORKSPACE_DATA_BACKENDS)) {
+            // User-added mount: drop the config entirely. Mirrored docs keep
+            // their tree nodes until purged via tree-rm or swept as
+            // dead-backend locations on the next resync.
+            const dataBackends = this.dataBackends;
+            delete dataBackends[address];
+            this.#configStore.set('dataBackends', dataBackends);
+            this.emit('dataBackends.changed', { backend: address, config: null });
+        }
         return true;
     }
 
@@ -1916,6 +2026,9 @@ class Workspace extends EventEmitter {
             homePath: this.homePath,
             dataBackends: this.dataBackends,
             workspaceId: this.id,
+            // This server's device identity — authority for the device-scoped
+            // file:// locations of external fs mounts.
+            device: getServerDevice(),
             logger: this.#logger,
             put: (record, options = {}) => this.put(record, { ...options, allowBackendsWrite: true }),
             unlink: (id, options = {}, unlinkOptions = {}) => this.unlink(id, options, { ...unlinkOptions, allowBackendsWrite: true }),
@@ -2098,6 +2211,30 @@ class Workspace extends EventEmitter {
             documentCount,
             removedNodes: result?.data?.removedNodeIds?.length || 0,
         }, 'Migrated legacy /.backends subtree out of the directory tree; backends tree repopulates via resync');
+    }
+
+    /**
+     * One-shot migration: driver-first → anchor-first mirror grammar in the
+     * backends tree (/file/workspace:home → /workspace/home, fs mounts →
+     * /device/<device>/<mount>). Drops the old /file subtree; documents keep
+     * their memberships/features elsewhere and the mirrors are rebuilt by the
+     * resync triggered in start(). Connector subtrees (/imap, /s3) already
+     * match the grammar and are untouched.
+     */
+    async #migrateBackendsTreeGrammar() {
+        const tree = this.#db.getTree(Workspace.BACKENDS_TREE_NAME);
+        if (!tree || typeof tree.pathExists !== 'function' || !tree.pathExists('/file')) return;
+
+        const result = await tree.removePath('/file', true, { ignoreLocks: true });
+        if (result?.error) {
+            this.#logger.warn({ workspaceId: this.id, error: result.error }, 'Backends-tree grammar migration failed; will retry next start');
+            return;
+        }
+        this.#backendsGrammarMigrated = true;
+        this.#logger.info({
+            workspaceId: this.id,
+            removedNodes: result?.data?.removedNodeIds?.length || 0,
+        }, 'Migrated backends tree to anchor-first grammar (/workspace, /device); mirrors repopulate via resync');
     }
 
     // ─────────────────────────────────────────────────────────────────────────

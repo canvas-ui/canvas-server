@@ -106,7 +106,7 @@ class DeviceRegistry {
         const data = pickDefined({
             ...(existing?.data || {}),
             deviceId,
-            name: device.name || existing?.data?.name || deviceId,
+            name: device.name || existing?.data?.name || hostname || deviceId,
             description: device.description ?? existing?.data?.description,
             platform: device.platform ?? existing?.data?.platform,
             arch: device.arch ?? existing?.data?.arch,
@@ -183,7 +183,8 @@ class DeviceRegistry {
 
         return pickDefined({
             deviceId: this.#requireDeviceId(input.deviceId),
-            name: String(input.name || existing?.name || input.deviceId).trim(),
+            // Human-readable handle: explicit name > hostname > raw uuid.
+            name: String(input.name || existing?.name || hostname || input.deviceId).trim(),
             description,
             platform: input.platform ?? existing?.platform,
             arch: input.arch ?? existing?.arch,

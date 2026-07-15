@@ -1,18 +1,6 @@
 # TODO List
 
-## StoreD local folders as databackens
-
-We need to enable adding local storage paths as "fs" driver storage backens (stored should already support them including a "watch" and "read-only" toggle) - the justification is to be able to ingest folders outside of the workspace root as data sources. The main question is how to index them since a workspace can be moved between canvas-server instances. My original ideal was file://deviceId/path where deviceId was originally the machineId then for several reasons moved to uuid. We already have a device registration pipeline - even on a clean reinstall, a user should be able to associate his current device with an existing deviceId(we store its metadata - as much as we can collect related to user, hostname/fqdn, os, architecture etc). Another option is to use a generic DEVICE placeholder but that limits the posibilities a bit(index may still reference data stored on non-local devices and we may still find ways to access them - thin canvas-edge runtime autoregistering to a remote canvas-server instance for example)
-
 ## WebUI cosmetics
-
-### Add timeline view to the main content area
-
-- side-to-side MC like view, timeline on the left, document list on the right, togge button for mobile view
-
-### Add map view to the main content area 
-
-- side-to-side MC like view, timeline on the left, document list on the right, togge button for mobile view
 
 ### Content area
 - (deffered) Content area section should support tabs 

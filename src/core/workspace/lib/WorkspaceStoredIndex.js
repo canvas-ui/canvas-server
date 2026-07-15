@@ -6,9 +6,10 @@ import { createReadStream } from 'fs';
 import getFolderSize from 'get-folder-size';
 import Stored from '../../../services/stored/src/index.js';
 import { extract as extractBlobMetadata } from '../../../services/stored/src/extractors/index.js';
-import { parseLocationUrl } from '../../../services/synapsd/src/utils/path-helpers.js';
+import { parseLocationUrl, deviceFileUrl } from '../../../services/synapsd/src/utils/path-helpers.js';
 import { mimeFromLocations } from './classifier.js';
-import { BACKENDS_TREE_NAME, legacyBitmapKey } from '../../../utils/backend-documents.js';
+import { pickGeo } from './geo.js';
+import { BACKENDS_TREE_NAME, legacyBitmapKey, normalizeSegment } from '../../../utils/backend-documents.js';
 import { DEFAULT_SYNC_EXCLUSIONS } from './constants.js';
 
 /*
@@ -50,6 +51,10 @@ export class WorkspaceStoredIndex {
     #homePath;
     #dataBackends;
     #workspaceId;
+    // Current server device ({deviceId, name}) — the file://<deviceId>/<path>
+    // authority for external fs mounts. Optional: without it, external mounts
+    // fall back to server-local stored:// addressing only.
+    #device;
     #logger;
 
     // Injected workspace operations
@@ -71,7 +76,7 @@ export class WorkspaceStoredIndex {
     #backendStatus = new Map();
     #resyncing = new Set();
 
-    constructor({ rootPath, cachePath, dataPath, homePath, dataBackends = {}, workspaceId, logger, put, unlink, getBackendsTreeSelector, getDb, describeImapLocation = null, destroyImapLocation = null, lockBackendNode = null, unlockBackendNode = null }) {
+    constructor({ rootPath, cachePath, dataPath, homePath, dataBackends = {}, workspaceId, device = null, logger, put, unlink, getBackendsTreeSelector, getDb, describeImapLocation = null, destroyImapLocation = null, lockBackendNode = null, unlockBackendNode = null }) {
         if (!dataPath || !homePath) throw new Error('dataPath and homePath are required');
         if (!put || !unlink || !getBackendsTreeSelector || !getDb) throw new Error('put, unlink, getBackendsTreeSelector, getDb are required');
 
@@ -81,6 +86,7 @@ export class WorkspaceStoredIndex {
         this.#homePath = homePath;
         this.#dataBackends = dataBackends;
         this.#workspaceId = workspaceId;
+        this.#device = device;
         this.#logger = logger || console;
         this.#put = put;
         this.#unlink = unlink;
@@ -332,11 +338,15 @@ export class WorkspaceStoredIndex {
                 this.#backendStatus.set(name, { lastScanAt: null, lastError: null });
                 await this.#applyBackendNodeLock(name, true);
                 if (fullConfig.resync) {
-                    await this.resync(name).catch((err) => this.#setBackendError(name, err));
+                    // Initial/catch-up scan can be slow (a whole external
+                    // folder) — never block the enable/add call on it.
+                    try { this.resyncInBackground(name); } catch (err) { this.#setBackendError(name, err); }
                 }
             } else if (!patch.enabled && live) {
                 await live.stop?.().catch(() => {});
-                this.#stored.removeBackend?.(name);
+                // removeBackend is async (awaits watcher stop before dropping
+                // the registry entry) — must be awaited or a re-add races it.
+                await this.#stored.removeBackend?.(name);
                 this.#backendStatus.delete(name);
                 await this.#applyBackendNodeLock(name, false);
             }
@@ -347,9 +357,10 @@ export class WorkspaceStoredIndex {
             if (live) {
                 if (patch.watch && !live.watching) {
                     await live.watch?.();
-                    // Catch up on anything that landed while watch was off
+                    // Catch up on anything that landed while watch was off —
+                    // in the background, the toggle must not block on a scan.
                     if (fullConfig.resync) {
-                        await this.resync(name).catch((err) => this.#setBackendError(name, err));
+                        try { this.resyncInBackground(name); } catch (err) { this.#setBackendError(name, err); }
                     }
                 } else if (!patch.watch && live.watching) {
                     await live.stop?.();
@@ -360,11 +371,14 @@ export class WorkspaceStoredIndex {
         // New exclusion patterns require rebuilding the backend's matcher
         // (chokidar + list/scan share it): re-register the live backend. A
         // follow-up resync applies exclusions retroactively (unlink-only).
-        if ('exclude' in patch) {
+        // Skip when 'enabled' just (re)registered the backend above — the fresh
+        // registration already carries the full config, exclusions included.
+        if ('exclude' in patch && !('enabled' in patch && patch.enabled)) {
             const live = this.#stored.getBackend(name);
             if (live && isLocal && fullConfig.enabled) {
                 await live.stop?.().catch(() => {});
-                this.#stored.removeBackend?.(name);
+                // Async remove must complete before the re-add or it collides.
+                await this.#stored.removeBackend?.(name);
                 this.#stored.addBackend(name, this.#backendRegistrationConfig(name, fullConfig));
             }
         }
@@ -463,7 +477,7 @@ export class WorkspaceStoredIndex {
             }
             return await this.#stored.deleteByUrl(url);
         } finally {
-            if (transient) this.#stored.removeBackend?.(parsed.backend);
+            if (transient) await this.#stored.removeBackend?.(parsed.backend);
         }
     }
 
@@ -544,10 +558,12 @@ export class WorkspaceStoredIndex {
             const primaryChecksum = doc.checksumArray?.[0];
             if (!primaryChecksum || presentChecksums.has(primaryChecksum)) continue;
 
-            // Gone from this backend — drop its locations; the helper purges the
-            // doc if nothing else holds the content, else keeps it on survivors.
+            // Gone from this backend — drop its locations (including the
+            // device-scoped file:// twins tied via metadata.backend); the
+            // helper purges the doc if nothing else holds the content, else
+            // keeps it on survivors.
             const removedUrls = (doc.locations || [])
-                .filter((l) => parseLocationUrl(l.url)?.backend === backendName)
+                .filter((l) => parseLocationUrl(l.url)?.backend === backendName || l.metadata?.backend === backendName)
                 .map((l) => l.url);
             await this.#reconcileRemovedLocations(doc, removedUrls);
         }
@@ -643,7 +659,13 @@ export class WorkspaceStoredIndex {
         const existingDocument = await db.getByChecksumString(checksumArray[0]).catch(() => null);
         if (!existingDocument?.id) return null;
 
-        return this.#reconcileRemovedLocations(existingDocument, [`stored://${storedFile.backend}/${storedFile.key}`]);
+        // Reconcile both address forms for this backend/key: mounts carry the
+        // device-scoped file:// URL, workspace stores the stored:// one (and
+        // docs written before the single-location switch may carry both).
+        const removedUrls = [`stored://${storedFile.backend}/${storedFile.key}`];
+        const twin = this.#deviceFileLocationUrl(storedFile.backend, storedFile.key);
+        if (twin) removedUrls.push(twin);
+        return this.#reconcileRemovedLocations(existingDocument, removedUrls);
     }
 
     /**
@@ -746,6 +768,18 @@ export class WorkspaceStoredIndex {
                     return { data: createReadStream(abs, { start: options.range.start, end: options.range.end }), ranged: true };
                 }
                 return { data: createReadStream(abs), ranged: false };
+            }
+            // file://<deviceId>/<abs-path>: locally resolvable when the
+            // authority is THIS server's device AND the path sits under a
+            // configured external mount (never arbitrary host paths). Other
+            // devices stay reference-only until a device proxy exists.
+            const local = this.#resolveLocalDevicePath(backend, key);
+            if (local) {
+                if (!options.stream) return { data: await fs.readFile(local.abs), ranged: false };
+                if (options.range) {
+                    return { data: createReadStream(local.abs, { start: options.range.start, end: options.range.end }), ranged: true };
+                }
+                return { data: createReadStream(local.abs), ranged: false };
             }
             throw new Error(`Device-proxy resolution not implemented for ${url}`);
         }
@@ -869,6 +903,13 @@ export class WorkspaceStoredIndex {
             } else if (p?.scheme === 'file' && p.backend === '{WORKSPACE_ROOT}') {
                 kind = 'workspace-file';
                 deletable = true;
+            } else if (p?.scheme === 'file') {
+                // Device-scoped path: deletable only when it's THIS device and
+                // the owning mount is not read-only; foreign devices are
+                // reference-drop only.
+                const local = this.#resolveLocalDevicePath(p.backend, p.key);
+                kind = 'device-file';
+                deletable = !!local && this.#dataBackends[local.backendName]?.readOnly !== true;
             } else if (p?.scheme === 'imap') {
                 // Delegated to the mail service (deletable only if imap creds wired).
                 const described = this.#describeImapLocation ? await this.#describeImapLocation(loc.url) : null;
@@ -921,10 +962,20 @@ export class WorkspaceStoredIndex {
                         // read-only (driver or config) / unknown backend → reference drop only
                         result.droppedRefs.push(loc.url);
                     }
-                    if (transient) this.#stored.removeBackend?.(p.backend);
+                    if (transient) await this.#stored.removeBackend?.(p.backend);
                 } else if (p?.scheme === 'file' && p.backend === '{WORKSPACE_ROOT}') {
                     await fs.rm(path.join(this.#rootPath, p.key), { force: true });
                     result.deleted.push(loc.url);
+                } else if (p?.scheme === 'file' && this.#resolveLocalDevicePath(p.backend, p.key)) {
+                    // Local device-scoped path on a RW external mount → wipe the
+                    // bytes; read-only mount → reference drop.
+                    const local = this.#resolveLocalDevicePath(p.backend, p.key);
+                    if (this.#dataBackends[local.backendName]?.readOnly !== true) {
+                        await fs.rm(local.abs, { force: true });
+                        result.deleted.push(loc.url);
+                    } else {
+                        result.droppedRefs.push(loc.url);
+                    }
                 } else if (p?.scheme === 'imap') {
                     const res = this.#destroyImapLocation ? await this.#destroyImapLocation(loc.url) : null;
                     if (res?.ok) result.deleted.push(loc.url); // STORE \Deleted + EXPUNGE by UID
@@ -1049,10 +1100,16 @@ export class WorkspaceStoredIndex {
         // onto the doc (metadata is .catchall(z.any()) so nested objects are fine).
         const extracted = meta?.custom && typeof meta.custom === 'object' ? meta.custom : null;
         if (extracted) {
-            for (const k of ['geo', 'exif', 'dimensions', 'media']) {
+            for (const k of ['exif', 'dimensions', 'media']) {
                 if (extracted[k] && typeof extracted[k] === 'object') { metadata[k] = extracted[k]; }
             }
         }
+        // Geo is provenance-ranked rather than overwritten: re-upserting a file
+        // whose pin a human fixed by hand must not silently revert it to the
+        // camera's fix. Runs even without `extracted` so sentinel coordinates
+        // ({lat:null,lon:null} -> Null Island) get dropped instead of indexed.
+        const geo = pickGeo(metadata.geo, extracted?.geo, { incomingSource: 'exif' });
+        if (geo) { metadata.geo = geo; } else { delete metadata.geo; }
 
         const doc = {
             schema: 'data/abstraction/file',
@@ -1081,6 +1138,20 @@ export class WorkspaceStoredIndex {
         const locations = [];
         for (const backend of backends) {
             if (!backend?.key) continue;
+            // Device-anchored fs mounts get file://<deviceId>/<abs-path> as their
+            // ONLY location: it survives a workspace move (a stored:// address is
+            // meaningful only on this server instance) and feeds the device/id/*
+            // presence bitmaps. metadata.backend ties it to its owning backend
+            // for orphan/dead-backend sweeps. stored:// stays reserved for
+            // workspace-anchored stores (workspace:home, workspace:data).
+            const deviceUrl = this.#deviceFileLocationUrl(backend.backend, backend.key);
+            if (deviceUrl) {
+                if (!seen.has(deviceUrl)) {
+                    seen.add(deviceUrl);
+                    locations.push({ url: deviceUrl, metadata: { backend: backend.backend } });
+                }
+                continue;
+            }
             const url = backend.url || `stored://${backend.backend}/${backend.key}`;
             if (seen.has(url)) continue;
             seen.add(url);
@@ -1124,7 +1195,58 @@ export class WorkspaceStoredIndex {
         const canEnumerate = live ? live.capabilities?.canEnumerate === true : driver === 'file';
         if (!canEnumerate) return null;
         const address = String(backendName || '').replace(/[^a-z0-9._:@-]+/gi, '-').toLowerCase();
+        // Anchor-first mirror grammar — the first segment names what the data is
+        // anchored to, not the driver (driver stays a config/API concept):
+        //   /workspace/<store>        workspace-anchored (workspace:home → /workspace/home)
+        //   /device/<device>/<mount>  device-anchored fs mounts (device segment is
+        //                             the config snapshot — stable across renames)
+        //   /<driver>/<address>       connectors/remotes (imap, s3, …)
+        const deviceSegment = config.device?.name ? normalizeSegment(config.device.name).replace(/\//g, '-') : null;
+        if (deviceSegment) return `/device/${deviceSegment}/${address}`;
+        if (backendName.startsWith('workspace:')) {
+            const store = normalizeSegment(backendName.slice('workspace:'.length)).replace(/\//g, '-');
+            return `/workspace/${store}`;
+        }
         return `/${driver}/${address}`;
+    }
+
+    /**
+     * External (device-scoped) mount info for a backend: a user-added file
+     * backend rooted outside the workspace (config.device snapshot present).
+     * These get a portable file://<deviceId>/<abs-path> location alongside the
+     * server-local stored:// one. Returns { deviceId, root } or null.
+     */
+    #externalMountInfo(backendName) {
+        const config = this.#dataBackends[backendName];
+        if (!config || config.driver !== 'file' || !config.device?.id) return null;
+        const root = config.root || '';
+        if (!root || root.includes('{WORKSPACE_ROOT}')) return null;
+        return { deviceId: config.device.id, root };
+    }
+
+    /** file://<deviceId>/<abs-path> twin URL for a key on an external mount (or null). */
+    #deviceFileLocationUrl(backendName, key) {
+        const mount = this.#externalMountInfo(backendName);
+        if (!mount || !key) return null;
+        return deviceFileUrl(mount.deviceId, path.join(mount.root, key));
+    }
+
+    /**
+     * Map a file://<deviceId>/<path> location to a local absolute path — only
+     * when the authority is this server's device and the path lies under a
+     * configured external mount root (a crafted location must never read
+     * arbitrary server files). Returns { abs, backendName } or null.
+     */
+    #resolveLocalDevicePath(deviceId, key) {
+        if (!this.#device?.deviceId || deviceId !== this.#device.deviceId) return null;
+        const abs = path.resolve('/', String(key || ''));
+        for (const backendName of Object.keys(this.#dataBackends || {})) {
+            const mount = this.#externalMountInfo(backendName);
+            if (!mount) continue;
+            const root = path.resolve(mount.root);
+            if (abs === root || abs.startsWith(root + path.sep)) return { abs, backendName };
+        }
+        return null;
     }
 
     /**

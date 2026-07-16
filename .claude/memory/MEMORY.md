@@ -7,6 +7,7 @@ Repo-local auto-memory (migrated from device-local store 2026-07-16, triaged: co
 - [feedback_no_emdash.md](feedback_no_emdash.md) — plain hyphens only, no em/en dashes in repo text
 - [feedback_dev_server.md](feedback_dev_server.md) — local canvas-server restart allowed (npm run dev); pkill gotchas
 - [feedback_url_design.md](feedback_url_design.md) — UI URLs mirror REST API paths; no type-specific query cruft
+- [feedback_version_bumps.md](feedback_version_bumps.md) — always semver-bump the touched component(s); scope decides patch/minor/major
 - [project_architecture_conventions.md](project_architecture_conventions.md) — consumer-agnostic synapsd, lib/ injection, post-commit bitmap deferral, checksum identity, putMany mutation pitfall
 - [project_dependency_constraints.md](project_dependency_constraints.md) — fastembed needs tar 6 (never global tar override); scoped-only semver overrides; deferred fastify/pi vulns
 

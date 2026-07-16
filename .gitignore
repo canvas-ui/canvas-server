@@ -129,3 +129,6 @@ build/Release
 
 # Include all .keep files
 !**/.keep
+
+# Claude Code per-machine settings (may contain command allowlists with tokens)
+.claude/settings.local.json

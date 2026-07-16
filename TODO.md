@@ -1,5 +1,34 @@
 # TODO List
 
+## Promoted from session memory (2026-07-16 triage)
+
+### synapsd
+- [ ] LayerIndex name-uniqueness refactor: getLayerByName is keyed globally per-tree -> name collisions silently reuse/upgrade layers (context->canvas), lost layers on move. Fix: id-keyed path resolution, name = position-scoped label, no silent type upgrade (refuse with clear error). Until then: avoid same-name collisions in trees.
+- [ ] `#buildAllDocumentsBitmap` callers (noneOf-only, excludeTree) full-scan every time - short-circuit when the positive set is bounded.
+- [ ] BitmapIndex cache is an unbounded Map (every bitmap ever touched stays resident) - fine at KB sizes, needs a cap/eviction before wikipedia-scale ingest.
+
+### Server error semantics (pre-GitHub-issues backlog)
+- [ ] Workspace errors are not coded (context errors are): ws-subscribe workspace branch + workspace REST routes still blanket "Access denied" - mirror the context errors.js pattern for WorkspaceManager.getWorkspace.
+- [ ] GET /contexts/:id/documents returns 500 when workspace down - should be 503 retryable.
+- [ ] fastify int->string body coercion: PUT /contexts/:id/documents schema declares documents id as string - fix to number|string; other id-in-body routes latent (synapsd normalizeDocumentId covers the doc path defensively).
+
+### IMAP / email
+- [ ] Attachments as File docs + rel/ relations (rel/* bitmaps exist, nothing populates them; Synapses tab empty by design gap).
+- [ ] SMTP reply: per-mailbox smtp{} config, nodemailer send route, Reply button in EmailRenderer.
+
+### Search
+- [ ] Re-tune the 0.35 cosine-distance floor (Workspace.DEFAULT_MAX_COSINE_DISTANCE) once real corpora land (wikipedia/Confluence); consider exposing as semantic.maxCosineDistance config knob.
+- [ ] Perf deep-dive: deterministic synapsd bench harness (fixed corpus/queries, warm/cold, p50/p95/p99 over curl vs standalone synapsd) - exact numbers only, no hand-wavy timings.
+
+### Datasets (design agreed 2026-07-16, not implemented)
+- [ ] `data/dataset/<name>` protected bitmap prefix (non-deletable), stamped at ingest (hooks rule or explicit app choice). Dataset = provenance, path-INDEPENDENT (a wikipedia article stays data/dataset/wikipedia wherever it is filed).
+- [ ] Default polarity excluded-unless-opted-in: workspace root layer stored filters carry `!data/dataset/*`; dataset subtree layer lifts it. Layer filters already fold into querySpec.
+- [ ] "Datasets" group in Features tab with tri-state any/all/not rows.
+
+### WebUI (deferred)
+- [ ] Socket-driven document refresh invalidates only the currently-viewed path's cache - docs inserted into non-viewed paths stay stale until reload (window CustomEvent path was fixed; mirror it in the socket handler or invalidate whole workspace+tree).
+- [ ] Document-list table Actions column (~6 icon buttons) forces ~680px width - condense to a kebab menu for mobile.
+
 ## WebUI cosmetics
 
 ### Content area

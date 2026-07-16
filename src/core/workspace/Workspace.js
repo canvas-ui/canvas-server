@@ -383,17 +383,19 @@ class Workspace extends EventEmitter {
             this.#setStatus(WORKSPACE_STATUS_CODES.ACTIVE);
             if (this.isServiceEnabled('home') || this.isDataBackendEnabled(WorkspaceStoredIndex.HOME_STORED_BACKEND)) {
                 await this.#startStoredIndex();
-                if (this.#legacyBackendsMigrated || this.#backendsGrammarMigrated) {
-                    // Repopulate the freshly-created backends tree from EVERY
-                    // resyncable file backend — workspace:home and fs mounts
-                    // (checksum-cached: no re-hash of unchanged files, no blob
-                    // re-download — membership re-tick only).
-                    for (const [name, cfg] of Object.entries(this.dataBackends)) {
-                        if (cfg?.enabled && cfg.resync && cfg.supported !== false && cfg.driver === 'file') {
-                            try { this.#storedIndex.resyncInBackground(name); } catch (err) {
-                                this.#logger.warn({ workspaceId: this.id, backend: name, error: err.message }, 'Post-migration resync failed to start');
-                            }
-                        }
+                const migrated = this.#legacyBackendsMigrated || this.#backendsGrammarMigrated;
+                for (const [name, cfg] of Object.entries(this.dataBackends)) {
+                    if (!cfg?.enabled || !cfg.resync || cfg.supported === false || cfg.driver !== 'file') continue;
+                    // Post-migration: repopulate the freshly-created backends tree
+                    // from EVERY resyncable file backend. Otherwise only catch up
+                    // external (device-scoped) mounts — a restart may have killed
+                    // their initial scan mid-flight, and without a watcher nothing
+                    // else would ever finish it. Cheap when already indexed: the
+                    // checksum cache skips re-hashing unchanged files.
+                    const isExternalMount = !!cfg.device?.id && !!cfg.root && !cfg.root.includes('{WORKSPACE_ROOT}');
+                    if (!migrated && !isExternalMount) continue;
+                    try { this.#storedIndex.resyncInBackground(name); } catch (err) {
+                        this.#logger.warn({ workspaceId: this.id, backend: name, error: err.message }, 'Start-time resync failed to start');
                     }
                 }
             }
@@ -974,6 +976,16 @@ class Workspace extends EventEmitter {
         return await this.#getActiveDb().timeline.queryInterval(timelineNames, interval, null, options);
     }
 
+    // Per-bucket counts across timelines, intersected with the same candidate
+    // scope as list() (context/directory path, features, filters, canvas
+    // querySpec folding) — so rail densities always agree with the document list.
+    async timelineHistogram(names, buckets, spec = {}) {
+        const db = this.#getActiveDb();
+        const querySpec = this.#normalizeQuerySpec(this.#composeCanvasQuerySpec(spec));
+        const { bitmap } = await db.resolveCandidates(querySpec);
+        return await db.timeline.histogram(names, buckets, bitmap);
+    }
+
     async insertTimelineEntry(timelineName, id, interval) {
         return await this.#getActiveDb().timeline.insert(timelineName, parseDocumentId(id, 'Document ID'), interval);
     }
@@ -1532,6 +1544,8 @@ class Workspace extends EventEmitter {
                 root: Workspace.#resolveWorkspaceRoot(config.root, this.#rootPath),
                 running: runtime.running || false,
                 watching: runtime.watching || false,
+                resyncing: runtime.resyncing === true,
+                resyncProgress: runtime.progress || null,
                 lastScanAt: runtime.lastScanAt || null,
                 lastError: runtime.lastError || null,
                 cacheStats: runtime.cacheStats || null,
@@ -1595,13 +1609,19 @@ class Workspace extends EventEmitter {
 
     #storageBackendDescriptor(name, status = {}) {
         const driver = status.driver || 'file';
-        const state = status.lastError ? 'error' : (status.running ? (status.watching ? 'running' : 'idle') : 'stopped');
+        const state = status.resyncing
+            ? 'syncing'
+            : (status.lastError ? 'error' : (status.running ? (status.watching ? 'running' : 'idle') : 'stopped'));
         return {
             driver,
             address: name,
             kind: 'storage',
             enabled: status.enabled !== false,
             status: state,
+            // Live resync state: clients render a spinner on the mirror node and
+            // a progress readout ({scanned, total}) without polling deep status.
+            resyncing: status.resyncing === true,
+            progress: status.resyncProgress || null,
             // Mirror node in the backends tree (/device/<device>/<mount> for
             // device-scoped mounts) so clients never re-derive path grammar.
             treePath: this.#storedIndex?.getBackendTreeRoot(name) || null,
@@ -1725,17 +1745,27 @@ class Workspace extends EventEmitter {
 
     /**
      * Mount an arbitrary local folder as a file data backend. The mount name
-     * ("Financial Reports") is the human handle: its slug becomes the backend
-     * address (/device/<device>/financial-reports in the backends tree,
-     * stored://financial-reports/<key> locations); the display label and the
-     * authoring device ({id, name}) are snapshotted on the config so mirror
-     * paths stay stable across device renames.
+     * ("Financial Reports") is the human handle: its case-preserving slug
+     * becomes the backend address (/device/<device>/Financial-Reports in the
+     * backends tree); documents carry file://<deviceId>/<abs-path> locations.
+     * The display label and the authoring device ({id, name}) are snapshotted
+     * on the config so mirror paths stay stable across device renames.
      */
     async #addFileBackend(config = {}) {
         const label = String(config.label || config.name || config.address || '').trim();
         if (!label) throw new Error('Backend name is required (e.g. "Financial Reports")');
-        const name = normalizeSegment(label).replace(/\//g, '-');
-        if (this.dataBackends[name]) throw new Error(`Backend "${name}" already exists`);
+        // Case- and unicode-preserving slug: "Fotky" must show as "Fotky" in the
+        // tree, not "fotky" (tree layer names keep case, like the home mirror's
+        // real folder names). Whitespace/separators collapse to '-'; the slug is
+        // the immutable backend address, the raw label stays the display name.
+        const name = label.normalize('NFC')
+            .replace(/[\s\\/]+/g, '-')
+            .replace(/[^\p{L}\p{N}._@-]+/gu, '-')
+            .replace(/-+/g, '-')
+            .replace(/^-+|-+$/g, '');
+        if (!name) throw new Error(`Backend name "${label}" has no usable characters`);
+        const collision = Object.keys(this.dataBackends).find((existing) => existing.toLowerCase() === name.toLowerCase());
+        if (collision) throw new Error(`Backend "${collision}" already exists`);
 
         const rawRoot = String(config.root || config.path || '').trim();
         if (!rawRoot) throw new Error('Backend root path is required');
@@ -1857,8 +1887,8 @@ class Workspace extends EventEmitter {
 
     async syncBackend(driver, address) {
         if (driver === 'imap') return (await this.#mail()).resyncAccount(address);
-        // Storage: address is the (normalized, lowercase) backend name, which
-        // matches the lowercase config keys (workspace:home, …).
+        // Storage: address is the backend name / config key verbatim
+        // (workspace:home, or a user mount's case-preserving slug).
         return this.resyncDataBackend(address);
     }
 
@@ -2039,6 +2069,11 @@ class Workspace extends EventEmitter {
             destroyImapLocation: (url) => this.#mailIndex?.destroyImapLocation(url) ?? null,
             lockBackendNode: (path, holder) => this.lockBackendTreeNode(path, holder),
             unlockBackendNode: (path, holder) => this.unlockBackendTreeNode(path, holder),
+            // Skeleton mirroring: bare directory nodes under the backend's
+            // mirror root (documents insert their own paths as they stream in).
+            insertBackendPath: (treePath) => this.getBackendsTree().insertPath(treePath, { ignoreLocks: true }),
+            // Resync lifecycle/progress → ws clients (tree spinner, settings).
+            onResyncStateChange: (state) => this.emit('backend.resync.changed', { ...state, workspaceId: this.id }),
         });
     }
 

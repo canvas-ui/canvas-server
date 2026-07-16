@@ -76,7 +76,13 @@ export class WorkspaceStoredIndex {
     #backendStatus = new Map();
     #resyncing = new Set();
 
-    constructor({ rootPath, cachePath, dataPath, homePath, dataBackends = {}, workspaceId, device = null, logger, put, unlink, getBackendsTreeSelector, getDb, describeImapLocation = null, destroyImapLocation = null, lockBackendNode = null, unlockBackendNode = null }) {
+    // Optional hooks: mirror a bare directory path into the backends tree
+    // (skeleton mirroring — docs create their paths themselves), and observe
+    // resync lifecycle/progress (Workspace re-emits it as a ws event).
+    #insertBackendPath;
+    #onResyncStateChange;
+
+    constructor({ rootPath, cachePath, dataPath, homePath, dataBackends = {}, workspaceId, device = null, logger, put, unlink, getBackendsTreeSelector, getDb, describeImapLocation = null, destroyImapLocation = null, lockBackendNode = null, unlockBackendNode = null, insertBackendPath = null, onResyncStateChange = null }) {
         if (!dataPath || !homePath) throw new Error('dataPath and homePath are required');
         if (!put || !unlink || !getBackendsTreeSelector || !getDb) throw new Error('put, unlink, getBackendsTreeSelector, getDb are required');
 
@@ -96,6 +102,8 @@ export class WorkspaceStoredIndex {
         this.#destroyImapLocation = destroyImapLocation;
         this.#lockBackendNode = lockBackendNode;
         this.#unlockBackendNode = unlockBackendNode;
+        this.#insertBackendPath = insertBackendPath;
+        this.#onResyncStateChange = onResyncStateChange;
     }
 
     get isRunning() {
@@ -231,17 +239,45 @@ export class WorkspaceStoredIndex {
             return { backend: backendName, count: null, alreadyRunning: true };
         }
         this.#resyncing.add(backendName);
-        this.#backendStatus.set(backendName, {
-            ...(this.#backendStatus.get(backendName) || {}),
+        this.#patchResyncState(backendName, {
             resyncing: true,
             resyncStartedAt: new Date().toISOString(),
+            progress: { scanned: 0, total: null },
         });
 
         try {
-            const { files = [] } = await this.#stored.scan(backendName);
-            for (const file of files) {
-                await this.#upsertDocument(file);
-            }
+            // Structural pre-pass: mirror the folder skeleton into the backends
+            // tree and size the progress bar — readdir only, so even a large
+            // network mount shows its subtree within seconds while checksums
+            // stream in behind it.
+            const total = await this.#mirrorBackendShape(backendName);
+            if (total !== null) this.#patchResyncState(backendName, { progress: { scanned: 0, total } });
+
+            // Stream: each hashed file is upserted (doc + tree path) as the walk
+            // runs. A single bad file must not kill an hours-long scan — upsert
+            // failures are logged and counted, not thrown.
+            let scanned = 0;
+            let failed = 0;
+            const upserted = new Set();
+            const consume = async (file) => {
+                if (file?.key == null || upserted.has(file.key)) return;
+                upserted.add(file.key);
+                try {
+                    await this.#upsertDocument(file);
+                } catch (error) {
+                    failed += 1;
+                    this.#logger.warn({ workspaceId: this.#workspaceId, backend: backendName, key: file.key, error: error.message }, 'Resync document upsert failed');
+                }
+                scanned += 1;
+                if (scanned % 25 === 0) {
+                    this.#patchResyncState(backendName, { progress: { scanned, total } }, { quiet: scanned % 100 !== 0 });
+                }
+            };
+
+            const { files = [] } = await this.#stored.scan(backendName, { onFile: consume });
+            // Backends whose scan() does not stream still get their rows here.
+            for (const file of files) await consume(file);
+
             await this.#purgeOrphanedPaths(backendName, files);
             // Global stale-local-path cleanup: drop locations whose backend was
             // renamed/removed (dead-backend refs like the legacy fs:home). Gated to
@@ -250,19 +286,53 @@ export class WorkspaceStoredIndex {
                 await this.#purgeDeadBackendLocations().catch((error) =>
                     this.#logger.warn({ workspaceId: this.#workspaceId, error: error.message }, 'Dead-backend location purge failed'));
             }
-            this.#backendStatus.set(backendName, {
-                ...(this.#backendStatus.get(backendName) || {}),
+            this.#patchResyncState(backendName, {
                 lastScanAt: new Date().toISOString(),
-                lastError: null,
+                lastError: failed > 0 ? `${failed} of ${files.length} files failed to index` : null,
                 fileCount: files.length,
-            });
-            return { backend: backendName, count: files.length };
+                progress: { scanned, total: files.length },
+            }, { quiet: true });
+            return { backend: backendName, count: files.length, failed };
         } finally {
             this.#resyncing.delete(backendName);
-            this.#backendStatus.set(backendName, {
-                ...(this.#backendStatus.get(backendName) || {}),
-                resyncing: false,
+            this.#patchResyncState(backendName, { resyncing: false });
+        }
+    }
+
+    // Merge a status patch + notify the resync observer (Workspace re-emits it
+    // to clients). `quiet` skips the observer for high-frequency updates.
+    #patchResyncState(backendName, patch = {}, { quiet = false } = {}) {
+        const next = { ...(this.#backendStatus.get(backendName) || {}), ...patch };
+        this.#backendStatus.set(backendName, next);
+        if (quiet || typeof this.#onResyncStateChange !== 'function') return;
+        try {
+            this.#onResyncStateChange({
+                backend: backendName,
+                // Mirror node the client should badge (null for unmirrored backends).
+                treePath: this.#getBackendRootPath(backendName),
+                resyncing: next.resyncing === true,
+                progress: next.progress || null,
+                lastScanAt: next.lastScanAt || null,
+                lastError: next.lastError || null,
             });
+        } catch { /* observer must never break a resync */ }
+    }
+
+    // Mirror the mount's directory skeleton under its backends-tree root and
+    // return the file count for progress totals (null when unsupported).
+    async #mirrorBackendShape(backendName) {
+        try {
+            const root = this.#getBackendRootPath(backendName);
+            if (!root || typeof this.#insertBackendPath !== 'function') return null;
+            const shape = await this.#stored.shape?.(backendName);
+            if (!shape?.ok) return null;
+            for (const dir of shape.dirs) {
+                await this.#insertBackendPath(`${root}/${dir}`);
+            }
+            return shape.files;
+        } catch (error) {
+            this.#logger.warn({ workspaceId: this.#workspaceId, backend: backendName, error: error.message }, 'Backend skeleton mirror failed');
+            return null;
         }
     }
 
@@ -1194,14 +1264,18 @@ export class WorkspaceStoredIndex {
         const live = this.#stored?.getBackend(backendName);
         const canEnumerate = live ? live.capabilities?.canEnumerate === true : driver === 'file';
         if (!canEnumerate) return null;
-        const address = String(backendName || '').replace(/[^a-z0-9._:@-]+/gi, '-').toLowerCase();
+        // Case/unicode-preserving: the mount slug is user-facing ("Fotky" must
+        // not become "fotky" in the tree). Only path-hostile chars are squashed.
+        const address = String(backendName || '').replace(/[^\p{L}\p{N}._:@-]+/gu, '-');
         // Anchor-first mirror grammar — the first segment names what the data is
         // anchored to, not the driver (driver stays a config/API concept):
         //   /workspace/<store>        workspace-anchored (workspace:home → /workspace/home)
         //   /device/<device>/<mount>  device-anchored fs mounts (device segment is
         //                             the config snapshot — stable across renames)
         //   /<driver>/<address>       connectors/remotes (imap, s3, …)
-        const deviceSegment = config.device?.name ? normalizeSegment(config.device.name).replace(/\//g, '-') : null;
+        const deviceSegment = config.device?.name
+            ? String(config.device.name).replace(/[^\p{L}\p{N}._@-]+/gu, '-')
+            : null;
         if (deviceSegment) return `/device/${deviceSegment}/${address}`;
         if (backendName.startsWith('workspace:')) {
             const store = normalizeSegment(backendName.slice('workspace:'.length)).replace(/\//g, '-');

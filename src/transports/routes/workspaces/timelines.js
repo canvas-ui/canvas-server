@@ -31,6 +31,38 @@ export default async function workspaceTimelineRoutes(fastify, options) {
     return workspace;
   }
 
+  // Read scoping mirrors documents.js: a directory tree must land in
+  // spec.directory, not spec.context. Returns { context, directory } with
+  // exactly one populated; defaults to context.
+  function resolveScopeSelectors(workspace, source = {}, fallbackPath = '/') {
+    const path = source?.context ?? fallbackPath;
+    const treeNameOrId = source?.treeNameOrTreeId ?? null;
+    const treeType = source?.treeType ?? null;
+
+    let isDirectory = treeType === 'directory';
+    if (!treeType && treeNameOrId) {
+      try {
+        isDirectory = workspace.getTree(treeNameOrId)?.type === 'directory';
+      } catch (err) {
+        if (!/not found/i.test(err?.message || '')) throw err;
+      }
+    }
+
+    return isDirectory
+      ? { context: null, directory: workspace.getDirectoryTreeSelector(path, treeNameOrId) }
+      : { context: workspace.getContextTreeSelector(path, treeNameOrId), directory: null };
+  }
+
+  function buildAttributes(source) {
+    const { allOf, noneOf, anyOf } = source;
+    if (!allOf?.length && !noneOf?.length && !anyOf?.length) return undefined;
+    const attrs = {};
+    if (allOf?.length) attrs.allOf = allOf;
+    if (noneOf?.length) attrs.noneOf = noneOf;
+    if (anyOf?.length) attrs.anyOf = anyOf;
+    return attrs;
+  }
+
   // GET /workspaces/:id/timelines
   fastify.get('/', {
     onRequest: [fastify.authenticate],
@@ -127,6 +159,72 @@ export default async function workspaceTimelineRoutes(fastify, options) {
     } catch (err) {
       fastify.log.error(err);
       const ro = new ResponseObject().serverError('Failed to delete timeline');
+      return reply.code(ro.statusCode).send(ro.getResponse());
+    }
+  });
+
+  // POST /workspaces/:id/timelines/histogram
+  // Per-bucket document counts for one or more timelines, intersected with the
+  // same candidate scope as the documents listing (context/directory path,
+  // features, filters, canvas querySpec folding). Buckets are caller-supplied
+  // intervals — the UI computes its visible periods, the server counts.
+  // Body: { names, buckets, context?, treeNameOrTreeId?, treeType?,
+  //         allOf?/anyOf?/noneOf?, filters?, scope?, applyCanvasSpec? }
+  fastify.post('/histogram', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      body: {
+        type: 'object',
+        required: ['names', 'buckets'],
+        additionalProperties: false,
+        properties: {
+          names: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 16 },
+          buckets: {
+            type: 'array',
+            minItems: 1,
+            maxItems: 200,
+            items: {
+              type: 'object',
+              required: ['start', 'end'],
+              properties: { start: {}, end: {} },
+            },
+          },
+          treeNameOrTreeId: { type: 'string' },
+          treeType: { type: 'string', enum: ['context', 'directory'] },
+          context: { type: 'string', default: '/' },
+          allOf: { type: 'array', items: { type: 'string' }, default: [] },
+          anyOf: { type: 'array', items: { type: 'string' }, default: [] },
+          noneOf: { type: 'array', items: { type: 'string' }, default: [] },
+          filters: { type: 'array', items: { type: 'string' }, default: [] },
+          scope: { type: 'string', enum: ['path', 'workspace'], default: 'path' },
+          applyCanvasSpec: { type: 'boolean', default: true },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    try {
+      const workspace = await getWorkspaceInstance(request, reply);
+      if (!workspace) return;
+
+      const body = request.body;
+      const { context: ctxSelector, directory: dirSelector } = body.scope === 'workspace'
+        ? { context: null, directory: null }
+        : resolveScopeSelectors(workspace, body, '/');
+
+      const spec = {
+        context: ctxSelector,
+        directory: dirSelector,
+        attributes: buildAttributes(body),
+        filters: body.filters,
+        applyCanvasQuerySpec: body.applyCanvasSpec,
+      };
+
+      const buckets = await workspace.timelineHistogram(body.names, body.buckets, spec);
+      const ro = new ResponseObject().found({ buckets }, 'Timeline histogram computed', 200, buckets.length);
+      return reply.code(ro.statusCode).send(ro.getResponse());
+    } catch (err) {
+      fastify.log.error(err);
+      const ro = new ResponseObject().serverError('Failed to compute timeline histogram');
       return reply.code(ro.statusCode).send(ro.getResponse());
     }
   });

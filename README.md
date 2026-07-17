@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/canvas-ai/.github/main/banners/canvas-banner_1200x480.jpg" alt="Canvas" width="100%" />
+</p>
+
 # There are many productivity tools, but this one is ~~yours~~ mine
 
 ..and yes, it has [pi](https://pi.dev/) integrated(..for now)

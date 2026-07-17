@@ -67,7 +67,16 @@ export default async function pubWorkspaceRoutes(fastify, options) {
         const resolvedId = isWorkspaceId ? workspaceIdentifier : fastify.workspaceManager.resolveWorkspaceId(userId, workspaceIdentifier);
         if (!resolvedId) return null;
 
-        const workspace = await fastify.workspaceManager.getWorkspace(resolvedId, userId);
+        // getWorkspaceOrThrow distinguishes "not found" / "access denied"
+        // (fall through → null → 403) from "not ready" (503, retryable), which
+        // must not be masked as a blanket access-denied.
+        let workspace;
+        try {
+          workspace = await fastify.workspaceManager.getWorkspaceOrThrow(resolvedId, userId);
+        } catch (err) {
+          if (err?.statusCode === 503) throw err;
+          workspace = null;
+        }
         if (workspace) {
           return {
             workspace,
@@ -79,6 +88,9 @@ export default async function pubWorkspaceRoutes(fastify, options) {
 
       return null;
     } catch (error) {
+      // Let a transient "workspace not ready" bubble up so the route can
+      // return 503 instead of a misleading 403.
+      if (error?.statusCode === 503) throw error;
       fastify.log.error(`Error checking workspace access: ${error.message}`);
       return null;
     }
@@ -203,7 +215,7 @@ export default async function pubWorkspaceRoutes(fastify, options) {
 
     } catch (error) {
       fastify.log.error(`Error in GET /pub/workspaces/${request.params.workspaceId}: ${error.message}`);
-      const response = new ResponseObject().serverError('Failed to get workspace');
+      const response = ResponseObject.fromError(error, 'Failed to get workspace');
       return reply.code(response.statusCode).send(response.getResponse());
     }
   });
@@ -282,7 +294,7 @@ export default async function pubWorkspaceRoutes(fastify, options) {
 
     } catch (error) {
       fastify.log.error(`Error in GET /pub/workspaces/${request.params.workspaceId}/documents: ${error.message}`);
-      const response = new ResponseObject().serverError('Failed to list documents in workspace');
+      const response = ResponseObject.fromError(error, 'Failed to list documents in workspace');
       return reply.code(response.statusCode).send(response.getResponse());
     }
   });
@@ -364,7 +376,7 @@ export default async function pubWorkspaceRoutes(fastify, options) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
-      const response = new ResponseObject().serverError('Failed to insert documents into workspace');
+      const response = ResponseObject.fromError(error, 'Failed to insert documents into workspace');
       return reply.code(response.statusCode).send(response.getResponse());
     }
   });
@@ -422,7 +434,7 @@ export default async function pubWorkspaceRoutes(fastify, options) {
 
     } catch (error) {
       fastify.log.error(`Error in GET /pub/workspaces/${request.params.workspaceId}/tree: ${error.message}`);
-      const response = new ResponseObject().serverError('Failed to get workspace tree');
+      const response = ResponseObject.fromError(error, 'Failed to get workspace tree');
       return reply.code(response.statusCode).send(response.getResponse());
     }
   });

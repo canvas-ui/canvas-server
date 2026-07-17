@@ -233,16 +233,30 @@ export default function setupWebSocketHandlers(fastify) {
             const isWorkspaceId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(identifier);
             const workspaceId = isWorkspaceId ? identifier : fastify.workspaceManager.resolveWorkspaceId(user.id, identifier);
             if (!workspaceId) {
-              socket.emit('error', { message: `Access denied to workspace ${identifier}` });
+              socket.emit('error', {
+                channel,
+                code: 'WORKSPACE_NOT_FOUND',
+                retryable: false,
+                message: `Workspace not found: ${identifier}`,
+              });
               return;
             }
-            const workspace = await fastify.workspaceManager.getWorkspace(workspaceId, user.id);
-            if (!workspace) {
-              socket.emit('error', { message: `Access denied to workspace ${identifier}` });
-              return;
-            }
+            // Throws ACCESS_DENIED / WORKSPACE_NOT_FOUND (permanent) or
+            // WORKSPACE_NOT_READY (transient — workspace down/not instantiable).
+            await fastify.workspaceManager.getWorkspaceOrThrow(workspaceId, user.id);
           } catch (err) {
-            socket.emit('error', { message: `Access denied to workspace ${identifier}` });
+            const retryable = err.retryable === true || err.code === 'WORKSPACE_NOT_READY';
+            const message = retryable
+              ? `Workspace ${identifier} not ready: ${err.message}`
+              : (err.code === 'WORKSPACE_NOT_FOUND'
+                ? `Workspace not found: ${identifier}`
+                : `Access denied to workspace ${identifier}`);
+            socket.emit('error', {
+              channel,
+              code: err.code || 'ACCESS_DENIED',
+              retryable,
+              message,
+            });
             return;
           }
         }

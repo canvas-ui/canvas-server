@@ -16,6 +16,7 @@ import { compareByUserOrder } from '../../utils/list-order.js';
 
 // Includes
 import Workspace from './Workspace.js';
+import { WorkspaceErrorCode, accessDenied, workspaceNotFound, workspaceNotReady } from './lib/errors.js';
 import DotfileManager from './services/dotfile/index.js';
 import HookService from './services/hook/index.js';
 import GraphService from './services/graph/index.js';
@@ -421,32 +422,62 @@ class WorkspaceManager extends EventEmitter {
         return entry;
     }
 
+    /**
+     * Resolve a workspace instance, returning `null` on any failure (not found,
+     * access denied, or not instantiable). Kept for backward compatibility —
+     * the many callers that branch on `if (!workspace)` continue to work.
+     * Use {@link getWorkspaceOrThrow} when the caller needs to distinguish
+     * *why* a workspace is unavailable (e.g. to return 403 vs 404 vs 503).
+     */
     async getWorkspace(workspaceId, userId) {
+        try {
+            return await this.getWorkspaceOrThrow(workspaceId, userId);
+        } catch (err) {
+            // Coded workspace errors map cleanly back to the null contract;
+            // anything unexpected (e.g. "Not initialized") still propagates.
+            if (err && err.code && WorkspaceErrorCode[err.code]) {
+                return null;
+            }
+            throw err;
+        }
+    }
+
+    /**
+     * Like {@link getWorkspace} but throws a coded workspace error instead of
+     * returning null, so callers can distinguish permission failures from a
+     * transient "workspace not ready" condition. Mirrors ContextManager.getContext.
+     * @throws accessDenied (403) / workspaceNotFound (404) / workspaceNotReady (503)
+     */
+    async getWorkspaceOrThrow(workspaceId, userId) {
         if (!this.#initialized) throw new Error('Not initialized');
 
         // 1. Check cache
         if (this.#workspaces.has(workspaceId)) {
             const ws = this.#workspaces.get(workspaceId);
-            if (userId && ws.owner !== userId) return null; // Access denied or wrong workspace
+            if (userId && ws.owner !== userId) {
+                throw accessDenied(`Access denied to workspace ${workspaceId}`);
+            }
             this.#registerWorkspaceInstance(ws);
             return ws;
         }
 
         // 2. Load from index
         const entry = this.#findInIndex(workspaceId);
-        if (!entry) return null;
-        if (userId && entry.owner !== userId) return null;
+        if (!entry) throw workspaceNotFound(`Workspace not found: ${workspaceId}`);
+        if (userId && entry.owner !== userId) {
+            throw accessDenied(`Access denied to workspace ${workspaceId}`);
+        }
 
         // 3. Instantiate
-        try {
-            // A missing config file would produce a hollow instance (owner/id
-            // undefined from an empty Conf store) that poisons the cache and
-            // breaks every downstream call — treat as not instantiable.
-            if (!entry.configPath || !existsSync(entry.configPath)) {
-                console.error(`Workspace ${workspaceId} config missing at ${entry.configPath} — not instantiable`);
-                return null;
-            }
+        // A missing config file would produce a hollow instance (owner/id
+        // undefined from an empty Conf store) that poisons the cache and
+        // breaks every downstream call — treat as not instantiable (retryable).
+        if (!entry.configPath || !existsSync(entry.configPath)) {
+            console.error(`Workspace ${workspaceId} config missing at ${entry.configPath} — not instantiable`);
+            throw workspaceNotReady(`Workspace ${workspaceId} is not available (config missing)`);
+        }
 
+        try {
             const conf = new Conf({
                 configName: path.basename(entry.configPath, '.json'),
                 cwd: path.dirname(entry.configPath),
@@ -467,7 +498,7 @@ class WorkspaceManager extends EventEmitter {
             return workspace;
         } catch (err) {
             console.error(`Failed to load workspace ${workspaceId}:`, err);
-            return null;
+            throw workspaceNotReady(`Failed to load workspace ${workspaceId}: ${err.message}`);
         }
     }
 

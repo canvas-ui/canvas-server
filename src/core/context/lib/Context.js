@@ -11,7 +11,7 @@ const logger = createLogger('context-manager:context');
 // Includes
 import Url from './Url.js';
 import { parseDocumentId, parseDocumentIdArray } from '../../../utils/documentId.js';
-import { accessDenied } from './errors.js';
+import { accessDenied, workspaceNotReady } from './errors.js';
 
 // Constants
 const DEFAULT_BASE_URL = '/';
@@ -406,7 +406,10 @@ class Context extends EventEmitter {
 
     #requireWorkspace() {
         if (!this.#workspace?.isActive) {
-            throw new Error('Workspace or database not available');
+            // Coded 503 (retryable) so REST routes surface "workspace down" as a
+            // retryable Service Unavailable instead of a generic 500. This fires
+            // for already-cached contexts whose workspace was stopped after load.
+            throw workspaceNotReady('Workspace or database not available');
         }
         return this.#workspace;
     }

@@ -12,7 +12,7 @@ Workspace hooks are the automation layer of a workspace: declarative reactions t
 
 ## Event model
 
-Event names follow the `noun.verb` past-tense webhook convention:
+Event names follow the `noun.verb` past-tense webhook convention(with their .batch versions):
 
 ```
 document.inserted
@@ -162,6 +162,27 @@ This is where hook systems live or die. Minimum viable surface:
 ## Open questions
 
 - Rule execution point: pre-commit (document lands with final paths atomically) vs. post-commit-inline (simpler, but a document can be observed pathless for a tick). Leaning pre-commit since rules are pure and bounded.
+  - Answer: Pre-commit
+
 - Run-record storage: documents in `/system/hooks/runs` (uniform, queryable) vs. a dedicated LMDB dbi (cheaper, no schema ceremony). Retention policy needed either way.
+  - Answer: Hidden system tree of type directory in the workspace DB, schema refactor should make working with schemas easier + we do need a schema for storing things like ad-hoc commands (local workspace that I want to use as my bash history) or logs(pure gedankenexperiment to stress-test the system)
+
 - Matcher escape hatch: ship JS predicates in v1 or hold until a real matcher-grammar gap appears? Pareto says hold.
+  - Answer: Probably already covered
+
 - Whether `context.changed` belongs in the hookable event set at all, or stays app-bus-only until a concrete hook use case shows up.
+  - Answer: I"d treat it the same as other events, might get useful
+
+## Feature: Workspace hook review/refine UI
+
+As the deadline of my monthly accounting paperwork is approaching, another needed feature popped-out: we need to extend the current hook/script logic to request approvals for planned actions. This needs to be implemented for both, agentic and "classic-but-deterministic" actions, couple of examples:
+- All received emails for invoice@mycompany.tld that contain a PDF should be a) stored in workspace foo at data backend home into path Accounting/YYYY/mm/received and re-sent to the invoice inbox of my accounting firm
+- Basic question answering, all emails that came to hi@mycompany.com should first tick my secretary-agent to be categorized (agent runtime will use canvas-cli or MCP to do just that) - for those that can be answered directly, agent would write a draft email that would show up in my pending actions list for review/refine
+
+Review screen design - refine if needed according to industry best practices:
+
+- Table view of all actions
+- Tickbox per line
+- Action (Approve/Decline/..)
+- Click to review or amend in real-time where it makes sense (emails are a good example)
+  - Side-quest here, since we already have to configure imap as the data source and already have the backend in-place, we could extend the same per-data-source to configure a SMTP server. Not sure if replies/sent items are moved into Sent by the client or by the server(I always assumed it was server, if it is - postfix/dovecot kombo - then great)

@@ -181,7 +181,7 @@ export default async function documentRoutes(fastify, options) {
       body: {
         type: 'object',
         properties: {
-          documents: { type: 'array', items: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } } },
+          documents: { type: 'array', items: { type: 'object', required: ['id'], properties: { id: { anyOf: [{ type: 'string' }, { type: 'number' }] } } } },
           documentIds: {
             anyOf: [
               { type: 'array', items: { anyOf: [{ type: 'string' }, { type: 'number' }] }, minItems: 1 },

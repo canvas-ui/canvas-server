@@ -119,7 +119,8 @@ test('chunkText: short text single chunk', () => {
 
 test('queue: dedupes by key and drains', async () => {
     const seen = [];
-    const q = new Queue(async (job) => { seen.push(job.id); });
+    // Handler receives a BATCH of jobs (1..batchSize), not a single job.
+    const q = new Queue(async (jobs) => { for (const j of jobs) { seen.push(j.id); } });
     q.enqueue('a', { id: 1 });
     q.enqueue('a', { id: 1 }); // dup
     q.enqueue('b', { id: 2 });

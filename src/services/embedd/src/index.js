@@ -194,7 +194,7 @@ export default class Embedd {
                 const cRow = await this.#embedComment(comment);
                 if (cRow) { rows = [...rows, cRow]; }
             }
-            await ws.storeVectors(job.docId, schema, updatedAt, rows, { space: rule.space });
+            await ws.storeVectors(job.docId, schema, updatedAt, rows, { space: rule.space, model: rule.model });
             written.add(rule.space);
             debug(`embedded ${job.wsId}:${job.docId} → ${rows.length} chunk(s) in '${rule.space}'`);
         } else {
@@ -206,7 +206,8 @@ export default class Embedd {
         // the comment chunk; marks the doc seen in text so it leaves the gap.
         if (comment && !written.has(TEXT_SPACE)) {
             const cRow = await this.#embedComment(comment);
-            await ws.storeVectors(job.docId, schema, updatedAt, cRow ? [cRow] : [], { space: TEXT_SPACE });
+            const textModel = this.#router.spaceRule(TEXT_SPACE)?.model;
+            await ws.storeVectors(job.docId, schema, updatedAt, cRow ? [cRow] : [], { space: TEXT_SPACE, model: textModel });
             written.add(TEXT_SPACE);
         }
 

@@ -8,6 +8,8 @@ Eval `/workspace/ingest/<driver>/<format>` ?stream?
 
 We want to leverage battle-tested `https://github.com/StarlightSearch/EmbedAnything` to generate embeddings. Question is how deep we should integrate it into the current embedd(maybe we can fully rewrite it or make it just a thin wrapper around EA). We need to use external runtimes like vllm/ollama or antrhopic&co which is already taken care of by EA
 
+It should be possible to seamlessly add new embedding models per modality + fine-tune their settings, revert back to a previous model or remove all vectors for a superseeded model.
+
 Origina TODO item:  
 
 Today `embedd` is a single **per-server singleton**: one shared model runtime + ONE serial queue + one server-wide router. Consequences to fix as part of the runtime split:
@@ -18,8 +20,7 @@ Today `embedd` is a single **per-server singleton**: one shared model runtime + 
 - **Model dtype configurable**: `CANVAS_CLIP_DTYPE` (fp32/q8/…) is env-only today. Make it a proper config option — globally for now (server-wide embedd), per-workspace once the runtime is split. Low priority (boilerplate vs value).
 - **Text embedding is broader than the UI implies**: we embed notes + emails + **text-file blobs** (`data/abstraction/file` with `text/*` mime), driven by the router's `DEFAULT_RULES`, not just `data/abstraction/note` (which is only synapsd's gap fallback default). The settings UI should reflect the router's real routing (done: `getStats().embedder.routing` surfaces per-space schema+mime rules; read-only until the router is per-workspace).
 
-This relates to
-
+This relates to "### Vectors & modalities" in `src/services/synapsd/TODO.md`
 
 
 ### IMAP / email

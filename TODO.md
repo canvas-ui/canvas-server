@@ -27,10 +27,42 @@ This relates to "### Vectors & modalities" in `src/services/synapsd/TODO.md`
 - [ ] Attachments as File docs + rel/ relations (rel/* bitmaps exist, nothing populates them; Synapses tab empty by design gap).
 - [ ] SMTP reply: per-mailbox smtp{} config, nodemailer send route, Reply button in EmailRenderer.
 
-### Datasets (design agreed 2026-07-16, not implemented)
-- [ ] `data/dataset/<name>` protected bitmap prefix (non-deletable), stamped at ingest (hooks rule or explicit app choice). Dataset = provenance, path-INDEPENDENT (a wikipedia article stays data/dataset/wikipedia wherever it is filed).
-- [ ] Default polarity excluded-unless-opted-in: workspace root layer stored filters carry `!data/dataset/*`; dataset subtree layer lifts it. Layer filters already fold into querySpec.
-- [ ] "Datasets" group in Features tab with tri-state any/all/not rows.
+### Datasets (synapsd core SHIPPED 2026-07-17, v2 timeline-style selection; REST + UI pending)
+
+Design (user, 2026-07-17): datasets work like the timelines — every doc implicitly belongs to the
+VIRTUAL `data/dataset/default` dataset (= stamped with no dataset; computed as
+candidate \ OR(all dataset bitmaps), never physically ticked). Every query intersects with
+OR(selected datasets); `default` starts selected. So in the features vocabulary:
+**anyOf `data/dataset/X` ADDS the dataset to the mix, allOf shows only it, noneOf deselects it
+(incl. `noneOf data/dataset/default`)**. Dataset keys are partitioned out of the generic
+anyOf/noneOf buckets in `#resolveParsed` so they can't bypass other feature filters. Dataset
+subtree views = ordinary CANVAS layers saving `data/dataset/*` keys in querySpec (existing
+machinery, nothing new). A rejected first cut (dedicated dataset layer type with mount-like
+window semantics) was reverted same day — canvas + querySpec covers it.
+
+- [x] `data/dataset/<name>` protected prefix — stamped via `spec.features` at ingest;
+      `BitmapIndex.deleteBitmap` refuses the prefix without force. Provenance, path-independent.
+- [x] Selection algebra in `#resolveParsed` (single query funnel; no-op until the first dataset
+      exists). Tests: synapsd tests/datasets.test.js (5 cases incl. filter-bypass guard and
+      multi-stamped docs).
+- [x] Lifecycle: `db.listDatasets()`, `db.deleteDataset(name, {dropDocuments})` → trash-and-repipe.
+- [ ] REST surface: workspace routes for GET/DELETE datasets; pipes stamp via the existing
+      documents API (features array), nothing new needed there.
+- [ ] "Datasets" group in Features tab with tri-state rows mapping to anyOf/allOf/noneOf; canvas
+      creation flow should offer dataset keys in the querySpec feature picker.
+- [x] **Perf prerequisite for the 7M wikipedia ingest** — DONE 2026-07-18: maintained
+      `internal/docs/all` bitmap (ticked on every put, unticked on delete UNCONDITIONALLY — i.e.
+      even when failed lance cleanup blocks free-pool admission, so no phantoms). One-time
+      backfill on start for pre-feature stores. `#buildAllDocumentsBitmap` is now an O(1) clone,
+      which also closes the old noneOf-only full-scan follow-up. Decision: `default` stays
+      VIRTUAL (= allDocs \ OR(named)) — a physical default bitmap was considered and rejected
+      (write-path invariant maintenance = drift risk; virtual is consistent by construction).
+      Tests: synapsd tests/all-docs-bitmap.test.js. Not done (deemed cheap enough):
+      `listBitmaps('data/dataset/')` per query is an LMDB key-range read of a handful of keys —
+      cache only if profiling ever says so.
+- [x] Reserved name guard (2026-07-17): stamping `data/dataset/default` is refused at write
+      (`#normalizeWriteFeatures`) — a physical bitmap under the virtual dataset's name would make
+      its docs permanently invisible to the selection.
 
 
 

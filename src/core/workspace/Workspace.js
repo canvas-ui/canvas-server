@@ -1418,6 +1418,20 @@ class Workspace extends EventEmitter {
         return await this.#getActiveDb().getDocumentsByIdArray(parseDocumentIdArray(ids, 'Document ID array'), options);
     }
 
+    /** Datasets: path-independent ingest provenance (data/dataset/<name>). */
+    async listDatasets() {
+        return await this.#getActiveDb().listDatasets();
+    }
+
+    /**
+     * Drop a dataset (its documents too unless dropDocuments:false). This is the
+     * ONLY sanctioned way to remove a data/dataset/* bitmap — deleteBitmap
+     * refuses the prefix.
+     */
+    async deleteDataset(name, { dropDocuments = true } = {}) {
+        return await this.#getActiveDb().deleteDataset(name, { dropDocuments });
+    }
+
     async listBitmaps(prefix = '', { includeData = false, includeInternal = false } = {}) {
         const keys = await this.#getActiveDb().bitmapIndex.listBitmaps(prefix, { includeInternal });
         const bitmaps = await Promise.all(keys.map(async (key) => this.getBitmap(key, { includeData })));

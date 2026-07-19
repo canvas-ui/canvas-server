@@ -8,7 +8,7 @@ import { simpleParser } from 'mailparser';
 import ImapBackend from './ImapBackend.js';
 import Email from '../../../../services/synapsd/src/schemas/abstractions/Email.js';
 import { parseLocationUrl } from '../../../../services/synapsd/src/utils/path-helpers.js';
-import { getBackendEmailContext, normalizeSegment, legacyBitmapKey } from '../../../../utils/backend-documents.js';
+import { getBackendEmailContext, normalizeSegment } from '../../../../utils/backend-documents.js';
 
 /*
  * WorkspaceMailIndex (ImapService)
@@ -55,15 +55,12 @@ export class WorkspaceMailIndex extends EventEmitter {
     // backends tree while a mailbox on that account is enabled).
     #lockBackendNode;
     #unlockBackendNode;
-    // One-shot: re-file already-indexed emails into the backends tree after the
-    // legacy /.backends subtree migration (no network fetch).
-    #refileBackendsTreeOnStart;
 
     #started = false;
     #backends = new Map(); // name -> ImapBackend
     #backendStatus = new Map();
 
-    constructor({ rootPath, workspaceId, logger, put, putMany = null, getBackendsTreeSelector, getDb, persistBlob, lockBackendNode = null, unlockBackendNode = null, refileBackendsTree = false }) {
+    constructor({ rootPath, workspaceId, logger, put, putMany = null, getBackendsTreeSelector, getDb, persistBlob, lockBackendNode = null, unlockBackendNode = null }) {
         super({ wildcard: true, delimiter: '.', maxListeners: 100 });
         if (!rootPath) throw new Error('rootPath is required');
         if (!put || !getBackendsTreeSelector || !getDb || !persistBlob) {
@@ -79,7 +76,6 @@ export class WorkspaceMailIndex extends EventEmitter {
         this.#persistBlob = persistBlob;
         this.#lockBackendNode = lockBackendNode;
         this.#unlockBackendNode = unlockBackendNode;
-        this.#refileBackendsTreeOnStart = refileBackendsTree === true;
     }
 
     get isRunning() { return this.#started; }
@@ -89,11 +85,6 @@ export class WorkspaceMailIndex extends EventEmitter {
         this.#started = true;
         try {
             await this.#registerStoredConfigBackends();
-            await this.#migrateLegacyAccountBitmaps();
-            if (this.#refileBackendsTreeOnStart) {
-                await this.#refileBackendsTree();
-                this.#refileBackendsTreeOnStart = false;
-            }
             await this.#startStoredConfigSources();
         } catch (error) {
             this.#logger.warn({ workspaceId: this.#workspaceId, error: error.message }, 'IMAP service unavailable');
@@ -214,52 +205,6 @@ export class WorkspaceMailIndex extends EventEmitter {
         return this.#getBackendsTreeSelector(backendContext);
     }
 
-    /**
-     * One-shot post-migration re-file: the legacy /.backends subtree was
-     * dropped from the directory tree, so already-indexed emails have no
-     * backends-tree membership. Rebuild it from data the index already holds —
-     * the per-account feature bitmap (data/backend/imap/<account>) plus each
-     * doc's data.folder — without touching the network or the UID cursors.
-     */
-    async #refileBackendsTree() {
-        const db = this.#getDb();
-        if (typeof db?.linkMany !== 'function') return;
-
-        const config = await this.readStoredConfig().catch(() => ({ backends: {} }));
-        const accounts = new Set();
-        for (const backendConfig of Object.values(config.backends || {})) {
-            if (backendConfig?.driver !== 'imap') continue;
-            accounts.add(this.#safeAccount(backendConfig.account || backendConfig.user));
-        }
-
-        for (const account of accounts) {
-            try {
-                const bitmap = await db.bitmapIndex.getBitmap(`data/backend/imap/${account}`, false);
-                const ids = bitmap ? bitmap.toArray() : [];
-                if (ids.length === 0) continue;
-
-                const fetched = await db.getDocumentsByIdArray(ids, { parse: false });
-                const docs = Array.isArray(fetched) ? fetched : (fetched?.data ?? []);
-                const byFolder = new Map();
-                for (const doc of docs.filter(Boolean)) {
-                    const folder = doc?.data?.folder?.path || doc?.data?.folder?.name || IMAP_DEFAULT_FOLDER;
-                    const key = String(folder);
-                    if (!byFolder.has(key)) byFolder.set(key, []);
-                    byFolder.get(key).push(doc.id);
-                }
-                for (const [folder, docIds] of byFolder) {
-                    await db.linkMany(docIds, {
-                        context: null,
-                        directory: this.#directoryFor(account, folder),
-                        emitEvent: false,
-                    });
-                }
-                this.#logger.info({ workspaceId: this.#workspaceId, account, documents: ids.length, folders: byFolder.size }, 'Re-filed indexed emails into the backends tree');
-            } catch (error) {
-                this.#logger.warn({ workspaceId: this.#workspaceId, account, error: error.message }, 'Backends-tree email re-file failed');
-            }
-        }
-    }
 
     // Ingest one fetched message into an Email document. Entry point for any
     // connector that pushes single raw messages; the owned ImapBackends land
@@ -511,27 +456,6 @@ export class WorkspaceMailIndex extends EventEmitter {
         }
     }
 
-    // Bitmap keys squashed '@' to '_' before synapsd widened its allowed
-    // charset — merge each account's legacy source tag bitmap
-    // (data/backend/imap/user_domain.tld) into the canonical '@' key.
-    // Idempotent: no-op once migrated or when keys don't differ.
-    async #migrateLegacyAccountBitmaps() {
-        const db = this.#getDb?.();
-        if (typeof db?.migrateBitmapKey !== 'function') return;
-        const accounts = new Set();
-        for (const backend of this.#backends.values()) {
-            const account = backend.config?.account || backend.config?.user;
-            if (account) accounts.add(account);
-        }
-        for (const account of accounts) {
-            const tag = `data/backend/imap/${account}`;
-            try {
-                await db.migrateBitmapKey(legacyBitmapKey(tag), tag);
-            } catch (error) {
-                this.#logger.warn({ workspaceId: this.#workspaceId, account, error: error.message }, 'Legacy imap bitmap key migration failed');
-            }
-        }
-    }
 
     // Kick the initial incremental sync + poll loop for each imap account.
     // Syncs run in the background — service start (and the HTTP requests that

@@ -12,15 +12,10 @@
  *     /imap/me@idnc.sk/inbox
  *     /slack/<account>/<channel>
  *     /s3/<address>/<bucket>/<path>
- *
- * Historically these lived inside the default directory tree under /.backends;
- * LEGACY_BACKENDS_PATH exists only for the one-shot startup migration and for
- * normalizing old client-supplied paths.
  */
 
 export const BACKENDS_TREE_NAME = 'backends';
 export const DIRECTORY_TREE_NAME = 'directory';
-export const LEGACY_BACKENDS_PATH = '/.backends';
 
 export function normalizeSegment(value, fallback = 'unknown') {
   const segment = String(value || '')
@@ -35,24 +30,6 @@ export function normalizeSegment(value, fallback = 'unknown') {
   return parts.length > 0 ? parts.join('/') : fallback;
 }
 
-/**
- * Bitmap keys used to squash '@' and ':' to '_' before synapsd widened its
- * allowed charset (data/backend/imap/user@domain.tld ended up as
- * .../user_domain.tld). This reproduces the OLD normalization so services
- * that know a tag's true spelling can merge the legacy bitmap into the
- * canonical key via db.migrateBitmapKey(legacyBitmapKey(tag), tag) — a no-op
- * once migrated (synapsd skips identical keys / missing legacy bitmaps).
- */
-export function legacyBitmapKey(key) {
-  return String(key || '')
-    .replace(/\\/g, '/')
-    .replace(/\s+/g, '_')
-    .toLowerCase()
-    .replace(/[^a-z0-9_\-./]/g, '_')
-    .replace(/_+/g, '_')
-    .replace(/\/+/g, '/');
-}
-
 function normalizeContextSpec(contextSpec) {
   if (contextSpec === null || contextSpec === undefined) { return null; }
   const value = String(contextSpec).trim();
@@ -60,24 +37,13 @@ function normalizeContextSpec(contextSpec) {
   return `/${value.replace(/^\/+/, '').replace(/\/+/g, '/')}`.replace(/\/$/, '');
 }
 
-/** Old-style /.backends-prefixed path (pre backends-tree). */
-export function isLegacyBackendsPath(pathOrContext) {
-  const normalized = normalizeContextSpec(pathOrContext);
-  return normalized === LEGACY_BACKENDS_PATH || normalized?.startsWith(`${LEGACY_BACKENDS_PATH}/`) || false;
-}
-
 /**
  * Normalize a path for use within the backends tree. Paths are tree-relative
- * (/<driver>/<address>/...); a legacy /.backends prefix from old clients is
- * stripped for compatibility.
+ * (/<anchor>/<address>/...).
  */
 export function normalizeBackendsTreePath(pathOrContext) {
   const normalized = normalizeContextSpec(pathOrContext);
   if (normalized === null || normalized === '/') { return '/'; }
-  if (normalized === LEGACY_BACKENDS_PATH) { return '/'; }
-  if (normalized.startsWith(`${LEGACY_BACKENDS_PATH}/`)) {
-    return normalized.slice(LEGACY_BACKENDS_PATH.length);
-  }
   return normalized;
 }
 

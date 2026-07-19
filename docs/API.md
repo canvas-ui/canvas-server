@@ -168,7 +168,6 @@ The API should accept optional `paths[]` and `backends[]` parameters; when omitt
 | `noneOf` | string[] | `[]` | Documents must have **none** of these features |
 | `anyOf` | string[] | `[]` | Documents must have **at least one** of these features |
 | `filters` | string[] | `[]` | Additional filters (e.g. `datetime:updated:today`) |
-| `includeBackends` | boolean | `false` | Include backend-staged documents (`/.backends` subtree); `includeIncoming` is a deprecated alias |
 | `limit`, `offset`, `page` | integer | — | Pagination |
 
 Example: `GET /documents?allOf[]=data/abstraction/file&noneOf[]=tag/deleted&filters[]=datetime:updated:today`

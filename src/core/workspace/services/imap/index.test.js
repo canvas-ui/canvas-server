@@ -105,9 +105,9 @@ describe('WorkspaceMailIndex', () => {
         assert.ok(urls.some((u) => u.startsWith('stored://workspace:data/')), `expected stored://workspace:data location, got ${urls}`);
         assert.ok(urls.some((u) => u.startsWith('imap://alice@example.com/INBOX;UID=5')), `expected imap:// location, got ${urls}`);
         assert.equal(record.checksumArray.length, 1);
-        // filed into the directory /.backends path, NOT the context root
+        // filed into the backends-tree path (anchor-first grammar), NOT the context root
         assert.equal(options.context, null);
-        assert.equal(String(options.directory), '/.backends/imap/alice@example.com/inbox');
+        assert.equal(String(options.directory), '/imap/alice@example.com/inbox');
         // raw blob persisted into the content-addressable store
         assert.equal(blobs.length, 1);
         assert.equal(record.checksumArray[0], `sha256/${blobs[0].checksum}`);
@@ -161,10 +161,10 @@ describe('WorkspaceMailIndex', () => {
             host: '127.0.0.1', port: 1, tls: false, pollInterval: 60000,
         });
         assert.equal(saved.id, 'acct');
-        assert.ok(lockCalls.some((c) => c.locked && c.nodePath === '/.backends/imap/dave@example.com' && c.holder === 'imap:acct'));
+        assert.ok(lockCalls.some((c) => c.locked && c.nodePath === '/imap/dave@example.com' && c.holder === 'imap:acct'));
 
         await mail.removeMailbox('acct');
-        assert.ok(lockCalls.some((c) => !c.locked && c.nodePath === '/.backends/imap/dave@example.com' && c.holder === 'imap:acct'));
+        assert.ok(lockCalls.some((c) => !c.locked && c.nodePath === '/imap/dave@example.com' && c.holder === 'imap:acct'));
     });
 
     test('ingestBatch groups by feature signature into putMany calls (single put untouched)', async () => {
@@ -194,7 +194,7 @@ describe('WorkspaceMailIndex', () => {
         assert.deepEqual(sizes, [1, 2]);
         for (const call of putManyCalls) {
             assert.equal(call.options.context, null);
-            assert.equal(String(call.options.directory), '/.backends/imap/alice@example.com/inbox');
+            assert.equal(String(call.options.directory), '/imap/alice@example.com/inbox');
             assert.ok(call.options.features.includes('data/backend/imap/alice@example.com'));
         }
         const attachmentGroup = putManyCalls.find((c) => c.records.length === 1);

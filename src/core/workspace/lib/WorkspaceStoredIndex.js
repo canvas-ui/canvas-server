@@ -9,7 +9,7 @@ import { extract as extractBlobMetadata } from '../../../services/stored/src/ext
 import { parseLocationUrl, deviceFileUrl } from '../../../services/synapsd/src/utils/path-helpers.js';
 import { mimeFromLocations } from './classifier.js';
 import { pickGeo } from './geo.js';
-import { BACKENDS_TREE_NAME, legacyBitmapKey, normalizeSegment } from '../../../utils/backend-documents.js';
+import { BACKENDS_TREE_NAME, normalizeSegment } from '../../../utils/backend-documents.js';
 import { DEFAULT_SYNC_EXCLUSIONS } from './constants.js';
 
 /*
@@ -524,7 +524,6 @@ export class WorkspaceStoredIndex {
             this.#stored.addBackend(backendName, this.#backendRegistrationConfig(backendName, config));
             this.#backendStatus.set(backendName, { lastScanAt: null, lastError: null });
             await this.#applyBackendNodeLock(backendName, true);
-            await this.#migrateLegacyBackendBitmap(backendName);
         }
     }
 
@@ -555,21 +554,6 @@ export class WorkspaceStoredIndex {
     getEffectiveExclusions(backendName) {
         const config = this.#dataBackends[backendName];
         return config ? (this.#effectiveExclusions(config) ?? []) : [];
-    }
-
-    // Bitmap keys squashed ':' (and '@') to '_' before synapsd widened its
-    // allowed charset — data/backend/workspace:home lived as
-    // data/backend/workspace_home. Merge the legacy bitmap into the canonical
-    // key; idempotent no-op once migrated.
-    async #migrateLegacyBackendBitmap(backendName) {
-        const db = this.#getDb?.();
-        if (typeof db?.migrateBitmapKey !== 'function') return;
-        const tag = `data/backend/${backendName}`;
-        try {
-            await db.migrateBitmapKey(legacyBitmapKey(tag), tag);
-        } catch (error) {
-            this.#logger.warn({ workspaceId: this.#workspaceId, backend: backendName, error: error.message }, 'Legacy backend bitmap key migration failed');
-        }
     }
 
     #isConfiguredLocalBackend(backendName) {
@@ -917,7 +901,7 @@ export class WorkspaceStoredIndex {
 
     /**
      * A backing blob vanished from one or more locations. Drop those locations;
-     * the doc keeps its survivors and unticks only the /.backends path(s) the
+     * the doc keeps its survivors and unticks only the backends-tree path(s) the
      * dead locations backed. When NO locations survive the doc is ORPHANED,
      * never deleted: it keeps its row, checksums and curated placements, gains
      * the data/no-location feature + orphanedAt, and is purged only by
@@ -1370,7 +1354,7 @@ export class WorkspaceStoredIndex {
             // Canonical source-backend tag on every ingested doc. Lets the UI
             // count/select "everything from backend X" independent of where the
             // doc now lives in the tree. Observability/selection only — purge stays
-            // scoped to the /.backends subtree path, never this bitmap.
+            // scoped to the backends-tree path, never this bitmap.
             if (backend.backend) features.push(`data/backend/${backend.backend}`);
             if (backend?.source?.provider) features.push(`data/source/${backend.source.provider}`);
         }

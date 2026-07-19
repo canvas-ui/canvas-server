@@ -55,7 +55,7 @@ describe('workspace document sub-resource routes', () => {
                 return { id: 'ctx-tree-id', name: 'context', type: 'context' };
             },
             async listDocumentTreeMemberships(id, treeId) {
-                return treeId === 'dir-tree-id' ? ['/.backends/imap/alice@example.com/inbox'] : ['/work/mail'];
+                return treeId === 'dir-tree-id' ? ['/imap/alice@example.com/inbox'] : ['/work/mail'];
             },
         };
 
@@ -81,7 +81,7 @@ describe('workspace document sub-resource routes', () => {
         assert.equal(payload.documentId, 42);
         assert.equal(payload.memberships.length, 2);
         const dir = payload.memberships.find((m) => m.type === 'directory');
-        assert.deepEqual(dir.paths, ['/.backends/imap/alice@example.com/inbox']);
+        assert.deepEqual(dir.paths, ['/imap/alice@example.com/inbox']);
         const ctx = payload.memberships.find((m) => m.type === 'context');
         assert.deepEqual(ctx.paths, ['/work/mail']);
     });
@@ -103,6 +103,7 @@ describe('workspace document sub-resource routes', () => {
         const response = await app.inject({
             method: 'GET',
             url: '/workspaces/universe/documents/42/content?url=' + encodeURIComponent('stored://workspace:data/other-docs-blob'),
+            headers: { authorization: 'Bearer test-token' },
         });
         assert.equal(response.statusCode, 403);
         assert.equal(workspace.resolveCalls.length, 0);
@@ -112,6 +113,7 @@ describe('workspace document sub-resource routes', () => {
         const response = await app.inject({
             method: 'GET',
             url: '/workspaces/universe/documents/42/content?url=' + encodeURIComponent('stored://workspace:data/raw-eml-key'),
+            headers: { authorization: 'Bearer test-token' },
         });
         assert.equal(response.statusCode, 200);
         assert.equal(response.headers['content-type'], 'message/rfc822');
@@ -122,6 +124,7 @@ describe('workspace document sub-resource routes', () => {
         const response = await app.inject({
             method: 'GET',
             url: '/workspaces/universe/documents/42/content?url=' + encodeURIComponent('stored://workspace:data/att-key') + '&download',
+            headers: { authorization: 'Bearer test-token' },
         });
         assert.equal(response.statusCode, 200);
         assert.equal(response.headers['content-type'], 'application/pdf');

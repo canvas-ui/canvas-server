@@ -6,7 +6,6 @@ import {
   getBackendFileContext,
   getBackendFileContextFromStoredLocation,
   getBackendChannelContext,
-  isLegacyBackendsPath,
   normalizeBackendsTreePath,
 } from './backend-documents.js';
 
@@ -72,18 +71,9 @@ test('places root-level files at the backend address with no subpath', () => {
   );
 });
 
-test('isLegacyBackendsPath matches only old /.backends-prefixed paths', () => {
-  assert.equal(isLegacyBackendsPath('/.backends'), true);
-  assert.equal(isLegacyBackendsPath('/.backends/imap/foo@bar.tld'), true);
-  assert.equal(isLegacyBackendsPath('/.backends-not'), false);
-  assert.equal(isLegacyBackendsPath('/imap/foo@bar.tld'), false);
-  assert.equal(isLegacyBackendsPath('/foo'), false);
-});
-
-test('normalizeBackendsTreePath is tree-relative and strips the legacy prefix', () => {
+test('normalizeBackendsTreePath is tree-relative', () => {
   assert.equal(normalizeBackendsTreePath('/'), '/');
   assert.equal(normalizeBackendsTreePath('imap/foo'), '/imap/foo');
   assert.equal(normalizeBackendsTreePath('/imap/foo'), '/imap/foo');
-  assert.equal(normalizeBackendsTreePath('/.backends'), '/');
-  assert.equal(normalizeBackendsTreePath('/.backends/imap/foo'), '/imap/foo');
+  assert.equal(normalizeBackendsTreePath('/imap/foo/'), '/imap/foo');
 });

@@ -253,7 +253,7 @@ describe('HookService batch fan-out', () => {
 
         workspace.emit('document.inserted.batch', {
             ids: [1, 2], count: 2,
-            directory: { type: 'directory', path: '/.backends/imap/a@b.c/inbox' },
+            directory: { type: 'directory', path: '/imap/a@b.c/inbox' },
             context: null, source: 'db',
         });
         await new Promise(resolve => setTimeout(resolve, 50));

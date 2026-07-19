@@ -13,7 +13,7 @@ import { createLogger } from '../../utils/log.js';
 // Includes
 import Db from '../../services/synapsd/src/index.js';
 import { parseDocumentId, parseDocumentIdArray } from '../../utils/documentId.js';
-import { BACKENDS_TREE_NAME, LEGACY_BACKENDS_PATH, normalizeBackendsTreePath, normalizeSegment } from '../../utils/backend-documents.js';
+import { BACKENDS_TREE_NAME, normalizeBackendsTreePath, normalizeSegment } from '../../utils/backend-documents.js';
 import { parseLocationUrl } from '../../services/synapsd/src/utils/path-helpers.js';
 
 // Sub-modules
@@ -48,9 +48,6 @@ class Workspace extends EventEmitter {
     // Tree types (used by the db layer)
     static CONTEXT_TYPE = 'context';
     static DIRECTORY_TYPE = 'directory';
-    // Pre-backends-tree staging subtree inside the directory tree; only used by
-    // the one-shot startup migration.
-    static LEGACY_BACKENDS_PATH = LEGACY_BACKENDS_PATH;
     // Default cosine-distance floor for the dense side of vector/hybrid search.
     // synapsd applies no floor by default (pure mechanism); Workspace sets the
     // product policy: drop kNN neighbours past this cosine distance so the dense
@@ -72,10 +69,6 @@ class Workspace extends EventEmitter {
     #db = null;
     #storedIndex = null;
     #mailIndex = null;
-    // Set when the legacy /.backends subtree was dropped this start — triggers a
-    // one-time backend resync/re-file to repopulate the backends tree.
-    #legacyBackendsMigrated = false;
-    #backendsGrammarMigrated = false;
     #mailRuntimeBinding = null;
     #tokens = null;
     #status = WORKSPACE_STATUS_CODES.INACTIVE;
@@ -382,8 +375,6 @@ class Workspace extends EventEmitter {
             await this.#ensureContextTree();
             await this.#ensureDirectoryTree();
             await this.#ensureBackendsTree();
-            await this.#migrateLegacyBackendsSubtree();
-            await this.#migrateBackendsTreeGrammar();
             this.#bindRuntimeEvents();
             this.#registerEmbedd();
             // Resume interrupted embedding: the embedd queue is in-memory, so a
@@ -404,17 +395,15 @@ class Workspace extends EventEmitter {
             this.#setStatus(WORKSPACE_STATUS_CODES.ACTIVE);
             if (this.isServiceEnabled('home') || this.isDataBackendEnabled(WorkspaceStoredIndex.HOME_STORED_BACKEND)) {
                 await this.#startStoredIndex();
-                const migrated = this.#legacyBackendsMigrated || this.#backendsGrammarMigrated;
                 for (const [name, cfg] of Object.entries(this.dataBackends)) {
                     if (!cfg?.enabled || !cfg.resync || cfg.supported === false || cfg.driver !== 'file') continue;
-                    // Post-migration: repopulate the freshly-created backends tree
-                    // from EVERY resyncable file backend. Otherwise only catch up
-                    // external (device-scoped) mounts — a restart may have killed
-                    // their initial scan mid-flight, and without a watcher nothing
-                    // else would ever finish it. Cheap when already indexed: the
-                    // checksum cache skips re-hashing unchanged files.
+                    // Catch up external (device-scoped) mounts on start — a
+                    // restart may have killed their initial scan mid-flight, and
+                    // without a watcher nothing else would ever finish it. Cheap
+                    // when already indexed: the checksum cache skips re-hashing
+                    // unchanged files.
                     const isExternalMount = !!cfg.device?.id && !!cfg.root && !cfg.root.includes('{WORKSPACE_ROOT}');
-                    if (!migrated && !isExternalMount) continue;
+                    if (!isExternalMount) continue;
                     try { this.#storedIndex.resyncInBackground(name); } catch (err) {
                         this.#logger.warn({ workspaceId: this.id, backend: name, error: err.message }, 'Start-time resync failed to start');
                     }
@@ -1317,7 +1306,7 @@ class Workspace extends EventEmitter {
     }
 
     /**
-     * Remove a /.backends folder AND delete the mirrored resources on the
+     * Remove a backends-tree folder AND delete the mirrored resources on the
      * backend itself (rw backends only; read-only/foreign locations degrade to
      * reference-drop). The byte half of "remove from canvas AND the backend".
      *
@@ -1379,7 +1368,7 @@ class Workspace extends EventEmitter {
     }
 
     /**
-     * Does a location URL belong to the backend scope mirrored by a /.backends
+     * Does a location URL belong to the backend scope mirrored by a backends-tree
      * path? Tree segments are normalized lowercase, so compares are
      * case-insensitive (IMAP folder INBOX ↔ tree node inbox).
      */
@@ -1608,7 +1597,7 @@ class Workspace extends EventEmitter {
     }
 
     /**
-     * Resync a backend addressed by its /.backends mirror node path
+     * Resync a backend addressed by its backends-tree mirror node path
      * (/<driver>/<address>/… in the backends tree). Dispatches by driver because
      * "backend" is overloaded: file/s3/etc. are stored data backends keyed by
      * name, while imap accounts are mailbox connectors keyed by mailbox id.
@@ -2039,7 +2028,7 @@ class Workspace extends EventEmitter {
         const root = this.#storedIndex.getBackendTreeRoot(address);
         if (root) {
             // movePath asserts mutability with no ignoreLocks escape under the
-            // locked /.backends root, so mirror the move as remove-old +
+            // locked backends-tree root, so mirror the move as remove-old +
             // insert-new (same pattern as create/delete). The watcher re-files
             // the contained docs under the new path.
             await tree.removePath(`${root}/${fromKey}`, true).catch(() => {});
@@ -2155,10 +2144,6 @@ class Workspace extends EventEmitter {
             persistBlob: (buffer) => this.#storedIndex.persistBlob(buffer),
             lockBackendNode: (path, holder) => this.lockBackendTreeNode(path, holder),
             unlockBackendNode: (path, holder) => this.unlockBackendTreeNode(path, holder),
-            // Legacy /.backends subtree was dropped this start: re-file already
-            // indexed emails into the backends tree from their metadata (no
-            // network fetch).
-            refileBackendsTree: this.#legacyBackendsMigrated,
         });
     }
 
@@ -2263,57 +2248,6 @@ class Workspace extends EventEmitter {
             settings: { linkContextRoot: false, protected: true },
         });
         return this.#db.getTree(Workspace.BACKENDS_TREE_NAME);
-    }
-
-    /**
-     * One-shot migration: drop the legacy /.backends subtree from the directory
-     * tree (nodes + memberships, reverse index cleaned by removePath). Documents
-     * stay indexed with their context memberships and feature bitmaps intact;
-     * the backends tree is repopulated by the file-backend resync and the mail
-     * service re-file triggered further down in start() via the returned flag.
-     */
-    async #migrateLegacyBackendsSubtree() {
-        const dirTree = this.#db.getTree(Workspace.DIRECTORY_TREE_NAME);
-        if (!dirTree || dirTree.type !== Workspace.DIRECTORY_TYPE) return;
-        if (typeof dirTree.pathExists !== 'function' || !dirTree.pathExists(Workspace.LEGACY_BACKENDS_PATH)) return;
-
-        const bitmap = await dirTree.findRecursive(Workspace.LEGACY_BACKENDS_PATH).catch(() => null);
-        const documentCount = bitmap?.size || 0;
-        const result = await dirTree.removePath(Workspace.LEGACY_BACKENDS_PATH, true, { ignoreLocks: true });
-        if (result?.error) {
-            this.#logger.warn({ workspaceId: this.id, error: result.error }, 'Legacy /.backends migration failed; will retry next start');
-            return;
-        }
-        this.#legacyBackendsMigrated = true;
-        this.#logger.info({
-            workspaceId: this.id,
-            documentCount,
-            removedNodes: result?.data?.removedNodeIds?.length || 0,
-        }, 'Migrated legacy /.backends subtree out of the directory tree; backends tree repopulates via resync');
-    }
-
-    /**
-     * One-shot migration: driver-first → anchor-first mirror grammar in the
-     * backends tree (/file/workspace:home → /workspace/home, fs mounts →
-     * /device/<device>/<mount>). Drops the old /file subtree; documents keep
-     * their memberships/features elsewhere and the mirrors are rebuilt by the
-     * resync triggered in start(). Connector subtrees (/imap, /s3) already
-     * match the grammar and are untouched.
-     */
-    async #migrateBackendsTreeGrammar() {
-        const tree = this.#db.getTree(Workspace.BACKENDS_TREE_NAME);
-        if (!tree || typeof tree.pathExists !== 'function' || !tree.pathExists('/file')) return;
-
-        const result = await tree.removePath('/file', true, { ignoreLocks: true });
-        if (result?.error) {
-            this.#logger.warn({ workspaceId: this.id, error: result.error }, 'Backends-tree grammar migration failed; will retry next start');
-            return;
-        }
-        this.#backendsGrammarMigrated = true;
-        this.#logger.info({
-            workspaceId: this.id,
-            removedNodes: result?.data?.removedNodeIds?.length || 0,
-        }, 'Migrated backends tree to anchor-first grammar (/workspace, /device); mirrors repopulate via resync');
     }
 
     // ─────────────────────────────────────────────────────────────────────────

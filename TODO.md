@@ -27,6 +27,23 @@ This relates to "### Vectors & modalities" in `src/services/synapsd/TODO.md`
 ### IMAP / email
 - [ ] Attachments as File docs + rel/ relations (rel/* bitmaps exist, nothing populates them; Synapses tab empty by design gap).
 - [ ] SMTP reply: per-mailbox smtp{} config, nodemailer send route, Reply button in EmailRenderer.
+  - Sent-folder: postfix/dovecot does NOT copy sent mail into Sent — that's the client's job
+    via IMAP APPEND (Gmail-style auto-append is a provider exception). So reply needs send +
+    APPEND (ImapBackend is write:false today), or the MVP shortcut: ingest the sent message
+    directly at send time (persistBlob + Email doc filed under the account's Sent path) and
+    APPEND best-effort so other mail clients see it.
+- [ ] UIDVALIDITY guard (small; do with/before SMTP reply — protects multi-mailbox MVP use):
+  persist `uidValidity` per mailbox next to `lastUid`; on mismatch reset `lastUid=0` (refetch
+  is idempotent — raw-.eml checksum dedup re-binds to existing docs) and refuse UID-based
+  EXPUNGE until resynced. Without it a bump silently gaps incremental sync (`lastUid+1:*`
+  skips renumbered messages) and destroy-by-UID can expunge the WRONG message server-side.
+  Reading is already safe: bytes live in stored://workspace:data, imap:// is provenance-only.
+- [ ] Per-driver Reconciler extraction (spec rule 5) — DEFERRED deliberately (2026-07-19):
+  imap sync is add-only incremental today, so the UIDVALIDITY mass-absence hazard cannot fire
+  (nothing diffs absences); shared invariants (scoping, liveness, orphan-not-delete,
+  completed-snapshot) are already enforced above the file driver. Extract the Reconciler
+  interface when imap gains real expunge/absence detection — driver supplies identity
+  (Message-ID over UID for imap, st_dev/st_ino for fs), shared layer enforces the invariants.
 
 ### Datasets (synapsd core SHIPPED 2026-07-17, v2 timeline-style selection; REST + UI pending)
 

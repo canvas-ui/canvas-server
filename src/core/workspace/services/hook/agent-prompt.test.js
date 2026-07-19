@@ -14,7 +14,7 @@ describe('buildHookAgentPrompt', () => {
                     data: { subject: 'DC migration window', from: { address: 'boss@corp.tld', name: 'Boss' } },
                     metadata: { contentType: 'message/rfc822' },
                 },
-                directory: { path: '/.backends/imap/a@b.c/inbox' },
+                directory: { path: '/imap/a@b.c/inbox' },
                 context: null,
             },
             prompt: 'Summarize this email in two sentences.',
@@ -25,7 +25,7 @@ describe('buildHookAgentPrompt', () => {
         assert.ok(prompt.includes('- type: data/abstraction/email'));
         assert.ok(prompt.includes('- title: DC migration window'));
         assert.ok(prompt.includes('- from: boss@corp.tld'));
-        assert.ok(prompt.includes('- filed under: /.backends/imap/a@b.c/inbox'));
+        assert.ok(prompt.includes('- filed under: /imap/a@b.c/inbox'));
         assert.ok(prompt.includes('Task from the hook author:\nSummarize this email in two sentences.'));
         assert.ok(prompt.includes('Reply with the final result only'));
     });

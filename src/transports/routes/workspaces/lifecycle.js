@@ -102,7 +102,7 @@ export default async function workspaceLifecycleRoutes(fastify, options) {
     }
   });
 
-  // Wipe the on-demand thumbnail cache (thumb:* entries in stored.cache).
+  // Wipe the on-demand thumbnail cache (thumb:* entries in the stored cache).
   // Always safe: thumbnails are derived artifacts regenerated on demand.
   fastify.delete('/thumbnails', {
     onRequest: [fastify.authenticate, requireWorkspaceWrite()],

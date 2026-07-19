@@ -4,17 +4,20 @@ import fs from 'fs-extra';
 import os from 'os';
 import path from 'path';
 import { WorkspaceStoredIndex } from './WorkspaceStoredIndex.js';
-import { WORKSPACE_DATA_BACKENDS, WORKSPACE_DIRECTORIES } from './constants.js';
+import { WORKSPACE_STORAGE_BACKENDS, WORKSPACE_STORED_DEFAULT, WORKSPACE_DIRECTORIES } from './constants.js';
 
-describe('Workspace data backend defaults', () => {
-    test('new workspaces get home, data, and cache defaults', () => {
+describe('Workspace stored defaults', () => {
+    test('new workspaces get home/data backends and a first-class cache', () => {
         assert.equal(WORKSPACE_DIRECTORIES.home, 'home');
         assert.equal(WORKSPACE_DIRECTORIES.data, 'data');
         assert.equal(WORKSPACE_DIRECTORIES.cache, 'cache');
-        assert.equal(WORKSPACE_DATA_BACKENDS['workspace:home'].enabled, true);
-        assert.equal(WORKSPACE_DATA_BACKENDS['workspace:home'].watch, true);
-        assert.equal(WORKSPACE_DATA_BACKENDS['stored.cache'].enabled, true);
-        assert.equal(WORKSPACE_DATA_BACKENDS['stored.cache'].root, '{WORKSPACE_ROOT}/cache');
+        assert.equal(WORKSPACE_STORAGE_BACKENDS['workspace:home'].enabled, true);
+        assert.equal(WORKSPACE_STORAGE_BACKENDS['workspace:home'].watch, true);
+        // The cache is NOT a backend — it's stored's own working store.
+        assert.equal('stored.cache' in WORKSPACE_STORAGE_BACKENDS, false);
+        assert.equal(WORKSPACE_STORED_DEFAULT.cache, '{WORKSPACE_ROOT}/cache');
+        assert.equal(WORKSPACE_STORED_DEFAULT.root, '{WORKSPACE_ROOT}/db/stored');
+        assert.deepEqual(WORKSPACE_STORED_DEFAULT.sync, { policies: [] });
     });
 });
 
@@ -77,7 +80,7 @@ describe('WorkspaceStoredIndex', () => {
             dataPath: path.join(rootPath, 'data'),
             homePath: path.join(rootPath, 'home'),
             workspaceId: 'test-workspace',
-            dataBackends: WORKSPACE_DATA_BACKENDS,
+            dataBackends: WORKSPACE_STORAGE_BACKENDS,
             logger: { info() {}, warn() {}, debug() {} },
             getDb: () => db,
             getBackendsTreeSelector: (pathSpec) => pathSpec,

@@ -1100,7 +1100,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     }
   });
 
-  // ── Document thumbnail (on-demand, cached in stored.cache) ──────────────
+  // ── Document thumbnail (on-demand, cached in the stored cache) ──────────────
 
   fastify.get('/:docId/thumbnail', {
     onRequest: [fastify.authenticate],

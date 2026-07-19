@@ -28,7 +28,8 @@ import {
     WORKSPACE_DIRECTORIES,
     WORKSPACE_CONFIG_FILENAME,
     WORKSPACE_DEFAULT_HOST,
-    WORKSPACE_DATA_BACKENDS,
+    WORKSPACE_INTERNALS,
+    WORKSPACE_STORED_DEFAULT,
     WORKSPACE_SERVICES,
 } from './lib/constants.js';
 
@@ -558,8 +559,16 @@ class WorkspaceManager extends EventEmitter {
             metadata: options.metadata || {},
             acl: options.acl || { tokens: {}, users: {} },
             roles: options.roles || [],
-            dataBackends: options.dataBackends || WorkspaceManager.#cloneConfigMap(WORKSPACE_DATA_BACKENDS),
-            services: options.services || WorkspaceManager.#cloneConfigMap(WORKSPACE_SERVICES),
+            internals: { ...WORKSPACE_INTERNALS },
+            // services.stored carries the storage config (root/cache/sync/backends);
+            // deep-clone — the stored default nests maps a shallow copy would alias.
+            services: options.services || {
+                ...structuredClone(WORKSPACE_SERVICES),
+                stored: {
+                    ...structuredClone(WORKSPACE_STORED_DEFAULT),
+                    ...(options.dataBackends ? { backends: options.dataBackends } : {}),
+                },
+            },
             links: options.links || {},
         };
 
@@ -1099,10 +1108,6 @@ class WorkspaceManager extends EventEmitter {
         for (const key in WORKSPACE_DIRECTORIES) {
             await fsPromises.mkdir(path.join(dir, WORKSPACE_DIRECTORIES[key]), { recursive: true });
         }
-    }
-
-    static #cloneConfigMap(config) {
-        return Object.fromEntries(Object.entries(config || {}).map(([key, value]) => [key, { ...(value || {}) }]));
     }
 
 }

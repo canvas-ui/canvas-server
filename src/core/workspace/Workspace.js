@@ -30,7 +30,9 @@ import {
     WORKSPACE_STATUS_CODES,
     WORKSPACE_DIRECTORIES,
     WORKSPACE_GIT_BARE_DIR,
-    WORKSPACE_DATA_BACKENDS,
+    WORKSPACE_INTERNALS,
+    WORKSPACE_STORAGE_BACKENDS,
+    WORKSPACE_STORED_DEFAULT,
     WORKSPACE_SERVICES,
 } from './lib/constants.js';
 
@@ -130,8 +132,46 @@ class Workspace extends EventEmitter {
     get acl() { return this.#configStore.get('acl'); }
     get publicCanvasShares() { return this.#configStore.get('publicCanvasShares', {}); }
 
+    // stored's config (services.stored): { root, cache, sync, backends } —
+    // stored is storage only: its metadata index root, its in-workspace working
+    // store (cache), sync policies, and the storage-backend map. Legacy
+    // workspace.json kept a flat top-level `dataBackends` map with the cache as
+    // a fake 'stored.cache' backend; #migrateConfigSchema rewrites that on
+    // start, the read-side fallback here covers pre-migration reads.
+    #storedConfig() {
+        const configured = (this.#configStore.get('services') || {}).stored;
+        if (configured && typeof configured === 'object') {
+            return {
+                ...WORKSPACE_STORED_DEFAULT,
+                ...configured,
+                // #mergeConfigMap is one level deep — materialize the nested
+                // backends map explicitly against the storage defaults.
+                backends: Workspace.#mergeConfigMap(WORKSPACE_STORAGE_BACKENDS, configured.backends || {}),
+            };
+        }
+        const legacy = this.#configStore.get('dataBackends') || {};
+        const { 'stored.cache': legacyCache, ...legacyBackends } = legacy;
+        const legacyDirs = this.#configStore.get('directories', {}) || {};
+        return {
+            ...WORKSPACE_STORED_DEFAULT,
+            root: legacyDirs.stored ?? WORKSPACE_STORED_DEFAULT.root,
+            cache: legacyCache?.root ?? legacyDirs.cache ?? WORKSPACE_STORED_DEFAULT.cache,
+            backends: Workspace.#mergeConfigMap(WORKSPACE_STORAGE_BACKENDS, legacyBackends),
+        };
+    }
+
+    // Storage backends only (services.stored.backends) — the cache is NOT a
+    // backend, it's stored's own working store (see cachePath).
     get dataBackends() {
-        return Workspace.#mergeConfigMap(WORKSPACE_DATA_BACKENDS, this.#configStore.get('dataBackends') || {});
+        return this.#storedConfig().backends;
+    }
+
+    // Single write authority for services.stored.backends. Keeps the rest of
+    // the stored config (root/cache/sync) as-is; materializing the full shape
+    // on write is intentional — workspace.json stays self-describing.
+    #writeStoredBackends(backends) {
+        const services = this.#configStore.get('services') || {};
+        this.#configStore.set('services', { ...services, stored: { ...this.#storedConfig(), backends } });
     }
 
     get services() {
@@ -208,14 +248,17 @@ class Workspace extends EventEmitter {
         return path.resolve(resolved);
     }
 
-    // Workspace INTERNALS (db/config/var/tmp/stored-index/git/hooks). A
-    // `directories` map in workspace.json overrides the WORKSPACE_DIRECTORIES
-    // default. Storage locations (home/data/cache) are NOT here — those are
-    // stored's backends (see #backendRoot); this is only the non-backend runtime
-    // dirs. (Full internals/services reshape is the NOW run in TODO.md.)
+    // Workspace INTERNALS (db/config/var/tmp …). The workspace.json `internals`
+    // map overrides the defaults (legacy `directories` maps are still honored
+    // below it). Storage locations (home/data/cache) are NOT here — those are
+    // stored's config (see #storedConfig/#backendRoot); this is only the
+    // non-service runtime dirs.
     #resolveDir(key) {
-        const overrides = this.#configStore.get('directories', {}) || {};
-        return this.#resolveWorkspacePath(overrides[key] ?? WORKSPACE_DIRECTORIES[key]);
+        const internals = this.#configStore.get('internals', {}) || {};
+        const legacy = this.#configStore.get('directories', {}) || {};
+        // internals uses `tmp` for what the legacy directories map called varTmp.
+        const internalsKey = key === 'varTmp' ? 'tmp' : key;
+        return this.#resolveWorkspacePath(internals[internalsKey] ?? legacy[key] ?? WORKSPACE_DIRECTORIES[key]);
     }
 
     // Single authority for a storage backend's byte-root: stored's backend config
@@ -233,8 +276,9 @@ class Workspace extends EventEmitter {
         return this.#backendRoot('workspace:data', 'data');
     }
 
+    /** stored's in-workspace working store (thumbnails, staging) — NOT a backend. */
     get cachePath() {
-        return this.#backendRoot('stored.cache', 'cache');
+        return this.#resolveWorkspacePath(this.#storedConfig().cache) ?? this.#resolveDir('cache');
     }
 
     get dbPath() {
@@ -243,11 +287,11 @@ class Workspace extends EventEmitter {
 
     /** Stored's runtime root (metadata index; blob cache lives at cachePath). */
     get storedRootPath() {
-        return this.#resolveDir('stored');
+        return this.#resolveWorkspacePath(this.#storedConfig().root) ?? this.#resolveDir('stored');
     }
 
     get gitPath() {
-        return this.#resolveDir('git');
+        return this.#resolveWorkspacePath(this.services.git?.root) ?? this.#resolveDir('git');
     }
 
     get gitBarePath() {
@@ -267,10 +311,11 @@ class Workspace extends EventEmitter {
     }
 
     // Structural local stores every workspace depends on: workspace:data is the
-    // managed blob target (persistBlob/stored:// addressing), stored.cache backs
-    // thumbnails/derived artifacts. Neither can be disabled, and as managed
-    // (non-browseable, never exported) stores the readOnly knob is meaningless.
-    static #ALWAYS_ON_BACKENDS = new Set([WorkspaceStoredIndex.DATA_BLOB_BACKEND, WorkspaceStoredIndex.CACHE_BACKEND]);
+    // managed blob target (persistBlob/stored:// addressing). It can't be
+    // disabled, and as a managed (non-browseable, never exported) store the
+    // readOnly knob is meaningless. (stored's cache is not a backend at all —
+    // see services.stored.cache.)
+    static #ALWAYS_ON_BACKENDS = new Set([WorkspaceStoredIndex.DATA_BLOB_BACKEND]);
 
     async setDataBackendConfig(backendName, patch) {
         if (Workspace.#ALWAYS_ON_BACKENDS.has(backendName)) {
@@ -284,7 +329,7 @@ class Workspace extends EventEmitter {
         const dataBackends = this.dataBackends;
         const next = { ...dataBackends[backendName], ...patch };
         dataBackends[backendName] = next;
-        this.#configStore.set('dataBackends', dataBackends);
+        this.#writeStoredBackends(dataBackends);
         this.emit('dataBackends.changed', { backend: backendName, config: next });
         if (this.#storedIndex?.isRunning) {
             await this.#storedIndex.applyBackendConfig(backendName, next, patch).catch((err) =>
@@ -382,9 +427,50 @@ class Workspace extends EventEmitter {
         return this.#startPromise;
     }
 
+    // One-time workspace.json schema migration (mirrors stored's
+    // #migrateLegacyStoredLayout): flat top-level `dataBackends` — with the
+    // cache as a fake 'stored.cache' backend — becomes services.stored
+    // { root, cache, sync, backends }, and the internals map is materialized
+    // (carrying over any legacy `directories` overrides). Idempotent: the
+    // legacy key is deleted after the rewrite, and every step is guarded on
+    // "target absent". This is the only code that persists a normalized
+    // config back to disk.
+    #migrateConfigSchema() {
+        try {
+            const services = this.#configStore.get('services') || {};
+            const legacy = this.#configStore.get('dataBackends');
+            const legacyDirs = this.#configStore.get('directories', {}) || {};
+            if (!services.stored && legacy && typeof legacy === 'object') {
+                const { 'stored.cache': legacyCache, ...backends } = legacy;
+                const stored = {
+                    ...WORKSPACE_STORED_DEFAULT,
+                    root: legacyDirs.stored ?? WORKSPACE_STORED_DEFAULT.root,
+                    cache: legacyCache?.root ?? legacyDirs.cache ?? WORKSPACE_STORED_DEFAULT.cache,
+                    backends,
+                };
+                this.#configStore.set('services', { ...services, stored });
+                this.#logger.info({ workspaceId: this.id }, 'Migrated workspace.json dataBackends → services.stored');
+            }
+            if (this.#configStore.get('dataBackends') !== undefined && (this.#configStore.get('services') || {}).stored) {
+                this.#configStore.delete('dataBackends');
+            }
+            if (!this.#configStore.get('internals')) {
+                this.#configStore.set('internals', {
+                    db: legacyDirs.db ?? WORKSPACE_INTERNALS.db,
+                    config: legacyDirs.config ?? WORKSPACE_INTERNALS.config,
+                    var: legacyDirs.var ?? WORKSPACE_INTERNALS.var,
+                    tmp: legacyDirs.varTmp ?? WORKSPACE_INTERNALS.tmp,
+                });
+            }
+        } catch (err) {
+            this.#logger.warn({ workspaceId: this.id, error: err.message }, 'workspace.json schema migration skipped');
+        }
+    }
+
     async #doStart() {
         this.#logger.debug({ workspaceId: this.id }, 'Starting workspace');
         try {
+            this.#migrateConfigSchema();
             await Promise.all([
                 fsPromises.mkdir(this.cachePath, { recursive: true }),
                 fsPromises.mkdir(this.dataPath, { recursive: true }),
@@ -1933,13 +2019,13 @@ class Workspace extends EventEmitter {
         // backend and releases the mirror-node enable-lock.
         const existing = this.dataBackends[address];
         await this.setDataBackendConfig(address, { enabled: false });
-        if (existing && existing.managed !== true && !(address in WORKSPACE_DATA_BACKENDS)) {
+        if (existing && existing.managed !== true && !(address in WORKSPACE_STORAGE_BACKENDS)) {
             // User-added mount: drop the config entirely. Mirrored docs keep
             // their tree nodes until purged via tree-rm or swept as
             // dead-backend locations on the next resync.
             const dataBackends = this.dataBackends;
             delete dataBackends[address];
-            this.#configStore.set('dataBackends', dataBackends);
+            this.#writeStoredBackends(dataBackends);
             this.emit('dataBackends.changed', { backend: address, config: null });
         }
         return true;
@@ -2140,7 +2226,7 @@ class Workspace extends EventEmitter {
             persistBackendConfig: (name, patch) => {
                 const dataBackends = this.dataBackends;
                 dataBackends[name] = { ...dataBackends[name], ...patch };
-                this.#configStore.set('dataBackends', dataBackends);
+                this.#writeStoredBackends(dataBackends);
             },
             // Orphan-GC retention (Settings > Database), -1 = keep forever.
             getOrphanRetentionDays: () => Number(this.databaseSettings.orphanRetentionDays ?? -1),

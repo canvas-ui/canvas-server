@@ -29,7 +29,6 @@ import { DEFAULT_SYNC_EXCLUSIONS } from './constants.js';
 
 const HOME_STORED_BACKEND = 'workspace:home';
 const HOME_BACKEND_FEATURE = 'data/backend/home';
-const CACHE_BACKEND = 'stored.cache';
 // The default local content-addressable blob store. Connectors persist blobs
 // here (persistBlob) and address them by stored://workspace:data/<key>.
 const DATA_BLOB_BACKEND = 'workspace:data';
@@ -48,7 +47,6 @@ const NO_LOCATION_FEATURE = 'data/no-location';
 export class WorkspaceStoredIndex {
     static HOME_STORED_BACKEND = HOME_STORED_BACKEND;
     static HOME_BACKEND_FEATURE = HOME_BACKEND_FEATURE;
-    static CACHE_BACKEND = CACHE_BACKEND;
     static DATA_BLOB_BACKEND = DATA_BLOB_BACKEND;
 
     #rootPath;
@@ -137,7 +135,7 @@ export class WorkspaceStoredIndex {
         const status = this.#backendStatus.get(backendName) || {};
         return {
             ...status,
-            running: backendName === CACHE_BACKEND ? this.isRunning : !!backend,
+            running: !!backend,
             watching: backend?.watching || false,
         };
     }
@@ -150,8 +148,7 @@ export class WorkspaceStoredIndex {
             this.#stored = new Stored({
                 // Configured runtime root (default db/stored) — NOT a hidden
                 // .stored/. Holds Stored's metadata index; the blob cache is
-                // redirected to the workspace cache dir (the same location the
-                // stored.cache settings entry points at).
+                // redirected to the workspace cache dir (services.stored.cache).
                 root: this.#storedRootPath,
                 cache: { path: this.#cachePath },
                 checksums: ['sha256'],
@@ -441,7 +438,7 @@ export class WorkspaceStoredIndex {
      */
     async getBackendDiskUsage(backendName) {
         const config = this.#dataBackends[backendName];
-        const isLocal = !!config && (LOCAL_DRIVERS.has(config.driver) || backendName === CACHE_BACKEND);
+        const isLocal = !!config && LOCAL_DRIVERS.has(config.driver);
         if (!isLocal) throw new Error(`Backend "${backendName}" has no local disk usage`);
 
         const root = this.#resolveBackendRoot(backendName, config);
@@ -491,8 +488,6 @@ export class WorkspaceStoredIndex {
     async applyBackendConfig(name, fullConfig = {}, patch = {}) {
         if (!this.#stored) return;
         this.#dataBackends = { ...this.#dataBackends, [name]: fullConfig };
-
-        if (name === CACHE_BACKEND) return;
 
         const isLocal = LOCAL_DRIVERS.has(fullConfig.driver) && fullConfig.supported !== false;
 
@@ -552,7 +547,6 @@ export class WorkspaceStoredIndex {
     async #registerConfiguredBackends() {
         for (const [backendName, config] of Object.entries(this.#dataBackends || {})) {
             if (!config?.enabled || config.supported === false || !LOCAL_DRIVERS.has(config.driver)) continue;
-            if (backendName === CACHE_BACKEND) continue;
 
             this.#stored.addBackend(backendName, this.#backendRegistrationConfig(backendName, config));
             this.#backendStatus.set(backendName, { lastScanAt: null, lastError: null });
@@ -1104,7 +1098,7 @@ export class WorkspaceStoredIndex {
 
     /**
      * On-demand thumbnail for an image document, cached in Stored's internal
-     * cacache store ({WORKSPACE_ROOT}/cache — the stored.cache settings entry)
+     * cacache store ({WORKSPACE_ROOT}/cache — services.stored.cache)
      * keyed `thumb:<checksum>:<size>` — derived artifacts never touch the main
      * index and the cache is purgeable at any time (purgeThumbnails on
      * delete/destroy, clearThumbnailCache for a full wipe).
@@ -1156,7 +1150,7 @@ export class WorkspaceStoredIndex {
      * Drop cached thumbnails (all sizes) for the given documents or primary
      * checksum strings. Called from the delete/destroy paths so derived
      * artifacts never outlive their source blobs — otherwise a stale entry
-     * lingers in stored.cache forever. Best-effort: cacache.rm.entry on a
+     * lingers in the stored cache forever. Best-effort: cacache.rm.entry on a
      * missing key is a no-op.
      */
     async purgeThumbnails(docsOrChecksums = []) {
@@ -1174,7 +1168,7 @@ export class WorkspaceStoredIndex {
     }
 
     /**
-     * Remove EVERY cached thumbnail (thumb:* entries in stored.cache). The
+     * Remove EVERY cached thumbnail (thumb:* entries in the stored cache). The
      * cache is a derived artifact store — thumbnails regenerate on demand, so
      * clearing is always safe. Other cache content (non-thumb keys) is left
      * untouched.
@@ -1513,7 +1507,7 @@ export class WorkspaceStoredIndex {
      * drivers (s3, …) may extend this with container/bucket segments later.
      *
      * Mirrored backends are the enumerable, non-managed ones: managed blob
-     * stores (workspace:data, stored.cache) are opaque by design — their
+     * stores (workspace:data) are opaque by design — their
      * documents are filed by the connector that persisted them (e.g. mail under
      * /imap/...). Config presence, not `enabled`, gates the path so the
      * disable-then-destroy flow can still resolve a disabled backend's subtree.
@@ -1521,7 +1515,7 @@ export class WorkspaceStoredIndex {
     #getBackendRootPath(backendName) {
         const config = this.#dataBackends[backendName];
         if (!config || config.supported === false) return null;
-        if (config.managed === true || backendName === CACHE_BACKEND) return null;
+        if (config.managed === true) return null;
         const driver = String(config.driver || 'file').toLowerCase();
         const live = this.#stored?.getBackend(backendName);
         const canEnumerate = live ? live.capabilities?.canEnumerate === true : driver === 'file';

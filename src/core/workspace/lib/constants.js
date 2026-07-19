@@ -57,7 +57,20 @@ const DEFAULT_SYNC_EXCLUSIONS = [
     '**/CachedData/**',
 ];
 
-const WORKSPACE_DATA_BACKENDS = {
+// Workspace INTERNALS — the non-service runtime dirs a workspace.json
+// `internals` map can remap (absolute, workspace-relative, or a
+// `{WORKSPACE_ROOT}` template). Storage locations (home/data/cache) are NOT
+// here — those belong to services.stored.
+const WORKSPACE_INTERNALS = {
+    db: '{WORKSPACE_ROOT}/db',
+    config: '{WORKSPACE_ROOT}/config',
+    var: '{WORKSPACE_ROOT}/var',
+    tmp: '{WORKSPACE_ROOT}/var/tmp',
+};
+
+// Storage backends only (services.stored.backends default). stored's cache is
+// NOT a backend — it is a first-class stored property (services.stored.cache).
+const WORKSPACE_STORAGE_BACKENDS = {
     'workspace:home': {
         enabled: true,
         supported: true,
@@ -86,11 +99,6 @@ const WORKSPACE_DATA_BACKENDS = {
         watch: false,
         resync: false,
     },
-    'stored.cache': {
-        enabled: true,
-        supported: true,
-        root: '{WORKSPACE_ROOT}/cache',
-    },
     // Future external object store (opt-in alternative to workspace:data).
     s3: {
         enabled: false,
@@ -98,13 +106,26 @@ const WORKSPACE_DATA_BACKENDS = {
     },
 };
 
+// services.stored default — stored is STORAGE ONLY: its metadata index
+// (`root`), its in-workspace working store (`cache`: thumbnails + future S3
+// pull-through + the stored.syncd staging area), sync policies, and the data
+// backends map. Not a feature toggle; always on.
+const WORKSPACE_STORED_DEFAULT = {
+    root: '{WORKSPACE_ROOT}/db/stored',
+    cache: '{WORKSPACE_ROOT}/cache',
+    sync: { policies: [] },
+    backends: { ...WORKSPACE_STORAGE_BACKENDS },
+};
+
 // Available workspace services
 const WORKSPACE_SERVICES = {
+    stored: { ...WORKSPACE_STORED_DEFAULT },
     dotfiles: {
         enabled: false,
     },
     git: {
         enabled: false,
+        root: '{WORKSPACE_ROOT}/git',
     },
     imap: {
         enabled: false,
@@ -147,8 +168,8 @@ const WORKSPACE_CONFIG_TEMPLATE = {
         tokens: {} // Token-based ACL: { "sha256:hash": { permissions: [], description: "", createdAt: "", expiresAt: null } }
     },
     roles: [], // Associated role IDs
-    dataBackends: { ...WORKSPACE_DATA_BACKENDS },
-    services: { ...WORKSPACE_SERVICES }, // Feature toggles
+    internals: { ...WORKSPACE_INTERNALS },
+    services: { ...WORKSPACE_SERVICES }, // stored (storage) + feature toggles
     created: null,
     updated: null,
 };
@@ -160,7 +181,9 @@ export {
     WORKSPACE_DIRECTORIES,
     WORKSPACE_GIT_BARE_DIR,
     WORKSPACE_STATUS_CODES,
-    WORKSPACE_DATA_BACKENDS,
+    WORKSPACE_INTERNALS,
+    WORKSPACE_STORAGE_BACKENDS,
+    WORKSPACE_STORED_DEFAULT,
     WORKSPACE_SERVICES,
     WORKSPACE_CONFIG_TEMPLATE,
 };

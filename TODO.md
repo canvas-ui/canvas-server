@@ -276,16 +276,15 @@ DONE (foundation, 2026-07-19):
       to sharp (resolve returns `{data,ranged}`, not raw bytes). Cache-miss thumbnails 200 + written to
       `cache/`.
 
-NOW run — REMAINING schema reshape. **Full executable plan:
-`~/.claude/plans/effervescent-rolling-pebble.md`** (complete consumer inventory + step-by-step + verify).
-Server-side + one workspace.json migration; does NOT touch imap/messages (already in `config/stored.json`):
-- [ ] Reshape config: `internals` map (db/config/var/tmp) + `services.{git,stored}`. `dataBackends`
-      → `services.stored.backends` (storage only: file/blob/s3); `stored.cache` fake-backend entry
-      → first-class `services.stored.cache`; add empty `services.stored.sync` slot.
-- [ ] Settings "Data Backends" tab reads the new shape; drop the cache-as-backend row (keep the
-      "Clear thumbnails" action as a stored-cache control).
-- [ ] Idempotent workspace.json migration (rename keys, backfill mandatory paths) — same pattern as
-      the `.stored` migration. External dirs stay `file://<deviceId>/path`.
+- [x] Schema reshape LANDED (2026-07-19, plan `~/.claude/plans/effervescent-rolling-pebble.md`):
+      `internals` map (db/config/var/tmp) + `services.stored` { root, cache, sync, backends } +
+      `services.git.root`. `dataBackends` → `services.stored.backends` (storage only); `stored.cache`
+      fake-backend killed → first-class `services.stored.cache`; empty `services.stored.sync` slot.
+      Read path `Workspace#storedConfig` (legacy fallback), single write authority
+      `#writeStoredBackends`. Idempotent `Workspace#migrateConfigSchema` in `#doStart` rewrites
+      legacy workspace.json (verified on universe: migrate → restart no-op). Settings Data tab shows
+      no cache-as-backend row; "Clear thumbnails" is a standalone Stored Cache control. Backends API,
+      cache-miss thumbnails, unit tests all verified.
 
 canvas-edge run (deferred — runtime, not schema):
 - [ ] Search-path loader (ROOT/workspace.json → .workspace.json → .workspace/workspace.json →

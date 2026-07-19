@@ -264,6 +264,27 @@ class Workspace extends EventEmitter {
         }
     }
 
+    // Database maintenance settings (Workspaces > Settings > Database).
+    // orphanRetentionDays: window before GC purges data/no-location docs;
+    // -1 (default) keeps orphans forever — explicit cleanup goes through the
+    // data/no-location filter or gcOrphanedDocuments().
+    get databaseSettings() {
+        return { orphanRetentionDays: -1, ...(this.#configStore.get('database') || {}) };
+    }
+
+    setDatabaseSettings(patch = {}) {
+        const next = { ...this.databaseSettings, ...patch };
+        this.#configStore.set('database', next);
+        this.emit('databaseSettings.changed', { workspaceId: this.id, settings: next });
+        return next;
+    }
+
+    /** Purge orphaned (data/no-location) documents past the retention window. */
+    async gcOrphanedDocuments(options = {}) {
+        if (!this.#storedIndex?.isRunning) await this.#startStoredIndex();
+        return this.#storedIndex.gcOrphanedDocuments(options);
+    }
+
     setServiceConfig(serviceName, config) {
         const services = this.services;
         services[serviceName] = { ...services[serviceName], ...config };
@@ -2088,6 +2109,15 @@ class Workspace extends EventEmitter {
             insertBackendPath: (treePath) => this.getBackendsTree().insertPath(treePath, { ignoreLocks: true }),
             // Resync lifecycle/progress → ws clients (tree spinner, settings).
             onResyncStateChange: (state) => this.emit('backend.resync.changed', { ...state, workspaceId: this.id }),
+            // Quiet config persist (mount fsid snapshot on first successful
+            // liveness check) — must NOT re-enter applyBackendConfig.
+            persistBackendConfig: (name, patch) => {
+                const dataBackends = this.dataBackends;
+                dataBackends[name] = { ...dataBackends[name], ...patch };
+                this.#configStore.set('dataBackends', dataBackends);
+            },
+            // Orphan-GC retention (Settings > Database), -1 = keep forever.
+            getOrphanRetentionDays: () => Number(this.databaseSettings.orphanRetentionDays ?? -1),
         });
     }
 

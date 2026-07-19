@@ -24,6 +24,7 @@ describe('WorkspaceStoredIndex', () => {
     let documents;
     let documentPaths;
     let lockCalls;
+    let migrations;
 
     beforeEach(async () => {
         rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'workspace-index-'));
@@ -32,6 +33,7 @@ describe('WorkspaceStoredIndex', () => {
         documents = new Map();
         documentPaths = new Map();
         lockCalls = [];
+        migrations = [];
     });
 
     afterEach(async () => {
@@ -46,18 +48,26 @@ describe('WorkspaceStoredIndex', () => {
             async getByChecksumString(checksum) {
                 return documents.get(checksum) || null;
             },
-            async list({ directory }) {
+            async list({ directory, features } = {}) {
+                if (features?.allOf) {
+                    return [...documents.values()].filter((doc) =>
+                        features.allOf.every((f) => (doc.metadata?.features || []).includes(f)));
+                }
                 return [...documents.values()].filter((doc) => (documentPaths.get(doc.id) || []).some((p) => p.startsWith(directory)));
             },
             async listDocumentTreePaths(id, treeNameOrId) {
-                // Regression: stale-path cleanup must query the 'directory' tree
-                // (the legacy 'incoming' tree name silently resolved to nothing).
-                assert.equal(treeNameOrId, 'directory');
+                // Regression: stale-path cleanup must query the dedicated
+                // backends tree, never a legacy/default tree name.
+                assert.equal(treeNameOrId, 'backends');
                 return documentPaths.get(id) || [];
             },
             async delete(id) {
                 for (const [key, doc] of documents) { if (doc.id === id) documents.delete(key); }
                 documentPaths.delete(id);
+            },
+            async migrateDocumentMemberships(fromId, toId, options = {}) {
+                migrations.push({ fromId, toId, options });
+                return [];
             },
         };
 
@@ -68,7 +78,7 @@ describe('WorkspaceStoredIndex', () => {
             homePath: path.join(rootPath, 'home'),
             workspaceId: 'test-workspace',
             dataBackends: WORKSPACE_DATA_BACKENDS,
-            logger: { warn() {}, debug() {} },
+            logger: { info() {}, warn() {}, debug() {} },
             getDb: () => db,
             getBackendsTreeSelector: (pathSpec) => pathSpec,
             lockBackendNode: (nodePath, holder) => { lockCalls.push({ nodePath, holder, locked: true }); },
@@ -77,18 +87,28 @@ describe('WorkspaceStoredIndex', () => {
                 documentPaths.set(id, (documentPaths.get(id) || []).filter((p) => p !== directory));
             },
             put: async (record, { directory } = {}) => {
-                const id = record.id || `doc-${documents.size + 1}`;
-                const doc = { ...record, id };
-                documents.set(record.checksumArray[0], doc);
-                if (directory !== undefined) {
-                    documentPaths.set(id, Array.isArray(directory) ? directory : [directory]);
+                // Mirror synapsd: a put carrying an id merges onto the stored doc
+                // (updateOne semantics — metadata is a shallow merge), a new doc
+                // is keyed by its primary checksum.
+                let doc = record.id ? [...documents.values()].find((d) => d.id === record.id) : null;
+                if (doc) {
+                    const { metadata, ...rest } = record;
+                    Object.assign(doc, rest);
+                    if (metadata) doc.metadata = { ...doc.metadata, ...metadata };
+                } else {
+                    const id = record.id || `doc-${documents.size + 1}`;
+                    doc = { ...record, id };
+                    documents.set(record.checksumArray[0], doc);
                 }
-                return id;
+                if (directory !== undefined) {
+                    documentPaths.set(doc.id, Array.isArray(directory) ? directory : [directory]);
+                }
+                return doc.id;
             },
         });
     }
 
-    test('resync indexes watched home files into the /.backends tree', async () => {
+    test('resync indexes watched home files into the backends tree', async () => {
         index = createIndex();
         await index.start();
 
@@ -99,14 +119,14 @@ describe('WorkspaceStoredIndex', () => {
         const [doc] = documents.values();
         assert.deepEqual(doc.data, {});
         assert.deepEqual(doc.locations, [{ url: 'stored://workspace:home/nested/a.txt' }]);
-        assert.deepEqual(documentPaths.get(doc.id), ['/.backends/file/workspace:home/nested']);
+        assert.deepEqual(documentPaths.get(doc.id), ['/workspace/home/nested']);
         assert.equal(index.getBackendStatus('workspace:home').running, true);
         assert.ok(index.getBackendStatus('workspace:home').lastScanAt);
         // Enable-lock applied to the backend mirror node on start
-        assert.ok(lockCalls.some((c) => c.locked && c.nodePath === '/.backends/file/workspace:home' && c.holder === 'workspace:home'));
+        assert.ok(lockCalls.some((c) => c.locked && c.nodePath === '/workspace/home' && c.holder === 'workspace:home'));
     });
 
-    test('resync purges docs whose only location was deleted', async () => {
+    test('resync orphans (never deletes) docs whose only location vanished', async () => {
         index = createIndex();
         await index.start();
         await index.resync('workspace:home');
@@ -115,8 +135,101 @@ describe('WorkspaceStoredIndex', () => {
         await fs.remove(path.join(rootPath, 'home', 'nested', 'a.txt'));
         await index.resync('workspace:home');
 
+        // Orphan lifecycle: row + checksums survive, backend-mirror path is
+        // unticked, doc is flagged data/no-location with an orphanedAt stamp.
+        assert.equal(documents.size, 1);
+        const orphan = [...documents.values()][0];
+        assert.deepEqual(orphan.locations, []);
+        assert.ok(orphan.orphanedAt);
+        assert.ok(orphan.metadata.features.includes('data/no-location'));
+        assert.deepEqual(documentPaths.get(doc.id), []);
+    });
+
+    test('orphaned doc re-binds when its bytes reappear', async () => {
+        index = createIndex();
+        await index.start();
+        await index.resync('workspace:home');
+        const [doc] = documents.values();
+
+        await fs.remove(path.join(rootPath, 'home', 'nested', 'a.txt'));
+        await index.resync('workspace:home');
+        assert.ok([...documents.values()][0].orphanedAt);
+
+        // Same bytes reappear (different name, same content) → checksum index
+        // re-binds the location to the SAME doc; orphan markers clear.
+        await fs.writeFile(path.join(rootPath, 'home', 'nested', 'restored.txt'), 'hello');
+        await index.resync('workspace:home');
+
+        assert.equal(documents.size, 1);
+        const rebound = [...documents.values()][0];
+        assert.equal(rebound.id, doc.id);
+        assert.equal(rebound.orphanedAt, null);
+        assert.ok(!rebound.metadata.features.includes('data/no-location'));
+        assert.deepEqual(rebound.locations, [{ url: 'stored://workspace:home/nested/restored.txt' }]);
+    });
+
+    test('resync does not purge when the backend root is missing (liveness gate)', async () => {
+        index = createIndex();
+        await index.start();
+        await index.resync('workspace:home');
+        assert.equal(documents.size, 1);
+        const before = JSON.parse(JSON.stringify([...documents.values()][0]));
+
+        // Simulate an unmounted drive: the root itself is gone. Absent mount
+        // must be indistinguishable from empty mount — nothing may be removed.
+        await fs.remove(path.join(rootPath, 'home'));
+        const result = await index.resync('workspace:home');
+
+        assert.equal(result.ok, false);
+        assert.equal(result.offline, true);
+        assert.equal(index.getBackendStatus('workspace:home').offline, true);
+        assert.equal(documents.size, 1);
+        const after = [...documents.values()][0];
+        assert.deepEqual(after.locations, before.locations);
+        assert.ok(!(after.metadata.features || []).includes('data/no-location'));
+    });
+
+    test('in-place edit migrates curated placements to the successor doc', async () => {
+        index = createIndex();
+        await index.start();
+        await index.resync('workspace:home');
+        const [oldDoc] = documents.values();
+
+        await fs.writeFile(path.join(rootPath, 'home', 'nested', 'a.txt'), 'edited content');
+        await index.resync('workspace:home');
+
+        const successor = [...documents.values()].find((d) => d.id !== oldDoc.id && (d.locations || []).length > 0);
+        const orphan = [...documents.values()].find((d) => d.id === oldDoc.id);
+        assert.ok(successor, 'successor doc for the edited bytes exists');
+        // Predecessor orphaned quietly (placements survive), successor carries
+        // the derivedFrom breadcrumb and received the migrated placements.
+        assert.deepEqual(orphan.locations, []);
+        assert.ok(orphan.metadata.features.includes('data/no-location'));
+        assert.equal(successor.metadata.derivedFrom, oldDoc.checksumArray[0]);
+        assert.deepEqual(migrations, [{
+            fromId: oldDoc.id,
+            toId: successor.id,
+            options: { excludeTrees: ['backends'] },
+        }]);
+    });
+
+    test('gcOrphanedDocuments honors retention (-1 keeps forever)', async () => {
+        index = createIndex();
+        await index.start();
+        await index.resync('workspace:home');
+        await fs.remove(path.join(rootPath, 'home', 'nested', 'a.txt'));
+        await index.resync('workspace:home');
+        const orphan = [...documents.values()][0];
+        assert.ok(orphan.orphanedAt);
+
+        // Default retention (none passed, no hook) → no purge.
+        assert.deepEqual(await index.gcOrphanedDocuments(), { purged: 0 });
+        assert.equal(documents.size, 1);
+
+        // retentionDays 0 → purge all current orphans.
+        const res = await index.gcOrphanedDocuments({ retentionDays: 0 });
+        assert.deepEqual(res, { purged: 1 });
         assert.equal(documents.size, 0);
-        assert.equal(documentPaths.get(doc.id), undefined);
     });
 
     test('resync updates backend paths when a home file moves', async () => {
@@ -130,7 +243,7 @@ describe('WorkspaceStoredIndex', () => {
         await index.resync('workspace:home');
 
         assert.equal(documents.size, 1);
-        assert.deepEqual(documentPaths.get(doc.id), ['/.backends/file/workspace:home/renamed']);
+        assert.deepEqual(documentPaths.get(doc.id), ['/workspace/home/renamed']);
         assert.deepEqual([...documents.values()][0].locations, [
             { url: 'stored://workspace:home/renamed/a.txt' },
         ]);
@@ -180,7 +293,7 @@ describe('WorkspaceStoredIndex', () => {
         assert.ok(res.checksum);
 
         const back = await index.resolve(res.url);
-        assert.deepEqual(back, payload);
+        assert.deepEqual(back.data, payload);
 
         // dedup: same bytes → same key
         const again = await index.persistBlob(payload);

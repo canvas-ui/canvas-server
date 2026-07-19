@@ -38,6 +38,12 @@ const DATA_BLOB_FEATURE = 'data/backend/data';
 // are registered eagerly and toggled live by config.
 const LOCAL_DRIVERS = new Set(['file', 'cacache']);
 const CHECKSUM_PRIORITY = ['sha256', 'sha1', 'md5'];
+// Orphan lifecycle: a doc whose last resolvable location vanished keeps its
+// row, checksums and curated placements, gains this feature bitmap (plus
+// orphanedAt on the doc), and is only purged by retention GC or explicit user
+// action. If its bytes reappear anywhere, the checksum index re-binds the new
+// location to the same doc and curation survives the round trip.
+const NO_LOCATION_FEATURE = 'data/no-location';
 
 export class WorkspaceStoredIndex {
     static HOME_STORED_BACKEND = HOME_STORED_BACKEND;
@@ -81,8 +87,14 @@ export class WorkspaceStoredIndex {
     // resync lifecycle/progress (Workspace re-emits it as a ws event).
     #insertBackendPath;
     #onResyncStateChange;
+    // Optional: quietly persist a backend-config patch (fsid snapshot on first
+    // successful liveness check) without re-triggering applyBackendConfig.
+    #persistBackendConfig;
+    // Optional: orphan-GC retention in days (-1 = keep forever). Read after
+    // each successful resync; also used by explicit gcOrphanedDocuments calls.
+    #getOrphanRetentionDays;
 
-    constructor({ rootPath, cachePath, dataPath, homePath, dataBackends = {}, workspaceId, device = null, logger, put, unlink, getBackendsTreeSelector, getDb, describeImapLocation = null, destroyImapLocation = null, lockBackendNode = null, unlockBackendNode = null, insertBackendPath = null, onResyncStateChange = null }) {
+    constructor({ rootPath, cachePath, dataPath, homePath, dataBackends = {}, workspaceId, device = null, logger, put, unlink, getBackendsTreeSelector, getDb, describeImapLocation = null, destroyImapLocation = null, lockBackendNode = null, unlockBackendNode = null, insertBackendPath = null, onResyncStateChange = null, persistBackendConfig = null, getOrphanRetentionDays = null }) {
         if (!dataPath || !homePath) throw new Error('dataPath and homePath are required');
         if (!put || !unlink || !getBackendsTreeSelector || !getDb) throw new Error('put, unlink, getBackendsTreeSelector, getDb are required');
 
@@ -104,6 +116,8 @@ export class WorkspaceStoredIndex {
         this.#unlockBackendNode = unlockBackendNode;
         this.#insertBackendPath = insertBackendPath;
         this.#onResyncStateChange = onResyncStateChange;
+        this.#persistBackendConfig = persistBackendConfig;
+        this.#getOrphanRetentionDays = getOrphanRetentionDays;
     }
 
     get isRunning() {
@@ -246,6 +260,34 @@ export class WorkspaceStoredIndex {
         });
 
         try {
+            // Liveness gate: an absent mountpoint or a different filesystem at
+            // the root scans as "empty", which a differ would read as "all
+            // deleted". Verify the root (and its fsid snapshot from mount
+            // creation) BEFORE touching anything; on failure the backend goes
+            // offline and nothing is removed — stale is a state, not a deletion.
+            const backend = this.#stored.getBackend(backendName);
+            const config = this.#dataBackends[backendName] || {};
+            if (typeof backend?.verifyRoot === 'function') {
+                const liveness = await backend.verifyRoot(config.fsid || null);
+                if (!liveness.ok) {
+                    this.#patchResyncState(backendName, {
+                        offline: true,
+                        lastError: `mount unavailable (${liveness.reason})`,
+                    });
+                    this.#logger.warn({ workspaceId: this.#workspaceId, backend: backendName, reason: liveness.reason }, 'Resync skipped: backend root failed liveness check');
+                    return { backend: backendName, ok: false, offline: true, reason: liveness.reason };
+                }
+                this.#patchResyncState(backendName, { offline: false }, { quiet: true });
+                // First successful verify: snapshot the filesystem identity into
+                // the mount config so later resyncs can tell "unmounted" from
+                // "emptied".
+                if (!config.fsid && liveness.fsid && typeof this.#persistBackendConfig === 'function') {
+                    this.#dataBackends = { ...this.#dataBackends, [backendName]: { ...config, fsid: liveness.fsid } };
+                    await Promise.resolve(this.#persistBackendConfig(backendName, { fsid: liveness.fsid })).catch((err) =>
+                        this.#logger.warn({ workspaceId: this.#workspaceId, backend: backendName, error: err.message }, 'Failed to persist mount fsid snapshot'));
+                }
+            }
+
             // Structural pre-pass: mirror the folder skeleton into the backends
             // tree and size the progress bar — readdir only, so even a large
             // network mount shows its subtree within seconds while checksums
@@ -274,11 +316,20 @@ export class WorkspaceStoredIndex {
                 }
             };
 
-            const { files = [] } = await this.#stored.scan(backendName, { onFile: consume });
+            const scanResult = await this.#stored.scan(backendName, { onFile: consume });
+            const { files = [] } = scanResult;
+            const scanErrors = scanResult.errors?.[backendName] || null;
             // Backends whose scan() does not stream still get their rows here.
             for (const file of files) await consume(file);
 
-            await this.#purgeOrphanedPaths(backendName, files);
+            // Reconcile absences only against a usable snapshot: a dead root
+            // means the walk never happened (double-guard behind the liveness
+            // gate above — the mount can vanish mid-resync too).
+            if (scanErrors?.root) {
+                this.#patchResyncState(backendName, { offline: true, lastError: `mount unavailable (${scanErrors.root})` });
+                return { backend: backendName, ok: false, offline: true, reason: scanErrors.root };
+            }
+            const orphaned = await this.#purgeOrphanedPaths(backendName, files, scanErrors);
             // Global stale-local-path cleanup: drop locations whose backend was
             // renamed/removed (dead-backend refs like the legacy fs:home). Gated to
             // the home resync so the all-file-docs scan runs once, not per backend.
@@ -290,9 +341,20 @@ export class WorkspaceStoredIndex {
                 lastScanAt: new Date().toISOString(),
                 lastError: failed > 0 ? `${failed} of ${files.length} files failed to index` : null,
                 fileCount: files.length,
+                orphaned,
                 progress: { scanned, total: files.length },
             }, { quiet: true });
-            return { backend: backendName, count: files.length, failed };
+
+            // Retention GC: purge orphans past the window. Default retention is
+            // -1 (keep forever) — explicit cleanup goes through the data/no-location
+            // filter or gcOrphanedDocuments().
+            const retentionDays = typeof this.#getOrphanRetentionDays === 'function' ? this.#getOrphanRetentionDays() : -1;
+            if (Number.isFinite(retentionDays) && retentionDays >= 0) {
+                await this.gcOrphanedDocuments({ retentionDays }).catch((error) =>
+                    this.#logger.warn({ workspaceId: this.#workspaceId, error: error.message }, 'Orphan GC failed'));
+            }
+
+            return { backend: backendName, count: files.length, failed, orphaned };
         } finally {
             this.#resyncing.delete(backendName);
             this.#patchResyncState(backendName, { resyncing: false });
@@ -473,6 +535,10 @@ export class WorkspaceStoredIndex {
             ...config,
             root: this.#resolveBackendRoot(backendName, config),
             ignored: this.#effectiveExclusions(config),
+            // External (device-anchored) mounts must never auto-create their
+            // mountpoint: a created-empty dir at an unmounted path would make
+            // "absent" scan as "empty". Managed workspace stores may create.
+            createRoot: config.device?.id ? false : config.createRoot !== false,
             provider: config.provider || 'fs',
             account: config.account || 'workspace',
             container: config.container || (backendName === HOME_STORED_BACKEND ? 'home' : 'data'),
@@ -613,30 +679,126 @@ export class WorkspaceStoredIndex {
     // Sync
     // ─────────────────────────────────────────────────────────────────────────
 
-    async #purgeOrphanedPaths(backendName, presentFiles = []) {
+    /**
+     * Reconcile absences after a COMPLETED scan of one backend. Scoped strictly
+     * to that backend's locations (stored://<backend>/…, plus the device file://
+     * twins tied via metadata.backend) — s3://, imap:// etc. on the same doc are
+     * never touched. Per-entry semantics:
+     *   - checksum present in scan        → unchanged, skip
+     *   - path present, new checksum      → in-place edit: migrate curated
+     *     placements to the successor doc (derivedFrom breadcrumb), then orphan
+     *   - path under an unreadable subtree→ carry forward (stale, not deleted)
+     *   - path hashed-failed              → present-but-unverified, carry forward
+     *   - path gone                       → drop this backend's locations; doc
+     *     orphans (never deletes) if none survive
+     * Returns the number of docs that lost locations here.
+     */
+    async #purgeOrphanedPaths(backendName, presentFiles = [], scanErrors = null) {
         const db = this.#getDb();
+        const nfc = (k) => String(k).normalize('NFC');
         const presentChecksums = new Set(
             presentFiles.flatMap((f) => this.#buildChecksumArray(f.checksums))
         );
+        // ALL scanned keys count as present — a row that failed to hash is
+        // present-but-unverified, not deleted.
+        const fileByKey = new Map(presentFiles.map((f) => [nfc(f.key), f]));
+        const erroredPrefixes = (scanErrors?.dirs || []).map((d) => d.prefix).filter(Boolean);
+        const underErroredPrefix = (key) => erroredPrefixes.some((prefix) =>
+            key === prefix || key.startsWith(`${prefix}/`));
 
         const backendRoot = this.#getBackendRootPath(backendName);
-        if (!backendRoot) return;
+        if (!backendRoot) return 0;
         const treeSelector = this.#getBackendsTreeSelector(backendRoot);
         const docsInTree = await db.list({ directory: treeSelector }).catch(() => []);
 
+        let reconciled = 0;
         for (const doc of docsInTree) {
             const primaryChecksum = doc.checksumArray?.[0];
-            if (!primaryChecksum || presentChecksums.has(primaryChecksum)) continue;
+            if (!primaryChecksum) continue;
 
-            // Gone from this backend — drop its locations (including the
-            // device-scoped file:// twins tied via metadata.backend); the
-            // helper purges the doc if nothing else holds the content, else
-            // keeps it on survivors.
-            const removedUrls = (doc.locations || [])
-                .filter((l) => parseLocationUrl(l.url)?.backend === backendName || l.metadata?.backend === backendName)
-                .map((l) => l.url);
+            const ownedLocations = (doc.locations || [])
+                .filter((l) => parseLocationUrl(l.url)?.backend === backendName || l.metadata?.backend === backendName);
+            if (ownedLocations.length === 0) continue;
+
+            const located = ownedLocations.map((l) => {
+                const key = this.#backendLocationKey(backendName, l);
+                return { location: l, key: key != null ? nfc(key) : null };
+            });
+            const keys = located.map((e) => e.key).filter((k) => k != null);
+
+            // Content still present in the snapshot: the doc survives, but any
+            // owned location whose path vanished (the old path of a moved file,
+            // upserted mid-scan before the walk completed) is trimmed — scoped
+            // to this backend, carried forward under errored prefixes.
+            if (presentChecksums.has(primaryChecksum)) {
+                const staleUrls = located
+                    .filter(({ key }) => key != null && !fileByKey.has(key) && !underErroredPrefix(key))
+                    .map(({ location }) => location.url);
+                if (staleUrls.length > 0) {
+                    await this.#reconcileRemovedLocations(doc, staleUrls);
+                    reconciled += 1;
+                }
+                continue;
+            }
+
+            // Unreadable subtree — prior entries carry forward as stale.
+            if (keys.some(underErroredPrefix)) continue;
+            // Path still exists but failed to hash — present, not deleted.
+            const survivorFiles = keys.map((k) => fileByKey.get(k)).filter(Boolean);
+            if (survivorFiles.some((f) => !f.checksums)) continue;
+
+            // Same path, new bytes: content identity made a new doc — migrate
+            // the predecessor's curated placements to it before orphaning.
+            const successorFile = survivorFiles.find((f) => f.checksums);
+            if (successorFile) {
+                await this.#migrateToSuccessor(doc, successorFile).catch((error) =>
+                    this.#logger.warn({ workspaceId: this.#workspaceId, docId: doc.id, key: successorFile.key, error: error.message }, 'Placement migration to successor failed'));
+            }
+
+            const removedUrls = ownedLocations.map((l) => l.url);
             await this.#reconcileRemovedLocations(doc, removedUrls);
+            reconciled += 1;
         }
+        if (reconciled > 0) {
+            this.#logger.info({ workspaceId: this.#workspaceId, backend: backendName, docs: reconciled }, 'Resync: reconciled removed locations (orphan-not-delete)');
+        }
+        return reconciled;
+    }
+
+    // Rel key of a location on `backendName` — stored://<backend>/<key> directly,
+    // file://<deviceId>/<abs> via the mount root. Null when not this backend's.
+    #backendLocationKey(backendName, location) {
+        const parsed = parseLocationUrl(location?.url);
+        if (!parsed) return null;
+        if (parsed.scheme === 'stored' && parsed.backend === backendName) return parsed.key;
+        if (parsed.scheme === 'file' && location.metadata?.backend === backendName) {
+            const mount = this.#externalMountInfo(backendName);
+            if (!mount) return null;
+            const abs = path.resolve('/', String(parsed.key || ''));
+            const root = path.resolve(mount.root);
+            if (abs === root || abs.startsWith(root + path.sep)) return path.relative(root, abs);
+        }
+        return null;
+    }
+
+    // In-place edit succession: copy curated placements (all trees except the
+    // backends mirror, which the successor writes itself) onto the successor
+    // doc and stamp a derivedFrom breadcrumb (predecessor's primary checksum) —
+    // convertible into a first-class relation edge once edge indexes land.
+    async #migrateToSuccessor(oldDoc, successorFile) {
+        const db = this.#getDb();
+        const successorChecksum = this.#buildChecksumArray(successorFile.checksums)[0];
+        if (!successorChecksum) return;
+        const successor = await db.getByChecksumString(successorChecksum).catch(() => null);
+        if (!successor?.id || successor.id === oldDoc.id) return;
+
+        if (typeof db.migrateDocumentMemberships === 'function') {
+            await db.migrateDocumentMemberships(oldDoc.id, successor.id, { excludeTrees: [BACKENDS_TREE_NAME] });
+        }
+        await this.#put({
+            id: successor.id,
+            metadata: { derivedFrom: oldDoc.checksumArray?.[0] || null },
+        }, { context: null });
     }
 
     /**
@@ -653,7 +815,7 @@ export class WorkspaceStoredIndex {
      * untouched. A backend that is merely DISABLED keeps its config, so
      * #isConfiguredLocalBackend stays true and its paths are preserved — only a
      * fully-removed backend (config gone) is treated as dead. If a doc loses its
-     * last location, #reconcileRemovedLocations purges the doc.
+     * last location, #reconcileRemovedLocations orphans it (data/no-location).
      */
     async #purgeDeadBackendLocations() {
         const db = this.#getDb();
@@ -717,6 +879,21 @@ export class WorkspaceStoredIndex {
         );
 
         await this.#removeStalePaths(docId, currentBackendPaths, backendPaths);
+
+        // In-place edit (same path, new bytes): the stored layer stamps the
+        // predecessor's identity on the add event — migrate its curated
+        // placements to this successor doc so a save never silently evicts a
+        // promoted file from the curated tree.
+        const prevChecksum = storedFile.previous?.checksums
+            ? this.#buildChecksumArray(storedFile.previous.checksums)[0]
+            : null;
+        if (prevChecksum && prevChecksum !== primaryChecksum) {
+            const predecessor = await db.getByChecksumString(prevChecksum).catch(() => null);
+            if (predecessor?.id && predecessor.id !== docId && typeof db.migrateDocumentMemberships === 'function') {
+                await db.migrateDocumentMemberships(predecessor.id, docId, { excludeTrees: [BACKENDS_TREE_NAME] }).catch((error) =>
+                    this.#logger.warn({ workspaceId: this.#workspaceId, docId, predecessorId: predecessor.id, error: error.message }, 'Placement migration from predecessor failed'));
+            }
+        }
         return docId;
     }
 
@@ -740,30 +917,77 @@ export class WorkspaceStoredIndex {
 
     /**
      * A backing blob vanished from one or more locations. Drop those locations;
-     * if none survive, the doc has no retrievable content → purge it from the DB
-     * (cascades unlink from every tree). Otherwise keep it on its survivors and
-     * untick only the /.backends path(s) the dead locations backed.
+     * the doc keeps its survivors and unticks only the /.backends path(s) the
+     * dead locations backed. When NO locations survive the doc is ORPHANED,
+     * never deleted: it keeps its row, checksums and curated placements, gains
+     * the data/no-location feature + orphanedAt, and is purged only by
+     * retention GC or explicit user action (destroy). Orphaning is what makes a
+     * resync bug survivable — promotions are user intent and outrank backend
+     * liveness, and an orphan-with-checksum re-binds if the bytes reappear.
      */
     async #reconcileRemovedLocations(doc, removedUrls = []) {
         const db = this.#getDb();
         const removed = new Set(removedUrls);
         const remaining = (Array.isArray(doc.locations) ? doc.locations : []).filter((l) => !removed.has(l.url));
+        const currentBackendPaths = await db.listDocumentTreePaths(doc.id, BACKENDS_TREE_NAME).catch(() => []);
 
         if (remaining.length === 0) {
-            await db.delete(doc.id);
-            await this.purgeThumbnails([doc]).catch(() => {});
-            return null;
+            const features = Array.from(new Set([
+                ...(Array.isArray(doc.metadata?.features) ? doc.metadata.features : []),
+                NO_LOCATION_FEATURE,
+            ]));
+            await this.#put({
+                id: doc.id,
+                locations: [],
+                orphanedAt: doc.orphanedAt || new Date().toISOString(),
+                metadata: { ...(doc.metadata || {}), features },
+            }, { context: null });
+            // Backend-mirror paths untick (the file is no longer there); curated
+            // placements in every other tree stay untouched. Thumbnails stay too
+            // (checksum-keyed) — the GC purges them with the doc.
+            await this.#removeStalePaths(doc.id, currentBackendPaths, []);
+            return doc.id;
         }
 
         const survivors = remaining
             .map((l) => parseLocationUrl(l.url))
             .filter(Boolean)
             .map((p) => ({ backend: p.backend, key: p.key }));
-        const currentBackendPaths = await db.listDocumentTreePaths(doc.id, BACKENDS_TREE_NAME).catch(() => []);
 
         await this.#put({ id: doc.id, locations: remaining }, { context: null });
         await this.#removeStalePaths(doc.id, currentBackendPaths, this.#buildBackendPaths(survivors));
         return doc.id;
+    }
+
+    /**
+     * Purge orphaned documents (data/no-location) whose orphanedAt exceeds the
+     * retention window. retentionDays 0 purges all current orphans; negative
+     * retention never purges (the default). Explicit user cleanup can also just
+     * bulk-delete via the data/no-location filter.
+     */
+    async gcOrphanedDocuments({ retentionDays } = {}) {
+        const db = this.#getDb();
+        const days = Number.isFinite(retentionDays)
+            ? retentionDays
+            : (typeof this.#getOrphanRetentionDays === 'function' ? this.#getOrphanRetentionDays() : -1);
+        if (!Number.isFinite(days) || days < 0) return { purged: 0 };
+
+        const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+        const orphans = await db.list({ features: { allOf: [NO_LOCATION_FEATURE] } }).catch(() => []);
+        let purged = 0;
+        for (const doc of orphans) {
+            const orphanedAt = doc.orphanedAt ? Date.parse(doc.orphanedAt) : NaN;
+            if (!Number.isFinite(orphanedAt) || orphanedAt > cutoff) continue;
+            // Belt-and-braces: never GC a doc that somehow regained locations.
+            if (Array.isArray(doc.locations) && doc.locations.length > 0) continue;
+            await db.delete(doc.id);
+            await this.purgeThumbnails([doc]).catch(() => {});
+            purged += 1;
+        }
+        if (purged > 0) {
+            this.#logger.info({ workspaceId: this.#workspaceId, purged, retentionDays: days }, 'Orphan GC: purged expired no-location documents');
+        }
+        return { purged };
     }
 
     async #removeStalePaths(docId, currentPaths = [], nextPaths = []) {
@@ -1072,7 +1296,12 @@ export class WorkspaceStoredIndex {
         if (kept.length === 0 && doc?.id != null) {
             if (options.keepDocument === true) {
                 // Caller chose to keep the index entry with no retrievable bytes
-                // (locations: []) — metadata/checksums stay searchable.
+                // (locations: []) — metadata/checksums stay searchable. Marked
+                // as orphaned so it's filterable and subject to retention GC.
+                doc.orphanedAt = doc.orphanedAt || new Date().toISOString();
+                if (doc.metadata) {
+                    doc.metadata.features = Array.from(new Set([...(doc.metadata.features || []), NO_LOCATION_FEATURE]));
+                }
                 await this.#put(doc, { context: null });
             } else {
                 await db.delete(doc.id);
@@ -1164,6 +1393,17 @@ export class WorkspaceStoredIndex {
         const metadata = { ...(existingDocument?.metadata || {}) };
         if (Number.isFinite(size)) metadata.size = size; else delete metadata.size;
         if (typeof mime === 'string' && mime.length > 0) metadata.contentType = mime;
+        // Re-bind: this upsert carries locations, so a previously orphaned doc
+        // loses its no-location marker (feature drop unticks the bitmap).
+        if (Array.isArray(metadata.features) && metadata.features.includes(NO_LOCATION_FEATURE)) {
+            metadata.features = metadata.features.filter((f) => f !== NO_LOCATION_FEATURE);
+        }
+        // Edit-succession breadcrumb (predecessor's primary checksum) — becomes
+        // a first-class relation edge once edge indexes land.
+        const prevChecksum = storedFile.previous?.checksums
+            ? this.#buildChecksumArray(storedFile.previous.checksums)[0]
+            : null;
+        if (prevChecksum) metadata.derivedFrom = prevChecksum;
 
         // Inline-extracted metadata (EXIF/GPS/dimensions/media) lives on the stored
         // index entry's `custom` (surfaced via stat → meta). Merge the known keys
@@ -1187,6 +1427,8 @@ export class WorkspaceStoredIndex {
             data: {},
             locations,
             metadata,
+            // Locations exist by construction here — clear any orphan marker.
+            orphanedAt: null,
         };
 
         // Content-derived date (EXIF capture time) → the default 'content' timeline

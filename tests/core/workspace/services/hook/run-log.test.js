@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import HookRunLog, { buildReplayEnvelope } from './run-log.js';
+import HookRunLog, { buildReplayEnvelope } from '../../../../../src/core/workspace/services/hook/run-log.js';
 
 describe('HookRunLog', () => {
     let rootPath;

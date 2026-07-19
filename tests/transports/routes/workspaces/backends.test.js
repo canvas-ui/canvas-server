@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import Fastify from 'fastify';
-import workspaceBackendRoutes from './backends.js';
+import workspaceBackendRoutes from '../../../../src/transports/routes/workspaces/backends.js';
 
 describe('workspace unified backend routes', () => {
     let app;

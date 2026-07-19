@@ -12,7 +12,8 @@
     "build": "npm run build -w src/ui/web",
     "postinstall": "npm run build -w src/ui/web",
     "lint": "eslint \"**/*.{js,ts}\"",
-    "lint:fix": "eslint \"**/*.{js,ts}\" --fix"
+    "lint:fix": "eslint \"**/*.{js,ts}\" --fix",
+    "test": "node --test \"tests/**/*.test.js\""
   },
   "workspaces": [
     ".",

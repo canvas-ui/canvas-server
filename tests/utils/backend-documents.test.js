@@ -7,7 +7,7 @@ import {
   getBackendFileContextFromStoredLocation,
   getBackendChannelContext,
   normalizeBackendsTreePath,
-} from './backend-documents.js';
+} from '../../src/utils/backend-documents.js';
 
 test('builds email backend paths with driver, account, and folder', () => {
   assert.equal(

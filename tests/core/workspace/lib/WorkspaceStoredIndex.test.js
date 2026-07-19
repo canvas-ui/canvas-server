@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'fs-extra';
 import os from 'os';
 import path from 'path';
-import { WorkspaceStoredIndex } from './WorkspaceStoredIndex.js';
-import { WORKSPACE_STORAGE_BACKENDS, WORKSPACE_STORED_DEFAULT, WORKSPACE_DIRECTORIES } from './constants.js';
+import { WorkspaceStoredIndex } from '../../../../src/core/workspace/lib/WorkspaceStoredIndex.js';
+import { WORKSPACE_STORAGE_BACKENDS, WORKSPACE_STORED_DEFAULT, WORKSPACE_DIRECTORIES } from '../../../../src/core/workspace/lib/constants.js';
 
 describe('Workspace stored defaults', () => {
     test('new workspaces get home/data backends and a first-class cache', () => {

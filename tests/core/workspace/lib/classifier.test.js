@@ -1,6 +1,6 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { classifyDocument, SCHEMAS } from './classifier.js';
+import { classifyDocument, SCHEMAS } from '../../../../src/core/workspace/lib/classifier.js';
 
 const tab = (url) => ({ schema: 'data/abstraction/tab', data: { url, title: 't' } });
 const email = (from, subject) => ({ schema: 'data/abstraction/email', data: { from, subject } });

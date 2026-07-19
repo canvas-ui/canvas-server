@@ -1,6 +1,6 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildHookAgentPrompt } from './agent-prompt.js';
+import { buildHookAgentPrompt } from '../../../../../src/core/workspace/services/hook/agent-prompt.js';
 
 describe('buildHookAgentPrompt', () => {
     test('wraps the task with event, doc summary and reply expectations', () => {

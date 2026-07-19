@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import Fastify from 'fastify';
 import { Readable } from 'stream';
-import workspaceDocumentRoutes from './documents.js';
+import workspaceDocumentRoutes from '../../../../src/transports/routes/workspaces/documents.js';
 
 // Route-level tests for the per-document sub-resources added for the object
 // properties card: /memberships, /content ?url allowlist + attachment headers,

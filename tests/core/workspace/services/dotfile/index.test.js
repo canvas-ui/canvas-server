@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import DotfileManager from './index.js';
+import DotfileManager from '../../../../../src/core/workspace/services/dotfile/index.js';
 
 describe('DotfileManager seed backfill', () => {
     let rootPath;

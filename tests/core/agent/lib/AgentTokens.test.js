@@ -7,7 +7,7 @@ import {
     normalizeAgentPermissions,
     verifyAgentTokenValue,
     AGENT_TOKEN_PREFIX,
-} from './AgentTokens.js';
+} from '../../../../src/core/agent/lib/AgentTokens.js';
 
 describe('AgentTokens', () => {
     test('mint produces prefixed value with matching sha256 hash', () => {

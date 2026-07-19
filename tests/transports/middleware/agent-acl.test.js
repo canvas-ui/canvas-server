@@ -1,6 +1,6 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { clampPathToBase, enforceAgentBinding, rejectAgentTokens } from './agent-acl.js';
+import { clampPathToBase, enforceAgentBinding, rejectAgentTokens } from '../../../src/transports/middleware/agent-acl.js';
 
 describe('clampPathToBase', () => {
     test('root base passes any normalized path through', () => {

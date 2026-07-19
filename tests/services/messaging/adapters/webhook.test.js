@@ -1,7 +1,7 @@
 import { describe, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { WebhookAdapter } from './webhook.js';
+import { WebhookAdapter } from '../../../../src/services/messaging/src/adapters/webhook.js';
 
 const noopLogger = { debug: () => {}, info: () => {} };
 

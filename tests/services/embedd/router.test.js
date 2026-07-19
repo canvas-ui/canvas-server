@@ -2,10 +2,10 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import Router from '../src/router.js';
-import { chunkText } from '../src/chunking.js';
-import Queue from '../src/queue.js';
-import Embedd from '../src/index.js';
+import Router from '../../../src/services/embedd/src/router.js';
+import { chunkText } from '../../../src/services/embedd/src/chunking.js';
+import Queue from '../../../src/services/embedd/src/queue.js';
+import Embedd from '../../../src/services/embedd/src/index.js';
 
 test('router: note schema -> text space, onnx', () => {
     const r = new Router();

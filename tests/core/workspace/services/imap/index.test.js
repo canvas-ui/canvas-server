@@ -4,7 +4,7 @@ import crypto from 'crypto';
 import fs from 'fs-extra';
 import os from 'os';
 import path from 'path';
-import { WorkspaceMailIndex } from './index.js';
+import { WorkspaceMailIndex } from '../../../../../src/core/workspace/services/imap/index.js';
 
 const RAW_EMAIL = Buffer.from([
     'From: alice@example.com',

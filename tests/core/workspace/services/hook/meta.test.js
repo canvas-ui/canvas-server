@@ -1,7 +1,7 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { HOOK_EVENTS, HOOK_ACTIONS, generateHookSkeleton } from './meta.js';
-import { isDisabledFile, enabledName, disabledName } from './naming.js';
+import { HOOK_EVENTS, HOOK_ACTIONS, generateHookSkeleton } from '../../../../../src/core/workspace/services/hook/meta.js';
+import { isDisabledFile, enabledName, disabledName } from '../../../../../src/core/workspace/services/hook/naming.js';
 
 describe('hook naming', () => {
     test('disable prefixes recognized', () => {

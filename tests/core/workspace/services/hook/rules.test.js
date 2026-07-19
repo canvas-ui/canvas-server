@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { resolveRuleFiles, loadRuleFile, matchRule, explainRule, executeRuleActions, interpolate } from './rules.js';
-import { classifyDocument } from '../../lib/classifier.js';
+import { resolveRuleFiles, loadRuleFile, matchRule, explainRule, executeRuleActions, interpolate } from '../../../../../src/core/workspace/services/hook/rules.js';
+import { classifyDocument } from '../../../../../src/core/workspace/lib/classifier.js';
 
 const noopLogger = { debug: () => {}, warn: () => {} };
 

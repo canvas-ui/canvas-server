@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import EventEmitter from 'eventemitter2';
-import HookService from './index.js';
+import HookService from '../../../../../src/core/workspace/services/hook/index.js';
 
 function createWorkspace(id = 'workspace-1', rootPath = '/tmp/workspace') {
     const workspace = new EventEmitter({ wildcard: true, delimiter: '.', newListener: false });

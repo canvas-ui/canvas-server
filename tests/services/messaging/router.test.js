@@ -1,7 +1,7 @@
 import { describe, test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { ChatRouter } from '../src/router.js';
-import { Messaging } from '../src/index.js';
+import { ChatRouter } from '../../../src/services/messaging/src/router.js';
+import { Messaging } from '../../../src/services/messaging/src/index.js';
 
 function makeStore() {
     const map = new Map();

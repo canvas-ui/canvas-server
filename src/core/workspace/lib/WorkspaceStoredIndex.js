@@ -166,7 +166,7 @@ export class WorkspaceStoredIndex {
             // across restarts and the file watcher (ignoreInitial) picks up live
             // changes. Reconciling drift (files changed while the server was
             // down, or a remote/large backend) is an explicit, user-triggered
-            // operation via resyncDataBackend() — a potentially slow scan that
+            // operation via the backend sync API — a potentially slow scan that
             // must not block workspace/server startup.
         } catch (error) {
             this.#logger.warn({ workspaceId: this.#workspaceId, error: error.message }, 'Stored home indexing unavailable');

@@ -55,7 +55,7 @@ Storage:      StoreD (cache-first blob storage, multi-backend)
 Index:        SynapsD (LMDB + roaring bitmaps, context/directory trees)
 ```
 
-Each workspace owns a StoreD instance. The home directory is just a file backend (`{ driver: 'file', root: './home', watch: true }`). Future backends (S3, SMB) sync via background worker threads.
+Each workspace owns a StoreD instance, configured in the workspace's `workspace.json` under `services.stored` — `{ root, cache, sync, backends }`. The home directory is just a file backend (`backends['workspace:home'] = { driver: 'file', root: '{WORKSPACE_ROOT}/home', watch: true }`); `cache` is StoreD's internal working store (thumbnails, pull-through), not a backend. Future backends (S3, SMB) sync via background worker threads. See [API.md → Backends](docs/API.md#backends-unified-storage--connector-facade) for the REST surface.
 
 ## Workspace hooks & per-workspace git
 

@@ -10,100 +10,10 @@ import { requireWorkspaceRead, requireWorkspaceWrite } from '../../middleware/wo
  *
  * Manages workspace service configuration and lifecycle
  */
+// Storage/connector backend routes live in ./backends.js (/:id/backends —
+// the unified facade); the legacy /data-backends trio was retired in the
+// services.stored reshape (2026-07).
 export default async function workspaceServicesRoutes(fastify, options) {
-    /**
-     * List data backends and runtime status
-     */
-    fastify.get('/data-backends', {
-        onRequest: [fastify.authenticate, requireWorkspaceRead()]
-    }, async (request, reply) => {
-        try {
-            const workspace = request.workspace;
-            if (!workspace) {
-                const response = new ResponseObject().notFound('Workspace not found');
-                return reply.code(response.statusCode).send(response.getResponse());
-            }
-
-            const response = new ResponseObject().success(workspace.getDataBackendStatus());
-            return reply.code(response.statusCode).send(response.getResponse());
-        } catch (error) {
-            request.log.error(error);
-            const response = new ResponseObject().error(error.message);
-            return reply.code(response.statusCode).send(response.getResponse());
-        }
-    });
-
-    /**
-     * Patch data backend configuration
-     */
-    fastify.patch('/data-backends', {
-        onRequest: [fastify.authenticate, requireWorkspaceWrite()]
-    }, async (request, reply) => {
-        try {
-            const workspace = request.workspace;
-            if (!workspace) {
-                const response = new ResponseObject().notFound('Workspace not found');
-                return reply.code(response.statusCode).send(response.getResponse());
-            }
-
-            const updates = request.body?.dataBackends || request.body || {};
-            if (!updates || typeof updates !== 'object' || Array.isArray(updates)) {
-                const response = new ResponseObject().badRequest('Data backend config object is required');
-                return reply.code(response.statusCode).send(response.getResponse());
-            }
-
-            for (const [backendName, config] of Object.entries(updates)) {
-                if (!config || typeof config !== 'object' || Array.isArray(config)) continue;
-                if ('exclude' in config) {
-                    if (!Array.isArray(config.exclude) || config.exclude.some((p) => typeof p !== 'string')) {
-                        const response = new ResponseObject().badRequest('exclude must be an array of glob pattern strings');
-                        return reply.code(response.statusCode).send(response.getResponse());
-                    }
-                    config.exclude = config.exclude.map((p) => p.trim()).filter(Boolean).slice(0, 200);
-                }
-                await workspace.setDataBackendConfig(backendName, config);
-                if (backendName === 'workspace:home' && typeof config.enabled === 'boolean') {
-                    if (config.enabled) {
-                        await workspace.startHomeService();
-                    } else {
-                        await workspace.stopHomeService();
-                    }
-                }
-            }
-
-            const response = new ResponseObject().success(workspace.getDataBackendStatus());
-            return reply.code(response.statusCode).send(response.getResponse());
-        } catch (error) {
-            request.log.error(error);
-            const response = new ResponseObject().error(error.message);
-            return reply.code(response.statusCode).send(response.getResponse());
-        }
-    });
-
-    /**
-     * Resync one data backend
-     */
-    fastify.post('/data-backends/:backendId/resync', {
-        onRequest: [fastify.authenticate, requireWorkspaceWrite()]
-    }, async (request, reply) => {
-        try {
-            const workspace = request.workspace;
-            if (!workspace) {
-                const response = new ResponseObject().notFound('Workspace not found');
-                return reply.code(response.statusCode).send(response.getResponse());
-            }
-
-            const backendId = decodeURIComponent(request.params.backendId);
-            const result = await workspace.resyncDataBackend(backendId);
-            const response = new ResponseObject().success(result);
-            return reply.code(response.statusCode).send(response.getResponse());
-        } catch (error) {
-            request.log.error(error);
-            const response = new ResponseObject().error(error.message);
-            return reply.code(response.statusCode).send(response.getResponse());
-        }
-    });
-
     /**
      * List all services and their status
      */

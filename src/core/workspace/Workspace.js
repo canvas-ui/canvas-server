@@ -1681,7 +1681,10 @@ class Workspace extends EventEmitter {
         await this.#stopStoredIndex();
     }
 
-    getDataBackendStatus() {
+    // Per-backend config + runtime status map — feeds the backend descriptors
+    // (#listStorageBackends). Internal since the legacy /services/data-backends
+    // routes were retired; clients consume /:id/backends.
+    #getDataBackendStatus() {
         const dataBackends = this.dataBackends;
         return Object.fromEntries(Object.entries(dataBackends).map(([name, config]) => {
             const runtime = this.#storedIndex?.getBackendStatus(name) || {};
@@ -1704,7 +1707,7 @@ class Workspace extends EventEmitter {
         }));
     }
 
-    async resyncDataBackend(backendName, { background = true } = {}) {
+    async #resyncDataBackend(backendName, { background = true } = {}) {
         const config = this.dataBackends[backendName];
         if (!config) throw new Error(`Unknown data backend: ${backendName}`);
         if (!config.supported) throw new Error(`Data backend "${backendName}" is not supported yet`);
@@ -1796,7 +1799,7 @@ class Workspace extends EventEmitter {
     }
 
     #listStorageBackends() {
-        return Object.entries(this.getDataBackendStatus())
+        return Object.entries(this.#getDataBackendStatus())
             .map(([name, status]) => this.#storageBackendDescriptor(name, status));
     }
 
@@ -2002,7 +2005,20 @@ class Workspace extends EventEmitter {
             for (const m of targets) await this.saveImapMailbox({ ...patch, id: m.id });
             return this.getBackend('imap', address);
         }
+        if ('exclude' in patch) {
+            if (!Array.isArray(patch.exclude) || patch.exclude.some((p) => typeof p !== 'string')) {
+                throw new Error('exclude must be an array of glob pattern strings');
+            }
+            patch = { ...patch, exclude: patch.exclude.map((p) => p.trim()).filter(Boolean).slice(0, 200) };
+        }
         await this.setDataBackendConfig(address, patch);
+        // Toggling the home backend drives the stored-index lifecycle: enabling
+        // it must boot the index when it isn't running (setDataBackendConfig
+        // only applies config to an already-running index), disabling stops it.
+        if (address === WorkspaceStoredIndex.HOME_STORED_BACKEND && typeof patch.enabled === 'boolean') {
+            if (patch.enabled) await this.#startStoredIndex();
+            else await this.#stopStoredIndex();
+        }
         return this.getBackend(driver, address);
     }
 
@@ -2035,7 +2051,7 @@ class Workspace extends EventEmitter {
         if (driver === 'imap') return (await this.#mail()).resyncAccount(address);
         // Storage: address is the backend name / config key verbatim
         // (workspace:home, or a user mount's case-preserving slug).
-        return this.resyncDataBackend(address);
+        return this.#resyncDataBackend(address);
     }
 
     async testBackend(driver, address) {

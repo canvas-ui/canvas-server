@@ -340,6 +340,59 @@ Raw responses set headers `X-Bitmap-Key`, `X-Bitmap-Cardinality`, `X-Bitmap-Is-E
 |--------|------|------|-----|-------------|
 | GET/POST | `/workspaces/:id/git/*` | Basic/Bearer | read/write | Git HTTP backend (`git/bare.git` on disk) |
 
+### Backends (unified storage + connector facade)
+
+One surface over everything mounted in the workspace's **backends tree** (`/<driver>/<address>` nodes): **storage backends** (`file`, `cacache`, `s3` — managed by Stored) and **message connectors** (`imap` accounts). `fs` is accepted as a UX alias for `file`. Addresses containing `:` must be URL-encoded (`workspace%3Ahome`).
+
+> **Schema note (2026-07):** storage config lives in `workspace.json` under **`services.stored`** — `{ root, cache, sync, backends }`. `backends` holds **storage backends only**; the old fake `stored.cache` backend entry is gone — the cache is a first-class stored property (`services.stored.cache`) and no longer appears in any backend listing. Legacy top-level `dataBackends` configs are migrated automatically on workspace start. The thumbnail cache is managed via `DELETE /workspaces/:id/thumbnails`.
+
+| Method | Path | Auth | ACL | Description |
+|--------|------|------|-----|-------------|
+| GET | `/workspaces/:id/backends` | `authenticate` | read | List all backends (storage + connectors) |
+| GET | `/workspaces/:id/backends/:driver` | `authenticate` | read | List backends of one driver |
+| POST | `/workspaces/:id/backends/:driver` | `authenticate` | write | Add a backend instance (`file` local-folder mount, `imap` account, …) |
+| POST | `/workspaces/:id/backends/:driver/discover` | `authenticate` | write | Probe a connector with candidate creds pre-create (imap folder discovery) |
+| GET | `/workspaces/:id/backends/:driver/:address` | `authenticate` | read | Get one backend (descriptor + capabilities + status) |
+| PATCH | `/workspaces/:id/backends/:driver/:address` | `authenticate` | write | Update backend config (`enabled`, `watch`, `readOnly`, `exclude`, imap creds, …) |
+| DELETE | `/workspaces/:id/backends/:driver/:address` | `authenticate` | write | Remove backend (managed defaults are disabled instead; user mounts are dropped) |
+| GET | `/workspaces/:id/backends/:driver/:address/documents` | `authenticate` | read | Documents mirrored under the address; `?linked=false` → only-on-backend (safe-to-purge), `?linked=true` → also filed elsewhere; `limit`/`offset` |
+| POST | `/workspaces/:id/backends/:driver/:address/sync` | `authenticate` | write | Pull latest (storage rescan / message fetch) |
+| GET | `/workspaces/:id/backends/:driver/:address/usage` | `authenticate` | read | On-demand disk usage of a local storage backend (slow walk, user-triggered) |
+| POST | `/workspaces/:id/backends/:driver/:address/test` | `authenticate` | write | Test connection (capability-gated; imap only today) |
+| GET | `/workspaces/:id/backends/:driver/:address/containers` | `authenticate` | read | List containers (folders / mailbox folders); `?available=1` → subscribable set |
+| POST | `/workspaces/:id/backends/:driver/:address/containers` | `authenticate` | write | Add containers (`{ folders: [] }`): imap → subscribe folders, file → create dirs |
+| PATCH | `/workspaces/:id/backends/:driver/:address/containers/:name` | `authenticate` | write | Rename/move a file-backend folder (`{ "name": "new/path" }`) |
+| DELETE | `/workspaces/:id/backends/:driver/:address/containers/:name` | `authenticate` | write | Remove a container (imap → unsubscribe, file → delete dir) |
+| POST | `/workspaces/:id/backends/:driver/:address/containers/:name/sync` | `authenticate` | write | Sync one container (imap mailbox folder) |
+
+**Backend descriptor shape** (list/get payloads):
+
+```json
+{
+  "driver": "file",
+  "address": "workspace:home",
+  "kind": "storage",
+  "enabled": true,
+  "status": "idle",
+  "resyncing": false,
+  "progress": null,
+  "treePath": "/workspace/home",
+  "lastSyncAt": "2026-07-19T12:00:00.000Z",
+  "lastError": null,
+  "usage": null,
+  "capabilities": { "sync": true, "test": false, "containers": false, "mutableContainers": true, "deleteObject": true },
+  "config": { "root": "/…/universe/home", "label": null, "device": null, "readOnly": false, "managed": false, "supported": true, "watch": false, "resync": true, "exclude": [] }
+}
+```
+
+Storage listings contain `workspace:home`, `workspace:data`, `s3`, and any user-added local-folder mounts — **no cache entry**. `imap` descriptors are `kind: "messages"` and carry a `containers[]` array (per-folder mailboxes) plus connection config.
+
+**Thumbnail cache** (stored's internal cache, not a backend):
+
+| Method | Path | Auth | ACL | Description |
+|--------|------|------|-----|-------------|
+| DELETE | `/workspaces/:id/thumbnails` | `authenticate` | write | Clear all cached thumbnails (`thumb:*` in the stored cache) — regenerated on demand; → `{ removed }` |
+
 ### Services
 
 | Method | Path | Auth | Description |
@@ -349,6 +402,8 @@ Raw responses set headers `X-Bitmap-Key`, `X-Bitmap-Cardinality`, `X-Bitmap-Is-E
 | POST | `/workspaces/:id/services/:name/disable` | `authenticate` | Disable service |
 | GET | `/workspaces/:id/services/:name/config` | `authenticate` | Get service config |
 | PUT | `/workspaces/:id/services/:name/config` | `authenticate` | Update service config |
+
+> The legacy `/services/data-backends` routes were **removed** (2026-07) — storage backends are managed exclusively through the unified [`/backends`](#backends-unified-storage--connector-facade) facade above.
 
 ### IMAP service (nested)
 

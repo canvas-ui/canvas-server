@@ -285,6 +285,16 @@ DONE (foundation, 2026-07-19):
       legacy workspace.json (verified on universe: migrate → restart no-op). Settings Data tab shows
       no cache-as-backend row; "Clear thumbnails" is a standalone Stored Cache control. Backends API,
       cache-miss thumbnails, unit tests all verified.
+- [x] Legacy `/services/data-backends` routes RETIRED (2026-07-19). **`/:id/backends` is the ONE
+      backend surface** — storage (file/cacache/s3) + connectors (imap), descriptors w/ capabilities;
+      it was built to retire the data-backends/services-imap split, so don't add parallel routes.
+      The home-toggle → stored-index lifecycle coupling and `exclude` validation moved into
+      `Workspace#updateBackend` (the facade), `getDataBackendStatus`/`resyncDataBackend` went
+      private (`#`-prefixed, descriptor plumbing only). NOTE: the stored **cache is integral to the
+      backend logic** (cache-first writes, pull-through, thumbnails) — it's just not *presented* as a
+      configurable backend; manage it via `DELETE /:id/thumbnails`. Principle: when a surface is
+      superseded, delete it same-change — no dead code, no "kept for compat" routes nothing ships
+      against.
 
 canvas-edge run (deferred — runtime, not schema):
 - [ ] Search-path loader (ROOT/workspace.json → .workspace.json → .workspace/workspace.json →

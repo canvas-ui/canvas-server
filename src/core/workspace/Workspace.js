@@ -2054,6 +2054,15 @@ class Workspace extends EventEmitter {
         return this.#resyncDataBackend(address);
     }
 
+    // Cancel an in-flight storage resync. The walk stops at the next file;
+    // nothing is orphaned from the partial snapshot and a later sync resumes
+    // via the checksum cache (see WorkspaceStoredIndex.cancelResync).
+    async cancelSyncBackend(driver, address) {
+        if (driver === 'imap') throw new Error('IMAP sync does not support cancellation');
+        if (!this.#storedIndex?.isRunning) return { backend: address, resyncing: false, cancelled: false };
+        return this.#storedIndex.cancelResync(address);
+    }
+
     async testBackend(driver, address) {
         if (driver !== 'imap') throw new Error(`Backend "${driver}/${address}" does not support test`);
         const target = (await this.listImapMailboxes())

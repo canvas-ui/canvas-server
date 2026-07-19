@@ -100,6 +100,7 @@ A handler exports a default async function receiving one context object:
 | `insert`, `update`, `remove`, `deleteDocument`, `get`, `list`, `find`, `link` | document CRUD on the workspace (`remove` = unlink from paths, `deleteDocument` = purge from index only) |
 | `destroy(idOrDoc)` | delete the document everywhere: bytes on every deletable location (stored:// blob, workspace file, imap EXPUNGE — read-only locations degrade to a reference drop), then purge from the index. Irreversible |
 | `agent(slug, prompt, opts)` | prompt one of your agents, returns its text reply (null on failure). Prompts are wrapped in a standard automation envelope (event, document summary, reply expectations — see `hook/agent-prompt.js`); `opts.raw: true` sends the prompt verbatim |
+| `propose(actions, { title?, summary?, editable?, ttl? })` | queue rule-action object(s) in the pending-actions review queue instead of executing them — see [Approval](#approval-pending-actions-queue) |
 | `notify(message, { channel? })` | message the workspace owner — bound channel (Slack/WhatsApp/`webhook` — POSTs `{ text }` to a bound URL, Slack/Teams incoming-webhook compatible) or, unbound, the in-app `canvas` channel (web-UI toast + toolbox notifications area, buffered server-side) |
 | `emit(name, payload)` | re-emit a workspace event (stamped `source:'hook'`) |
 | `logger` | debug logger |
@@ -224,6 +225,37 @@ String fields in `agent.prompt`, `notify.message` and `script.args` support
 e.g. `{{doc.data.subject}}`, `{{doc.data.body}}` / `{{doc.data.bodyHtml}}`
 (emails). Any document path works; objects/arrays such as `{{doc.locations}}`
 are inserted as JSON. Missing paths render empty.
+
+### Approval (pending-actions queue)
+
+By default a matched rule's actions run immediately — approval is **opt-in**
+per rule. `"approval": true` on a rule holds its whole `then` block as one
+proposal in the pending-actions queue instead of executing; on a single action
+it holds only that action (the rest run now). In the simple rule builder this
+is the **"request my approval before running"** checkbox; per-action holds are
+JSON-only.
+
+Optional companions on the rule: `"editable": ["actions.0.paths", …]` lists
+JSON paths the reviewer may amend before approving; `"ttl": "24h"` (or `"15m"`,
+ms) expires undecided proposals.
+
+Proposals live in `{WORKSPACE_ROOT}/var/hooks/pending.jsonl` and surface in
+the Automation panel's **Pending** tab. Approval executes the stored actions
+through the ordinary rule-action pipeline with the original provenance chain
+(cascade guards and the run log behave as if the rule had run directly);
+decline discards. REST:
+
+- `GET /rest/v2/workspaces/:id/hooks/pending?status&handler&limit` — list
+  proposals (`pending` / `approved` / `declined` / `failed` / `expired`).
+- `GET /rest/v2/workspaces/:id/hooks/pending/:actionId` — one proposal.
+- `POST /rest/v2/workspaces/:id/hooks/pending/decisions`
+  `{ approve?: [actionId | { actionId, amend }], decline?: [actionId] }` —
+  bulk decide; `amend` is restricted to the record's `editable` allowlist.
+
+JS hooks use the same queue programmatically:
+`ctx.propose(actions, { title?, summary?, editable?, ttl? })` — `actions` is
+one rule-action object or an array — files the actions for review instead of
+executing them (the proposal carries the triggering event's provenance).
 
 ## Loop prevention (provenance + cascade control)
 

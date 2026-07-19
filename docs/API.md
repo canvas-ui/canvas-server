@@ -357,6 +357,7 @@ One surface over everything mounted in the workspace's **backends tree** (`/<dri
 | DELETE | `/workspaces/:id/backends/:driver/:address` | `authenticate` | write | Remove backend (managed defaults are disabled instead; user mounts are dropped) |
 | GET | `/workspaces/:id/backends/:driver/:address/documents` | `authenticate` | read | Documents mirrored under the address; `?linked=false` → only-on-backend (safe-to-purge), `?linked=true` → also filed elsewhere; `limit`/`offset` |
 | POST | `/workspaces/:id/backends/:driver/:address/sync` | `authenticate` | write | Pull latest (storage rescan / message fetch) |
+| POST | `/workspaces/:id/backends/:driver/:address/sync/cancel` | `authenticate` | write | Stop an in-flight storage resync at the next file boundary; indexed files stay, nothing is orphaned from the partial walk, a later sync resumes via the checksum cache (stop + re-sync ≈ pause/resume) |
 | GET | `/workspaces/:id/backends/:driver/:address/usage` | `authenticate` | read | On-demand disk usage of a local storage backend (slow walk, user-triggered) |
 | POST | `/workspaces/:id/backends/:driver/:address/test` | `authenticate` | write | Test connection (capability-gated; imap only today) |
 | GET | `/workspaces/:id/backends/:driver/:address/containers` | `authenticate` | read | List containers (folders / mailbox folders); `?available=1` → subscribable set |
@@ -1121,6 +1122,16 @@ All admin routes require `authenticate` + admin role.
 | POST | `/admin/users/:userId/ssh-keys` | admin | Add SSH key |
 | GET | `/admin/users/:userId/ssh-keys/:keyId` | admin | Get SSH key |
 | DELETE | `/admin/users/:userId/ssh-keys/:keyId` | admin | Delete SSH key |
+
+### Embedd (server-wide embedding queue)
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/admin/embedd/status` | admin | Queue + provider status: `{ queue: { pending, draining, paused, ingestDisabled }, providers, … }` |
+| POST | `/admin/embedd/pause` | admin | Pause embedding after the in-flight batch — the backlog holds (enqueues keep accumulating); runtime-only, a restart clears it |
+| POST | `/admin/embedd/resume` | admin | Resume draining the held backlog |
+
+Env gates: `CANVAS_EMBEDD_INGEST_DISABLED=true` soft-disables ingest (enqueue/reconcile no-op; existing vectors still serve dense search); `CANVAS_EMBEDD_ENABLED=false` disables the service entirely (dense search degrades to FTS). Also surfaced as a Pause/Resume control on the queue row in workspace Settings → Database.
 
 ### Workspaces
 

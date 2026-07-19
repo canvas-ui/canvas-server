@@ -162,6 +162,18 @@ export default async function workspaceBackendRoutes(fastify) {
         } catch (error) { return fail(request, reply, error); }
     });
 
+    // Cancel an in-flight storage resync — the walk stops at the next file
+    // boundary; indexed rows stay and a later sync resumes via the checksum
+    // cache, so this doubles as "pause".
+    fastify.post('/:driver/:address/sync/cancel', {
+        onRequest: [fastify.authenticate, requireWorkspaceWrite()],
+    }, async (request, reply) => {
+        try {
+            const result = await request.workspace.cancelSyncBackend(drv(request.params.driver), arg(request.params.address));
+            return ok(reply, result);
+        } catch (error) { return fail(request, reply, error); }
+    });
+
     // On-demand disk usage of a local storage backend (walks the backend root —
     // potentially slow on large trees, hence user-triggered, never automatic).
     fastify.get('/:driver/:address/usage', {

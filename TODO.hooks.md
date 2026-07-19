@@ -173,6 +173,115 @@ This is where hook systems live or die. Minimum viable surface:
 - Whether `context.changed` belongs in the hookable event set at all, or stays app-bus-only until a concrete hook use case shows up.
   - Answer: I"d treat it the same as other events, might get useful
 
+## Approvals: pending actions (design, v1)
+
+> Implementation notes — aligned with the current `src/core/workspace/services/hook/` code
+> (JSON rules `when`/`then`, JSONL run log under `var/hooks/`, provenance stamping).
+
+### Concept
+
+Any automation output that needs human sign-off becomes a **pending action**: the
+handler runs its matching/reasoning as usual, but instead of executing the final
+side effect it *proposes* it. Proposals queue per workspace; the review UI (and
+CLI) lists them; approve executes the stored action through the exact same
+execution path it would have taken originally (provenance chain preserved,
+run-logged as `trigger: 'approval'`), decline archives it, amend edits the
+proposed payload before approval.
+
+Two producer surfaces, matching the two handler kinds:
+
+1. **Declarative rules** — `"approval": true` on a rule (whole `then` block held
+   as one proposal) or on an individual action (only that action held; the rest
+   execute immediately).
+2. **JS hooks / agent flows** — `await ctx.propose(action, { title, summary,
+   editable })`, where `action` is any rule-action object (`{ action: 'link', ... }`)
+   or the dedicated draft type below. This is how the secretary-agent files a
+   draft reply for review.
+
+Draft email is the first rich proposal type:
+
+```json
+{
+  "action": "email.send",
+  "account": "imap-mycompany",
+  "draft": { "to": ["..."], "subject": "...", "body": "...", "inReplyTo": "<msgid>" },
+  "sourceDocumentId": 48213
+}
+```
+
+`editable` marks which JSON paths the reviewer may amend (e.g. `draft.subject`,
+`draft.body`). Non-editable proposals are approve/decline only.
+
+### Record shape & storage
+
+`{WORKSPACE_ROOT}/var/hooks/pending.jsonl` (+ `.1` rotation), same append/query
+pattern as `run-log.js`, but records are *mutable in status*: status transitions
+append a superseding record with the same `actionId` (last-write-wins on read),
+so the file stays append-only and crash-safe.
+
+```json
+{
+  "actionId": "pa_uuid",
+  "ts": "2026-07-19T...",
+  "workspace": "universe",
+  "status": "pending",            // pending | approved | declined | expired | failed
+  "handlerType": "rule|hook",
+  "handler": "invoice-router",     // rule id | hook file rel. hooks root
+  "event": "document.inserted",
+  "envelope": { },                 // replay envelope (doc stripped to id+schema)
+  "provenance": { "origin": "rule", "causedBy": "evt_...", "depth": 1 },
+  "title": "File invoice + forward to accounting",
+  "summary": "email from foo@bar → Accounting/2026/07/received + resend",
+  "actions": [ { "action": "link", "paths": ["..."] } ],
+  "editable": ["actions.0.draft.subject", "actions.0.draft.body"],
+  "decidedAt": null, "decidedBy": null, "amended": false,
+  "result": null                   // run-log runId(s) after execution
+}
+```
+
+Expiry: optional `ttl` per rule (default none); expired proposals surface in
+history, never execute. Retention: decided records pruned with rotation.
+
+### Lifecycle & events
+
+- propose → workspace event `action.proposed` (drives UI live update + badge)
+- approve → re-hydrate document by id, execute via `executeRuleActions`/
+  `runTargeted` with the *stored* provenance (depth/causedBy intact → cascade
+  guards keep working), append run-log record `trigger:'approval'`, emit
+  `action.approved`; execution failure → status `failed` (re-approvable).
+- decline → status update + `action.declined`. Bulk approve/decline = loop.
+- amend → validate against `editable` allowlist, then approve.
+
+### API (transport layer, next to existing hooks endpoints)
+
+```
+GET    /workspaces/:id/hooks/pending?status=pending&limit=100
+GET    /workspaces/:id/hooks/pending/:actionId
+POST   /workspaces/:id/hooks/pending/decisions
+       { approve: [ "pa_..." | { actionId, amend: { "actions.0.draft.body": "..." } } ],
+         decline: [ "pa_..." ] }   # per-entry outcomes; amend allowlisted via `editable`
+```
+
+### Review UI (v1 scope)
+
+- Pending-actions screen per workspace: table (checkbox | title/summary |
+  handler | event/doc | age), bulk Approve/Decline on selection, per-row
+  actions, filter by status/handler.
+- Row expand → detail pane: rendered proposal (email draft preview), inline
+  editors for `editable` fields, Approve / Decline buttons.
+- Live updates via the existing workspace event channel (`action.*` events);
+  pending count badge in nav.
+- Industry-pattern reference: PR review queues / moderation queues — optimistic
+  row removal on decision, undo-toast for decline (grace period before final).
+
+### SMTP side-quest (scoped out of v1 core, tracked)
+
+Extend per-datasource IMAP config with optional SMTP block; `email.send`
+proposal type executes through it. Sent-folder note: with a postfix/dovecot
+combo the *client* appends to Sent over IMAP (dovecot does not do it for you
+unless you run a submission-time sieve/LMTP trick) — so the executor must
+APPEND the sent message to the configured Sent mailbox after SMTP accept.
+
 ## Feature: Workspace hook review/refine UI
 
 As the deadline of my monthly accounting paperwork is approaching, another needed feature popped-out: we need to extend the current hook/script logic to request approvals for planned actions. This needs to be implemented for both, agentic and "classic-but-deterministic" actions, couple of examples:

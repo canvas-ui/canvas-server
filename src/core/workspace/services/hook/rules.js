@@ -16,8 +16,14 @@ import { WORKSPACE_DIRECTORIES } from '../../lib/constants.js';
  * a rule with `enabled: false` is skipped individually.
  *
  * Rule shape:
- *   { id, enabled?, description?, cascade?, when: { event, schema?, path?,
- *     url?, from?, to?, subject?, mime?, attachment? }, then: [ { action, ... } ] }
+ *   { id, enabled?, description?, cascade?, approval?, editable?, ttl?,
+ *     when: { event, schema?, path?, url?, from?, to?, subject?, mime?,
+ *     attachment? }, then: [ { action, ..., approval? } ] }
+ *
+ * `approval: true` (rule-level: hold the whole `then` block; action-level:
+ * hold that action only) diverts execution into the pending-actions review
+ * queue — see pending-actions.js. `editable` lists JSON paths the reviewer
+ * may amend; `ttl` expires undecided proposals.
  *
  * `when` keys AND together; a key's value may be an array (any-of / OR).
  * Every matching rule fires — there is no first-match-wins, which keeps the

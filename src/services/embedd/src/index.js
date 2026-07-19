@@ -44,6 +44,13 @@ export default class Embedd {
     #workspaces = new Map();   // wsId -> { resolveInput, storeVectors }
     #queue;
     #stopped = false;
+    // Soft ingest gate: CANVAS_EMBEDD_INGEST_DISABLED=true drops enqueues and
+    // no-ops reconcile while queries (embedQuery) keep serving existing
+    // vectors. Escape hatch for CPU-bound bulk ingests (the serialized CLIP
+    // child pins the whole box); the gap ledger re-drives skipped docs via
+    // reconcile once the gate is lifted. CANVAS_EMBEDD_ENABLED=false remains
+    // the hard switch (no embedd instance at all, dense search degrades).
+    #ingestDisabled = process.env.CANVAS_EMBEDD_INGEST_DISABLED === 'true';
 
     constructor(options = {}) {
         this.#router = new Router({ rules: options.rules });
@@ -91,7 +98,7 @@ export default class Embedd {
     // ── Ingestion ─────────────────────────────────────────────────────────────
 
     enqueue(wsId, docId) {
-        if (this.#stopped || !this.#workspaces.has(wsId)) { return; }
+        if (this.#stopped || this.#ingestDisabled || !this.#workspaces.has(wsId)) { return; }
         const id = Number(docId);
         if (!Number.isInteger(id) || id <= 0) { return; }
         this.#queue.enqueue(`${wsId}:${id}`, { wsId, docId: id });
@@ -267,6 +274,7 @@ export default class Embedd {
      * @returns {Promise<{enqueued:number, spaces:Record<string,number>}|{error:string}>}
      */
     async reconcile(wsId, { space = null, reindex = false } = {}) {
+        if (this.#ingestDisabled) { return { enqueued: 0, spaces: {}, ingestDisabled: true }; }
         const ws = this.#workspaces.get(wsId);
         if (!ws) { return { error: 'workspace not registered' }; }
         if (!ws.getUnembedded) { return { error: 'workspace has no ledger adapter' }; }
@@ -305,6 +313,23 @@ export default class Embedd {
 
     async drained() { await this.#queue.drained(); }
 
+    /**
+     * Pause embedding after the in-flight batch: the queue holds its backlog
+     * (and keeps accepting enqueues) but drains nothing until resume(). Runtime
+     * state only — a restart clears it; reconcile re-drives anything missed.
+     */
+    pause() {
+        this.#queue.pause();
+        debug('queue paused');
+        return { paused: true, pending: this.#queue.size };
+    }
+
+    resume() {
+        this.#queue.resume();
+        debug('queue resumed');
+        return { paused: false, pending: this.#queue.size };
+    }
+
     async status() {
         const providers = {};
         for (const [id, p] of this.#providers) {
@@ -313,7 +338,12 @@ export default class Embedd {
         return {
             workspaces: this.#workspaces.size,
             spaces: this.#router.spaces,
-            queue: { pending: this.#queue.size, draining: this.#queue.isDraining },
+            queue: {
+                pending: this.#queue.size,
+                draining: this.#queue.isDraining,
+                paused: this.#queue.isPaused,
+                ingestDisabled: this.#ingestDisabled,
+            },
             providers,
         };
     }

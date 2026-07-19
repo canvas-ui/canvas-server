@@ -21,6 +21,7 @@ export default class Queue extends EventEmitter {
     #queued = new Set();
     #running = false;
     #stopped = false;
+    #paused = false;
     #batchSize;
 
     /**
@@ -37,6 +38,20 @@ export default class Queue extends EventEmitter {
 
     get size() { return this.#queue.length; }
     get isDraining() { return this.#running; }
+    get isPaused() { return this.#paused; }
+
+    /**
+     * Pause the drain after the in-flight batch finishes. Enqueues still
+     * accumulate (dedup intact) so nothing is lost; resume() picks the backlog
+     * up where it stopped.
+     */
+    pause() { this.#paused = true; }
+
+    resume() {
+        if (!this.#paused) { return; }
+        this.#paused = false;
+        this.#kick();
+    }
 
     enqueue(key, job) {
         if (this.#queued.has(key)) { return; }
@@ -54,7 +69,7 @@ export default class Queue extends EventEmitter {
     stop() { this.#stopped = true; }
 
     #kick() {
-        if (this.#running || this.#stopped) { return; }
+        if (this.#running || this.#stopped || this.#paused) { return; }
         this.#running = true;
         setImmediate(() => this.#drain());
     }
@@ -62,7 +77,7 @@ export default class Queue extends EventEmitter {
     async #drain() {
         let processed = 0;
         try {
-            while (this.#queue.length > 0 && !this.#stopped) {
+            while (this.#queue.length > 0 && !this.#stopped && !this.#paused) {
                 const batch = this.#queue.splice(0, this.#batchSize);
                 for (const { key } of batch) { this.#queued.delete(key); }
                 try {
@@ -79,7 +94,8 @@ export default class Queue extends EventEmitter {
             if (this.#queue.length === 0) {
                 debug(`drain done: processed ${processed} jobs`);
                 this.emit('drained');
-            } else { this.#kick(); }
+            } else if (!this.#paused) { this.#kick(); }
+            // paused with a backlog: stay quiet — resume() re-kicks.
         }
     }
 }

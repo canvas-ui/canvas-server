@@ -11,6 +11,24 @@ We want to leverage battle-tested `https://github.com/StarlightSearch/EmbedAnyth
 
 It should be possible to seamlessly add new embedding models per modality + fine-tune their settings, revert back to a previous model or remove all vectors for a superseeded model.
 
+**Remote/GPU-backed inference is the priority direction (2026-07-20).** Running CLIP/ONNX fp32
+on the server's CPU is what pins the whole box during a photo-mount ingest (Fotky incident:
+23.5k photos → serialized CLIP child saturates every core, server starves). A GPU workstation
+is available in-office for testing remote vllm/ollama-powered embedding models — target: the
+embedd provider layer points at that box (OllamaProvider exists; add/verify a vllm-compatible
+OpenAI-endpoint provider, incl. image models), CPU-local ONNX/CLIP becomes the fallback, not
+the default. This also derisks the EA question: if providers are remote, embedd stays a thin
+router/queue and EA (or nothing) handles model lifecycle on the inference host.
+
+**Stopgaps landed (2026-07-20)** so a bulk ingest can't take the server down meanwhile:
+- Queue **pause/resume** — `POST /rest/v2/admin/embedd/{pause,resume}` (+ `GET /admin/embedd/status`),
+  Pause/Resume button on the queue row in Settings → Database. Holds the backlog after the
+  in-flight batch; runtime-only (restart clears; reconcile re-drives).
+- **`CANVAS_EMBEDD_INGEST_DISABLED=true`** — soft gate: enqueue+reconcile no-op, existing vectors
+  still serve dense search. (`CANVAS_EMBEDD_ENABLED=false` stays the hard switch.)
+- Backend resyncs are now **cancellable** (`POST .../backends/:driver/:address/sync/cancel`,
+  Stop-sync button) — stops the scan feeding the queue.
+
 Origina TODO item:  
 
 Today `embedd` is a single **per-server singleton**: one shared model runtime + ONE serial queue + one server-wide router. Consequences to fix as part of the runtime split:

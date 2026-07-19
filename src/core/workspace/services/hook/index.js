@@ -11,6 +11,7 @@ import { resolveRuleFiles, loadRuleFile, matchRule, executeRuleActions } from '.
 import { buildHookAgentPrompt } from './agent-prompt.js';
 import { resolveHookFiles, statFile } from './files.js';
 import HookRunLog, { buildReplayEnvelope } from './run-log.js';
+import PendingActionStore, { applyAmendments } from './pending-actions.js';
 
 const logger = createLogger('hook-service');
 
@@ -42,6 +43,7 @@ class HookService extends EventEmitter {
     #ruleFileCache = new Map(); // filePath -> { mtimeMs, rules }
     #debounce = new Map(); // key -> { timer, payloads }
     #runLogs = new Map(); // workspaceId -> HookRunLog
+    #pendingStores = new Map(); // workspaceId -> PendingActionStore
     #initialized = false;
 
     constructor(options = {}) {
@@ -241,9 +243,17 @@ class HookService extends EventEmitter {
                 return { status: 'skipped' };
             }
 
+            // Approval gate applies on targeted runs too: backfilling an
+            // approval rule fills the review queue instead of side-effecting.
+            const { held, immediate } = HookService.#splitApproval(rule);
+            if (held.length) {
+                await this.#proposeFromRule(workspace, rule, eventName, payload, held, trigger);
+            }
+            if (!immediate.length) { return { status: 'held' }; }
+
             const context = this.#buildHookContext(workspace, eventName, payload, 'rule');
             const t0 = Date.now();
-            const actions = await executeRuleActions(rule, context, logger);
+            const actions = await executeRuleActions({ ...rule, then: immediate }, context, logger);
             const status = actions.some((a) => a.status === 'error') ? 'error' : 'ok';
             runLog?.append({
                 ...this.#baseRecord(eventName, payload, trigger),
@@ -263,7 +273,7 @@ class HookService extends EventEmitter {
             const loaded = await this.#loadHookRun(hookPath);
             if (!loaded) { throw new Error(`Hook "${target.hookFile}" not found`); }
 
-            const context = this.#buildHookContext(workspace, eventName, payload);
+            const context = this.#buildHookContext(workspace, eventName, payload, 'hook', this.#hookName(workspace, hookPath));
             await this.#invokeHook(loaded.run, context, hookPath, { workspace, eventName, payload, trigger });
             // #invokeHook records ok/error itself; read nothing back — errors
             // are swallowed by design, the run log is the outcome surface.
@@ -295,6 +305,176 @@ class HookService extends EventEmitter {
             this.#runLogs.set(workspace.id, log);
         }
         return log;
+    }
+
+    // Lazy per-workspace pending-action store (JSONL under {root}/var/hooks).
+    // Public for the same reason as runLogFor: the REST layer reads/decides
+    // through the same instance.
+    pendingFor(workspace) {
+        if (!workspace?.id || !workspace.rootPath) { return null; }
+        let store = this.#pendingStores.get(workspace.id);
+        if (!store) {
+            store = new PendingActionStore(workspace.rootPath);
+            this.#pendingStores.set(workspace.id, store);
+        }
+        return store;
+    }
+
+    // '15m' / '24h' / 3600000 → ms (0 = no expiry).
+    static #parseTtl(value) {
+        if (value == null) { return 0; }
+        if (Number.isFinite(Number(value))) { return Math.max(0, Number(value)); }
+        const m = /^(\d+)(ms|s|m|h|d)$/.exec(String(value).trim());
+        if (!m) { return 0; }
+        return Number(m[1]) * { ms: 1, s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 }[m[2]];
+    }
+
+    // Split a matched rule's actions into approval-held and immediate.
+    // `"approval": true` on the rule holds the whole `then` block as one
+    // proposal; on an individual action it holds only that action.
+    static #splitApproval(rule) {
+        const then = Array.isArray(rule.then) ? rule.then : [];
+        if (rule.approval === true) { return { held: then, immediate: [] }; }
+        const held = then.filter((a) => a?.approval === true);
+        return held.length
+            ? { held, immediate: then.filter((a) => a?.approval !== true) }
+            : { held: [], immediate: then };
+    }
+
+    /**
+     * Queue actions for human review instead of executing them. Used by the
+     * rule engine (`approval: true`) and exposed to JS hooks as ctx.propose().
+     * The triggering payload's provenance is stored so approval executes with
+     * the exact automation chain direct execution would have carried.
+     * @returns {Object|null} the pending record (null when the store is down)
+     */
+    async proposePending(workspace, spec = {}) {
+        const store = this.pendingFor(workspace);
+        if (!store) { return null; }
+        const payload = spec.payload || {};
+        const ttlMs = HookService.#parseTtl(spec.ttl);
+        const record = store.propose({
+            handlerType: spec.handlerType || 'hook',
+            handler: spec.handler || '?',
+            event: spec.event || null,
+            envelope: buildReplayEnvelope(spec.event, payload),
+            provenance: {
+                origin: payload?.origin ?? 'user',
+                causedBy: payload?.causedBy ?? null,
+                depth: Number.isInteger(payload?.depth) ? payload.depth : 0,
+            },
+            title: spec.title || spec.handler || 'Pending action',
+            summary: spec.summary || null,
+            actions: (Array.isArray(spec.actions) ? spec.actions : [spec.actions]).filter(Boolean),
+            editable: Array.isArray(spec.editable) ? spec.editable : [],
+            ...(ttlMs > 0 ? { expiresAt: new Date(Date.now() + ttlMs).toISOString() } : {}),
+        });
+        if (!record) { return null; }
+
+        this.runLogFor(workspace)?.append({
+            ...this.#baseRecord(spec.event, payload, spec.trigger || 'event'),
+            handlerType: record.handlerType, handler: record.handler,
+            durationMs: 0, status: 'held', actionId: record.actionId,
+        });
+        // Automated provenance so only cascade-opted hooks can react (e.g. a
+        // notify-on-proposal hook); the websocket channel forwards regardless.
+        workspace.emit('action.proposed', {
+            workspaceId: workspace.id,
+            actionId: record.actionId,
+            title: record.title,
+            handler: record.handler,
+            handlerType: record.handlerType,
+            origin: 'hook',
+            causedBy: payload?.eventId ?? null,
+            depth: (Number.isInteger(payload?.depth) ? payload.depth : 0) + 1,
+        });
+        return record;
+    }
+
+    async #proposeFromRule(workspace, rule, eventName, payload, heldActions, trigger = 'event') {
+        const doc = payload?.document || null;
+        return this.proposePending(workspace, {
+            handlerType: 'rule',
+            handler: rule.id || '?',
+            event: eventName,
+            payload,
+            trigger,
+            actions: heldActions,
+            title: rule.description || rule.id || 'Rule action',
+            summary: `${heldActions.map((a) => a?.action).filter(Boolean).join(', ')}${doc?.id ? ` · doc ${doc.id} (${doc.schema || '?'})` : ''}`,
+            editable: rule.editable,
+            ttl: rule.ttl,
+        });
+    }
+
+    /**
+     * Resolve one pending action.
+     * approve — optionally apply amendments (restricted to the record's
+     *   `editable` allowlist), rehydrate the document, execute the stored
+     *   actions through the ordinary rule-action pipeline with the original
+     *   provenance, run-log as trigger:'approval'. A failed execution leaves
+     *   the record re-approvable (status 'failed').
+     * decline — supersede as declined, nothing executes.
+     * @returns {Object} the superseding record
+     */
+    async decidePending(workspace, actionId, { decision, amend = null, decidedBy = null } = {}) {
+        const store = this.pendingFor(workspace);
+        if (!store) { throw new Error('Pending-action store unavailable'); }
+        const record = await store.get(actionId);
+        if (!record) { throw new Error(`Pending action ${actionId} not found`); }
+
+        if (decision === 'decline') {
+            if (record.status !== 'pending') { throw new Error(`Action ${actionId} is ${record.status}, not pending`); }
+            const next = store.supersede(record, { status: 'declined', decidedAt: new Date().toISOString(), decidedBy });
+            workspace.emit('action.declined', { workspaceId: workspace.id, actionId, origin: 'user', depth: 0 });
+            return next;
+        }
+        if (decision !== 'approve') { throw new Error(`Unknown decision "${decision}"`); }
+        if (record.status !== 'pending' && record.status !== 'failed') {
+            throw new Error(`Action ${actionId} is ${record.status} — only pending or failed actions can be approved`);
+        }
+
+        const amended = amend ? applyAmendments(record, amend) : record;
+
+        const basePayload = { ...(amended.envelope?.payload || {}) };
+        const docId = basePayload.document?.id ?? basePayload.id ?? null;
+        if (docId != null) {
+            let document = null;
+            try { document = await workspace.get(docId); }
+            catch (err) { logger.debug(`approve ${actionId}: get(${docId}) failed: ${err.message}`); }
+            if (!document) {
+                return store.supersede(amended, {
+                    status: 'failed', decidedAt: new Date().toISOString(), decidedBy,
+                    result: [{ action: '*', status: 'error', error: `document ${docId} no longer exists` }],
+                });
+            }
+            basePayload.document = document;
+        }
+
+        const syntheticRule = { id: amended.handler, description: amended.title, then: amended.actions };
+        const context = this.#buildHookContext(
+            workspace, amended.event, basePayload,
+            amended.handlerType === 'rule' ? 'rule' : 'hook', amended.handler,
+        );
+        const t0 = Date.now();
+        const actions = await executeRuleActions(syntheticRule, context, logger);
+        const status = actions.some((a) => a.status === 'error') ? 'failed' : 'approved';
+
+        this.runLogFor(workspace)?.append({
+            ...this.#baseRecord(amended.event, basePayload, 'approval'),
+            handlerType: amended.handlerType, handler: amended.handler, actionId,
+            durationMs: Date.now() - t0,
+            status: status === 'approved' ? 'ok' : 'error', actions,
+            replayEnvelope: buildReplayEnvelope(amended.event, basePayload),
+        });
+
+        const next = store.supersede(amended, {
+            status, decidedAt: new Date().toISOString(), decidedBy, result: actions,
+        });
+        workspace.emit(status === 'approved' ? 'action.approved' : 'action.failed', {
+            workspaceId: workspace.id, actionId, origin: 'user', depth: 0,
+        });
+        return next;
     }
 
     // Shared record skeleton for one handler execution.
@@ -398,10 +578,17 @@ class HookService extends EventEmitter {
                     });
                     continue;
                 }
-                context = context || this.#buildHookContext(workspace, eventName, payload, 'rule');
                 logger.debug(`Rule ${rule.id || '?'} matched ${eventName} in workspace ${workspace.id}`);
+                // Approval gate: held actions become a pending proposal
+                // (reviewed in the UI) instead of executing; the rest run now.
+                const { held, immediate } = HookService.#splitApproval(rule);
+                if (held.length) {
+                    await this.#proposeFromRule(workspace, rule, eventName, payload, held);
+                }
+                if (!immediate.length) { continue; }
+                context = context || this.#buildHookContext(workspace, eventName, payload, 'rule');
                 const t0 = Date.now();
-                const actions = await executeRuleActions(rule, context, logger);
+                const actions = await executeRuleActions({ ...rule, then: immediate }, context, logger);
                 runLog?.append({
                     ...this.#baseRecord(eventName, payload),
                     handlerType: 'rule', handler: rule.id || '?',
@@ -477,7 +664,7 @@ class HookService extends EventEmitter {
             return;
         }
 
-        const context = this.#buildHookContext(workspace, eventName, payload);
+        const context = this.#buildHookContext(workspace, eventName, payload, 'hook', this.#hookName(workspace, hookPath));
         await this.#invokeHook(loaded.run, context, hookPath, { workspace, eventName, payload });
     }
 
@@ -495,7 +682,7 @@ class HookService extends EventEmitter {
             this.#debounce.delete(key);
             const payloads = entry.payloads;
             const lastPayload = payloads[payloads.length - 1];
-            const context = this.#buildHookContext(workspace, eventName, lastPayload);
+            const context = this.#buildHookContext(workspace, eventName, lastPayload, 'hook', this.#hookName(workspace, hookPath));
             context.payloads = payloads;
             context.event.payloads = payloads;
             this.#invokeHook(loaded.run, context, hookPath, {
@@ -527,7 +714,7 @@ class HookService extends EventEmitter {
         }
     }
 
-    #buildHookContext(workspace, eventName, payload, origin = 'hook') {
+    #buildHookContext(workspace, eventName, payload, origin = 'hook', handlerName = null) {
         const event = {
             name: eventName,
             workspaceId: workspace.id,
@@ -601,6 +788,21 @@ class HookService extends EventEmitter {
                 return this.#buildAgentHelper(workspace)(slugOrId, finalPrompt, rest);
             },
             notify: this.#buildNotifyHelper(workspace),
+            // Queue action(s) for human review instead of executing them —
+            // the agent-drafted-reply flow. `actions` is one rule-action
+            // object or an array of them; options: { title, summary,
+            // editable: ['actions.0.draft.body'], ttl }.
+            propose: async (actions, options = {}) => this.proposePending(workspace, {
+                handlerType: origin === 'rule' ? 'rule' : 'hook',
+                handler: options.handler || handlerName || eventName,
+                event: eventName,
+                payload,
+                actions,
+                title: options.title,
+                summary: options.summary,
+                editable: options.editable,
+                ttl: options.ttl,
+            }),
             // classify() → the event's document; classify(otherPayload) for a
             // debounced burst element; classify(rawDoc) for a fetched document.
             classify: (target = payload) => {

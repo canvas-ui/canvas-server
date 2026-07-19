@@ -472,6 +472,31 @@ export default async function adminRoutes(fastify, options) {
     }
   });
 
+  // Embedd queue control — server-wide (the queue is a shared singleton).
+  // Pause holds the backlog after the in-flight batch (enqueues keep
+  // accumulating, nothing is lost); resume drains it. Runtime state only — a
+  // restart clears the pause and reconcile re-drives anything missed. The
+  // escape hatch for CPU-bound bulk ingests (serialized CLIP child).
+  const embeddControl = (action) => async (request, reply) => {
+    try {
+      const embedd = fastify.workspaceManager.embedd;
+      if (!embedd) {
+        const response = new ResponseObject().badRequest('Embedding service is disabled (CANVAS_EMBEDD_ENABLED=false)');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+      const payload = action === 'status' ? await embedd.status() : embedd[action]();
+      const response = new ResponseObject().success(payload);
+      return reply.code(response.statusCode).send(response.getResponse());
+    } catch (error) {
+      fastify.log.error(error);
+      const response = new ResponseObject().serverError(error.message || `Failed to ${action} embedd`);
+      return reply.code(response.statusCode).send(response.getResponse());
+    }
+  };
+  fastify.get('/embedd/status', { onRequest: [fastify.authenticate, requireAdmin] }, embeddControl('status'));
+  fastify.post('/embedd/pause', { onRequest: [fastify.authenticate, requireAdmin] }, embeddControl('pause'));
+  fastify.post('/embedd/resume', { onRequest: [fastify.authenticate, requireAdmin] }, embeddControl('resume'));
+
   // Compact + prune Lance tables and (re)build ANN indexes. `space`:
   //   'fts'          → the full-text (BM25) table
   //   'text'|'image' → that dense-vector table

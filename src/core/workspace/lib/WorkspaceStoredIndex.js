@@ -80,6 +80,7 @@ export class WorkspaceStoredIndex {
     #listeners = [];
     #backendStatus = new Map();
     #resyncing = new Set();
+    #resyncCancels = new Set();
 
     // Optional hooks: mirror a bare directory path into the backends tree
     // (skeleton mirroring — docs create their paths themselves), and observe
@@ -273,6 +274,20 @@ export class WorkspaceStoredIndex {
         return { backend: backendName, started: true, resyncing: true };
     }
 
+    /**
+     * Request cancellation of an in-flight resync. The walk stops at the next
+     * file boundary. Nothing is reconciled from the partial snapshot (no
+     * orphaning), and already-indexed files stay indexed — a later resync
+     * resumes cheaply via the checksum cache, so cancel + re-run ≈ pause.
+     */
+    cancelResync(backendName = HOME_STORED_BACKEND) {
+        if (!this.#resyncing.has(backendName)) {
+            return { backend: backendName, resyncing: false, cancelled: false };
+        }
+        this.#resyncCancels.add(backendName);
+        return { backend: backendName, cancelRequested: true };
+    }
+
     async resync(backendName = HOME_STORED_BACKEND) {
         this.#assertResyncable(backendName);
 
@@ -282,6 +297,7 @@ export class WorkspaceStoredIndex {
         if (this.#resyncing.has(backendName)) {
             return { backend: backendName, count: null, alreadyRunning: true };
         }
+        this.#resyncCancels.delete(backendName);
         this.#resyncing.add(backendName);
         this.#patchResyncState(backendName, {
             resyncing: true,
@@ -332,6 +348,13 @@ export class WorkspaceStoredIndex {
             let failed = 0;
             const upserted = new Set();
             const consume = async (file) => {
+                // Cancellation: throwing here aborts the backend's walk at the
+                // current file (onFile is awaited inline by the scan loop).
+                if (this.#resyncCancels.has(backendName)) {
+                    const err = new Error('resync cancelled');
+                    err.code = 'RESYNC_CANCELLED';
+                    throw err;
+                }
                 if (file?.key == null || upserted.has(file.key)) return;
                 upserted.add(file.key);
                 try {
@@ -346,11 +369,23 @@ export class WorkspaceStoredIndex {
                 }
             };
 
-            const scanResult = await this.#stored.scan(backendName, { onFile: consume });
+            let scanResult;
+            try {
+                scanResult = await this.#stored.scan(backendName, { onFile: consume });
+                // Backends whose scan() does not stream still get their rows here.
+                for (const file of scanResult.files || []) await consume(file);
+            } catch (error) {
+                if (error?.code !== 'RESYNC_CANCELLED') throw error;
+                // Cancelled: the snapshot is partial, so NOTHING may be
+                // reconciled from it (a differ would read the unwalked rest as
+                // "all deleted"). Indexed rows stay; a later resync resumes via
+                // the checksum cache.
+                this.#logger.info({ workspaceId: this.#workspaceId, backend: backendName, scanned }, 'Resync cancelled by user');
+                this.#patchResyncState(backendName, { lastError: null, cancelledAt: new Date().toISOString() });
+                return { backend: backendName, cancelled: true, scanned };
+            }
             const { files = [] } = scanResult;
             const scanErrors = scanResult.errors?.[backendName] || null;
-            // Backends whose scan() does not stream still get their rows here.
-            for (const file of files) await consume(file);
 
             // Reconcile absences only against a usable snapshot: a dead root
             // means the walk never happened (double-guard behind the liveness
@@ -387,6 +422,7 @@ export class WorkspaceStoredIndex {
             return { backend: backendName, count: files.length, failed, orphaned };
         } finally {
             this.#resyncing.delete(backendName);
+            this.#resyncCancels.delete(backendName);
             this.#patchResyncState(backendName, { resyncing: false });
         }
     }

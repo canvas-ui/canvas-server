@@ -221,6 +221,128 @@ export default async function workspaceHooksRoutes(fastify) {
     }
   });
 
+  // Pending actions: approval-gated automation waiting for review. List,
+  // detail, and decisions (approve — optionally amended — or decline).
+  fastify.get('/pending', {
+    onRequest: [fastify.authenticate, requireWorkspaceRead()],
+    schema: {
+      querystring: {
+        type: 'object',
+        properties: {
+          status: { type: 'string', enum: ['pending', 'approved', 'declined', 'failed', 'expired'] },
+          handler: { type: 'string' },
+          limit: { type: 'integer', minimum: 1, maximum: 500 },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    try {
+      const store = fastify.workspaceManager?.hookService?.pendingFor(request.workspace);
+      if (!store) {
+        const response = new ResponseObject().serverError('Hook service unavailable');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+      const { status, handler, limit } = request.query || {};
+      const actions = await store.query({ status, handler, limit });
+      const response = new ResponseObject().found(actions, 'Pending actions retrieved successfully', 200, actions.length);
+      return reply.code(response.statusCode).send(response.getResponse());
+    } catch (error) {
+      request.log.error(error);
+      const response = new ResponseObject().serverError('Failed to list pending actions');
+      return reply.code(response.statusCode).send(response.getResponse());
+    }
+  });
+
+  fastify.get('/pending/:actionId', {
+    onRequest: [fastify.authenticate, requireWorkspaceRead()],
+  }, async (request, reply) => {
+    try {
+      const store = fastify.workspaceManager?.hookService?.pendingFor(request.workspace);
+      const record = await store?.get(request.params.actionId);
+      if (!record) {
+        const response = new ResponseObject().notFound(`Pending action ${request.params.actionId} not found`);
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+      const response = new ResponseObject().found(record, 'Pending action retrieved successfully');
+      return reply.code(response.statusCode).send(response.getResponse());
+    } catch (error) {
+      request.log.error(error);
+      const response = new ResponseObject().serverError('Failed to get pending action');
+      return reply.code(response.statusCode).send(response.getResponse());
+    }
+  });
+
+  // Bulk decisions. `approve` entries are actionId strings or
+  // { actionId, amend: { '<editable json-path>': value } }; `decline` entries
+  // are actionId strings. Per-entry outcomes — one bad id never blocks the
+  // rest of a bulk approve.
+  fastify.post('/pending/decisions', {
+    onRequest: [fastify.authenticate, requireWorkspaceWrite()],
+    schema: {
+      body: {
+        type: 'object',
+        properties: {
+          approve: {
+            type: 'array',
+            items: {
+              anyOf: [
+                { type: 'string' },
+                {
+                  type: 'object',
+                  required: ['actionId'],
+                  properties: { actionId: { type: 'string' }, amend: { type: 'object' } },
+                },
+              ],
+            },
+          },
+          decline: { type: 'array', items: { type: 'string' } },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    try {
+      const hookService = fastify.workspaceManager?.hookService;
+      if (!hookService) {
+        const response = new ResponseObject().serverError('Hook service unavailable');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+
+      const { approve = [], decline = [] } = request.body || {};
+      const decidedBy = request.user?.id ?? null;
+      const results = [];
+
+      for (const entry of approve) {
+        const actionId = typeof entry === 'string' ? entry : entry.actionId;
+        const amend = typeof entry === 'object' && entry.amend ? entry.amend : null;
+        try {
+          const record = await hookService.decidePending(request.workspace, actionId, { decision: 'approve', amend, decidedBy });
+          results.push({ actionId, status: record?.status ?? 'approved', result: record?.result ?? null });
+        } catch (error) {
+          results.push({ actionId, status: 'error', error: error.message });
+        }
+      }
+      for (const actionId of decline) {
+        try {
+          const record = await hookService.decidePending(request.workspace, actionId, { decision: 'decline', decidedBy });
+          results.push({ actionId, status: record?.status ?? 'declined' });
+        } catch (error) {
+          results.push({ actionId, status: 'error', error: error.message });
+        }
+      }
+
+      const failed = results.filter((r) => r.status === 'error' || r.status === 'failed').length;
+      const response = new ResponseObject().success(
+        { decided: results.length, failed, results },
+        failed ? 'Decisions applied with errors' : 'Decisions applied',
+      );
+      return reply.code(response.statusCode).send(response.getResponse());
+    } catch (error) {
+      request.log.error(error);
+      const response = new ResponseObject().serverError(`Failed to apply decisions: ${error.message}`);
+      return reply.code(response.statusCode).send(response.getResponse());
+    }
+  });
+
   // Explain: which rules and JS hooks would fire for a document + event, with
   // a matcher-by-matcher breakdown ("why didn't my rule run"). Path matchers
   // evaluate against `paths` from the body (a live event carries the landing

@@ -45,55 +45,6 @@ This relates to "### Vectors & modalities" in `src/services/synapsd/TODO.md`
   interface when imap gains real expunge/absence detection — driver supplies identity
   (Message-ID over UID for imap, st_dev/st_ino for fs), shared layer enforces the invariants.
 
-### Datasets (synapsd core SHIPPED 2026-07-17, v2 timeline-style selection; REST + UI pending)
-
-Design (user, 2026-07-17): datasets work like the timelines — every doc implicitly belongs to the
-VIRTUAL `data/dataset/default` dataset (= stamped with no dataset; computed as
-candidate \ OR(all dataset bitmaps), never physically ticked). Every query intersects with
-OR(selected datasets); `default` starts selected. So in the features vocabulary:
-**anyOf `data/dataset/X` ADDS the dataset to the mix, allOf shows only it, noneOf deselects it
-(incl. `noneOf data/dataset/default`)**. Dataset keys are partitioned out of the generic
-anyOf/noneOf buckets in `#resolveParsed` so they can't bypass other feature filters. Dataset
-subtree views = ordinary CANVAS layers saving `data/dataset/*` keys in querySpec (existing
-machinery, nothing new). A rejected first cut (dedicated dataset layer type with mount-like
-window semantics) was reverted same day — canvas + querySpec covers it.
-
-- [x] `data/dataset/<name>` protected prefix — stamped via `spec.features` at ingest;
-      `BitmapIndex.deleteBitmap` refuses the prefix without force. Provenance, path-independent.
-- [x] Selection algebra in `#resolveParsed` (single query funnel; no-op until the first dataset
-      exists). Tests: synapsd tests/datasets.test.js (5 cases incl. filter-bypass guard and
-      multi-stamped docs).
-- [x] Lifecycle: `db.listDatasets()`, `db.deleteDataset(name, {dropDocuments})` → trash-and-repipe.
-- [x] REST surface — SHIPPED 2026-07-18: `GET /workspaces/:id/datasets`,
-      `DELETE /workspaces/:id/datasets/*` (wildcard: names may contain @ . /; `?dropDocuments=false`
-      unstamps only; deleting 'default' → 400). Workspace.listDatasets/deleteDataset passthroughs.
-      Verified end-to-end on the live dev server (universe ws): stamp via documents API →
-      default view hides (209), anyOf adds (211), allOf isolates (2), drop deletes 2 docs,
-      default view unharmed (209). allOf-'default' engine bug found+fixed on the way (virtual key
-      must not reach bitmapIndex.AND — resolves as selection {default}; regression test added).
-- [x] "Datasets" group in Features tab — SHIPPED 2026-07-18: dedicated group (data/dataset prefix
-      split), synthesized virtual 'default' row (labelled "virtual · on by default", tri-state:
-      not = hide unstamped, all = only unstamped), named dataset rows get a trash action wired to
-      the dataset lifecycle (confirm warns documents are deleted; refreshes open doc lists via
-      workspace:documents:refresh). Dead 'server'/'user' prefix labels dropped. tsc clean.
-      NOT yet visually verified in a browser — check on next dev session.
-- [ ] Canvas creation flow: offer dataset keys in the querySpec feature picker (small; the engine
-      side already composes canvas querySpec features into the dataset selection).
-- [x] **Perf prerequisite for the 7M wikipedia ingest** — DONE 2026-07-18: maintained
-      `internal/docs/all` bitmap (ticked on every put, unticked on delete UNCONDITIONALLY — i.e.
-      even when failed lance cleanup blocks free-pool admission, so no phantoms). One-time
-      backfill on start for pre-feature stores. `#buildAllDocumentsBitmap` is now an O(1) clone,
-      which also closes the old noneOf-only full-scan follow-up. Decision: `default` stays
-      VIRTUAL (= allDocs \ OR(named)) — a physical default bitmap was considered and rejected
-      (write-path invariant maintenance = drift risk; virtual is consistent by construction).
-      Tests: synapsd tests/all-docs-bitmap.test.js. Not done (deemed cheap enough):
-      `listBitmaps('data/dataset/')` per query is an LMDB key-range read of a handful of keys —
-      cache only if profiling ever says so.
-- [x] Reserved name guard (2026-07-17): stamping `data/dataset/default` is refused at write
-      (`#normalizeWriteFeatures`) — a physical bitmap under the virtual dataset's name would make
-      its docs permanently invisible to the selection.
-
-
 
 ## Geotagging follow-ups
 

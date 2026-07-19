@@ -459,6 +459,11 @@ export default async function workspaceHooksRoutes(fastify) {
     }
   });
 
+  // Empty rules.json body for workspaces that haven't saved any rules yet.
+  // Returned virtually on GET so the UI can open Rules without a 404 toast;
+  // the file is only written when something is actually saved (PUT).
+  const EMPTY_RULES_JSON = `${JSON.stringify({ $schema: 'canvas.hook-rules/v1', rules: [] }, null, 2)}\n`;
+
   fastify.get('/*', {
     onRequest: [fastify.authenticate, requireWorkspaceRead()],
   }, async (request, reply) => {
@@ -470,7 +475,16 @@ export default async function workspaceHooksRoutes(fastify) {
       }
 
       const filePath = path.join(request.workspace.hooksPath, result.path);
-      const content = await fs.readFile(filePath, 'utf-8');
+      let content;
+      try {
+        content = await fs.readFile(filePath, 'utf-8');
+      } catch (error) {
+        if (error?.code === 'ENOENT' && result.path === 'rules.json') {
+          content = EMPTY_RULES_JSON;
+        } else {
+          throw error;
+        }
+      }
       const response = new ResponseObject().found({ path: result.path, content }, 'Workspace hook retrieved successfully');
       return reply.code(response.statusCode).send(response.getResponse());
     } catch (error) {

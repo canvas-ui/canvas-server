@@ -1098,10 +1098,13 @@ export class WorkspaceStoredIndex {
         if (hit?.data) return { buffer: hit.data, mime: 'image/webp' };
 
         // Miss → resolve original bytes from the first reachable location.
+        // resolve() returns { data, ranged }, not the raw buffer — pass the
+        // bytes to sharp, not the wrapper object (else sharp throws and the
+        // thumbnail 500s for every not-yet-cached image).
         let original = null;
         for (const loc of (doc.locations || [])) {
             if (!loc?.url) continue;
-            try { original = await this.resolve(loc.url); if (original) break; } catch { /* next */ }
+            try { const res = await this.resolve(loc.url); if (res?.data) { original = res.data; break; } } catch { /* next */ }
         }
         if (!original) return null;
 

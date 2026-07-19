@@ -198,15 +198,9 @@ class Workspace extends EventEmitter {
         return { semantic: next, applied };
     }
 
-    // Resolve a logical workspace directory to an absolute path. A workspace.json
-    // `directories` map overrides any WORKSPACE_DIRECTORIES default; values may be
-    // absolute, a `{WORKSPACE_ROOT}` template, or plain workspace-relative. This
-    // is the single place layout is decided, so getters + Stored + backends all
-    // agree — and a local runtime can relocate everything (e.g. under .workspace/)
-    // by writing that one map.
-    #resolveDir(key) {
-        const overrides = this.#configStore.get('directories', {}) || {};
-        const value = overrides[key] ?? WORKSPACE_DIRECTORIES[key];
+    // Resolve a config path value (absolute / `{WORKSPACE_ROOT}` template /
+    // workspace-relative) to an absolute path.
+    #resolveWorkspacePath(value) {
         if (!value) return null;
         const resolved = value.includes('{WORKSPACE_ROOT}')
             ? value.replaceAll('{WORKSPACE_ROOT}', this.#rootPath)
@@ -214,12 +208,33 @@ class Workspace extends EventEmitter {
         return path.resolve(resolved);
     }
 
+    // Workspace INTERNALS (db/config/var/tmp/stored-index/git/hooks). A
+    // `directories` map in workspace.json overrides the WORKSPACE_DIRECTORIES
+    // default. Storage locations (home/data/cache) are NOT here — those are
+    // stored's backends (see #backendRoot); this is only the non-backend runtime
+    // dirs. (Full internals/services reshape is the NOW run in TODO.md.)
+    #resolveDir(key) {
+        const overrides = this.#configStore.get('directories', {}) || {};
+        return this.#resolveWorkspacePath(overrides[key] ?? WORKSPACE_DIRECTORIES[key]);
+    }
+
+    // Single authority for a storage backend's byte-root: stored's backend config
+    // (dataBackends). home/data/cache resolve through here so WebDAV, the /home
+    // API, and stored's indexer can never point at different dirs.
+    #backendRoot(backendName, fallbackDirKey) {
+        return this.#resolveWorkspacePath(this.dataBackends[backendName]?.root) ?? this.#resolveDir(fallbackDirKey);
+    }
+
     get homePath() {
-        return this.#resolveDir('home');
+        return this.#backendRoot('workspace:home', 'home');
     }
 
     get dataPath() {
-        return this.#resolveDir('data');
+        return this.#backendRoot('workspace:data', 'data');
+    }
+
+    get cachePath() {
+        return this.#backendRoot('stored.cache', 'cache');
     }
 
     get dbPath() {
@@ -241,10 +256,6 @@ class Workspace extends EventEmitter {
 
     get hooksPath() {
         return this.#resolveDir('hooks');
-    }
-
-    get cachePath() {
-        return this.#resolveDir('cache');
     }
 
     isDataBackendEnabled(backendName) {

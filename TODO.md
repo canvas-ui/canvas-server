@@ -217,21 +217,85 @@ Workspace config search paths
     $WORKSPACE_ROOT/workspace.json    
 ```
 
-### Configurable directory layout (partly DONE 2026-07-19)
+### Configurable directory layout + workspace.json schema (design agreed 2026-07-19)
 
-- [x] On-disk layout is config-driven: a `directories` map in workspace.json overrides
-      `WORKSPACE_DIRECTORIES` defaults via `Workspace#resolveDir` (absolute / workspace-relative /
-      `{WORKSPACE_ROOT}` template). All internal getters (cache/data/home/db/stored/git/hooks) go
-      through it, so a local runtime can stash everything under `.workspace/{cache,data,…}` and keep
-      the root as the user's Home.
-- [x] Killed the hidden `.stored/` dir — Stored roots at `db/stored` (its blob cache is redirected to
-      `cache/`); one-time idempotent migration moves any legacy `.stored/index` → `db/stored/index`
-      and drops the stale dir (`WorkspaceStoredIndex#migrateLegacyStoredLayout`).
-- [ ] Built-in backend roots (`workspace:home`/`data`) still resolve via their own
-      `{WORKSPACE_ROOT}/…` templates in `dataBackends` (`#resolveBackendRoot`), a separate key from
-      `directories`. Defaults agree; to make `directories.home`/`.data` authoritative for those
-      backends too, that resolver should prefer the getters. (`stored.cache` already follows
-      `directories.cache` — it isn't a separate backend.)
+Driver: a workspace must be **movable** (stop, tar, scp, untar) and self-describing. canvas-edge
+will wrap a workspace as a single bun binary dropped into a folder — on setup it asks where internal
+data goes (default `.workspace/*`) and which dirs to index; canvas-server keeps the flat root layout.
+So the loader must make **no assumptions**: all mandatory paths live in workspace.json (search order
+already noted under "Config file search paths for workspaces", primarily canvas-edge).
+
+**Two categories (the location-authority split):**
+- **Workspace internals** — `db` (synapsd), `config`, `var`, `tmp`. Owned by an `internals` map.
+- **Services** — engines with single responsibilities:
+  - **stored** = STORAGE ONLY (SRP: bytes and nothing else). Owns its index (`root`), its in-workspace
+    `cache`, and its **data backends** (`file` / `blob(cacache)` / `s3`) — re-fetchable addressable
+    bytes (`stored://`, `file://<deviceId>/…` for out-of-root dirs). Supports N in-workspace `file`
+    dirs + external device-scoped mounts (both already resolve today). `cache` is a first-class stored
+    property, NOT a backend: it holds derived artifacts (thumbnails), pull-through copies (future S3),
+    and the sync-staging area for `stored.syncd` (store→queue{src,targets}→push→emit `locations[]`).
+  - **git** — a service (version control over the home file backend).
+  - **messages** — imap / graph(Teams,mail) / slack / whatsapp / irc: discrete records pulled on a
+    cadence, deduped, each → a doc. NOT stored's job — a separate service (today the mail service;
+    imap accounts already live outside `dataBackends`, in `config/stored.json`). Poll + cursor
+    (generalises UIDVALIDITY/lastUid).
+  - **streams** — cameras / logs / sensors: windowed time-series, sample + sliding retention +
+    trigger/emit ("re-surface relevant on a feed"), NOT blind ingest. Planned for the LLM-agents work;
+    a separate service, shape left OPEN.
+
+`home`/`data`/`cache` are **stored's storage, never internals** — this dissolves the earlier
+double-authority: their location comes only from stored's config; the `homePath`/`dataPath`/
+`cachePath` getters must DERIVE from the resolved paths so WebDAV, the `/home` API, and the indexer
+can't diverge.
+
+Target workspace.json shape:
+```json
+{ "internals": { "db": "{WORKSPACE_ROOT}/db", "config": "…", "var": "…", "tmp": "…" },
+  "services": {
+    "git":    { "enabled": false, "root": "{WORKSPACE_ROOT}/git" },
+    "stored": { "root":  "{WORKSPACE_ROOT}/db/stored",       // index
+                "cache": "{WORKSPACE_ROOT}/cache",            // derived + pull-through + sync staging
+                "sync":  { "policies": [] },                  // future stored.syncd
+                "backends": { "home": {"type":"file","root":"{WORKSPACE_ROOT}/home"},
+                              "data": {"type":"blob","root":"{WORKSPACE_ROOT}/data"},
+                              "downloads":{"type":"file","root":"file://<deviceId>/home/user/Downloads"} } }
+    // messages (imap/…) + streams live under their own services, added when that work starts
+  } }
+```
+
+DONE (foundation, 2026-07-19):
+- [x] Config path resolvers `Workspace#resolveWorkspacePath` / `#resolveDir` / `#backendRoot`
+      (absolute / workspace-relative / `{WORKSPACE_ROOT}`).
+- [x] Killed the hidden `.stored/` dir — Stored roots at `db/stored` (blob cache redirected to `cache/`);
+      idempotent migration moves legacy `.stored/index` → `db/stored/index`, drops the stale dir
+      (`WorkspaceStoredIndex#migrateLegacyStoredLayout`).
+- [x] Double-authority killed — `homePath`/`dataPath`/`cachePath` getters derive from the storage
+      backend `root` (single source: dataBackends) via `Workspace#backendRoot`; storage is NOT in the
+      `directories`/internals map. WebDAV, `/home` API, and stored's indexer can't diverge. Verified.
+- [x] Thumbnail 500-on-cache-miss fixed — `WorkspaceStoredIndex#getThumbnail` passes `resolve().data`
+      to sharp (resolve returns `{data,ranged}`, not raw bytes). Cache-miss thumbnails 200 + written to
+      `cache/`.
+
+NOW run — REMAINING schema reshape. **Full executable plan:
+`~/.claude/plans/effervescent-rolling-pebble.md`** (complete consumer inventory + step-by-step + verify).
+Server-side + one workspace.json migration; does NOT touch imap/messages (already in `config/stored.json`):
+- [ ] Reshape config: `internals` map (db/config/var/tmp) + `services.{git,stored}`. `dataBackends`
+      → `services.stored.backends` (storage only: file/blob/s3); `stored.cache` fake-backend entry
+      → first-class `services.stored.cache`; add empty `services.stored.sync` slot.
+- [ ] Settings "Data Backends" tab reads the new shape; drop the cache-as-backend row (keep the
+      "Clear thumbnails" action as a stored-cache control).
+- [ ] Idempotent workspace.json migration (rename keys, backfill mandatory paths) — same pattern as
+      the `.stored` migration. External dirs stay `file://<deviceId>/path`.
+
+canvas-edge run (deferred — runtime, not schema):
+- [ ] Search-path loader (ROOT/workspace.json → .workspace.json → .workspace/workspace.json →
+      .workspace/config/workspace.json) + mandatory-path validation (no load-time defaults).
+- [ ] Creation-time defaults per mode, written INTO workspace.json: canvas-server = flat root;
+      canvas-edge = internals under `.workspace/`, Home = root itself.
+
+messages/streams runs (deferred): `services.messages` gets its OWN config home (imap currently squats
+in `config/stored.json` = stored's config — that coupling is the very thing SRP removes; move it out
+when the messages service is extracted); `services.streams` shape defined with the LLM-agents feed work.
 
 ### Extend workspaces API (partly blocked by synapsd)
 

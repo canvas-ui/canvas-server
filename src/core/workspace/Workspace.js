@@ -198,16 +198,41 @@ class Workspace extends EventEmitter {
         return { semantic: next, applied };
     }
 
+    // Resolve a logical workspace directory to an absolute path. A workspace.json
+    // `directories` map overrides any WORKSPACE_DIRECTORIES default; values may be
+    // absolute, a `{WORKSPACE_ROOT}` template, or plain workspace-relative. This
+    // is the single place layout is decided, so getters + Stored + backends all
+    // agree — and a local runtime can relocate everything (e.g. under .workspace/)
+    // by writing that one map.
+    #resolveDir(key) {
+        const overrides = this.#configStore.get('directories', {}) || {};
+        const value = overrides[key] ?? WORKSPACE_DIRECTORIES[key];
+        if (!value) return null;
+        const resolved = value.includes('{WORKSPACE_ROOT}')
+            ? value.replaceAll('{WORKSPACE_ROOT}', this.#rootPath)
+            : (path.isAbsolute(value) ? value : path.join(this.#rootPath, value));
+        return path.resolve(resolved);
+    }
+
     get homePath() {
-        return path.join(this.#rootPath, WORKSPACE_DIRECTORIES.home);
+        return this.#resolveDir('home');
     }
 
     get dataPath() {
-        return path.join(this.#rootPath, WORKSPACE_DIRECTORIES.data);
+        return this.#resolveDir('data');
+    }
+
+    get dbPath() {
+        return this.#resolveDir('db');
+    }
+
+    /** Stored's runtime root (metadata index; blob cache lives at cachePath). */
+    get storedRootPath() {
+        return this.#resolveDir('stored');
     }
 
     get gitPath() {
-        return path.join(this.#rootPath, WORKSPACE_DIRECTORIES.git);
+        return this.#resolveDir('git');
     }
 
     get gitBarePath() {
@@ -215,11 +240,11 @@ class Workspace extends EventEmitter {
     }
 
     get hooksPath() {
-        return path.join(this.#rootPath, WORKSPACE_DIRECTORIES.hooks);
+        return this.#resolveDir('hooks');
     }
 
     get cachePath() {
-        return path.join(this.#rootPath, WORKSPACE_DIRECTORIES.cache);
+        return this.#resolveDir('cache');
     }
 
     isDataBackendEnabled(backendName) {
@@ -356,7 +381,7 @@ class Workspace extends EventEmitter {
                 fsPromises.mkdir(this.hooksPath, { recursive: true }),
             ]);
 
-            const dbPath = path.join(this.#rootPath, WORKSPACE_DIRECTORIES.db || 'Db');
+            const dbPath = this.dbPath;
             this.#db = new Db({
                 path: dbPath,
                 // synapsd owns no model; if the embedd service is present, hand it
@@ -2078,6 +2103,7 @@ class Workspace extends EventEmitter {
             cachePath: this.cachePath,
             dataPath: this.dataPath,
             homePath: this.homePath,
+            storedRootPath: this.storedRootPath,
             dataBackends: this.dataBackends,
             workspaceId: this.id,
             // This server's device identity — authority for the device-scoped

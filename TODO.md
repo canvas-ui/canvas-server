@@ -217,6 +217,22 @@ Workspace config search paths
     $WORKSPACE_ROOT/workspace.json    
 ```
 
+### Configurable directory layout (partly DONE 2026-07-19)
+
+- [x] On-disk layout is config-driven: a `directories` map in workspace.json overrides
+      `WORKSPACE_DIRECTORIES` defaults via `Workspace#resolveDir` (absolute / workspace-relative /
+      `{WORKSPACE_ROOT}` template). All internal getters (cache/data/home/db/stored/git/hooks) go
+      through it, so a local runtime can stash everything under `.workspace/{cache,data,…}` and keep
+      the root as the user's Home.
+- [x] Killed the hidden `.stored/` dir — Stored roots at `db/stored` (its blob cache is redirected to
+      `cache/`); one-time idempotent migration moves any legacy `.stored/index` → `db/stored/index`
+      and drops the stale dir (`WorkspaceStoredIndex#migrateLegacyStoredLayout`).
+- [ ] Built-in backend roots (`workspace:home`/`data`) still resolve via their own
+      `{WORKSPACE_ROOT}/…` templates in `dataBackends` (`#resolveBackendRoot`), a separate key from
+      `directories`. Defaults agree; to make `directories.home`/`.data` authoritative for those
+      backends too, that resolver should prefer the getters. (`stored.cache` already follows
+      `directories.cache` — it isn't a separate backend.)
+
 ### Extend workspaces API (partly blocked by synapsd)
 
 - [] Add a workspaces/:workspace_id/db endpoint

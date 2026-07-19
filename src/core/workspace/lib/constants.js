@@ -12,13 +12,21 @@ const WORKSPACE_DEFAULT_HOST = 'canvas.local';
 // - user.email@remote.server.com:shared-workspace/subfolder
 const WORKSPACE_CONFIG_FILENAME = 'workspace.json';
 
-// Lets adhere to the "You aint gonna need it" principle here
+// Default on-disk layout, relative to the workspace root. Every entry is an
+// override point: a workspace.json `directories` map can remap any of these
+// (absolute, workspace-relative, or a `{WORKSPACE_ROOT}` template) — e.g. stash
+// all runtime dirs under `.workspace/` and leave the root itself as the user's
+// home. Resolved through Workspace#resolveDir; nothing here is a hidden dir.
 const WORKSPACE_DIRECTORIES = {
     db: 'db',
     config: 'config',
     cache: 'cache',
     data: 'data',
     home: 'home',
+    // Stored's runtime root (its metadata index; the blob cache is redirected to
+    // `cache` above). Nested under db/, NOT a hidden `.stored/` — see
+    // WorkspaceStoredIndex.start() and its one-time migration off the old path.
+    stored: 'db/stored',
     git: 'git',
     hooks: 'git/hooks',
     roles: 'roles',

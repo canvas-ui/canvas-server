@@ -55,6 +55,7 @@ export class WorkspaceStoredIndex {
     #cachePath;
     #dataPath;
     #homePath;
+    #storedRootPath;
     #dataBackends;
     #workspaceId;
     // Current server device ({deviceId, name}) — the file://<deviceId>/<path>
@@ -94,7 +95,7 @@ export class WorkspaceStoredIndex {
     // each successful resync; also used by explicit gcOrphanedDocuments calls.
     #getOrphanRetentionDays;
 
-    constructor({ rootPath, cachePath, dataPath, homePath, dataBackends = {}, workspaceId, device = null, logger, put, unlink, getBackendsTreeSelector, getDb, describeImapLocation = null, destroyImapLocation = null, lockBackendNode = null, unlockBackendNode = null, insertBackendPath = null, onResyncStateChange = null, persistBackendConfig = null, getOrphanRetentionDays = null }) {
+    constructor({ rootPath, cachePath, dataPath, homePath, storedRootPath, dataBackends = {}, workspaceId, device = null, logger, put, unlink, getBackendsTreeSelector, getDb, describeImapLocation = null, destroyImapLocation = null, lockBackendNode = null, unlockBackendNode = null, insertBackendPath = null, onResyncStateChange = null, persistBackendConfig = null, getOrphanRetentionDays = null }) {
         if (!dataPath || !homePath) throw new Error('dataPath and homePath are required');
         if (!put || !unlink || !getBackendsTreeSelector || !getDb) throw new Error('put, unlink, getBackendsTreeSelector, getDb are required');
 
@@ -102,6 +103,7 @@ export class WorkspaceStoredIndex {
         this.#cachePath = cachePath || path.join(this.#rootPath, 'cache');
         this.#dataPath = dataPath;
         this.#homePath = homePath;
+        this.#storedRootPath = storedRootPath || path.join(this.#rootPath, 'db', 'stored');
         this.#dataBackends = dataBackends;
         this.#workspaceId = workspaceId;
         this.#device = device;
@@ -144,12 +146,13 @@ export class WorkspaceStoredIndex {
         if (this.#stored) return;
 
         try {
+            await this.#migrateLegacyStoredLayout();
             this.#stored = new Stored({
-                root: path.join(this.#rootPath, '.stored'),
-                // The internal cache (remote-resource copies, thumbnails, other
-                // derived artifacts) lives in the workspace cache dir — the same
-                // location the stored.cache settings entry points at — instead
-                // of the hidden .stored/cache default.
+                // Configured runtime root (default db/stored) — NOT a hidden
+                // .stored/. Holds Stored's metadata index; the blob cache is
+                // redirected to the workspace cache dir (the same location the
+                // stored.cache settings entry points at).
+                root: this.#storedRootPath,
                 cache: { path: this.#cachePath },
                 checksums: ['sha256'],
                 primaryChecksum: 'sha256',
@@ -171,6 +174,36 @@ export class WorkspaceStoredIndex {
         } catch (error) {
             this.#logger.warn({ workspaceId: this.#workspaceId, error: error.message }, 'Stored home indexing unavailable');
             await this.stop();
+        }
+    }
+
+    /**
+     * One-time migration off the legacy hidden `<root>/.stored/` layout. Older
+     * builds kept Stored's index at `.stored/index` (and, before the cache
+     * redirect, its cache at `.stored/cache`). Relocate the index to the
+     * configured location and drop the stale hidden dir so no `.stored/` lingers.
+     * Runs before Stored opens the index; best-effort and idempotent.
+     */
+    async #migrateLegacyStoredLayout() {
+        const legacyRoot = path.join(this.#rootPath, '.stored');
+        const legacyIndex = path.join(legacyRoot, 'index');
+        const targetIndex = path.join(this.#storedRootPath, 'index');
+        try {
+            const [hasLegacy, hasTarget] = await Promise.all([
+                fs.stat(legacyIndex).then(() => true, () => false),
+                fs.stat(targetIndex).then(() => true, () => false),
+            ]);
+            // Only move when the new location is empty — never clobber a live index.
+            if (hasLegacy && !hasTarget) {
+                await fs.mkdir(this.#storedRootPath, { recursive: true });
+                await fs.rename(legacyIndex, targetIndex);
+                this.#logger.info({ workspaceId: this.#workspaceId, from: legacyIndex, to: targetIndex }, 'Migrated Stored index off legacy .stored/');
+            }
+            // Remove the now-stale hidden dir (its cache/ was superseded by the
+            // workspace cache redirect; index/ has moved or is superseded).
+            await fs.rm(legacyRoot, { recursive: true, force: true }).catch(() => {});
+        } catch (error) {
+            this.#logger.warn({ workspaceId: this.#workspaceId, error: error.message }, 'Legacy .stored migration skipped');
         }
     }
 

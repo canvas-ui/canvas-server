@@ -3,7 +3,52 @@
 Eval `/workspace/ingest/<driver>/<format>` ?stream?
 https://canvas.idnc.sk/home/pinned
 
+## Scheduled tasks
+
+
+
 ## Workspace hook TODO items in `TODO.hooks.md`
+
+Lets do a couple of cosmetics (because there is no time for the interesting stuff now) - but our old-school 
+react(yuck) UI is just temporary, a new AR-like canvas-centric UI is being shaped as you sleep ;) first, lets 
+update our Layers M2 view to first show canvases then normal layers - or even better, since we may introduce a
+layer of type dataset - lets divide the boring list of layers per layer type. Additionally, there is one more 
+feature related solely to the UI which may become prominent and should be available across integrations - 
+pinned layers(stored per-workspace but listable globally) - this is not a task, more a design question, 
+justification is simple - you logon to your computer(idealy nfc - phone nearby, ask and confirm on phone - 
+login shows you a simple, beatiful round control element on the bottom right that would default to voice input
+and a nice dynamic wallpaper, nithing else, simplicity at its purest form, you made a gesture tracked by your 
+camera with your left hand which opens a list of all your pinned tasks (nice semi-transparent AR-design 
+compatible tiles of layers or canvases displaying the most imporatnt stats of each - if its a pinned canvas, 
+you get whatever data is available for that canvas (number of new messages, todo tasks for today, missed 
+calls), for pinned tree paths(not sure we should implement this) - workspace where the pin came from, number of
+documents per type, last updated) - move left again and you get a list of workspaces > select > a flaoting 
+workspace tree, hand rotation(or kb shortcut) would switch between trees) - select what you want to work on and
+you are greeted by a beautiful empty canvas with your trusty toolbox button on the right - tick to voice input
+- Lucy, show me the latest comm for the AG merger -> a2ui/mcpui canvas shows the content, "whats on plan for 
+today" - adds a todo list "move it to a separate canvas" -> creates a separate canvas -> "move that canvas to 
+my tv" - opens the canvas in a connected device tagged "tv" (this can be a simple tv web browser) => toolbox 
+will have global part and a context part - want to edit an email, toolbox will have controls for emails, want 
+to edit text, toolbox will have controls for text - besides the global filter and agent views and controlls" =>
+this is where we are heading +/-, whats our opinion (all of this is relatively easy to implement - well, nfs 
+login not but I used to work on my own linux-based OS before and I can do all kinds of trickery to make that 
+experience very near)
+
+- Storage: per-workspace, as you said — a pin is { layerId, pinnedAt, order? } living in the workspace (it
+  references a layer that already belongs to that workspace, so it stays movable with tar + scp). Do not store pins
+  in a global file; that breaks the "workspace is self-contained and portable" principle we just spent a session
+  defending.
+- Global listing: derived, not stored. The server enumerates open/known workspaces and concatenates their pins →
+  one global list. This means a pin's identity is always (workspaceId, layerId); the global view is a projection.
+  Fits the AR "move-left → all my pinned tiles across everything" gesture exactly.
+- The tile is a view contract, not a layer field. A pinned canvas tile shows "3 new messages, 5 todos today, 2
+  missed calls"; a pinned context/tree tile shows "workspace, doc counts per type, last updated." That's a small
+  PinnedTileSummary the server computes per layer type — a discriminated union keyed on layer type. This is the
+  same taxonomy work as the schema reshape: the layer type drives the descriptor. Same pattern as
+  #storageBackendDescriptor.
+- Skip pinned tree-paths for now (you flagged the doubt yourself). A path isn't a stable identity — rename/move
+  and the pin dangles. Pin layers and canvases (both have IDs); revisit paths only if a real need shows up.
+
 
 ## Refactor `embedd` (coupled to the workspace runtime)
 
@@ -77,6 +122,70 @@ Landed 2026-07-15: `metadata.geo = {lat, lon, alt?, accuracy?, source?}` with `s
 ## WebUI cosmetics
 
 - [ ] (deffered) Content area section should support tabs 
+- [x] Layers M2 (WorkspaceM2 "Context layers" tab) now grouped by layer type — Canvases first,
+      then Datasets, Context layers, Workspaces, Universe, Labels, System, then any unknown type
+      as its own title-cased section (forward-compatible: a future `dataset` layer type slots in
+      with no code change). Section headers reuse the `text-[10px] uppercase tracking-wide` idiom
+      + a per-group count. (2026-07-21)
+- [x] Canvas layout Save button (CanvasGrid toolbar) goes **purple (`bg-violet-600`)** while the
+      layout is dirty — same affordance as the toolbox "Save filters" button (ToolsPanel) so an
+      unsaved canvas is spottable at a glance; neutral bordered look once saved. (2026-07-21)
+      NOTE: deliberately did NOT add "open canvas from the Layers menu" — a canvas fine-tuned for a
+      specific path renders misleadingly under `/`; a plain-root open is the wrong affordance.
+
+## Pinned items (renderer-agnostic pin API) — design agreed 2026-07-21
+
+Driver: the webui and a future desktop overlay (and canvas-agent "Lucy") must show the **same**
+pinned items — you log in, gesture/shortcut, and get your pinned canvases/layers as tiles with live
+stats. A pin is a **personal attention concept**, the target (layer/canvas) is a data concept — keep
+them separate; the pin API stays renderer-agnostic so any UI is just another client (the "UI is
+replaceable, data model renderer-agnostic" principle).
+
+**What already exists (this is a promotion, not a greenfield build):**
+- `useCanvasPins()` → `src/ui/web/src/components/home/pins-context.tsx` reads/writes
+  `home.pinnedCanvases` in the **per-user webui config** (`getWebuiConfig`/`putWebuiConfig` →
+  server `UserConfigStore`, one JSON doc per user). Entries: `{ workspaceName, treeName, path }`.
+- Home page already unions them into tiles (`PinnedCanvasTile`, `pages/home/index.tsx`); the canvas
+  header already has working Pin/Unpin (`onTogglePinCanvas` / `isCanvasPinned`, wired in
+  `pages/workspaces/[workspaceName]/index.tsx`).
+- So pins are ALREADY a per-user, server-persisted, cross-workspace flat list. Two gaps block a second
+  client: (1) they live in the **`webui`** config namespace (renderer-specific blob, not a neutral
+  API); (2) they're **canvas-only** (`pinnedCanvases`), not typed layer/canvas/(future dataset) pins.
+
+**Placement decision — Model A (per-user registry), NOT per-workspace `/workspaces/:id/pinned`:**
+A pin is personal ("MY pinned tasks") → identity is its natural home. Model A: union is free (already
+one list), global order has one home, far less code (promote the existing store). Per-workspace
+(Model B) would need an aggregator that opens every known workspace, per-user-within-workspace keying,
+and STILL a per-user side-store for global order (state in two places); its only real win — pins travel
+with a `tar+scp`'d workspace — isn't wanted here (pins are yours, not the workspace's). Reserve Model B
+only if pins must travel with a handed-off workspace, and even then keep global order in user config.
+Dangling pins (target deleted) are handled at read time: resolve each, flag `resolvable:false` — never
+404 the whole list.
+
+**Target API (renderer-agnostic — NOT under the `webui` config namespace):**
+```
+GET    /pins             -> PinnedItem[]        # target.type in {canvas, layer, dataset…}
+POST   /pins             -> add { target: { type, workspaceName, treeName, path|layerId } }
+DELETE /pins/:pinId
+PATCH  /pins/order       -> reorder (global overlay order)
+GET    /pins/summaries   -> PinnedTileSummary[] # per-tile live stats (new msgs, todos today, …)
+```
+- **`PinnedItem`** — discriminated on `target.type` (same type-driven-descriptor pattern as the
+  layers grouping + backend descriptors). Pin layers/canvases (stable IDs); **skip pinned tree-paths**
+  for now — a path has no stable identity, a rename dangles it.
+- **`PinnedTileSummary`** — computed **server-side per target type**, so webui and desktop overlay
+  render identical tiles without either re-deriving stats. This endpoint is what makes "same pinned
+  items as my desktop overlay" literally true (both hit `/pins/summaries`).
+
+Tasks:
+- [ ] Lift the per-user pin list out of the `webui` config namespace into a first-class `/pins` API
+      (its own user-scoped store or a neutral config doc), renderer-agnostic.
+- [ ] Generalize entries from canvas-only to typed `PinnedItem` (canvas | layer | future dataset).
+- [ ] `GET /pins/summaries` — per-target-type server-side tile stats.
+- [ ] `PATCH /pins/order` — global overlay ordering (per-user).
+- [ ] Read-time resolve + `resolvable:false` flag for dangling targets.
+- [ ] Migrate existing `home.pinnedCanvases` (canvas targets) into `/pins`; repoint `useCanvasPins()`
+      at the new endpoint (webui keeps working, overlay becomes just another caller).
 
 ## Remote workspaces
 

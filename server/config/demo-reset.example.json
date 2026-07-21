@@ -1,0 +1,14 @@
+{
+  "canvasRoot": "/opt/canvas-server",
+  "canvasServerHome": "/opt/canvas-server/server",
+  "canvasUser": "canvas",
+  "canvasGroup": "www-data",
+  "serviceName": "canvas-server",
+  "demoWorkspace": "/opt/canvas-server/server/users/demo@canvas.local",
+  "demoBackup": "/root/demo@canvas.local",
+  "logFile": "/var/log/canvas-demo-reset.log",
+  "lockFile": "/var/run/canvas-demo-reset.lock",
+  "maintenancePage": true,
+  "maintenancePort": 8001,
+  "maintenanceHost": "0.0.0.0"
+}

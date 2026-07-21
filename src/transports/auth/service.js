@@ -139,6 +139,7 @@ class AuthService {
 
       // Create default configuration with all supported strategies and security settings
       const defaultConfig = {
+        allowUserRegistrations: true,
         strategies: {
           local: {
             enabled: true,
@@ -973,6 +974,16 @@ class AuthService {
   isLocalEnabled() {
     const local = this.#readAuthConfig()?.strategies?.local;
     return local?.enabled !== false; // default true if missing
+  }
+
+  /**
+   * Whether new user self-registration is allowed (reads fresh from disk).
+   * Server-wide switch independent of the local strategy being enabled: set
+   * to false to close registrations entirely (e.g. on the public demo instance)
+   * while existing users can still log in.
+   */
+  areRegistrationsAllowed() {
+    return this.#readAuthConfig()?.allowUserRegistrations !== false; // default true if missing
   }
 
   /**

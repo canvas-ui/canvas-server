@@ -53,6 +53,7 @@ export default async function authRoutes(fastify, options) {
       await ldapAuthStrategy.initialize();
 
       const config = {
+        allowUserRegistrations: authService.areRegistrationsAllowed(),
         strategies: {
           local: {
             enabled: authService.isLocalEnabled(),
@@ -220,6 +221,11 @@ export default async function authRoutes(fastify, options) {
     }
   }, async (request, reply) => {
     try {
+      if (!authService.areRegistrationsAllowed()) {
+        const response = new ResponseObject().forbidden('User registrations are disabled on this server');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+
       if (!authService.isLocalEnabled()) {
         const response = new ResponseObject().forbidden('Registration is disabled');
         return reply.code(response.statusCode).send(response.getResponse());

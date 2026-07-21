@@ -1,11 +1,22 @@
 #!/usr/bin/env node
 
 /**
- * Throwaway "we'll be right back" page served while update-git.sh rebuilds the app.
+ * Throwaway "we'll be right back" page served while a maintenance job (update or
+ * demo reset) takes the real service down.
  *
  * Runs on the same port as canvas-server, so it must be stopped before the real
  * service starts. Uses node builtins only: update-git.sh wipes node_modules
  * while this is running.
+ *
+ * The copy defaults to the "updating" wording. Callers that reuse it for other
+ * maintenance (e.g. reset-demo.sh) override the copy so no job-specific detail
+ * has to live in this shared file:
+ *   --title      <document title>
+ *   --heading    <h1 text>
+ *   --message    <paragraph text; disables the version line when set>
+ *   --meta-label <label before the elapsed counter, e.g. "Reset started">
+ *   --status     <healthz status string>
+ *   --quips      <JSON array of loading-line strings>
  *
  * Usage: node maintenance-server.js [--port 8001] [--root /opt/canvas-server]
  */
@@ -25,6 +36,24 @@ const HOST = argValue('--host', process.env.CANVAS_API_HOST || '0.0.0.0');
 const ROOT = argValue('--root', process.env.CANVAS_ROOT || process.cwd());
 const STARTED_AT = Date.now();
 
+// Copy overrides. Defaults reproduce the original "updating" page verbatim.
+const TITLE = argValue('--title', 'Canvas is updating...');
+const HEADING = argValue('--heading', 'Canvas is being updated');
+const MESSAGE = argValue('--message', '');
+const META_LABEL = argValue('--meta-label', 'Update started');
+const STATUS = argValue('--status', 'updating');
+
+// Minimal escaping so overridden copy can't break out of the HTML/attribute it
+// sits in. These strings come from the calling script, not the network, but the
+// page also embeds them in a <script> via JSON below.
+function esc(s) {
+    return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
 // Read per-request, not once at boot: the git pull swaps package.json underneath
 // us mid-update, so the page starts showing the incoming version by itself.
 function currentVersion() {
@@ -36,7 +65,7 @@ function currentVersion() {
     }
 }
 
-const QUIPS = [
+const DEFAULT_QUIPS = [
     'Reticulating splines...',
     'Teaching the bitmaps to count again...',
     'Convincing npm that yes, we really do need all 1400 packages...',
@@ -47,17 +76,35 @@ const QUIPS = [
     'Asking the vectors to please stay in their own dimension.',
 ];
 
+function loadQuips() {
+    const raw = argValue('--quips', '');
+    if (!raw) return DEFAULT_QUIPS;
+    try {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length) return parsed.map(String);
+    } catch {
+        // fall through to defaults on malformed input
+    }
+    return DEFAULT_QUIPS;
+}
+
+const QUIPS = loadQuips();
+
 function page() {
-    const version = currentVersion();
     const elapsed = Math.floor((Date.now() - STARTED_AT) / 1000);
     const quips = JSON.stringify(QUIPS);
+    // Default (no --message): show the version we're rebuilding to. When a caller
+    // supplies --message, use that verbatim and drop the version line.
+    const messageHtml = MESSAGE
+        ? esc(MESSAGE)
+        : `We're pulling in version <code>${esc(currentVersion())}</code> and rebuilding.<br>Please stand by - this page refreshes itself.`;
     return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="refresh" content="15">
-<title>Canvas is updating...</title>
+<title>${esc(TITLE)}</title>
 <style>
   :root { color-scheme: light; }
   * { box-sizing: border-box; }
@@ -84,10 +131,10 @@ function page() {
 <body>
   <div class="card">
     <div class="spinner"></div>
-    <h1>Canvas is being updated</h1>
-    <p>We're pulling in version <code>${version}</code> and rebuilding.<br>Please stand by - this page refreshes itself.</p>
+    <h1>${esc(HEADING)}</h1>
+    <p>${messageHtml}</p>
     <p id="quip"></p>
-    <div class="meta">Update started ${elapsed}s ago</div>
+    <div class="meta">${esc(META_LABEL)} ${elapsed}s ago</div>
   </div>
 <script>
   const quips = ${quips};
@@ -104,7 +151,7 @@ function page() {
 const server = http.createServer((req, res) => {
     if (req.url === '/healthz') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ status: 'updating', version: currentVersion() }));
+        res.end(JSON.stringify({ status: STATUS, version: currentVersion() }));
         return;
     }
 

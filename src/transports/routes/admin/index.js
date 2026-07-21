@@ -337,8 +337,12 @@ export default async function adminRoutes(fastify, options) {
   // Reindex CRUD timelines (created/updated intervals) for a workspace.
   // NOTE: the old reindex-features route called a synapsd method removed in the
   // 2026-04 cleanup (permanent 500) — replaced by this timelines op.
+  // Per-workspace DB maintenance (reindex/optimize) is NOT admin-gated: access
+  // is scoped to workspaces the caller owns via getWorkspace(id, user.id), so a
+  // non-admin can only ever run these on their own workspaces. (Server-wide
+  // controls below — embedd pause/resume, logs, users — stay requireAdmin.)
   fastify.post('/workspaces/:workspaceId/reindex-timelines', {
-    onRequest: [fastify.authenticate, requireAdmin],
+    onRequest: [fastify.authenticate],
     schema: { params: { type: 'object', required: ['workspaceId'], properties: { workspaceId: { type: 'string' } } } }
   }, async (request, reply) => {
     try {
@@ -364,7 +368,7 @@ export default async function adminRoutes(fastify, options) {
   // Backfills a corpus indexed before mime bitmaps existed (e.g. blobs/files).
   // Synchronous, in-process, idempotent.
   fastify.post('/workspaces/:workspaceId/reindex-mime', {
-    onRequest: [fastify.authenticate, requireAdmin],
+    onRequest: [fastify.authenticate],
     schema: { params: { type: 'object', required: ['workspaceId'], properties: { workspaceId: { type: 'string' } } } }
   }, async (request, reply) => {
     try {
@@ -391,7 +395,7 @@ export default async function adminRoutes(fastify, options) {
   // un-indexed tail. Idempotent (skips already-indexed). Runs in-process, so no
   // LMDB lock conflict with the live server. FTS-only; dense vectors are separate.
   fastify.post('/workspaces/:workspaceId/reindex-search', {
-    onRequest: [fastify.authenticate, requireAdmin],
+    onRequest: [fastify.authenticate],
     schema: {
       params: { type: 'object', required: ['workspaceId'], properties: { workspaceId: { type: 'string' } } },
       // ?rebuild=true wipes the FTS table + coverage bitmap first — use when the
@@ -424,7 +428,7 @@ export default async function adminRoutes(fastify, options) {
   // wipes each space first for a full re-embed. Embedding runs off-thread in the
   // embedd service; this only enqueues.
   fastify.post('/workspaces/:workspaceId/reindex-embeddings', {
-    onRequest: [fastify.authenticate, requireAdmin],
+    onRequest: [fastify.authenticate],
     schema: {
       params: { type: 'object', required: ['workspaceId'], properties: { workspaceId: { type: 'string' } } },
       body: {
@@ -503,7 +507,7 @@ export default async function adminRoutes(fastify, options) {
   //   omitted        → every table. Synchronous, in-process; safe on the live
   // server (no lock conflict). Idempotent.
   fastify.post('/workspaces/:workspaceId/optimize', {
-    onRequest: [fastify.authenticate, requireAdmin],
+    onRequest: [fastify.authenticate],
     schema: {
       params: { type: 'object', required: ['workspaceId'], properties: { workspaceId: { type: 'string' } } },
       body: { type: 'object', properties: { space: { type: 'string' } }, additionalProperties: false },

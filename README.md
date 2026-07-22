@@ -10,6 +10,9 @@
 ## Canvas Server
 Server runtime for the Canvas project.
 
+## (Temporary) Demo instance (resets every hour)
+https://demo.cnvs.ai/pub/c/v64cxh0i
+
 Data from all sources is indexed and abstracted away from its physical location. Users construct virtual context or directory trees on top of that data. Storage backends (local, NAS, S3) are managed transparently - writes hit local cache first, then sync to backends based on rules.
 
 ## Install & Run

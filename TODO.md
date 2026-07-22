@@ -3,6 +3,17 @@
 Eval `/workspace/ingest/<driver>/<format>` ?stream?
 https://canvas.idnc.sk/home/pinned
 
+- Refactor user + workspace + contexts index
+- Allow removing of the default context
+- Allow removing of the universe
+Server
+  - Users
+    - User container
+      - Workspaces/
+	  	- Workspace container
+
+dynamic discovery at least for workspaces, to facilitate simple import/export or even rsync - newly copied workspace gets autodiscovered
+
 ## Scheduled tasks
 
 

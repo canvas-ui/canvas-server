@@ -13,26 +13,29 @@ import Context from './lib/Context.js';
 import { accessDenied, contextNotFound, workspaceNotReady } from './lib/errors.js';
 import { compareByUserOrder } from '../../utils/list-order.js';
 
-// Constants
-const DEFAULT_WORKSPACE_ID = 'universe';
-
 /**
  * Context Manager
+ *
+ * Contexts are user-local (owned by a userId, may point at any of the user's
+ * workspaces). Persistence is one index file per user
+ * (db/users/<userId>/contexts.json, key = contextId) opened lazily through
+ * the shared Jim factory.
  */
 
 class ContextManager extends EventEmitter {
 
-    #indexStore;             // Persistent index of all contexts
+    #indexFactory;           // Jim instance — per-user context index files
+    #userIndexes = new Map();// userId -> Conf
     #workspaceManager;       // Reference to workspace manager
 
     // Runtime
-    #contexts = new Map();   // In-memory cache of loaded contexts
+    #contexts = new Map();   // In-memory cache of loaded contexts (key: userId/contextId)
     #initialized = false;    // Manager initialized flag
 
     /**
      * Create a new ContextManager
      * @param {Object} options - Manager options
-     * @param {Object} options.indexStore - Index store for context data
+     * @param {Object} options.indexFactory - Jim instance for per-user index files
      * @param {Object} options.workspaceManager - Workspace manager instance
      */
     constructor(options = {}) {
@@ -46,14 +49,14 @@ class ContextManager extends EventEmitter {
             ...(options.eventEmitterOptions || {})
         });
 
-        if (!options.indexStore) {
-            throw new Error('Index store is required for ContextManager');
+        if (!options.indexFactory) {
+            throw new Error('indexFactory (jim) is required for ContextManager');
         }
         if (!options.workspaceManager) {
             throw new Error('WorkspaceManager is required for ContextManager');
         }
 
-        this.#indexStore = options.indexStore;
+        this.#indexFactory = options.indexFactory;
         this.#workspaceManager = options.workspaceManager;
 
         logger.debug('Context manager created');
@@ -64,15 +67,58 @@ class ContextManager extends EventEmitter {
      */
     async initialize() {
         if (this.#initialized) { return this; }
-        logger.debug('Initializing context manager: loading stored context IDs...');
-
-        // Log the number of items directly from the store if possible, or after loading.
-        // For a simple Map-like store, size might be available.
-        // If indexStore is more complex, this log might need adjustment.
-        const initialContextCount = typeof this.#indexStore.size === 'function' ? this.#indexStore.size() : (this.#indexStore.store ? Object.keys(this.#indexStore.store).length : 'N/A');
-        logger.debug(`ContextManager initialized with ${initialContextCount} context(s) in index`);
         this.#initialized = true;
+        logger.debug('ContextManager initialized (per-user index files)');
         return this;
+    }
+
+    /**
+     * Per-user store helpers
+     */
+
+    #getUserIndex(userId) {
+        if (!this.#userIndexes.has(userId)) {
+            this.#userIndexes.set(userId, this.#indexFactory.getOrCreateIndex('contexts', { scope: `users/${userId}` }));
+        }
+        return this.#userIndexes.get(userId);
+    }
+
+    #userStore(userId) {
+        return this.#getUserIndex(userId).store || {};
+    }
+
+    #storeHas(userId, contextId) {
+        return this.#getUserIndex(userId).has(this.#sanitizeContextId(contextId.toString()));
+    }
+
+    #storeGet(userId, contextId) {
+        return this.#getUserIndex(userId).get(this.#sanitizeContextId(contextId.toString())) || null;
+    }
+
+    #storeSet(userId, contextId, data) {
+        this.#getUserIndex(userId).set(this.#sanitizeContextId(contextId.toString()), data);
+    }
+
+    #storeDelete(userId, contextId) {
+        this.#getUserIndex(userId).delete(this.#sanitizeContextId(contextId.toString()));
+    }
+
+    #knownUserIds() {
+        const ids = new Set(this.#userIndexes.keys());
+        for (const id of Object.keys(this.#workspaceManager.users?.indexStore?.store || {})) {
+            ids.add(id);
+        }
+        return ids;
+    }
+
+    // Iterate every [userId, contextId, data] across all per-user indexes.
+    *#allEntries() {
+        for (const userId of this.#knownUserIds()) {
+            const store = this.#userStore(userId);
+            for (const contextId in store) {
+                if (store[contextId]) yield [userId, contextId, store[contextId]];
+            }
+        }
     }
 
     /**
@@ -113,7 +159,7 @@ class ContextManager extends EventEmitter {
             // Lets get the context key
             const contextKey = this.#constructContextKey(userId, contextId);
 
-            if (this.#contexts.has(contextKey) || this.#indexStore.has(contextKey)) {
+            if (this.#contexts.has(contextKey) || this.#storeHas(userId, contextId)) {
                 throw new Error(`Context with key ${contextKey} already exists`);
             }
 
@@ -130,11 +176,20 @@ class ContextManager extends EventEmitter {
                     workspaceId = this.#workspaceManager.resolveWorkspaceId(userId, workspaceId) || workspaceId;
                 }
             }
-            // Otherwise, resolve from URL or default to universe
+            // Otherwise, resolve from the URL's workspace part
             else if (parsed.workspaceId) {
                 workspaceId = this.#workspaceManager.resolveWorkspaceId(userId, parsed.workspaceId);
-            } else {
-                workspaceId = this.#workspaceManager.resolveWorkspaceId(userId, DEFAULT_WORKSPACE_ID);
+            }
+            // There is no special default workspace anymore: fall back to the
+            // user's primary workspace (first in their explicit ordering). A
+            // user can legitimately have zero workspaces — surface that clearly.
+            else {
+                const owned = (await this.#workspaceManager.listWorkspaces(userId))
+                    .filter((ws) => ws.owner === userId);
+                if (owned.length === 0) {
+                    throw new Error(`Cannot create context: user ${userId} has no workspaces`);
+                }
+                workspaceId = owned[0].id; // listWorkspaces is user-order sorted
             }
 
             if (!workspaceId) {
@@ -220,14 +275,13 @@ class ContextManager extends EventEmitter {
             !contextIdOrFullIdentifier.toString().includes('/');
 
         let contextKey = this.#constructContextKey(ownerUserId, contextId);
+        let storedContextData = this.#storeGet(ownerUserId, contextId);
 
         // Backward-compat for older mixed-case IDs: try to locate by case-insensitive match.
         // (We now canonicalize IDs to lowercase.)
-        if (!this.#contexts.has(contextKey) && !this.#indexStore.has(contextKey)) {
-            const allContexts = this.#indexStore.store || {};
-            const ownerPrefix = ownerUserId ? `${ownerUserId}/` : null;
-
+        if (!this.#contexts.has(contextKey) && !storedContextData) {
             // 1) In-memory
+            const ownerPrefix = ownerUserId ? `${ownerUserId}/` : null;
             for (const [key, instance] of this.#contexts) {
                 if (ownerPrefix && !key.startsWith(ownerPrefix)) continue;
                 if ((instance?.id || '').toString().toLowerCase() === contextId) {
@@ -236,13 +290,13 @@ class ContextManager extends EventEmitter {
                 }
             }
 
-            // 2) Persistent store
-            if (!this.#contexts.has(contextKey) && !this.#indexStore.has(contextKey)) {
-                for (const [key, data] of Object.entries(allContexts)) {
-                    if (ownerPrefix && !key.startsWith(ownerPrefix)) continue;
+            // 2) Persistent store (owner's index file)
+            if (!this.#contexts.has(contextKey)) {
+                const ownerStore = ownerUserId ? this.#userStore(ownerUserId) : {};
+                for (const data of Object.values(ownerStore)) {
                     if ((data?.id || '').toString().toLowerCase() === contextId) {
-                        contextKey = key;
-                        ownerUserId = data.userId;
+                        storedContextData = data;
+                        contextKey = this.#constructContextKey(ownerUserId, data.id);
                         break;
                     }
                 }
@@ -250,14 +304,14 @@ class ContextManager extends EventEmitter {
         }
 
         // Check if it's a shared context owned by someone else
-        if (ownerUserId === userId && !this.#contexts.has(contextKey) && !this.#indexStore.has(contextKey)) {
-            const allContexts = this.#indexStore.store || {};
-            for (const [key, contextData] of Object.entries(allContexts)) {
+        if (ownerUserId === userId && !this.#contexts.has(contextKey) && !storedContextData) {
+            for (const [entryUserId, , contextData] of this.#allEntries()) {
                 if (contextData.id === contextId && contextData.userId !== userId) {
                     const hasAccess = await this.#checkContextAccess(contextData, userId);
                     if (hasAccess) {
-                        contextKey = key;
-                        ownerUserId = contextData.userId;
+                        ownerUserId = contextData.userId || entryUserId;
+                        storedContextData = contextData;
+                        contextKey = this.#constructContextKey(ownerUserId, contextData.id);
                         break;
                     }
                 }
@@ -269,45 +323,64 @@ class ContextManager extends EventEmitter {
 
             if (this.#contexts.has(contextKey)) {
                 contextInstance = this.#contexts.get(contextKey);
-            } else {
-                const storedContextData = this.#indexStore.get(contextKey);
-                if (storedContextData) {
-                    if (storedContextData.userId !== ownerUserId) {
-                        throw accessDenied(`Owner mismatch: expected ${ownerUserId}, found ${storedContextData.userId}`);
-                    }
-
-                    let workspaceId = storedContextData.workspaceId;
-                    if (workspaceId && (workspaceId.includes(':') || workspaceId.length < 12)) {
-                         const resolvedId = this.#workspaceManager.resolveWorkspaceId(ownerUserId, workspaceId);
-                         if (resolvedId) workspaceId = resolvedId;
-                    }
-
-                    const workspace = await this.#workspaceManager.getWorkspace(workspaceId, ownerUserId);
-                    if (!workspace) {
-                        throw workspaceNotReady(`Failed to load workspace ${storedContextData.workspaceId} for context ${contextKey}`);
-                    }
-
-                    // Workspace must be active to create context (Context constructor accesses workspace.db and a bound context tree)
-                    if (!workspace.isActive) {
-                        throw workspaceNotReady(`Workspace ${workspace.name} is not active. Start the workspace before accessing contexts.`);
-                    }
-
-                    const contextOptions = {
-                        ...storedContextData,
-                        userId: ownerUserId,
-                        workspace: workspace,
-                        workspaceManager: this.#workspaceManager,
-                        contextManager: this,
-                    };
-
-                    const loadedContext = new Context(storedContextData.url, contextOptions);
-                    await loadedContext.initialize();
-
-                    this.#contexts.set(contextKey, loadedContext);
-                    this.#setupEventForwarding(loadedContext);
-
-                    contextInstance = loadedContext;
+            } else if (storedContextData) {
+                if (storedContextData.userId !== ownerUserId) {
+                    throw accessDenied(`Owner mismatch: expected ${ownerUserId}, found ${storedContextData.userId}`);
                 }
+
+                let workspaceId = storedContextData.workspaceId;
+                if (workspaceId && (workspaceId.includes(':') || workspaceId.length < 12)) {
+                     const resolvedId = this.#workspaceManager.resolveWorkspaceId(ownerUserId, workspaceId);
+                     if (resolvedId) workspaceId = resolvedId;
+                }
+
+                // Resolve the workspace; a permanently missing workspace marks
+                // the context orphaned (its workspace was deleted or moved away)
+                // instead of failing opaquely.
+                let workspace = null;
+                try {
+                    workspace = await this.#workspaceManager.getWorkspaceOrThrow(workspaceId, ownerUserId);
+                } catch (err) {
+                    if (err?.code === 'WORKSPACE_NOT_FOUND') {
+                        this.#markContextOrphaned(ownerUserId, storedContextData);
+                        throw workspaceNotReady(`Context ${contextKey} is orphaned: workspace ${storedContextData.workspaceName || workspaceId} is gone`);
+                    }
+                    throw workspaceNotReady(`Failed to load workspace ${storedContextData.workspaceId} for context ${contextKey}: ${err.message}`);
+                }
+
+                // Workspaces start on demand — there is no login-time universe
+                // auto-start anymore (Context constructor needs workspace.db and
+                // a bound context tree).
+                if (!workspace.isActive) {
+                    try {
+                        await workspace.start();
+                    } catch (err) {
+                        throw workspaceNotReady(`Workspace ${workspace.name} could not be started: ${err.message}`);
+                    }
+                }
+
+                // Workspace is back — clear a stale orphan flag lazily
+                if (storedContextData.status === 'orphaned') {
+                    const { status, orphanedAt, ...clean } = storedContextData;
+                    this.#storeSet(ownerUserId, storedContextData.id, clean);
+                    storedContextData = clean;
+                }
+
+                const contextOptions = {
+                    ...storedContextData,
+                    userId: ownerUserId,
+                    workspace: workspace,
+                    workspaceManager: this.#workspaceManager,
+                    contextManager: this,
+                };
+
+                const loadedContext = new Context(storedContextData.url, contextOptions);
+                await loadedContext.initialize();
+
+                this.#contexts.set(contextKey, loadedContext);
+                this.#setupEventForwarding(loadedContext);
+
+                contextInstance = loadedContext;
             }
 
             if (contextInstance) {
@@ -338,7 +411,7 @@ class ContextManager extends EventEmitter {
         const contextKey = this.#constructContextKey(ownerUserId, contextId);
         // This check doesn't verify permissions, just existence.
         // For a true "has access" check, getContext would be needed.
-        return this.#contexts.has(contextKey) || this.#indexStore.has(contextKey);
+        return this.#contexts.has(contextKey) || this.#storeHas(ownerUserId, contextId);
     }
 
     /**
@@ -366,14 +439,13 @@ class ContextManager extends EventEmitter {
                 }
             }
 
-            // Search persistent store
-            const allContextsInStore = this.#indexStore.store || {};
-            for (const [contextKey, contextData] of Object.entries(allContextsInStore)) {
+            // Search persistent stores
+            for (const [entryUserId, , contextData] of this.#allEntries()) {
                 if (contextData.id === contextId) {
                     return {
-                        contextKey,
+                        contextKey: this.#constructContextKey(contextData.userId || entryUserId, contextData.id),
                         contextData,
-                        userId: contextData.userId
+                        userId: contextData.userId || entryUserId
                     };
                 }
             }
@@ -414,12 +486,10 @@ class ContextManager extends EventEmitter {
                 }
             }
 
-            const allContextsInStore = this.#indexStore.store;
-            if (allContextsInStore) {
-                for (const key in allContextsInStore) {
+            {
+                for (const [entryUserId, entryContextId, storedContextData] of this.#allEntries()) {
+                    const key = this.#constructContextKey(entryUserId, entryContextId);
                     if (processedKeys.has(key)) continue;
-
-                    const storedContextData = allContextsInStore[key];
                     if (!storedContextData) continue;
 
                     const storedWorkspaceActive = await this.#resolveWorkspaceActive(storedContextData);
@@ -519,9 +589,6 @@ class ContextManager extends EventEmitter {
         }
 
         const requestedId = this.#sanitizeContextId(contextId.toString());
-        if (requestedId === 'default') {
-            throw new Error('Default context cannot be removed');
-        }
 
         try {
             let contextKey = this.#constructContextKey(userId, requestedId);
@@ -529,7 +596,7 @@ class ContextManager extends EventEmitter {
 
             // Backward-compat: contexts created before lowercasing may be stored under mixed-case keys/ids.
             // Try to locate them by case-insensitive ID match within the owner's contexts.
-            if (!this.#contexts.has(contextKey) && !this.#indexStore.has(contextKey)) {
+            if (!this.#contexts.has(contextKey) && !this.#storeHas(userId, actualId)) {
                 const ownedPrefix = `${userId}/`;
 
                 for (const [key, instance] of this.#contexts) {
@@ -541,13 +608,11 @@ class ContextManager extends EventEmitter {
                     }
                 }
 
-                if (!this.#contexts.has(contextKey) && !this.#indexStore.has(contextKey)) {
-                    const allContexts = this.#indexStore.store || {};
-                    for (const [key, data] of Object.entries(allContexts)) {
-                        if (!key.startsWith(ownedPrefix)) continue;
-                        if ((data?.id || '').toString().toLowerCase() === requestedId) {
-                            contextKey = key;
-                            actualId = data.id.toString();
+                if (!this.#contexts.has(contextKey) && !this.#storeHas(userId, actualId)) {
+                    for (const [storedId, data] of Object.entries(this.#userStore(userId))) {
+                        if ((data?.id || storedId).toString().toLowerCase() === requestedId) {
+                            actualId = (data?.id || storedId).toString();
+                            contextKey = this.#constructContextKey(userId, actualId);
                             break;
                         }
                     }
@@ -562,9 +627,9 @@ class ContextManager extends EventEmitter {
                 contextWasRemoved = true;
             }
 
-            // Remove from index store if exists (which should be the case)
-            if (this.#indexStore.has(contextKey)) {
-                this.#indexStore.delete(contextKey);
+            // Remove from the owner's index store if present
+            if (this.#storeHas(userId, actualId)) {
+                this.#storeDelete(userId, actualId);
                 contextWasRemoved = true;
             }
 
@@ -602,8 +667,22 @@ class ContextManager extends EventEmitter {
         const contextData = context.toJSON();
 
         this.#contexts.set(contextKey, context);
-        this.#indexStore.set(contextKey, contextData);
+        this.#storeSet(userId, context.id, contextData);
         this.#setupEventForwarding(context);
+    }
+
+    // Mark a stored context whose workspace disappeared (deleted / moved away).
+    // Orphaned contexts stay listed and deletable; the flag clears lazily on
+    // the next successful getContext once the workspace is back.
+    #markContextOrphaned(userId, contextData) {
+        if (!contextData?.id) return;
+        if (contextData.status === 'orphaned') return;
+        this.#storeSet(userId, contextData.id, {
+            ...contextData,
+            status: 'orphaned',
+            orphanedAt: new Date().toISOString(),
+        });
+        logger.warn(`Context ${userId}/${contextData.id} marked orphaned (workspace ${contextData.workspaceName || contextData.workspaceId} missing)`);
     }
 
     /**
@@ -718,15 +797,12 @@ class ContextManager extends EventEmitter {
 
             // Check if context exists
             const contextKey = this.#constructContextKey(resolvedUserId, contextId);
-            if (this.#contexts.has(contextKey) || this.#indexStore.has(contextKey)) {
+            if (this.#contexts.has(contextKey) || this.#storeHas(resolvedUserId, contextId)) {
                 return contextId;
             }
 
             // Fallback: older mixed-case IDs stored before canonicalization
-            const allContexts = this.#indexStore.store || {};
-            const ownerPrefix = `${resolvedUserId}/`;
-            for (const [key, data] of Object.entries(allContexts)) {
-                if (!key.startsWith(ownerPrefix)) continue;
+            for (const data of Object.values(this.#userStore(resolvedUserId))) {
                 if ((data?.id || '').toString().toLowerCase() === contextId) {
                     return data.id;
                 }
@@ -869,9 +945,9 @@ class ContextManager extends EventEmitter {
             });
         }
 
-        // Get contexts from persistent store that aren't in memory
-        const allContextsInStore = this.#indexStore.store || {};
-        for (const [contextKey, contextData] of Object.entries(allContextsInStore)) {
+        // Get contexts from persistent stores that aren't in memory
+        for (const [entryUserId, entryContextId, contextData] of this.#allEntries()) {
+            const contextKey = this.#constructContextKey(entryUserId, entryContextId);
             if (!this.#contexts.has(contextKey)) {
                 contexts.push({
                     contextKey,

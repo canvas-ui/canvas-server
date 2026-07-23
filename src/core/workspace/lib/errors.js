@@ -10,6 +10,7 @@ export const WorkspaceErrorCode = {
     ACCESS_DENIED: 'ACCESS_DENIED',             // 403 — caller lacks permission
     WORKSPACE_NOT_FOUND: 'WORKSPACE_NOT_FOUND', // 404 — no such workspace for this user
     WORKSPACE_NOT_READY: 'WORKSPACE_NOT_READY', // 503 — workspace down/not instantiable (retry)
+    NOT_IMPLEMENTED: 'NOT_IMPLEMENTED',         // 501 — e.g. remote workspace resolution
 };
 
 function coded(message, code, statusCode, retryable = false) {
@@ -28,3 +29,6 @@ export const workspaceNotFound = (message) =>
 
 export const workspaceNotReady = (message) =>
     coded(message, WorkspaceErrorCode.WORKSPACE_NOT_READY, 503, true);
+
+export const notImplemented = (message) =>
+    coded(message, WorkspaceErrorCode.NOT_IMPLEMENTED, 501);

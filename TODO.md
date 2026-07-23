@@ -3,16 +3,25 @@
 Eval `/workspace/ingest/<driver>/<format>` ?stream?
 https://canvas.idnc.sk/home/pinned
 
-- Refactor user + workspace + contexts index
+
+We need to refactor the unfortunate way we handle workspaces on the server, specifically:
+- Refactor users + workspaces + contexts index
 - Allow removing of the default context
-- Allow removing of the universe
+- Allow removing of the users default "universe" workspace
+
+Workspaces are movable, one should easily move them between canvas-server instances - even by copyting them into users Workspaces directory (server should scan for valid accessible workspaces - we need this feature to support a more standard import/export feature)
+
+We also need to support foreign-local or remote workspaces besides "transplanting" a workspace into a users Workspaces director, hence why the updated design should account for that
+
+The design is still an open question hence the plan mode trigger for this session
+If we auto-scan, we could probably hold all user workspaces under User in a map(re-use our conf-based wrapper to support conf updates with all the bells and whistles wo reinventing the wheel)
+Contexts are user-local, can span workspaces (although not sure, this moved between workspace-local and user-local a couple of times already)
+
 Server
   - Users
-    - User container
-      - Workspaces/
-	  	- Workspace container
-
-dynamic discovery at least for workspaces, to facilitate simple import/export or even rsync - newly copied workspace gets autodiscovered
+    - User "container"
+      - Workspaces
+        - Workspace "container"
 
 ## Scheduled tasks
 

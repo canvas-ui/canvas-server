@@ -7,6 +7,7 @@ import { env } from './env.js';
 import path from 'path';
 import EventEmitter from 'eventemitter2';
 import Jim from './utils/jim/index.js';
+import { runPerUserIndexMigration } from './utils/migrations/001-per-user-indexes.js';
 const jim = new Jim({
     rootPath: path.join(env.server.home, 'db'),
     driver: 'conf',
@@ -211,6 +212,20 @@ class Server extends EventEmitter {
     }
 
     async #initializeCoreServices() {
+        // One-time split of the legacy global workspaces/contexts indexes into
+        // per-user files (db/users/<id>/...) — must run before any manager
+        // opens its index.
+        try {
+            await runPerUserIndexMigration({
+                dbPath: path.join(env.server.home, 'db'),
+                usersRootPath: env.user.home,
+                logger,
+            });
+        } catch (err) {
+            logger.error({ err }, 'Per-user index migration failed');
+            throw err;
+        }
+
         this.#users = new Users({
             rootPath: env.user.home,
             indexStore: jim.createIndex('users'),
@@ -229,14 +244,14 @@ class Server extends EventEmitter {
 
         this.#workspaceManager = new WorkspaceManager({
             defaultRootPath: env.user.home,
-            indexStore: jim.createIndex('workspaces'),
+            indexFactory: jim, // per-user index files under db/users/<id>/
             users: this.#users,
             embedd: this.#embedd,
             logger: createLogger('workspace-manager'),
         });
 
         this.#contextManager = new ContextManager({
-            indexStore: jim.createIndex('contexts'),
+            indexFactory: jim, // per-user index files under db/users/<id>/
             workspaceManager: this.#workspaceManager,
             logger: createLogger('context-manager'),
         });

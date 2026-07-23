@@ -143,6 +143,19 @@ const WORKSPACE_SERVICES = {
     },
 };
 
+// How this server relates to a workspace directory. Index-only — never
+// written into workspace.json (a transplanted dir must not carry the previous
+// server's origin classification with it).
+// - local: lives under the owner's Workspaces/ dir, discovered by scan
+// - foreign-local: arbitrary absolute path on this machine, registered via API
+// - remote: hosted by another canvas-server (host != canvas.local); entries
+//   are representable but resolution is not implemented yet
+const WORKSPACE_ORIGINS = {
+    LOCAL: 'local',
+    FOREIGN_LOCAL: 'foreign-local',
+    REMOTE: 'remote',
+};
+
 const WORKSPACE_STATUS_CODES = {
     AVAILABLE: 'available', // Workspace dir exists, config readable
     NOT_FOUND: 'not_found', // Workspace dir/config specified in index not found
@@ -180,6 +193,7 @@ export {
     WORKSPACE_CONFIG_FILENAME,
     WORKSPACE_DIRECTORIES,
     WORKSPACE_GIT_BARE_DIR,
+    WORKSPACE_ORIGINS,
     WORKSPACE_STATUS_CODES,
     WORKSPACE_INTERNALS,
     WORKSPACE_STORAGE_BACKENDS,

@@ -188,4 +188,58 @@ export function normalizeConfig(options = {}) {
     return { providers, spaces, rules };
 }
 
-export default { normalizeConfig, toMatcher, builtinProviders, PROVIDER_TYPES };
+/**
+ * Merge configuration layers, lowest precedence first —
+ * `mergeConfigLayers(serverDefault, userConfig)`.
+ *
+ * Providers merge by id and spaces merge KEY-WISE, so a user who only wants a
+ * different text model sends `{ spaces: { text: { model, dim } } }` and inherits
+ * the provider underneath. (normalizeConfig replaces whole spaces; that is the
+ * right call for a single hand-written file, and this is the right call for
+ * layering. The merged result still has to validate, so a half-specified space
+ * fails loudly rather than embedding with a mismatched dim.)
+ *
+ * Routing rules do NOT merge — a layer that declares them replaces them
+ * wholesale. Interleaving ordered match rules from two sources produces routing
+ * nobody wrote or can predict.
+ */
+export function mergeConfigLayers(...layers) {
+    const out = { providers: {}, spaces: {} };
+    let rules = null;
+    for (const layer of layers) {
+        if (!layer || typeof layer !== 'object') { continue; }
+        for (const [id, spec] of Object.entries(layer.providers || {})) {
+            if (!spec || typeof spec !== 'object') { continue; }
+            out.providers[id] = { ...(out.providers[id] || {}), ...spec };
+        }
+        // Within a layer, an explicit `spaces` entry beats a backend described
+        // inline on a legacy rule; across layers, later still wins.
+        const layerSpaces = { ...splitLegacyRules(layer.rules || []), ...(layer.spaces || {}) };
+        for (const [space, cfg] of Object.entries(layerSpaces)) {
+            if (!cfg || typeof cfg !== 'object') { continue; }
+            out.spaces[space] = { ...(out.spaces[space] || {}), ...cfg };
+        }
+        if (Array.isArray(layer.rules) && layer.rules.length) { rules = layer.rules; }
+    }
+    if (rules) { out.rules = rules; }
+    return out;
+}
+
+/**
+ * Strip secrets from a config for anything that leaves the server. API keys are
+ * write-only over the API: a GET reports whether one is set, never its value.
+ */
+export function redactConfig(config) {
+    const providers = {};
+    for (const [id, spec] of Object.entries(config?.providers || {})) {
+        const { apiKey, headers, ...rest } = spec || {};
+        providers[id] = {
+            ...rest,
+            ...(apiKey ? { apiKeySet: true } : {}),
+            ...(headers ? { headerNames: Object.keys(headers) } : {}),
+        };
+    }
+    return { ...config, providers };
+}
+
+export default { normalizeConfig, mergeConfigLayers, redactConfig, toMatcher, builtinProviders, PROVIDER_TYPES };

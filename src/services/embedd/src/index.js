@@ -3,29 +3,32 @@
 import debugInstance from 'debug';
 const debug = debugInstance('canvas:embedd');
 
-import Router from './router.js';
+import Router, { DEFAULT_SPACES } from './router.js';
 import Queue from './queue.js';
 import Semaphore from './semaphore.js';
-import { normalizeConfig } from './config.js';
-import { createProviders } from './providers/index.js';
+import { normalizeConfig, mergeConfigLayers } from './config.js';
+import ProviderPool from './providers/pool.js';
 import { chunkText } from './chunking.js';
 import { COMMENT_CHUNK_ID, TEXT_SPACE, BASELINE_SPACES, presenceKey, seenKey } from './constants.js';
 
 /**
  * Embedd — the canvas embedding service.
  *
- * One shared model runtime for the whole server (no per-workspace model
- * footprint) with pluggable providers and a content router — but a SEPARATE
- * queue per workspace, so a workspace's backlog is its own and a bulk import in
- * one never shows up as pending work in another. Concurrency across those queues
- * is capped by a shared semaphore, because the expensive part (inference) is
- * still a server-wide resource; default limit 1 reproduces the old single-serial
- * queue exactly.
+ * Three things are scoped differently, on purpose:
  *
- * Providers and routing rules are CONFIG (see config.js), which is what lets the
- * provider layer point at a remote/GPU inference host without touching code.
+ *   per USER      the backend config — which provider/model fills each modality.
+ *                 Workspaces belong to users, so a workspace embeds with its
+ *                 OWNER's models. Resolution: built-in ← server default ← user.
+ *   per WORKSPACE the queue, so a bulk import in one workspace never shows up as
+ *                 pending work in another.
+ *   per SERVER    the model runtimes (pooled by backend config, so N users on the
+ *                 same endpoint share one client) and the inference concurrency
+ *                 cap, because inference is a server-wide resource however many
+ *                 users want a slice of it. Default limit 1 reproduces the old
+ *                 single-serial queue exactly.
+ *
  * synapsd owns no model — it only stores + searches vectors; for search, the
- * synapsd Db is handed this service's `embedQuery` as a callback.
+ * synapsd Db is handed this service's `embedQuery` bound to the workspace owner.
  *
  * Workspace adapter contract (per registerWorkspace):
  *   resolveInput(docId) -> {
@@ -43,9 +46,13 @@ import { COMMENT_CHUNK_ID, TEXT_SPACE, BASELINE_SPACES, presenceKey, seenKey } f
  */
 export default class Embedd {
 
-    #router;
-    #providers;
+    #baseOptions;              // cache dirs / hosts for the built-in providers
+    #serverConfig;             // admin-set defaults (the embedd.json layer)
+    #resolveUserConfig;        // async (userId) -> raw per-user config | null
+    #pool = new ProviderPool();
+    #contexts = new Map();     // userId -> { config, router, providers } (lazy, invalidatable)
     #workspaces = new Map();   // wsId -> adapter
+    #wsUser = new Map();       // wsId -> userId (whose models the workspace embeds with)
     #queues = new Map();       // wsId -> Queue  (one per workspace)
     #gate;                     // shared inference concurrency cap
     #batchSize;
@@ -61,25 +68,92 @@ export default class Embedd {
 
     /**
      * @param {object} [options]
-     * @param {object} [options.providers]    declared providers, keyed by id (config.js)
-     * @param {Array}  [options.rules]        routing rules (defaults to DEFAULT_RULES)
-     * @param {string} [options.onnxCacheDir] built-in `onnx` provider cache dir
-     * @param {string} [options.clipCacheDir] built-in `clip` provider cache dir
-     * @param {string} [options.ollamaHost]   built-in `ollama` provider host
-     * @param {number} [options.concurrency]  max batches in flight across all queues
+     * @param {object} [options.providers] server-default providers (embedd.json)
+     * @param {object} [options.spaces]    server-default per-space backends
+     * @param {Array}  [options.rules]     routing rules
+     * @param {string} [options.onnxCacheDir]
+     * @param {string} [options.clipCacheDir]
+     * @param {string} [options.ollamaHost]
+     * @param {number} [options.concurrency] max batches in flight across all queues
+     * @param {(userId:string)=>Promise<object|null>} [options.resolveUserConfig]
+     *        per-user overrides. Omitted → every user gets the server config.
      */
     constructor(options = {}) {
-        const { providers, spaces, rules } = normalizeConfig(options);
-        this.#router = new Router({ rules, spaces });
-        this.#providers = createProviders(providers);
+        const { providers, spaces, rules, concurrency, resolveUserConfig, ...base } = options;
+        this.#baseOptions = base;
+        this.#serverConfig = { providers, spaces, rules };
+        this.#resolveUserConfig = typeof resolveUserConfig === 'function' ? resolveUserConfig : null;
+        // Validate the server layer eagerly: a broken embedd.json must fail at
+        // boot, not on the first document a user happens to save.
+        this.#context(null);
         // Batched drain: images resolved in one batch share a single provider
         // call (one IPC round-trip + one batched ORT run for up to N images)
         // instead of one call per doc — the dominant ingest cost for photo sets.
         this.#batchSize = Math.max(1, Number(process.env.CANVAS_EMBED_BATCH) || 8);
-        this.#gate = new Semaphore(options.concurrency || Number(process.env.CANVAS_EMBEDD_CONCURRENCY) || 1);
+        this.#gate = new Semaphore(concurrency || Number(process.env.CANVAS_EMBEDD_CONCURRENCY) || 1);
     }
 
-    get router() { return this.#router; }
+    // ── Per-user configuration ────────────────────────────────────────────────
+
+    /**
+     * Build (and cache) a user's resolved context: their config, the router it
+     * produces, and their provider instances drawn from the shared pool.
+     * `userId === null` is the server layer — used for validation at boot and as
+     * the fallback for any workspace with no resolvable owner.
+     */
+    #context(userId, rawUser = null) {
+        const cached = this.#contexts.get(userId);
+        if (cached) { return cached; }
+
+        // Built-in ← server ← user, all merged KEY-WISE per space. The built-in
+        // layer has to take part: a user who sets only `{ text: { model, dim } }`
+        // must inherit the provider from underneath rather than declaring a
+        // space with no backend.
+        const merged = mergeConfigLayers({ spaces: DEFAULT_SPACES }, this.#serverConfig, rawUser);
+        // A user's config is data they typed. It must never take the server down:
+        // fall back to the server layer and surface the reason instead.
+        let normalized;
+        try {
+            normalized = normalizeConfig({ ...this.#baseOptions, ...merged });
+        } catch (e) {
+            if (userId === null) { throw e; }   // the server layer is an operator error → loud
+            debug(`user ${userId} has invalid embedd config, falling back to server defaults: ${e.message}`);
+            const ctx = { ...this.#context(null), invalid: e.message };
+            this.#contexts.set(userId, ctx);
+            return ctx;
+        }
+
+        const ctx = {
+            config: normalized,
+            router: new Router({ rules: normalized.rules, spaces: normalized.spaces }),
+            providers: this.#pool.resolve(normalized.providers),
+        };
+        this.#contexts.set(userId, ctx);
+        return ctx;
+    }
+
+    /** Resolved context for a user, loading their stored config on first use. */
+    async contextFor(userId) {
+        if (!userId || !this.#resolveUserConfig) { return this.#context(userId || null); }
+        if (this.#contexts.has(userId)) { return this.#contexts.get(userId); }
+        let raw = null;
+        try { raw = await this.#resolveUserConfig(userId); }
+        catch (e) { debug(`resolveUserConfig(${userId}) failed, using server defaults: ${e.message}`); }
+        return this.#context(userId, raw);
+    }
+
+    /**
+     * Drop a user's cached context so their next operation re-reads config.
+     * Providers stay pooled — a config change must not tear down a model runtime
+     * another user is mid-batch on.
+     */
+    invalidateUser(userId) {
+        this.#contexts.delete(userId);
+        debug(`config cache invalidated for ${userId}`);
+    }
+
+    /** Router for a user (their routing + backends). */
+    async routerFor(userId) { return (await this.contextFor(userId)).router; }
 
     /**
      * Per-space vector config for synapsd (`semantic.spaces`). The router knows
@@ -93,10 +167,11 @@ export default class Embedd {
      * a space still on its baseline model keeps the original `vec_text`/`vec_image`
      * so making the model configurable orphans nothing.
      */
-    spaceConfigs() {
+    async spaceConfigsFor(userId) {
+        const router = await this.routerFor(userId);
         const out = {};
-        for (const space of this.#router.spaces) {
-            const rule = this.#router.spaceRule(space);
+        for (const space of router.spaces) {
+            const rule = router.spaceRule(space);
             if (!rule) { continue; }
             const baseline = BASELINE_SPACES[space];
 
@@ -119,20 +194,33 @@ export default class Embedd {
 
     // ── Workspace registration ────────────────────────────────────────────────
 
-    registerWorkspace(wsId, adapter) {
+    /**
+     * @param {string} wsId
+     * @param {object} adapter  resolveInput / storeVectors / getUnembedded / …
+     * @param {{userId?: string}} [opts] the workspace OWNER — whose configured
+     *   models this workspace embeds with. Omitted → server defaults.
+     */
+    registerWorkspace(wsId, adapter, { userId = null } = {}) {
         if (!wsId || !adapter?.resolveInput || !adapter?.storeVectors) {
             throw new Error('registerWorkspace requires { resolveInput, storeVectors }');
         }
         this.#workspaces.set(wsId, adapter);
+        if (userId) { this.#wsUser.set(wsId, userId); }
         this.#queueFor(wsId);
-        debug(`workspace registered: ${wsId}`);
+        debug(`workspace registered: ${wsId}${userId ? ` (owner ${userId})` : ''}`);
     }
 
     unregisterWorkspace(wsId) {
         this.#queues.get(wsId)?.stop();
         this.#queues.delete(wsId);
         this.#workspaces.delete(wsId);
+        this.#wsUser.delete(wsId);
         debug(`workspace unregistered: ${wsId}`);
+    }
+
+    /** Workspaces owned by a user — the ones a config change affects. */
+    workspacesOf(userId) {
+        return [...this.#wsUser.entries()].filter(([, u]) => u === userId).map(([wsId]) => wsId);
     }
 
     /** This workspace's queue, created on demand. */
@@ -186,6 +274,8 @@ export default class Embedd {
     async #handleBatch(wsId, jobs) {
         const ws = this.#workspaces.get(wsId);
         if (!ws) { return; }   // unregistered mid-flight
+        // The workspace embeds with its OWNER's configured models.
+        const ctx = await this.contextFor(this.#wsUser.get(wsId));
 
         // 1) Resolve inputs.
         const items = [];   // { job, input, rule }
@@ -193,7 +283,7 @@ export default class Embedd {
             try {
                 const input = await ws.resolveInput(job.docId);
                 if (!input) { continue; }   // doc gone → do not record as seen
-                const rule = input.skip ? null : this.#router.route(input);
+                const rule = input.skip ? null : ctx.router.route(input);
                 items.push({ job, input, rule });
             } catch (e) {
                 console.warn(`embedd: resolveInput failed for ${wsId}:${job.docId} (doc keeps no vectors until reconcile): ${e.message}`);
@@ -210,7 +300,7 @@ export default class Embedd {
             imageGroups.get(key).list.push(it);
         }
         for (const { rule, list } of imageGroups.values()) {
-            const provider = this.#providers.get(rule.provider);
+            const provider = ctx.providers.get(rule.provider);
             if (!provider) { continue; }   // #finish surfaces the unknown-provider error per doc
             try {
                 const { vectors } = await provider.embedImage(
@@ -234,7 +324,7 @@ export default class Embedd {
         // 3) Finish docs sequentially (bounded main-thread/LMDB pressure).
         for (const it of items) {
             try {
-                await this.#finish(wsId, ws, it, rowsByItem.get(it));
+                await this.#finish(wsId, ws, ctx, it, rowsByItem.get(it));
             } catch (e) {
                 console.warn(`embedd: job ${wsId}:${it.job.docId} failed (doc keeps no vectors until reconcile): ${e.message}`);
             }
@@ -243,12 +333,12 @@ export default class Embedd {
 
     // Store/comment/seen pipeline for one resolved doc. `precomputedRows` skips
     // the primary embed (batch image path); undefined → embed here.
-    async #finish(wsId, ws, { job, input, rule }, precomputedRows) {
+    async #finish(wsId, ws, ctx, { job, input, rule }, precomputedRows) {
         const { schema, updatedAt } = input;
         // The doc appears in the gap of EVERY space that lists its schema as a
         // candidate (files are candidates for both text+image). It resolves to at
         // most one; the rest must still be marked seen so reconcile converges.
-        const candidateSpaces = this.#router.candidateSpaces(schema);
+        const candidateSpaces = ctx.router.candidateSpaces(schema);
         const comment = typeof input.comment === 'string' ? input.comment.trim() : '';
 
         // Spaces we've written real vectors to (so the seen-[] pass below skips them
@@ -257,7 +347,7 @@ export default class Embedd {
         const written = new Set();
 
         if (rule) {
-            const provider = this.#providers.get(rule.provider);
+            const provider = ctx.providers.get(rule.provider);
             if (!provider) { throw new Error(`unknown provider '${rule.provider}'`); }
             let rows = precomputedRows;
             try {
@@ -273,7 +363,7 @@ export default class Embedd {
             // same upsert (one storeVectors per space — a second text upsert would
             // delete+replace and wipe the content chunks).
             if (rule.space === TEXT_SPACE && comment) {
-                const cRow = await this.#embedComment(comment);
+                const cRow = await this.#embedComment(comment, ctx);
                 if (cRow) { rows = [...rows, cRow]; }
             }
             await ws.storeVectors(job.docId, schema, updatedAt, rows, { space: rule.space, model: rule.model });
@@ -287,8 +377,8 @@ export default class Embedd {
         // non-text files, or non-embeddable JSON like tabs). Own upsert with just
         // the comment chunk; marks the doc seen in text so it leaves the gap.
         if (comment && !written.has(TEXT_SPACE)) {
-            const cRow = await this.#embedComment(comment);
-            const textModel = this.#router.spaceRule(TEXT_SPACE)?.model;
+            const cRow = await this.#embedComment(comment, ctx);
+            const textModel = ctx.router.spaceRule(TEXT_SPACE)?.model;
             await ws.storeVectors(job.docId, schema, updatedAt, cRow ? [cRow] : [], { space: TEXT_SPACE, model: textModel });
             written.add(TEXT_SPACE);
         }
@@ -304,10 +394,10 @@ export default class Embedd {
     // Embed a document's user-authored comment as a single dedicated chunk row
     // (reserved chunkId) using the text space's provider/model. Returns null if the
     // text space has no provider or the vector couldn't be produced.
-    async #embedComment(comment) {
-        const rule = this.#router.spaceRule(TEXT_SPACE);
+    async #embedComment(comment, ctx) {
+        const rule = ctx.router.spaceRule(TEXT_SPACE);
         if (!rule) { return null; }
-        const provider = this.#providers.get(rule.provider);
+        const provider = ctx.providers.get(rule.provider);
         if (!provider) { return null; }
         const { vectors } = await provider.embedText([comment], rule);
         const vec = vectors?.[0];
@@ -354,12 +444,15 @@ export default class Embedd {
         if (!ws) { return { error: 'workspace not registered' }; }
         if (!ws.getUnembedded) { return { error: 'workspace has no ledger adapter' }; }
 
-        const spaces = space ? [space] : this.#router.spaces;
+        // The gap is defined by the OWNER's spaces — a user who switched models
+        // has a different set of candidate spaces to drain.
+        const router = await this.routerFor(this.#wsUser.get(wsId));
+        const spaces = space ? [space] : router.spaces;
         const per = {};
         let enqueued = 0;
         for (const sp of spaces) {
             if (reindex && ws.clearSpace) { await ws.clearSpace(sp); }
-            const schemas = this.#router.candidateSchemas(sp);
+            const schemas = router.candidateSchemas(sp);
             if (schemas.length === 0) { per[sp] = 0; continue; }
             let ids = [];
             try { ids = await ws.getUnembedded(sp, schemas); } catch (e) { debug(`reconcile ${wsId}/${sp}: ${e.message}`); }
@@ -373,12 +466,17 @@ export default class Embedd {
 
     // ── Query (search side) ───────────────────────────────────────────────────
 
-    /** Embed a query string into a space's vector, for synapsd search. */
-    async embedQuery(text, space = 'text') {
+    /**
+     * Embed a query string into a space's vector, for synapsd search. Must use
+     * the SAME model that filled the space, so it takes the workspace owner —
+     * querying a Qwen-filled table with a bge vector returns noise.
+     */
+    async embedQuery(text, space = 'text', userId = null) {
         if (typeof text !== 'string' || text.length === 0) { return null; }
-        const rule = this.#router.spaceRule(space);
+        const ctx = await this.contextFor(userId);
+        const rule = ctx.router.spaceRule(space);
         if (!rule) { return null; }
-        const provider = this.#providers.get(rule.provider);
+        const provider = ctx.providers.get(rule.provider);
         if (!provider) { return null; }
         const { vector } = await provider.embedQuery(text, rule);
         return vector || null;
@@ -451,18 +549,21 @@ export default class Embedd {
     }
 
     async status() {
-        const providers = {};
-        for (const [id, p] of this.#providers) {
-            try { providers[id] = await p.status(); } catch (e) { providers[id] = { id, error: e.message }; }
-        }
         const queues = {};
         for (const [wsId, q] of this.#queues) {
-            queues[wsId] = { pending: q.size, draining: q.isDraining, paused: q.isPaused };
+            queues[wsId] = {
+                pending: q.size, draining: q.isDraining, paused: q.isPaused,
+                owner: this.#wsUser.get(wsId) || null,
+            };
         }
+        const serverRouter = (await this.contextFor(null)).router;
         return {
             workspaces: this.#workspaces.size,
-            spaces: this.#router.spaces,
-            spaceConfigs: this.spaceConfigs(),
+            // The SERVER-default spaces. Per-user spaces are reported by the
+            // per-user config endpoint — this is an operator view.
+            spaces: serverRouter.spaces,
+            spaceConfigs: await this.spaceConfigsFor(null),
+            configuredUsers: [...this.#contexts.keys()].filter(Boolean).length,
             concurrency: { limit: this.#gate.limit, active: this.#gate.active, waiting: this.#gate.waiting },
             // Server-wide rollup — the admin pause/resume surface.
             queue: {
@@ -472,7 +573,9 @@ export default class Embedd {
                 ingestDisabled: this.#ingestDisabled,
             },
             queues,
-            providers,
+            // Pooled by backend config, so this is the set of DISTINCT backends
+            // in use across all users, not one entry per user.
+            providers: await this.#pool.status(),
         };
     }
 
@@ -480,6 +583,7 @@ export default class Embedd {
         this.#stopped = true;
         for (const q of this.#queues.values()) { q.stop(); }
         this.#queues.clear();
-        await Promise.all([...this.#providers.values()].map(p => p.stop().catch(() => {})));
+        this.#contexts.clear();
+        await this.#pool.stopAll();
     }
 }

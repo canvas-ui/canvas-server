@@ -206,7 +206,9 @@ class Workspace extends EventEmitter {
                 // Actual routing (what really embeds where) from the embedd router
                 // rules — notes/emails + text-file blobs → text, image/* → image.
                 // Surfaced so the UI shows reality, not synapsd's note-only gap default.
-                const router = this.#embedd.router;
+                // The owner's router — a user who configured their own backends
+                // must see THOSE models here, not the server defaults.
+                const router = await this.#embedd.routerFor(this.owner);
                 const routing = {};
                 for (const r of (router?.rules || [])) {
                     const m = r.match || {};
@@ -489,20 +491,30 @@ class Workspace extends EventEmitter {
             ]);
 
             const dbPath = this.dbPath;
+            // Resolve the owner's embedding backends BEFORE synapsd starts: the
+            // vector spaces (tables + ledger keys) are latched at Db construction.
+            const embeddSpaces = this.#embedd?.spaceConfigsFor
+                ? await this.#embedd.spaceConfigsFor(this.owner).catch((err) => {
+                    this.#logger.warn({ workspaceId: this.id, error: err.message }, 'embedd space config resolve failed; using defaults');
+                    return undefined;
+                })
+                : undefined;
             this.#db = new Db({
                 path: dbPath,
                 // synapsd owns no model; if the embedd service is present, hand it
                 // the query embedder so dense/hybrid search works. Absent → FTS.
                 semantic: this.#embedd
                     ? {
-                        embedQuery: (text, space) => this.#embedd.embedQuery(text, space),
+                        // Bound to the OWNER: a query must be embedded by the same
+                        // model that filled the space, or the kNN is noise.
+                        embedQuery: (text, space) => this.#embedd.embedQuery(text, space, this.owner),
                         // The embedd router owns each space's model + dim, so it also
                         // owns where those vectors live: a space on its baseline model
                         // keeps the original table, any other model gets its own table
                         // AND its own presence/seen ledger. That is what makes a model
                         // swap reversible — switch back and the previous vectors are
                         // still there, still marked embedded, nothing to redo.
-                        spaces: this.#embedd.spaceConfigs?.(),
+                        spaces: embeddSpaces,
                         // Workspace-level search tuning (persisted in workspace.json
                         // under `semantic`). Undefined → synapsd defaults.
                         imageMaxDistance: (this.#configStore.get('semantic', {}) || {}).imageMaxDistance,
@@ -818,7 +830,7 @@ class Workspace extends EventEmitter {
                 this.#embedStoreCount = 0;
                 return this.#optimizeSearchIndexes('queue-drained');
             },
-        });
+        }, { userId: this.owner });
         // Live enqueue: new + content-updated docs. Blob ingestion also lands as
         // document.inserted (WorkspaceStoredIndex creates docs), so this covers
         // stored files too — no separate object:add subscription needed.

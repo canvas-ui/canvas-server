@@ -161,7 +161,7 @@ test('createProviders: an openai provider without a baseUrl fails at build time,
 
 test('spaceConfigs: baseline models keep the original Lance tables', async () => {
     const e = new Embedd();
-    const sc = e.spaceConfigs();
+    const sc = await e.spaceConfigsFor(null);
     // An explicit `table` pins the space to its pre-config table, so existing
     // vectors stay attached. This is the guarantee that making the model
     // configurable orphans nothing.
@@ -173,7 +173,7 @@ test('spaceConfigs: baseline models keep the original Lance tables', async () =>
 
 test('spaceConfigs: ledger keys are always (space, model) with the model as the leaf', async () => {
     const e = new Embedd();
-    const sc = e.spaceConfigs();
+    const sc = await e.spaceConfigsFor(null);
     // Uniform even for baseline spaces. A namespace must never also be a key:
     // listBitmaps() range-scans strictly below `prefix + '/'`, so a bare
     // `.../vectors/text` above `.../vectors/text/<slug>` would be unlistable
@@ -201,7 +201,7 @@ test('spaceConfigs: a non-baseline model gets its own table AND its own ledger',
             chunk: true, match: { schema: 'data/abstraction/note' },
         }],
     });
-    const sc = e.spaceConfigs();
+    const sc = await e.spaceConfigsFor(null);
     assert.equal(sc.text.model, 'Qwen/Qwen3-Embedding-0.6B');
     assert.equal(sc.text.dim, 1024);
     assert.equal(sc.text.table, undefined, 'synapsd derives vec_text__<slug>__<dim>');
@@ -220,7 +220,7 @@ test('spaceConfigs: same space, same model, different dim is still a new space',
             chunk: true, match: { schema: 'data/abstraction/note' },
         }],
     });
-    const sc = e.spaceConfigs();
+    const sc = await e.spaceConfigsFor(null);
     assert.equal(sc.text.table, undefined);
     assert.equal(sc.text.dim, 256);
     await e.stop();
@@ -236,7 +236,7 @@ test('spaceConfigs: a new modality slots in with no code change', async () => {
             { space: 'audio', provider: 'gpu', model: 'laion/clap-htsat-unfused', dim: 512, chunk: false, match: { contentType: 'audio/*' } },
         ],
     });
-    const sc = e.spaceConfigs();
+    const sc = await e.spaceConfigsFor(null);
     assert.equal(sc.audio.bitmapKey, 'internal/embed/vectors/audio/laion-clap-htsat-unfused');
     assert.equal(sc.audio.seenKey, 'internal/embed/seen/audio/laion-clap-htsat-unfused');
     assert.equal(sc.audio.table, undefined, 'no baseline → model-keyed table');

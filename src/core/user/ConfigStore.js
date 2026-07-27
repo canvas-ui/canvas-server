@@ -9,13 +9,20 @@ import { createLogger } from '../../utils/log.js';
  * <userHome>/<email>/config/<name>.json, alongside tokens.json and devices.json.
  *
  * The store is deliberately schema-less: it round-trips whatever object the
- * client owns (currently the web UI's webui.json). The server never introspects
- * it, the same way canvas layer metadata is opaque to the backend.
+ * client owns (webui.json). The server never introspects it, the same way canvas
+ * layer metadata is opaque to the backend.
+ *
+ * `embedd` is the exception and it matters: the server DOES read and act on it
+ * (it selects the embedding backends a user's workspaces run), so it must be
+ * validated before it lands here. Validation lives in the route rather than the
+ * store, keeping the store schema-less while ensuring nothing invalid is ever
+ * persisted — embedd itself also refuses to trust it, falling back to server
+ * defaults if a stored config no longer resolves.
  */
 
 // The name lands in a filesystem path, so an open parameter would be a
 // traversal vector. Whitelist rather than sanitize.
-const ALLOWED_CONFIGS = new Set(['webui']);
+const ALLOWED_CONFIGS = new Set(['webui', 'embedd']);
 
 const MAX_CONFIG_BYTES = 256 * 1024;
 

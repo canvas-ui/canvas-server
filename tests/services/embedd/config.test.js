@@ -101,12 +101,44 @@ test('normalizeConfig: a rule without a usable dim throws (it sizes the Lance ta
 });
 
 test('normalizeConfig: JSON matchers are compiled on the way in', () => {
-    const { rules } = normalizeConfig({
+    const { rules, spaces } = normalizeConfig({
+        providers: { gpu: { type: 'openai', baseUrl: 'http://gpu.local:7997' } },
+        spaces: { image: { provider: 'gpu', model: 'siglip', dim: 768, chunk: false } },
+        rules: [{ space: 'image', match: { contentType: 'image/*' } }],
+    });
+    const r = new Router({ rules, spaces });
+    assert.equal(r.route({ modality: 'image', schema: 'data/abstraction/file', contentType: 'image/jpeg' }).provider, 'gpu');
+});
+
+test('normalizeConfig: the pre-split shape (provider/model on the rule) still loads', () => {
+    // The first cut shipped provider+model+dim inline on each rule, and that is
+    // what the example config shows. Keep reading it: the first rule to describe
+    // a space defines that space's backend, and the rule keeps its routing half.
+    const { rules, spaces } = normalizeConfig({
         providers: { gpu: { type: 'openai', baseUrl: 'http://gpu.local:7997' } },
         rules: [{ space: 'image', provider: 'gpu', model: 'siglip', dim: 768, chunk: false, match: { contentType: 'image/*' } }],
     });
-    const r = new Router({ rules });
-    assert.equal(r.route({ modality: 'image', schema: 'data/abstraction/file', contentType: 'image/jpeg' }).provider, 'gpu');
+    assert.deepEqual(spaces.image, { provider: 'gpu', model: 'siglip', dim: 768, chunk: false });
+    assert.deepEqual(rules, [{ space: 'image', match: { contentType: /^image\// } }]);
+    const r = new Router({ rules, spaces });
+    assert.equal(r.route({ modality: 'image', schema: 'data/abstraction/file', contentType: 'image/png' }).provider, 'gpu');
+});
+
+test('normalizeConfig: a space override leaves the other spaces on their defaults', () => {
+    // Partial config is the norm once users override one modality.
+    const { spaces } = normalizeConfig({
+        providers: { gpu: { type: 'openai', baseUrl: 'http://gpu.local:8000/v1' } },
+        spaces: { text: { provider: 'gpu', model: 'bge-m3', dim: 1024, chunk: true } },
+    });
+    assert.equal(spaces.text.provider, 'gpu');
+    assert.equal(spaces.image.provider, 'clip', 'untouched space keeps its default backend');
+});
+
+test('normalizeConfig: a rule routing to a space with no backend throws', () => {
+    assert.throws(
+        () => normalizeConfig({ rules: [{ space: 'audio', match: { contentType: 'audio/*' } }] }),
+        /space 'audio', which has no configured backend/,
+    );
 });
 
 // ── Provider factory ─────────────────────────────────────────────────────────

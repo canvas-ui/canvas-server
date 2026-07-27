@@ -69,8 +69,8 @@ export default class Embedd {
      * @param {number} [options.concurrency]  max batches in flight across all queues
      */
     constructor(options = {}) {
-        const { providers, rules } = normalizeConfig(options);
-        this.#router = new Router({ rules });
+        const { providers, spaces, rules } = normalizeConfig(options);
+        this.#router = new Router({ rules, spaces });
         this.#providers = createProviders(providers);
         // Batched drain: images resolved in one batch share a single provider
         // call (one IPC round-trip + one batched ORT run for up to N images)

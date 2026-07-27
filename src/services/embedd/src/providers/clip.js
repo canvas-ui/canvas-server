@@ -25,18 +25,37 @@ export default class ClipProvider {
 
     id = 'clip';
     #cacheDir;
+    #model;
+    #dtype;
     #child = null;
     #pending = new Map();   // requestId -> { resolve, reject }
     #seq = 1;
 
-    constructor({ cacheDir = null } = {}) {
+    /**
+     * @param {object} [options]
+     * @param {string} [options.cacheDir]
+     * @param {string} [options.model] transformers.js model id; overrides the
+     *   worker's CANVAS_CLIP_MODEL default. Normally supplied from the routing
+     *   rule's `model` so the config, not an env var, is the source of truth.
+     * @param {string} [options.dtype] fp32 (default, best retrieval quality) | q8 | …
+     *   Changing dtype SHIFTS the embeddings — re-embed the image space after a
+     *   switch, or stored vectors won't line up with query vectors.
+     */
+    constructor({ cacheDir = null, model = null, dtype = null, id = null } = {}) {
+        if (id) { this.id = id; }
         this.#cacheDir = cacheDir;
+        this.#model = model;
+        this.#dtype = dtype;
     }
 
     #ensureWorker() {
         if (this.#child) { return this.#child; }
         const env = { ...process.env };
         if (this.#cacheDir) { env.CANVAS_CLIP_CACHE = this.#cacheDir; }
+        // Config wins over the ambient env: the worker reads these as its
+        // defaults, so setting them here makes the routing rule authoritative.
+        if (this.#model) { env.CANVAS_CLIP_MODEL = this.#model; }
+        if (this.#dtype) { env.CANVAS_CLIP_DTYPE = this.#dtype; }
         // 'advanced' (v8 structured clone) so image Buffers/TypedArrays cross the
         // IPC boundary intact instead of being JSON-mangled.
         const child = fork(WORKER_PATH, [], { env, serialization: 'advanced' });
@@ -103,7 +122,15 @@ export default class ClipProvider {
     }
 
     status() {
-        return { id: this.id, cacheDir: this.#cacheDir, worker: !!this.#child, pending: this.#pending.size };
+        return {
+            id: this.id,
+            type: 'clip',
+            cacheDir: this.#cacheDir,
+            model: this.#model || process.env.CANVAS_CLIP_MODEL || 'Xenova/siglip-base-patch16-224',
+            dtype: this.#dtype || process.env.CANVAS_CLIP_DTYPE || 'fp32',
+            worker: !!this.#child,
+            pending: this.#pending.size,
+        };
     }
 
     async stop() {

@@ -196,23 +196,33 @@ class Workspace extends EventEmitter {
     async getStats() {
         if (!this.isActive || !this.#db) return null;
         const stats = await this.#db.getStats();
-        // Embedding progress: the embedd queue is shared across workspaces, but its
-        // pending count + this workspace's per-space embeddedDocs (semantic.vectorSpaces)
-        // let the UI show a re-embed in flight and how far it's got.
-        if (this.#embedd?.status) {
+        // Embedding progress. The queue is this workspace's own, so the backlog
+        // shown here is genuinely its work — re-indexing a 3-doc workspace no
+        // longer reports the server's other 800 pending jobs. Combined with the
+        // per-space embeddedDocs (semantic.vectorSpaces) the UI can show a
+        // re-embed in flight and how far it's got.
+        if (this.#embedd?.workspaceStatus) {
             try {
-                const es = await this.#embedd.status();
                 // Actual routing (what really embeds where) from the embedd router
                 // rules — notes/emails + text-file blobs → text, image/* → image.
                 // Surfaced so the UI shows reality, not synapsd's note-only gap default.
+                const router = this.#embedd.router;
                 const routing = {};
-                for (const r of (this.#embedd.router?.rules || [])) {
+                for (const r of (router?.rules || [])) {
                     const m = r.match || {};
                     const desc = m.schema != null ? String(m.schema)
                         : (m.contentType != null ? `mime ${String(m.contentType)}` : 'any');
                     (routing[r.space] ||= []).push(desc);
                 }
-                stats.embedder = { queue: es.queue, routing };
+                // Which provider/model fills each space — now that both are config,
+                // the UI should say what is actually running rather than imply the
+                // old hardcoded pair.
+                const spaces = {};
+                for (const sp of (router?.spaces || [])) {
+                    const rule = router.spaceRule(sp);
+                    if (rule) { spaces[sp] = { provider: rule.provider, model: rule.model, dim: rule.dim }; }
+                }
+                stats.embedder = { queue: this.#embedd.workspaceStatus(this.id), routing, spaces };
             } catch (_) { /* best effort */ }
         }
         return stats;
@@ -486,6 +496,13 @@ class Workspace extends EventEmitter {
                 semantic: this.#embedd
                     ? {
                         embedQuery: (text, space) => this.#embedd.embedQuery(text, space),
+                        // The embedd router owns each space's model + dim, so it also
+                        // owns where those vectors live: a space on its baseline model
+                        // keeps the original table, any other model gets its own table
+                        // AND its own presence/seen ledger. That is what makes a model
+                        // swap reversible — switch back and the previous vectors are
+                        // still there, still marked embedded, nothing to redo.
+                        spaces: this.#embedd.spaceConfigs?.(),
                         // Workspace-level search tuning (persisted in workspace.json
                         // under `semantic`). Undefined → synapsd defaults.
                         imageMaxDistance: (this.#configStore.get('semantic', {}) || {}).imageMaxDistance,
@@ -764,6 +781,21 @@ class Workspace extends EventEmitter {
     /** Wipe an embedding space (vectors + presence + seen) for a full re-embed. */
     async clearSpace(space = 'text') {
         return await this.#getActiveDb().clearSpace(space);
+    }
+
+    /**
+     * Dense-vector tables in this workspace, flagged with which are live. Tables
+     * a model swap left behind report `active:false` — they still hold their
+     * vectors so switching back is free, and this is how you find the ones worth
+     * reclaiming.
+     */
+    async listVectorTables() {
+        return await this.#getActiveDb().listVectorTables();
+    }
+
+    /** Drop a superseded model's vectors + ledger. Refuses live tables. */
+    async dropVectorTable(name) {
+        return await this.#getActiveDb().dropVectorTable(name);
     }
 
     // ── embedd registration + live enqueue ────────────────────────────────────

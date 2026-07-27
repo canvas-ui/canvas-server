@@ -5,22 +5,26 @@ const debug = debugInstance('canvas:embedd');
 
 import Router from './router.js';
 import Queue from './queue.js';
-import OnnxProvider from './providers/onnx.js';
-import OllamaProvider from './providers/ollama.js';
-import ClipProvider from './providers/clip.js';
+import Semaphore from './semaphore.js';
+import { normalizeConfig } from './config.js';
+import { createProviders } from './providers/index.js';
 import { chunkText } from './chunking.js';
-import { COMMENT_CHUNK_ID, TEXT_SPACE } from './constants.js';
+import { COMMENT_CHUNK_ID, TEXT_SPACE, BASELINE_SPACES, modelSlug } from './constants.js';
 
 /**
  * Embedd — the canvas embedding service.
  *
- * Singleton (one model runtime shared across all workspaces — no per-workspace
- * model footprint). Owns pluggable providers (ONNX local, Ollama remote) and a
- * content router. Workspaces register a small adapter and enqueue doc ids; the
- * queue resolves the doc's embeddable input, routes it to a provider/space,
- * embeds, and pushes chunk vectors back through the workspace's storeVectors.
+ * One shared model runtime for the whole server (no per-workspace model
+ * footprint) with pluggable providers and a content router — but a SEPARATE
+ * queue per workspace, so a workspace's backlog is its own and a bulk import in
+ * one never shows up as pending work in another. Concurrency across those queues
+ * is capped by a shared semaphore, because the expensive part (inference) is
+ * still a server-wide resource; default limit 1 reproduces the old single-serial
+ * queue exactly.
  *
- * synapsd owns no model — it only stores + searches vectors. For search, the
+ * Providers and routing rules are CONFIG (see config.js), which is what lets the
+ * provider layer point at a remote/GPU inference host without touching code.
+ * synapsd owns no model — it only stores + searches vectors; for search, the
  * synapsd Db is handed this service's `embedQuery` as a callback.
  *
  * Workspace adapter contract (per registerWorkspace):
@@ -35,15 +39,18 @@ import { COMMENT_CHUNK_ID, TEXT_SPACE } from './constants.js';
  *   } | null                    // null => skip (doc gone / not embeddable)
  *   storeVectors(docId, schema, updatedAt, chunks, { space }) -> Promise<void>
  *     chunks: { chunkId, text?, vector }[]
- *   onQueueDrained?() -> Promise<void>   // optional: queue fully drained (compact/index hook)
+ *   onQueueDrained?() -> Promise<void>   // optional: THIS workspace's queue drained
  */
 export default class Embedd {
 
     #router;
-    #providers = new Map();
-    #workspaces = new Map();   // wsId -> { resolveInput, storeVectors }
-    #queue;
+    #providers;
+    #workspaces = new Map();   // wsId -> adapter
+    #queues = new Map();       // wsId -> Queue  (one per workspace)
+    #gate;                     // shared inference concurrency cap
+    #batchSize;
     #stopped = false;
+    #paused = false;           // global pause (admin control); per-queue pause is separate
     // Soft ingest gate: CANVAS_EMBEDD_INGEST_DISABLED=true drops enqueues and
     // no-ops reconcile while queries (embedQuery) keep serving existing
     // vectors. Escape hatch for CPU-bound bulk ingests (the serialized CLIP
@@ -52,33 +59,63 @@ export default class Embedd {
     // the hard switch (no embedd instance at all, dense search degrades).
     #ingestDisabled = process.env.CANVAS_EMBEDD_INGEST_DISABLED === 'true';
 
+    /**
+     * @param {object} [options]
+     * @param {object} [options.providers]    declared providers, keyed by id (config.js)
+     * @param {Array}  [options.rules]        routing rules (defaults to DEFAULT_RULES)
+     * @param {string} [options.onnxCacheDir] built-in `onnx` provider cache dir
+     * @param {string} [options.clipCacheDir] built-in `clip` provider cache dir
+     * @param {string} [options.ollamaHost]   built-in `ollama` provider host
+     * @param {number} [options.concurrency]  max batches in flight across all queues
+     */
     constructor(options = {}) {
-        this.#router = new Router({ rules: options.rules });
-        this.#providers.set('onnx', new OnnxProvider({ cacheDir: options.onnxCacheDir || null }));
-        this.#providers.set('ollama', new OllamaProvider({ host: options.ollamaHost }));
-        this.#providers.set('clip', new ClipProvider({ cacheDir: options.clipCacheDir || options.onnxCacheDir || null }));
+        const { providers, rules } = normalizeConfig(options);
+        this.#router = new Router({ rules });
+        this.#providers = createProviders(providers);
         // Batched drain: images resolved in one batch share a single provider
         // call (one IPC round-trip + one batched ORT run for up to N images)
         // instead of one call per doc — the dominant ingest cost for photo sets.
-        const batchSize = Math.max(1, Number(process.env.CANVAS_EMBED_BATCH) || 8);
-        this.#queue = new Queue((jobs) => this.#handleBatch(jobs), { batchSize });
-        this.#queue.on('error', (e) => console.warn(`embedd: job ${e.key} failed (doc keeps no vectors until reconcile): ${e.error}`));
-        // Bulk ingests leave the Lance tables shredded (one delete+add commit per
-        // doc) with no ANN index; notify workspaces on drain so they can compact
-        // + index without waiting for a manual admin optimize. Best-effort.
-        this.#queue.on('drained', async () => {
-            // Sequential on purpose: compaction + ANN rebuild is CPU-heavy native
-            // work inside this process — running every workspace's maintenance in
-            // parallel right after a drain visibly degrades live queries.
-            for (const [wsId, ws] of this.#workspaces) {
-                if (typeof ws.onQueueDrained !== 'function') { continue; }
-                try { await ws.onQueueDrained(); }
-                catch (e) { debug(`onQueueDrained failed for ${wsId}: ${e.message}`); }
-            }
-        });
+        this.#batchSize = Math.max(1, Number(process.env.CANVAS_EMBED_BATCH) || 8);
+        this.#gate = new Semaphore(options.concurrency || Number(process.env.CANVAS_EMBEDD_CONCURRENCY) || 1);
     }
 
     get router() { return this.#router; }
+
+    /**
+     * Per-space vector config for synapsd (`semantic.spaces`). The router knows
+     * each space's model+dim; synapsd keys its Lance table (and, via the keys
+     * below, its presence/seen ledger) off them.
+     *
+     * A space still on its BASELINE model keeps the original table and bitmap
+     * keys, so making the model configurable orphans nothing. Any other model
+     * gets its own table AND its own ledger — which is what makes switching
+     * models and switching back cheap: the previous model's vectors and its
+     * "already embedded" bookkeeping are both still there, so a revert costs a
+     * restart rather than a full re-embed.
+     */
+    spaceConfigs() {
+        const out = {};
+        for (const space of this.#router.spaces) {
+            const rule = this.#router.spaceRule(space);
+            if (!rule) { continue; }
+            const baseline = BASELINE_SPACES[space];
+            const annIndex = rule.annIndex ?? baseline?.annIndex;
+
+            if (baseline && baseline.model === rule.model && baseline.dim === rule.dim) {
+                out[space] = { table: baseline.table, dim: baseline.dim, bitmapKey: baseline.bitmapKey };
+            } else {
+                const slug = modelSlug(rule.model);
+                out[space] = {
+                    model: rule.model,
+                    dim: rule.dim,
+                    bitmapKey: `internal/lance/vectors/${space}/${slug}`,
+                    seenKey: `internal/embed/seen/${space}/${slug}`,
+                };
+            }
+            if (annIndex === false) { out[space].annIndex = false; }
+        }
+        return out;
+    }
 
     // ── Workspace registration ────────────────────────────────────────────────
 
@@ -87,12 +124,43 @@ export default class Embedd {
             throw new Error('registerWorkspace requires { resolveInput, storeVectors }');
         }
         this.#workspaces.set(wsId, adapter);
+        this.#queueFor(wsId);
         debug(`workspace registered: ${wsId}`);
     }
 
     unregisterWorkspace(wsId) {
+        this.#queues.get(wsId)?.stop();
+        this.#queues.delete(wsId);
         this.#workspaces.delete(wsId);
         debug(`workspace unregistered: ${wsId}`);
+    }
+
+    /** This workspace's queue, created on demand. */
+    #queueFor(wsId) {
+        let q = this.#queues.get(wsId);
+        if (q) { return q; }
+
+        // Every batch takes a permit from the shared gate, so per-workspace
+        // queues give isolation and visibility without multiplying the load the
+        // inference runtime actually sees.
+        q = new Queue((jobs) => this.#gate.run(() => this.#handleBatch(wsId, jobs)), { batchSize: this.#batchSize });
+        q.on('error', (e) => console.warn(`embedd: job ${e.key} failed (doc keeps no vectors until reconcile): ${e.error}`));
+        // Bulk ingests leave the Lance tables shredded (one delete+add commit per
+        // doc) with no ANN index; notify the workspace on drain so it can compact
+        // + index without waiting for a manual admin optimize. Best-effort, and
+        // now scoped to the workspace that actually drained — the shared queue
+        // used to wake EVERY registered workspace on any drain.
+        q.on('drained', async () => {
+            const ws = this.#workspaces.get(wsId);
+            if (typeof ws?.onQueueDrained !== 'function') { return; }
+            try { await ws.onQueueDrained(); }
+            catch (e) { debug(`onQueueDrained failed for ${wsId}: ${e.message}`); }
+        });
+        // A workspace registered while embedding is globally paused must not
+        // start draining behind the admin's back.
+        if (this.#paused) { q.pause(); }
+        this.#queues.set(wsId, q);
+        return q;
     }
 
     // ── Ingestion ─────────────────────────────────────────────────────────────
@@ -101,7 +169,7 @@ export default class Embedd {
         if (this.#stopped || this.#ingestDisabled || !this.#workspaces.has(wsId)) { return; }
         const id = Number(docId);
         if (!Number.isInteger(id) || id <= 0) { return; }
-        this.#queue.enqueue(`${wsId}:${id}`, { wsId, docId: id });
+        this.#queueFor(wsId).enqueue(`${wsId}:${id}`, { wsId, docId: id });
     }
 
     enqueueMany(wsId, docIds) {
@@ -110,24 +178,25 @@ export default class Embedd {
     }
 
     /**
-     * Drain one batch: resolve every job's input, embed all image-modality
-     * inputs per rule in ONE provider call, then finish each doc individually
-     * (store vectors, comment chunk, seen ticks). Per-doc errors are isolated —
-     * one broken doc never fails its batch-mates.
+     * Drain one batch of a single workspace: resolve every job's input, embed all
+     * image-modality inputs per rule in ONE provider call, then finish each doc
+     * individually (store vectors, comment chunk, seen ticks). Per-doc errors are
+     * isolated — one broken doc never fails its batch-mates.
      */
-    async #handleBatch(jobs) {
+    async #handleBatch(wsId, jobs) {
+        const ws = this.#workspaces.get(wsId);
+        if (!ws) { return; }   // unregistered mid-flight
+
         // 1) Resolve inputs.
-        const items = [];   // { job, ws, input, rule }
+        const items = [];   // { job, input, rule }
         for (const job of jobs) {
-            const ws = this.#workspaces.get(job.wsId);
-            if (!ws) { continue; }
             try {
                 const input = await ws.resolveInput(job.docId);
                 if (!input) { continue; }   // doc gone → do not record as seen
                 const rule = input.skip ? null : this.#router.route(input);
-                items.push({ job, ws, input, rule });
+                items.push({ job, input, rule });
             } catch (e) {
-                console.warn(`embedd: resolveInput failed for ${job.wsId}:${job.docId} (doc keeps no vectors until reconcile): ${e.message}`);
+                console.warn(`embedd: resolveInput failed for ${wsId}:${job.docId} (doc keeps no vectors until reconcile): ${e.message}`);
             }
         }
 
@@ -144,7 +213,13 @@ export default class Embedd {
             const provider = this.#providers.get(rule.provider);
             if (!provider) { continue; }   // #finish surfaces the unknown-provider error per doc
             try {
-                const { vectors } = await provider.embedImage(list.map((it) => it.input.bytes), rule);
+                const { vectors } = await provider.embedImage(
+                    list.map((it) => it.input.bytes),
+                    rule,
+                    // Remote providers encode images as data URIs and need the
+                    // mime; local ones ignore the third argument.
+                    { contentTypes: list.map((it) => it.input.contentType || null) },
+                );
                 list.forEach((it, i) => {
                     const vec = vectors?.[i];
                     rowsByItem.set(it, Array.isArray(vec) ? [{ chunkId: 0, vector: vec }] : []);
@@ -159,16 +234,16 @@ export default class Embedd {
         // 3) Finish docs sequentially (bounded main-thread/LMDB pressure).
         for (const it of items) {
             try {
-                await this.#finish(it, rowsByItem.get(it));
+                await this.#finish(wsId, ws, it, rowsByItem.get(it));
             } catch (e) {
-                console.warn(`embedd: job ${it.job.wsId}:${it.job.docId} failed (doc keeps no vectors until reconcile): ${e.message}`);
+                console.warn(`embedd: job ${wsId}:${it.job.docId} failed (doc keeps no vectors until reconcile): ${e.message}`);
             }
         }
     }
 
     // Store/comment/seen pipeline for one resolved doc. `precomputedRows` skips
     // the primary embed (batch image path); undefined → embed here.
-    async #finish({ job, ws, input, rule }, precomputedRows) {
+    async #finish(wsId, ws, { job, input, rule }, precomputedRows) {
         const { schema, updatedAt } = input;
         // The doc appears in the gap of EVERY space that lists its schema as a
         // candidate (files are candidates for both text+image). It resolves to at
@@ -191,7 +266,7 @@ export default class Embedd {
                 // A provider that can't handle this input yet (e.g. image/CLIP is not
                 // wired) must NOT abort the job — the doc's comment still needs its
                 // text vector. Treat as 0 content rows (seen, no presence).
-                debug(`primary embed failed ${job.wsId}:${job.docId} in '${rule.space}': ${err.message}`);
+                debug(`primary embed failed ${wsId}:${job.docId} in '${rule.space}': ${err.message}`);
                 rows = [];
             }
             // If content routes to the text space, bundle the comment chunk into the
@@ -203,9 +278,9 @@ export default class Embedd {
             }
             await ws.storeVectors(job.docId, schema, updatedAt, rows, { space: rule.space, model: rule.model });
             written.add(rule.space);
-            debug(`embedded ${job.wsId}:${job.docId} → ${rows.length} chunk(s) in '${rule.space}'`);
+            debug(`embedded ${wsId}:${job.docId} → ${rows.length} chunk(s) in '${rule.space}'`);
         } else {
-            debug(`skip ${job.wsId}:${job.docId} (schema=${schema}, ct=${input.contentType})`);
+            debug(`skip ${wsId}:${job.docId} (schema=${schema}, ct=${input.contentType})`);
         }
 
         // Comment → text space when content didn't already route there (photos,
@@ -243,7 +318,7 @@ export default class Embedd {
     async #embedInput(provider, rule, input) {
         if (input.modality === 'image') {
             if (!input.bytes) { return []; }
-            const { vectors } = await provider.embedImage([input.bytes], rule);
+            const { vectors } = await provider.embedImage([input.bytes], rule, { contentTypes: [input.contentType || null] });
             const vec = vectors?.[0];
             return Array.isArray(vec) ? [{ chunkId: 0, vector: vec }] : [];
         }
@@ -311,23 +386,68 @@ export default class Embedd {
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
-    async drained() { await this.#queue.drained(); }
-
     /**
-     * Pause embedding after the in-flight batch: the queue holds its backlog
-     * (and keeps accepting enqueues) but drains nothing until resume(). Runtime
-     * state only — a restart clears it; reconcile re-drives anything missed.
+     * Resolve when the given workspace's queue has drained, or (no argument)
+     * when every workspace's has. The all-workspaces form re-checks after each
+     * settle: queues drain independently, so one finishing says nothing about
+     * the others, and a reconcile can feed a queue while another is still busy.
      */
-    pause() {
-        this.#queue.pause();
-        debug('queue paused');
-        return { paused: true, pending: this.#queue.size };
+    async drained(wsId = null) {
+        if (wsId) { await this.#queues.get(wsId)?.drained(); return; }
+        for (;;) {
+            await Promise.all([...this.#queues.values()].map((q) => q.drained()));
+            if ([...this.#queues.values()].every((q) => q.size === 0 && !q.isDraining)) { return; }
+        }
     }
 
-    resume() {
-        this.#queue.resume();
-        debug('queue resumed');
-        return { paused: false, pending: this.#queue.size };
+    /**
+     * Pause embedding after the in-flight batch: queues hold their backlog (and
+     * keep accepting enqueues) but drain nothing until resume(). Runtime state
+     * only — a restart clears it; reconcile re-drives anything missed.
+     * @param {string} [wsId] pause just this workspace (default: all)
+     */
+    pause(wsId = null) {
+        if (wsId) {
+            const q = this.#queues.get(wsId);
+            q?.pause();
+            debug(`queue paused: ${wsId}`);
+            return { paused: true, workspace: wsId, pending: q?.size || 0 };
+        }
+        this.#paused = true;
+        for (const q of this.#queues.values()) { q.pause(); }
+        debug('queues paused (all)');
+        return { paused: true, pending: this.#pending() };
+    }
+
+    resume(wsId = null) {
+        if (wsId) {
+            const q = this.#queues.get(wsId);
+            q?.resume();
+            debug(`queue resumed: ${wsId}`);
+            return { paused: false, workspace: wsId, pending: q?.size || 0 };
+        }
+        this.#paused = false;
+        for (const q of this.#queues.values()) { q.resume(); }
+        debug('queues resumed (all)');
+        return { paused: false, pending: this.#pending() };
+    }
+
+    #pending() {
+        let total = 0;
+        for (const q of this.#queues.values()) { total += q.size; }
+        return total;
+    }
+
+    /** Queue state for ONE workspace — what the workspace settings UI shows. */
+    workspaceStatus(wsId) {
+        const q = this.#queues.get(wsId);
+        if (!q) { return null; }
+        return {
+            pending: q.size,
+            draining: q.isDraining,
+            paused: q.isPaused,
+            ingestDisabled: this.#ingestDisabled,
+        };
     }
 
     async status() {
@@ -335,22 +455,31 @@ export default class Embedd {
         for (const [id, p] of this.#providers) {
             try { providers[id] = await p.status(); } catch (e) { providers[id] = { id, error: e.message }; }
         }
+        const queues = {};
+        for (const [wsId, q] of this.#queues) {
+            queues[wsId] = { pending: q.size, draining: q.isDraining, paused: q.isPaused };
+        }
         return {
             workspaces: this.#workspaces.size,
             spaces: this.#router.spaces,
+            spaceConfigs: this.spaceConfigs(),
+            concurrency: { limit: this.#gate.limit, active: this.#gate.active, waiting: this.#gate.waiting },
+            // Server-wide rollup — the admin pause/resume surface.
             queue: {
-                pending: this.#queue.size,
-                draining: this.#queue.isDraining,
-                paused: this.#queue.isPaused,
+                pending: this.#pending(),
+                draining: [...this.#queues.values()].some((q) => q.isDraining),
+                paused: this.#paused,
                 ingestDisabled: this.#ingestDisabled,
             },
+            queues,
             providers,
         };
     }
 
     async stop() {
         this.#stopped = true;
-        this.#queue.stop();
+        for (const q of this.#queues.values()) { q.stop(); }
+        this.#queues.clear();
         await Promise.all([...this.#providers.values()].map(p => p.stop().catch(() => {})));
     }
 }

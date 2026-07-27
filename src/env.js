@@ -1,4 +1,5 @@
 // Imports
+import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import argv from 'node:process';
@@ -12,6 +13,7 @@ const SERVER_MODE = argv.argv.slice(2).includes('--user') ? 'user' : 'standalone
 const SERVER_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const SERVER_HOME = process.env.CANVAS_SERVER_HOME || getServerHome();
 const USER_HOME = process.env.CANVAS_USER_HOME || getUserHome();
+const EMBEDD_CONFIG_PATH = process.env.CANVAS_EMBEDD_CONFIG || path.join(SERVER_HOME, 'config', 'embedd.json');
 
 /**
  * Environment variables
@@ -42,13 +44,23 @@ export const env = {
         home: USER_HOME
     },
     embedd: {
-        // Server-managed embedding service (shared singleton). Disabled → workspaces
-        // run store-only: existing vectors stay searchable, no new embeddings, dense
-        // search degrades to FTS.
+        // Server-managed embedding service (shared model runtimes, one queue per
+        // workspace). Disabled → workspaces run store-only: existing vectors stay
+        // searchable, no new embeddings, dense search degrades to FTS.
         enabled: process.env.CANVAS_EMBEDD_ENABLED !== 'false',
         ollamaHost: process.env.OLLAMA_HOST || null,
         // One shared fastembed model store for all workspaces (not per-workspace).
         cacheDir: process.env.CANVAS_EMBEDD_CACHE_DIR || path.join(SERVER_HOME, 'embedd', 'models'),
+        // Max embedding batches in flight across ALL workspace queues. 1 keeps the
+        // old single-serial-queue behaviour (right when inference is CPU-local);
+        // raise it once the providers point at a GPU host that can take the load.
+        concurrency: Math.max(1, Number(process.env.CANVAS_EMBEDD_CONCURRENCY) || 1),
+        // Optional providers + routing rules file. Absent → built-in providers and
+        // DEFAULT_RULES, i.e. CPU-local ONNX + CLIP. This is the file that points
+        // embedd at a remote/GPU inference host without a code change; see
+        // src/services/embedd/src/config.js for the shape.
+        configPath: EMBEDD_CONFIG_PATH,
+        ...readJsonConfig(EMBEDD_CONFIG_PATH, 'embedd'),
     },
     messaging: {
         // User notification/chat channels (Slack, WhatsApp Cloud API). The
@@ -100,6 +112,22 @@ export const env = {
 /**
  * Private Utils
  */
+
+/**
+ * Read an optional JSON config file. A missing file is the normal case (defaults
+ * apply) and returns {}. A file that exists but cannot be parsed is a real
+ * mistake, so it is reported loudly rather than silently ignored — but it still
+ * falls back to defaults instead of taking the whole server down at import time.
+ */
+function readJsonConfig(filePath, label) {
+    try {
+        if (!fs.existsSync(filePath)) { return {}; }
+        return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    } catch (error) {
+        console.warn(`env: ignoring unreadable ${label} config at ${filePath}: ${error.message}`);
+        return {};
+    }
+}
 
 function getServerHome() {
     if (SERVER_MODE === 'user') {

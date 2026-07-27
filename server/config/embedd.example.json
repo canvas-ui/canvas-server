@@ -1,0 +1,52 @@
+{
+  "_comment": "Copy to embedd.json (or point CANVAS_EMBEDD_CONFIG at it) to override the embedding providers and routing table. Absent = CPU-local ONNX text + CLIP images, i.e. the built-in defaults. Providers onnx/ollama/clip always exist; declaring one by the same id overrides its options. Rules match top-down, first match wins. `match.contentType` accepts an exact string, a `type/*` prefix, or an explicit `/regex/flags`. Changing a space's model or dim moves its vectors into their own Lance table with their own ledger, so the previous model stays intact and switching back costs a restart, not a re-embed. Reclaim a superseded model with DELETE /rest/v2/admin/workspaces/:id/vector-tables/:table.",
+
+  "providers": {
+    "gpu-text": {
+      "type": "openai",
+      "baseUrl": "http://gpu.local:8000/v1",
+      "apiKey": null,
+      "timeoutMs": 120000
+    },
+    "gpu-image": {
+      "type": "openai",
+      "baseUrl": "http://gpu.local:7997",
+      "imageInput": "data-uri"
+    }
+  },
+
+  "rules": [
+    {
+      "space": "text",
+      "provider": "gpu-text",
+      "model": "Qwen/Qwen3-Embedding-0.6B",
+      "dim": 1024,
+      "chunk": true,
+      "match": { "schema": "data/abstraction/note" }
+    },
+    {
+      "space": "text",
+      "provider": "gpu-text",
+      "model": "Qwen/Qwen3-Embedding-0.6B",
+      "dim": 1024,
+      "chunk": true,
+      "match": { "schema": "data/abstraction/email" }
+    },
+    {
+      "space": "text",
+      "provider": "gpu-text",
+      "model": "Qwen/Qwen3-Embedding-0.6B",
+      "dim": 1024,
+      "chunk": true,
+      "match": { "contentType": "text/*" }
+    },
+    {
+      "space": "image",
+      "provider": "gpu-image",
+      "model": "google/siglip-base-patch16-224",
+      "dim": 768,
+      "chunk": false,
+      "match": { "contentType": "image/*" }
+    }
+  ]
+}

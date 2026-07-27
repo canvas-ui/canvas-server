@@ -20,7 +20,8 @@ export default class OllamaProvider {
     id = 'ollama';
     #host;
 
-    constructor({ host } = {}) {
+    constructor({ host, id } = {}) {
+        if (id) { this.id = id; }
         this.#host = (host || process.env.OLLAMA_HOST || DEFAULT_HOST).replace(/\/+$/, '');
     }
 
@@ -71,7 +72,7 @@ export default class OllamaProvider {
     }
 
     async status() {
-        return { id: this.id, host: this.#host, reachable: await this.#ping() };
+        return { id: this.id, type: 'ollama', host: this.#host, reachable: await this.#ping() };
     }
 
     async stop() { /* stateless HTTP client */ }

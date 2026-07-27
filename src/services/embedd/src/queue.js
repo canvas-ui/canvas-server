@@ -60,13 +60,23 @@ export default class Queue extends EventEmitter {
         this.#kick();
     }
 
-    /** Resolves when the queue has fully drained (or immediately if idle). */
+    /** Resolves when the queue has fully drained (or immediately if idle/stopped). */
     async drained() {
+        if (this.#stopped) { return; }
         if (!this.#running && this.#queue.length === 0) { return; }
         await new Promise((resolve) => this.once('drained', resolve));
     }
 
-    stop() { this.#stopped = true; }
+    /**
+     * Stop draining permanently. Anything still queued is abandoned (the durable
+     * gap ledger re-drives it on the next reconcile), and 'drained' is emitted so
+     * a caller awaiting drained() on a stopped/unregistered queue is released
+     * instead of hanging forever.
+     */
+    stop() {
+        this.#stopped = true;
+        if (!this.#running) { this.emit('drained'); }
+    }
 
     #kick() {
         if (this.#running || this.#stopped || this.#paused) { return; }
@@ -91,8 +101,11 @@ export default class Queue extends EventEmitter {
             }
         } finally {
             this.#running = false;
-            if (this.#queue.length === 0) {
-                debug(`drain done: processed ${processed} jobs`);
+            if (this.#queue.length === 0 || this.#stopped) {
+                // Stopped with a backlog still counts as drained for waiters:
+                // nothing more will run, and the durable gap ledger re-drives
+                // the abandoned jobs on the next reconcile.
+                debug(`drain done: processed ${processed} jobs${this.#stopped ? ' (stopped)' : ''}`);
                 this.emit('drained');
             } else if (!this.#paused) { this.#kick(); }
             // paused with a backlog: stay quiet — resume() re-kicks.

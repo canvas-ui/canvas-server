@@ -217,13 +217,23 @@ class Server extends EventEmitter {
             logger: createLogger('users'),
         });
 
-        // Shared embedding service — one model runtime for all workspaces (avoids
-        // the per-workspace model footprint). Optional: when disabled, workspaces
-        // run store-only and dense search degrades to FTS.
+        // Shared embedding service — model runtimes are shared across workspaces
+        // (avoids the per-workspace model footprint) while each workspace owns its
+        // own queue. Optional: when disabled, workspaces run store-only and dense
+        // search degrades to FTS.
+        //
+        // `providers` + `rules` come from the optional embedd config file, which is
+        // how the provider layer gets pointed at a remote/GPU inference host. A
+        // malformed config throws here on purpose: a typo'd provider id would
+        // otherwise degrade dense search silently, which is far worse than a loud
+        // boot failure.
         if (env.embedd.enabled) {
             this.#embedd = new Embedd({
                 onnxCacheDir: env.embedd.cacheDir,
                 ollamaHost: env.embedd.ollamaHost,
+                concurrency: env.embedd.concurrency,
+                providers: env.embedd.providers,
+                rules: env.embedd.rules,
             });
         }
 

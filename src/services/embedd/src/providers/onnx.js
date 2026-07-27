@@ -177,7 +177,8 @@ export default class OnnxProvider {
     #workers = new Map();   // modelId -> ModelWorker
     #cacheDir;
 
-    constructor({ cacheDir } = {}) {
+    constructor({ cacheDir, id } = {}) {
+        if (id) { this.id = id; }
         this.#cacheDir = cacheDir || null;
     }
 
@@ -210,6 +211,7 @@ export default class OnnxProvider {
     status() {
         return {
             id: this.id,
+            type: 'onnx',
             cacheDir: this.#cacheDir,
             models: [...this.#workers.values()].map(w => w.status()),
         };

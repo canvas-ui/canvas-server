@@ -34,6 +34,7 @@ import webdavRoutes from './routes/webdav.js';
 import contextWebdavRoutes from './routes/context-webdav.js';
 import menuRoutes from './routes/menu.js';
 import userRoutes from './routes/users.js';
+import embeddRoutes from './routes/embedd.js';
 import roleRoutes from './routes/roles/index.js';
 import roleTemplateRoutes from './routes/role-templates/index.js';
 import messagingRoutes from './routes/messaging/index.js';
@@ -342,6 +343,7 @@ export async function createServer(options = {}) {
   server.register(messagingRoutes, { prefix: '/rest/v2/messaging' });
   server.register(messagingWebhookRoutes, { prefix: '/rest/v2/messaging/webhooks' });
   server.register(voiceRoutes, { prefix: '/rest/v2/voice' });
+  server.register(withoutAgentTokens(embeddRoutes), { prefix: '/rest/v2/embedd' });
   server.register(withoutAgentTokens(adminRoutes), { prefix: '/rest/v2/admin' });
   server.register(withoutAgentTokens(roleRoutes), { prefix: '/rest/v2/roles' });
   server.register(withoutAgentTokens(roleTemplateRoutes), { prefix: '/rest/v2/role-templates' });

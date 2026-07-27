@@ -60,6 +60,12 @@ export const env = {
         // embedd at a remote/GPU inference host without a code change; see
         // src/services/embedd/src/config.js for the shape.
         configPath: EMBEDD_CONFIG_PATH,
+        // Optional host allowlist for user-supplied provider URLs. Empty = only
+        // the always-blocked ranges (link-local / cloud metadata) apply, which
+        // is the right default: loopback and private ranges are where local
+        // Ollama and in-office GPU boxes live. Set it to lock users down to
+        // named hosts. Entries may be exact (`gpu.local`) or `*.suffix`.
+        allowHosts: (process.env.CANVAS_EMBEDD_ALLOW_HOSTS || '').split(',').map((h) => h.trim()).filter(Boolean),
         ...readJsonConfig(EMBEDD_CONFIG_PATH, 'embedd'),
     },
     messaging: {

@@ -155,6 +155,46 @@ export default class Embedd {
     /** Router for a user (their routing + backends). */
     async routerFor(userId) { return (await this.contextFor(userId)).router; }
 
+    /** The server-default layer, as stored (unresolved). */
+    get serverConfig() { return this.#serverConfig; }
+
+    /**
+     * Replace the server-default layer at runtime. Validates before adopting —
+     * a rejected config leaves the running one untouched — then drops EVERY
+     * cached context, since the defaults sit underneath every user.
+     * @throws if the new config does not resolve
+     */
+    setServerConfig(config = {}) {
+        const previous = this.#serverConfig;
+        const previousContexts = this.#contexts;
+        this.#serverConfig = { providers: config.providers, spaces: config.spaces, rules: config.rules };
+        this.#contexts = new Map();
+        try {
+            this.#context(null);
+        } catch (e) {
+            this.#serverConfig = previous;
+            this.#contexts = previousContexts;
+            throw e;
+        }
+        debug('server default config replaced; all user contexts invalidated');
+        return this.#context(null).config;
+    }
+
+    /**
+     * Validate a candidate config the way it would actually be used — layered
+     * under (or over) the server defaults — without adopting it. This is what
+     * lets the API reject a bad config before it is ever persisted.
+     */
+    validate(config = {}, { asServerDefault = false } = {}) {
+        const layers = asServerDefault
+            ? [{ spaces: DEFAULT_SPACES }, config]
+            : [{ spaces: DEFAULT_SPACES }, this.#serverConfig, config];
+        return normalizeConfig({ ...this.#baseOptions, ...mergeConfigLayers(...layers) });
+    }
+
+    /** A pooled provider instance for an ad-hoc spec — used by test-connection. */
+    providerFor(spec) { return this.#pool.get(spec.id || 'test', spec); }
+
     /**
      * Per-space vector config for synapsd (`semantic.spaces`). The router knows
      * each space's model+dim, so it also decides where those vectors live and

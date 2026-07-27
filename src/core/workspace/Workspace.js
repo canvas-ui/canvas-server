@@ -178,6 +178,35 @@ class Workspace extends EventEmitter {
         return Workspace.#mergeConfigMap(WORKSPACE_SERVICES, this.#configStore.get('services') || {});
     }
 
+    /**
+     * embedd's config (`services.embedd`): `{ providers?, spaces?, rules? }`.
+     *
+     * This lives IN workspace.json on purpose. A workspace is meant to be
+     * self-contained and movable — stop it, tar it, scp it, run it under
+     * canvas-edge from a folder with no canvas-server at all — and which model
+     * its vectors were built with is part of what makes it readable elsewhere.
+     * Server and per-user config are *defaults* that a fresh workspace inherits;
+     * once set here, this layer wins and travels with the data.
+     *
+     * Empty ({}) means "inherit everything", which is the normal case.
+     */
+    get embeddConfig() {
+        const configured = (this.#configStore.get('services') || {}).embedd;
+        return configured && typeof configured === 'object' ? configured : {};
+    }
+
+    /**
+     * Single write authority for `services.embedd`. Validation happens above
+     * this (the route asks embedd to resolve the candidate first) — a workspace
+     * must never persist a config its own runtime would refuse.
+     */
+    setEmbeddConfig(config = {}) {
+        const services = this.#configStore.get('services') || {};
+        this.#configStore.set('services', { ...services, embedd: config });
+        this.emit('services.changed', { service: 'embedd', config });
+        return this.embeddConfig;
+    }
+
     get db() {
         if (!this.#db) throw new Error('Database not initialized');
         return this.#db;
@@ -206,9 +235,9 @@ class Workspace extends EventEmitter {
                 // Actual routing (what really embeds where) from the embedd router
                 // rules — notes/emails + text-file blobs → text, image/* → image.
                 // Surfaced so the UI shows reality, not synapsd's note-only gap default.
-                // The owner's router — a user who configured their own backends
-                // must see THOSE models here, not the server defaults.
-                const router = await this.#embedd.routerFor(this.owner);
+                // This workspace's own router — what it actually embeds with,
+                // after workspace.json overrides the user/server defaults.
+                const router = (await this.#embedd.contextForWorkspace(this.id)).router;
                 const routing = {};
                 for (const r of (router?.rules || [])) {
                     const m = r.match || {};
@@ -491,10 +520,12 @@ class Workspace extends EventEmitter {
             ]);
 
             const dbPath = this.dbPath;
-            // Resolve the owner's embedding backends BEFORE synapsd starts: the
-            // vector spaces (tables + ledger keys) are latched at Db construction.
-            const embeddSpaces = this.#embedd?.spaceConfigsFor
-                ? await this.#embedd.spaceConfigsFor(this.owner).catch((err) => {
+            // Resolve this workspace's embedding backends BEFORE synapsd starts:
+            // the vector spaces (tables + ledger keys) are latched at Db
+            // construction. workspace.json wins over the owner's defaults, so a
+            // moved/standalone workspace keeps embedding as its vectors were built.
+            const embeddSpaces = this.#embedd?.spaceConfigsForWorkspace
+                ? await this.#embedd.spaceConfigsForWorkspace(this.id, { userId: this.owner, config: this.embeddConfig }).catch((err) => {
                     this.#logger.warn({ workspaceId: this.id, error: err.message }, 'embedd space config resolve failed; using defaults');
                     return undefined;
                 })
@@ -507,7 +538,7 @@ class Workspace extends EventEmitter {
                     ? {
                         // Bound to the OWNER: a query must be embedded by the same
                         // model that filled the space, or the kNN is noise.
-                        embedQuery: (text, space) => this.#embedd.embedQuery(text, space, this.owner),
+                        embedQuery: (text, space) => this.#embedd.embedQueryForWorkspace(this.id, text, space),
                         // The embedd router owns each space's model + dim, so it also
                         // owns where those vectors live: a space on its baseline model
                         // keeps the original table, any other model gets its own table
@@ -785,6 +816,11 @@ class Workspace extends EventEmitter {
         }
     }
 
+    /** Document ids under a `ctx://` / `dir://` path — scopes a partial re-embed. */
+    async documentIdsUnderScope(scope) {
+        return await this.#getActiveDb().documentIdsUnderScope(scope);
+    }
+
     /** Ledger read: docIds that match `schemas` but have no embedding for `space`. */
     async getUnembeddedDocIds(space = 'text', schemas = null) {
         return await this.#getActiveDb().getUnembeddedDocIds(space, schemas);
@@ -820,6 +856,7 @@ class Workspace extends EventEmitter {
             storeVectors: (docId, schema, updatedAt, chunks, opts) =>
                 this.storeDocumentEmbeddings(docId, schema, updatedAt, chunks, opts),
             getUnembedded: (space, schemas) => this.getUnembeddedDocIds(space, schemas),
+            documentIdsUnderScope: (scope) => this.documentIdsUnderScope(scope),
             clearSpace: (space) => this.clearSpace(space),
             onQueueDrained: () => {
                 // The shared queue drains after every trickle (a single note
@@ -830,7 +867,7 @@ class Workspace extends EventEmitter {
                 this.#embedStoreCount = 0;
                 return this.#optimizeSearchIndexes('queue-drained');
             },
-        }, { userId: this.owner });
+        }, { userId: this.owner, config: this.embeddConfig });
         // Live enqueue: new + content-updated docs. Blob ingestion also lands as
         // document.inserted (WorkspaceStoredIndex creates docs), so this covers
         // stored files too — no separate object:add subscription needed.

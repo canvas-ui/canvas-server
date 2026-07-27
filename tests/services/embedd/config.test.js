@@ -127,17 +127,37 @@ test('createProviders: an openai provider without a baseUrl fails at build time,
 
 // ── Space configs (model lifecycle) ──────────────────────────────────────────
 
-test('spaceConfigs: baseline models keep the original tables + bitmap keys', async () => {
+test('spaceConfigs: baseline models keep the original Lance tables', async () => {
     const e = new Embedd();
     const sc = e.spaceConfigs();
-    // No `model` key → synapsd uses `table` verbatim, so existing vectors stay
-    // attached. This is the guarantee that making the model configurable
-    // orphans nothing.
-    assert.deepEqual(sc.text, { table: 'vec_text', dim: 384, bitmapKey: 'internal/lance/vectors' });
+    // An explicit `table` pins the space to its pre-config table, so existing
+    // vectors stay attached. This is the guarantee that making the model
+    // configurable orphans nothing.
+    assert.equal(sc.text.table, 'vec_text');
     assert.equal(sc.image.table, 'vec_image');
-    assert.equal(sc.image.bitmapKey, 'internal/lance/vectors/image');
     assert.equal(sc.image.annIndex, false, 'cross-modal kNN stays an exact scan');
-    assert.equal(sc.text.model, undefined);
+    await e.stop();
+});
+
+test('spaceConfigs: ledger keys are always (space, model) with the model as the leaf', async () => {
+    const e = new Embedd();
+    const sc = e.spaceConfigs();
+    // Uniform even for baseline spaces. A namespace must never also be a key:
+    // listBitmaps() range-scans strictly below `prefix + '/'`, so a bare
+    // `.../vectors/text` above `.../vectors/text/<slug>` would be unlistable
+    // under its own namespace — the defect the legacy `internal/lance/vectors`
+    // key had (it was text's bitmap AND image's parent path).
+    assert.equal(sc.text.bitmapKey, 'internal/embed/vectors/text/bge-small-en-v1.5');
+    assert.equal(sc.text.seenKey, 'internal/embed/seen/text/bge-small-en-v1.5');
+    assert.equal(sc.image.bitmapKey, 'internal/embed/vectors/image/xenova-siglip-base-patch16-224');
+    assert.equal(sc.image.seenKey, 'internal/embed/seen/image/xenova-siglip-base-patch16-224');
+    // Both ledgers share one root, so `internal/embed` lists every embedding
+    // bitmap and `internal/embed/vectors/text` lists every text model.
+    for (const cfg of Object.values(sc)) {
+        assert.ok(cfg.bitmapKey.startsWith('internal/embed/vectors/'));
+        assert.ok(cfg.seenKey.startsWith('internal/embed/seen/'));
+        assert.equal(cfg.bitmapKey.split('/').length, 5, 'space + model slug, no bare namespace key');
+    }
     await e.stop();
 });
 
@@ -155,7 +175,7 @@ test('spaceConfigs: a non-baseline model gets its own table AND its own ledger',
     assert.equal(sc.text.table, undefined, 'synapsd derives vec_text__<slug>__<dim>');
     // Model-scoped presence + seen keys are what make a revert free: switch back
     // and the old model's vectors are still there AND still marked embedded.
-    assert.equal(sc.text.bitmapKey, 'internal/lance/vectors/text/qwen-qwen3-embedding-0.6b');
+    assert.equal(sc.text.bitmapKey, 'internal/embed/vectors/text/qwen-qwen3-embedding-0.6b');
     assert.equal(sc.text.seenKey, 'internal/embed/seen/text/qwen-qwen3-embedding-0.6b');
     await e.stop();
 });
@@ -171,5 +191,22 @@ test('spaceConfigs: same space, same model, different dim is still a new space',
     const sc = e.spaceConfigs();
     assert.equal(sc.text.table, undefined);
     assert.equal(sc.text.dim, 256);
+    await e.stop();
+});
+
+test('spaceConfigs: a new modality slots in with no code change', async () => {
+    // The naming convention has to hold for spaces that do not exist yet —
+    // audio, spatial, whatever comes next.
+    const e = new Embedd({
+        providers: { gpu: { type: 'openai', baseUrl: 'http://gpu.local:8000/v1' } },
+        rules: [
+            { space: 'text', provider: 'onnx', model: 'bge-small-en-v1.5', dim: 384, chunk: true, match: { schema: 'data/abstraction/note' } },
+            { space: 'audio', provider: 'gpu', model: 'laion/clap-htsat-unfused', dim: 512, chunk: false, match: { contentType: 'audio/*' } },
+        ],
+    });
+    const sc = e.spaceConfigs();
+    assert.equal(sc.audio.bitmapKey, 'internal/embed/vectors/audio/laion-clap-htsat-unfused');
+    assert.equal(sc.audio.seenKey, 'internal/embed/seen/audio/laion-clap-htsat-unfused');
+    assert.equal(sc.audio.table, undefined, 'no baseline → model-keyed table');
     await e.stop();
 });

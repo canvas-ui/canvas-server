@@ -97,6 +97,20 @@ so pointing embedd at the GPU box meant editing source. All three are now data.
 - **`CANVAS_CLIP_MODEL` / `CANVAS_CLIP_DTYPE` are proper config** — `ClipProvider` takes
   `model`/`dtype` and passes them to the worker, so the routing rule is authoritative and env is
   just the fallback. (Changing dtype shifts the embeddings — re-embed the image space after.)
+- **Embedding ledger keys unified + renamed** (follow-up, same day). Both per-space ledgers now
+  live under one root and are always keyed `(space, model)` with the **model slug as the leaf**:
+  `internal/embed/vectors/<space>/<slug>` (presence) and `internal/embed/seen/<space>/<slug>`
+  (processed). This fixes a live defect, not just a naming wart: the legacy text presence bitmap
+  sat at `internal/lance/vectors`, which was **also the parent path of the image one**, and
+  `listBitmaps()` range-scans strictly below `prefix + '/'` — so listing `internal/lance/vectors`
+  returned image and silently omitted text, including through
+  `GET /workspaces/:id/bitmaps/internal/lance/vectors`. The rule the rest of synapsd already
+  follows (`internal/ts/…`, `data/mime/…`, `feature/…`): **a namespace is a directory, never also
+  a key.** Migration is idempotent via the existing `BitmapIndex.migrateKey`, runs at start before
+  any VectorIndex latches its key, and maps legacy → the *baseline* slug (not the configured one),
+  so a workspace upgrading straight onto a new model keeps its old vectors correctly attributed
+  and reachable on a revert. `presenceKey()`/`seenKey()` in embedd's constants.js are the single
+  source; a new modality (audio, spatial) slots in with no code change.
 - Tests: `tests/services/embedd/{config,openai-provider,queue-split}.test.js` (39 new).
 
 **On EmbedAnything: do NOT take it as an in-process dependency.** It's a Rust crate with Python

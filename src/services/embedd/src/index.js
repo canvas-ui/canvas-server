@@ -9,7 +9,7 @@ import Semaphore from './semaphore.js';
 import { normalizeConfig } from './config.js';
 import { createProviders } from './providers/index.js';
 import { chunkText } from './chunking.js';
-import { COMMENT_CHUNK_ID, TEXT_SPACE, BASELINE_SPACES, modelSlug } from './constants.js';
+import { COMMENT_CHUNK_ID, TEXT_SPACE, BASELINE_SPACES, presenceKey, seenKey } from './constants.js';
 
 /**
  * Embedd — the canvas embedding service.
@@ -83,15 +83,15 @@ export default class Embedd {
 
     /**
      * Per-space vector config for synapsd (`semantic.spaces`). The router knows
-     * each space's model+dim; synapsd keys its Lance table (and, via the keys
-     * below, its presence/seen ledger) off them.
+     * each space's model+dim, so it also decides where those vectors live and
+     * which ledgers track them.
      *
-     * A space still on its BASELINE model keeps the original table and bitmap
-     * keys, so making the model configurable orphans nothing. Any other model
-     * gets its own table AND its own ledger — which is what makes switching
-     * models and switching back cheap: the previous model's vectors and its
-     * "already embedded" bookkeeping are both still there, so a revert costs a
-     * restart rather than a full re-embed.
+     * Ledger keys are ALWAYS keyed by (space, model) — that is what makes
+     * switching models and switching back cheap: the previous model's vectors and
+     * its "already embedded" bookkeeping are both still there, so a revert costs
+     * a restart rather than a full re-embed. Only the Lance TABLE is special-cased:
+     * a space still on its baseline model keeps the original `vec_text`/`vec_image`
+     * so making the model configurable orphans nothing.
      */
     spaceConfigs() {
         const out = {};
@@ -99,20 +99,20 @@ export default class Embedd {
             const rule = this.#router.spaceRule(space);
             if (!rule) { continue; }
             const baseline = BASELINE_SPACES[space];
-            const annIndex = rule.annIndex ?? baseline?.annIndex;
 
+            const cfg = {
+                model: rule.model,
+                dim: rule.dim,
+                bitmapKey: presenceKey(space, rule.model),
+                seenKey: seenKey(space, rule.model),
+            };
+            // Baseline (model AND dim unchanged) → pin to the pre-config table.
             if (baseline && baseline.model === rule.model && baseline.dim === rule.dim) {
-                out[space] = { table: baseline.table, dim: baseline.dim, bitmapKey: baseline.bitmapKey };
-            } else {
-                const slug = modelSlug(rule.model);
-                out[space] = {
-                    model: rule.model,
-                    dim: rule.dim,
-                    bitmapKey: `internal/lance/vectors/${space}/${slug}`,
-                    seenKey: `internal/embed/seen/${space}/${slug}`,
-                };
+                cfg.table = baseline.table;
             }
-            if (annIndex === false) { out[space].annIndex = false; }
+            const annIndex = rule.annIndex ?? baseline?.annIndex;
+            if (annIndex === false) { cfg.annIndex = false; }
+            out[space] = cfg;
         }
         return out;
     }

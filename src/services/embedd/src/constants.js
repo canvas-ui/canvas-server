@@ -16,27 +16,37 @@ export const TEXT_SPACE = 'text';
 /**
  * Baseline space identities — the (model, dim) each space had before embedding
  * config became data. A space still running its baseline model keeps the
- * ORIGINAL Lance table + bitmap keys, so making the model configurable does not
- * orphan a single existing vector. Any other model gets a model-keyed table and
- * its OWN presence/seen ledger (see `Embedd#spaceConfigs`), which is what makes
- * "switch model, then switch back" free instead of a full re-embed.
+ * ORIGINAL Lance table, so making the model configurable does not orphan a
+ * single existing vector. Any other model gets a model-keyed table.
  */
 export const BASELINE_SPACES = {
-    text: {
-        model: 'bge-small-en-v1.5', dim: 384,
-        table: 'vec_text', bitmapKey: 'internal/lance/vectors',
-    },
+    text: { model: 'bge-small-en-v1.5', dim: 384, table: 'vec_text' },
     image: {
-        model: 'Xenova/siglip-base-patch16-224', dim: 768,
-        table: 'vec_image', bitmapKey: 'internal/lance/vectors/image',
+        model: 'Xenova/siglip-base-patch16-224', dim: 768, table: 'vec_image',
         // Cross-modal kNN must stay an exact scan — see synapsd's spaces default.
         annIndex: false,
     },
 };
 
-/** Slug used in model-keyed table/bitmap names. Mirrors synapsd's own slugging. */
+/** Slug used in model-keyed table/ledger names. Mirrors synapsd's own slugging. */
 export function modelSlug(model) {
     return String(model || '').toLowerCase().replace(/[^a-z0-9._-]+/g, '-');
 }
 
-export default { COMMENT_CHUNK_ID, TEXT_SPACE, BASELINE_SPACES, modelSlug };
+/**
+ * Embedding ledger keys — both under `internal/embed/`, both keyed by
+ * (space, model): presence ("this doc has vectors") and seen ("the embedder has
+ * processed this doc", including deliberate skips). Keying them by model is what
+ * makes "switch model, then switch back" free instead of a full re-embed.
+ *
+ * The model segment is ALWAYS the leaf — a namespace must never also be a key.
+ * synapsd's listBitmaps() range-scans strictly below `prefix + '/'`, so a bare
+ * `.../vectors/text` sitting above `.../vectors/text/<slug>` would be invisible
+ * to a prefix query of its own namespace. That was the defect in the legacy
+ * `internal/lance/vectors` key: it was the text presence bitmap AND the parent
+ * path of the image one, so listing it returned image and omitted text.
+ */
+export function presenceKey(space, model) { return `internal/embed/vectors/${space}/${modelSlug(model)}`; }
+export function seenKey(space, model) { return `internal/embed/seen/${space}/${modelSlug(model)}`; }
+
+export default { COMMENT_CHUNK_ID, TEXT_SPACE, BASELINE_SPACES, modelSlug, presenceKey, seenKey };

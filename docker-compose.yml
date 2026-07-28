@@ -8,7 +8,6 @@ services:
     image: canvas-server:latest
     ports:
       - "8001:8001"  # API port
-      - "8002:8002"  # Web UI port (if different)
     environment:
       NODE_ENV: ${NODE_ENV:-production}
       LOG_LEVEL: ${LOG_LEVEL:-info}

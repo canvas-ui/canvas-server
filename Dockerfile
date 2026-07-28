@@ -46,7 +46,7 @@ RUN chown -R nodejs:nodejs /opt/canvas-server
 USER nodejs
 
 # Expose ports
-EXPOSE 8001 8002
+EXPOSE 8001
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \

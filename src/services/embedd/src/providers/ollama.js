@@ -2,6 +2,7 @@
 
 import debugInstance from 'debug';
 const debug = debugInstance('canvas:embedd:ollama');
+import { trimTrailingSlashes } from '../constants.js';
 
 const DEFAULT_HOST = 'http://127.0.0.1:11434';
 
@@ -20,8 +21,9 @@ export default class OllamaProvider {
     id = 'ollama';
     #host;
 
-    constructor({ host } = {}) {
-        this.#host = (host || process.env.OLLAMA_HOST || DEFAULT_HOST).replace(/\/+$/, '');
+    constructor({ host, id } = {}) {
+        if (id) { this.id = id; }
+        this.#host = trimTrailingSlashes(host || process.env.OLLAMA_HOST || DEFAULT_HOST);
     }
 
     async #embed(model, input) {
@@ -71,7 +73,7 @@ export default class OllamaProvider {
     }
 
     async status() {
-        return { id: this.id, host: this.#host, reachable: await this.#ping() };
+        return { id: this.id, type: 'ollama', host: this.#host, reachable: await this.#ping() };
     }
 
     async stop() { /* stateless HTTP client */ }

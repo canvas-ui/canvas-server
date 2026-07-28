@@ -72,9 +72,75 @@ experience very near)
 
 ## Refactor `embedd` (coupled to the workspace runtime)
 
-We want to leverage battle-tested `https://github.com/StarlightSearch/EmbedAnything` to generate embeddings. Question is how deep we should integrate it into the current embedd(maybe we can fully rewrite it or make it just a thin wrapper around EA). We need to use external runtimes like vllm/ollama or antrhopic&co which is already taken care of by EA
+**LANDED 2026-07-27 — providers + routing are config, queues are per-workspace, models are
+swappable.** The blocker was never the provider set: `DEFAULT_RULES` was a const in router.js,
+`Server.js` never passed `options.rules`, and the provider map was three hardcoded constructors,
+so pointing embedd at the GPU box meant editing source. All three are now data.
 
-It should be possible to seamlessly add new embedding models per modality + fine-tune their settings, revert back to a previous model or remove all vectors for a superseeded model.
+- **Config-driven providers + rules** — `src/services/embedd/src/config.js`; optional
+  `$SERVER_HOME/config/embedd.json` (`CANVAS_EMBEDD_CONFIG` overrides the path,
+  `server/config/embedd.example.json` documents the shape). Providers are `{ type, ...opts }`
+  under a caller-chosen id; `onnx`/`ollama`/`clip` always exist and are overridable by
+  re-declaring the id. JSON matchers accept an exact string, a `type/*` prefix, or
+  `/regex/flags`. Defaults reproduce the old routing exactly. Misconfiguration throws at boot
+  on purpose — a typo'd provider id would otherwise degrade dense search silently.
+- **`OpenAIProvider`** (`providers/openai.js`) — `POST {baseUrl}/v1/embeddings`, so one provider
+  covers vllm, TEI, infinity, LM Studio, OpenAI **and an EmbedAnything sidecar**. Images are
+  configurable rather than guessed: `imageInput: 'data-uri'` (infinity/TEI-style batched `input`)
+  or `'messages'` (vLLM multimodal, one request per image). Responses are re-paired by
+  `data[].index` and a short response throws — silently dropping documents is worse than failing.
+- **Model swap / revert / reclaim** — the router owns each space's model+dim, and
+  `Embedd#spaceConfigs()` feeds them to synapsd. A space on its **baseline** model keeps
+  `vec_text`/`vec_image` and its original bitmap keys (nothing existing is orphaned); any other
+  model gets its own `vec_<space>__<slug>__<dim>` table **plus its own presence/seen ledger**.
+  That last part is what makes a revert free: switch back and the old vectors are still there and
+  still marked embedded, so nothing re-embeds. Reclaim a superseded model via
+  `GET|DELETE /rest/v2/admin/workspaces/:id/vector-tables[/:table]` (refuses the live table).
+- **Per-workspace queues** — one `Queue` per registered workspace behind a shared `Semaphore`
+  (`CANVAS_EMBEDD_CONCURRENCY`, default 1 = byte-for-byte the old serial behaviour; raise it once
+  inference is remote). Per-workspace `pause`/`resume`/`drained`/`workspaceStatus`;
+  `/admin/embedd/{pause,resume}?workspaceId=` narrows to one. `onQueueDrained` now fires only for
+  the workspace that drained — the shared queue used to trigger a compact + ANN rebuild in EVERY
+  workspace on any drain. Settings → Database shows this workspace's own backlog (the
+  "· all workspaces" caveat is gone) plus the provider/model per space.
+- **`CANVAS_CLIP_MODEL` / `CANVAS_CLIP_DTYPE` are proper config** — `ClipProvider` takes
+  `model`/`dtype` and passes them to the worker, so the routing rule is authoritative and env is
+  just the fallback. (Changing dtype shifts the embeddings — re-embed the image space after.)
+- **Embedding ledger keys unified + renamed** (follow-up, same day). Both per-space ledgers now
+  live under one root and are always keyed `(space, model)` with the **model slug as the leaf**:
+  `internal/embed/vectors/<space>/<slug>` (presence) and `internal/embed/seen/<space>/<slug>`
+  (processed). This fixes a live defect, not just a naming wart: the legacy text presence bitmap
+  sat at `internal/lance/vectors`, which was **also the parent path of the image one**, and
+  `listBitmaps()` range-scans strictly below `prefix + '/'` — so listing `internal/lance/vectors`
+  returned image and silently omitted text, including through
+  `GET /workspaces/:id/bitmaps/internal/lance/vectors`. The rule the rest of synapsd already
+  follows (`internal/ts/…`, `data/mime/…`, `feature/…`): **a namespace is a directory, never also
+  a key.** Migration is idempotent via the existing `BitmapIndex.migrateKey`, runs at start before
+  any VectorIndex latches its key, and maps legacy → the *baseline* slug (not the configured one),
+  so a workspace upgrading straight onto a new model keeps its old vectors correctly attributed
+  and reachable on a revert. `presenceKey()`/`seenKey()` in embedd's constants.js are the single
+  source; a new modality (audio, spatial) slots in with no code change.
+- Tests: `tests/services/embedd/{config,openai-provider,queue-split}.test.js` (39 new).
+
+**On EmbedAnything: do NOT take it as an in-process dependency.** It's a Rust crate with Python
+bindings and no maintained Node/NAPI binding, so integrating it means either building and
+maintaining a NAPI shim or running it as a sidecar — and a sidecar is just another endpoint
+behind `OpenAIProvider`. embedd stays a thin router+queue; model lifecycle lives on the inference
+host. EA is now a deployment choice (one `baseUrl`), not a rewrite.
+
+Remaining on this thread:
+- [ ] Point the in-office GPU box at it for real and verify an image model end-to-end — the
+      `imageInput` modes are written against the documented shapes but only tested against a
+      local fake server.
+- [ ] Rules are still server-wide. Making them **per-workspace** is what would finally let the
+      settings UI stop being read-only (see the router bullet below).
+- [ ] Model cache **search path** (workspace-local dir → server-shared fallback) for
+      containerized/standalone workspaces.
+- [ ] CLIP worker **pool** (~nCPUs-2, ORT intra-op threads capped so pool × threads ≈ nCPUs).
+      Much lower priority now: with remote providers the local CLIP child is the fallback path,
+      and the shared semaphore already bounds it.
+
+Original context below.
 
 **Remote/GPU-backed inference is the priority direction (2026-07-20).** Running CLIP/ONNX fp32
 on the server's CPU is what pins the whole box during a photo-mount ingest (Fotky incident:
@@ -97,11 +163,11 @@ router/queue and EA (or nothing) handles model lifecycle on the inference host.
 Origina TODO item:  
 
 Today `embedd` is a single **per-server singleton**: one shared model runtime + ONE serial queue + one server-wide router. Consequences to fix as part of the runtime split:
-- **Queue is global + serial** — the "Embedding queue" count in workspace settings is server-wide (re-indexing a 3-doc workspace can show 800 pending from other workspaces). Each workspace runtime should own its own queue.
-- **Embeddable schemas/mimes are router-driven and server-wide, NOT per-workspace-configurable.** Reconcile uses `router.candidateSchemas(sp)` and the live path routes by the shared `DEFAULT_RULES` — synapsd's per-workspace `embeddableSchemas` is only a gap-ledger fallback. So "text-embeddable schemas" and "image-embeddable schema+mime" can only become real workspace settings once the router is per-workspace (make the router rules the configurable surface). Until then the UI should stay read-only/informational (done: labelled "Text-embeddable schemas" + "Image-embeddable: data/abstraction/file · image/*").
+- [x] **Queue is global + serial** — the "Embedding queue" count in workspace settings is server-wide (re-indexing a 3-doc workspace can show 800 pending from other workspaces). Each workspace runtime should own its own queue. **(done 2026-07-27: one Queue per workspace behind a shared concurrency semaphore.)**
+- **Embeddable schemas/mimes are router-driven and server-wide, NOT per-workspace-configurable.** Reconcile uses `router.candidateSchemas(sp)` and the live path routes by the shared `DEFAULT_RULES` — synapsd's per-workspace `embeddableSchemas` is only a gap-ledger fallback. So "text-embeddable schemas" and "image-embeddable schema+mime" can only become real workspace settings once the router is per-workspace (make the router rules the configurable surface). Until then the UI should stay read-only/informational (done: labelled "Text-embeddable schemas" + "Image-embeddable: data/abstraction/file · image/*"). **(2026-07-27: rules are now config — but SERVER-wide config. Per-workspace rules are still the unlock for a writable UI.)**
 - **Model cache**: per-workspace embedd with a cache **search path** (workspace-local dir → server-shared cache fallback) so containerized/standalone workspaces don't re-download models.
 - **Throughput**: image (CLIP) runs in a **single forked child, serialized** (`clip-worker.js` request chain) → photo embedding is strictly one-at-a-time and CPU-bound (fp32 default is slow; q8 ~2-4x faster). Real fix = a small **worker pool** (~nCPUs-2) with ORT intra-op threads **capped** per child so pool × threads ≈ nCPUs (naive nCPUs-2 pool would oversubscribe — ORT already grabs all cores per single inference).
-- **Model dtype configurable**: `CANVAS_CLIP_DTYPE` (fp32/q8/…) is env-only today. Make it a proper config option — globally for now (server-wide embedd), per-workspace once the runtime is split. Low priority (boilerplate vs value).
+- [x] **Model dtype configurable**: `CANVAS_CLIP_DTYPE` (fp32/q8/…) is env-only today. Make it a proper config option — globally for now (server-wide embedd), per-workspace once the runtime is split. Low priority (boilerplate vs value). **(done 2026-07-27: `model`/`dtype` are ClipProvider options fed from the routing rule; env is the fallback.)**
 - **Text embedding is broader than the UI implies**: we embed notes + emails + **text-file blobs** (`data/abstraction/file` with `text/*` mime), driven by the router's `DEFAULT_RULES`, not just `data/abstraction/note` (which is only synapsd's gap fallback default). The settings UI should reflect the router's real routing (done: `getStats().embedder.routing` surfaces per-space schema+mime rules; read-only until the router is per-workspace).
 
 This relates to "### Vectors & modalities" in `src/services/synapsd/TODO.md`

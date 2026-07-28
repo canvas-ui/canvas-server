@@ -7,6 +7,7 @@ import fastifySocketIO from 'fastify-socket.io';
 import fastifyStatic from '@fastify/static';
 import fastifyMultipart from '@fastify/multipart';
 import fastifyCors from '@fastify/cors';
+import fastifyRateLimit from '@fastify/rate-limit';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { env } from '../env.js';
@@ -34,6 +35,7 @@ import webdavRoutes from './routes/webdav.js';
 import contextWebdavRoutes from './routes/context-webdav.js';
 import menuRoutes from './routes/menu.js';
 import userRoutes from './routes/users.js';
+import embeddRoutes from './routes/embedd.js';
 import roleRoutes from './routes/roles/index.js';
 import roleTemplateRoutes from './routes/role-templates/index.js';
 import messagingRoutes from './routes/messaging/index.js';
@@ -252,6 +254,23 @@ export async function createServer(options = {}) {
     maxAge: 86400 // 24 hours
   });
 
+  // Rate limiting — OPT-IN ONLY. `global: false` means this adds no hook to any
+  // route that does not declare `config.rateLimit`, so bulk paths (CLI uploads,
+  // WebDAV, the fs indexer) are completely untouched. That flag is the ONLY thing
+  // keeping it off them, so do not drop it.
+  //
+  // Registered once here because two separate route plugins need it
+  // (/rest/v2/embedd and /workspaces/:id/embedd). Per-plugin registration also
+  // works — @fastify/rate-limit is fastify-plugin wrapped but still applies its
+  // options per encapsulated scope — it just duplicates the setup.
+  //
+  // Keyed by authenticated user where there is one — several users behind a
+  // single NAT must not share a bucket — falling back to IP for anonymous routes.
+  await server.register(fastifyRateLimit, {
+    global: false,
+    keyGenerator: (request) => request.user?.id || request.ip,
+  });
+
   // WebDAV routes (scoped plugins — own content-type parsers)
   server.register(webdavRoutes);
   server.register(contextWebdavRoutes);
@@ -342,6 +361,7 @@ export async function createServer(options = {}) {
   server.register(messagingRoutes, { prefix: '/rest/v2/messaging' });
   server.register(messagingWebhookRoutes, { prefix: '/rest/v2/messaging/webhooks' });
   server.register(voiceRoutes, { prefix: '/rest/v2/voice' });
+  server.register(withoutAgentTokens(embeddRoutes), { prefix: '/rest/v2/embedd' });
   server.register(withoutAgentTokens(adminRoutes), { prefix: '/rest/v2/admin' });
   server.register(withoutAgentTokens(roleRoutes), { prefix: '/rest/v2/roles' });
   server.register(withoutAgentTokens(roleTemplateRoutes), { prefix: '/rest/v2/role-templates' });

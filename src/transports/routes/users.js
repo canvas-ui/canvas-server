@@ -18,6 +18,11 @@ export default async function userRoutes(fastify, options) {
         if (!UserConfigStore.isValidName(name)) {
             return reply.code(404).send(ResponseObject.notFound(`Unknown user config "${name}"`));
         }
+        // Configs the server acts on are served by their own endpoint, which
+        // redacts secrets (this one would hand back stored API keys verbatim).
+        if (UserConfigStore.requiresValidation(name)) {
+            return reply.code(400).send(ResponseObject.badRequest(`"${name}" is served by /rest/v2/${name}/config`));
+        }
 
         try {
             const config = await fastify.userConfig.read(request.user.id, name);
@@ -35,6 +40,11 @@ export default async function userRoutes(fastify, options) {
 
         if (!UserConfigStore.isValidName(name)) {
             return reply.code(404).send(ResponseObject.notFound(`Unknown user config "${name}"`));
+        }
+        // This route is deliberately schema-less, so it must not be a way to
+        // store a config the server later acts on unvalidated.
+        if (UserConfigStore.requiresValidation(name)) {
+            return reply.code(400).send(ResponseObject.badRequest(`"${name}" must be written through /rest/v2/${name}/config, which validates it`));
         }
 
         const body = request.body;

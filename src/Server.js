@@ -232,13 +232,27 @@ class Server extends EventEmitter {
             logger: createLogger('users'),
         });
 
-        // Shared embedding service — one model runtime for all workspaces (avoids
-        // the per-workspace model footprint). Optional: when disabled, workspaces
-        // run store-only and dense search degrades to FTS.
+        // Shared embedding service — model runtimes are shared across workspaces
+        // (avoids the per-workspace model footprint) while each workspace owns its
+        // own queue. Optional: when disabled, workspaces run store-only and dense
+        // search degrades to FTS.
+        //
+        // The embedd config file is the SERVER DEFAULT layer — how an operator
+        // points the whole box at a GPU host. Users override it per modality from
+        // their settings (`resolveUserConfig` below); a workspace embeds with its
+        // owner's models. A malformed server file throws here on purpose: a
+        // typo'd provider id would otherwise degrade dense search silently, which
+        // is far worse than a loud boot failure. A malformed USER config does not
+        // throw — it falls back to these defaults and reports why.
         if (env.embedd.enabled) {
             this.#embedd = new Embedd({
                 onnxCacheDir: env.embedd.cacheDir,
                 ollamaHost: env.embedd.ollamaHost,
+                concurrency: env.embedd.concurrency,
+                providers: env.embedd.providers,
+                spaces: env.embedd.spaces,
+                rules: env.embedd.rules,
+                resolveUserConfig: (userId) => this.#userConfig.read(userId, 'embedd'),
             });
         }
 

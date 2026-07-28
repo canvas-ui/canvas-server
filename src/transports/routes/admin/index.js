@@ -17,6 +17,19 @@ export default async function adminRoutes(fastify, options) {
     module: typeof query.module === 'string' ? query.module : undefined,
   });
 
+  // Workspace params accept either a UUID or a user-scoped workspace name.
+  const isUUID = (value) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+
+  /** Resolve `:workspaceId` to a started workspace, or null. */
+  const resolveActiveWorkspace = async (request) => {
+    const identifier = request.params.workspaceId;
+    const workspaceId = isUUID(identifier)
+      ? identifier
+      : fastify.workspaceManager.resolveWorkspaceId(request.user.id, identifier);
+    const ws = workspaceId ? await fastify.workspaceManager.getWorkspace(workspaceId, request.user.id) : null;
+    return ws?.isActive ? ws : null;
+  };
+
   /**
    * Middleware to check if user is admin
    */
@@ -462,7 +475,9 @@ export default async function adminRoutes(fastify, options) {
       // tables. Compact + prune old versions once the queue drains — fire and
       // forget so the request returns immediately (embedding is async anyway).
       if (reindex) {
-        embedd.drained()
+        // Scoped to this workspace's queue — waiting on every workspace would
+        // delay the compaction behind unrelated backlogs.
+        embedd.drained(workspaceId)
           .then(() => ws.db.optimizeVectors(space || null))
           .then(() => fastify.log.info(`reindex-embeddings: vector index compacted for ${identifier}${space ? ` (${space})` : ''}`))
           .catch((e) => fastify.log.warn(`reindex-embeddings: post-drain optimize failed for ${identifier}: ${e.message}`));
@@ -476,11 +491,67 @@ export default async function adminRoutes(fastify, options) {
     }
   });
 
-  // Embedd queue control — server-wide (the queue is a shared singleton).
-  // Pause holds the backlog after the in-flight batch (enqueues keep
-  // accumulating, nothing is lost); resume drains it. Runtime state only — a
-  // restart clears the pause and reconcile re-drives anything missed. The
-  // escape hatch for CPU-bound bulk ingests (serialized CLIP child).
+  // Superseded-model housekeeping. Each embedding space is keyed by its model:
+  // change the model and the new vectors land in their OWN table with their own
+  // ledger, leaving the previous model's table intact (which is what makes
+  // switching back free rather than a full re-embed). GET lists them, DELETE
+  // reclaims one. The live table for a space is refused — re-embedding it is
+  // what reindex-embeddings?reindex=true is for.
+  fastify.get('/workspaces/:workspaceId/vector-tables', {
+    onRequest: [fastify.authenticate],
+    schema: { params: { type: 'object', required: ['workspaceId'], properties: { workspaceId: { type: 'string' } } } },
+  }, async (request, reply) => {
+    try {
+      const ws = await resolveActiveWorkspace(request);
+      if (!ws) {
+        const response = new ResponseObject().badRequest('Workspace not found or not active');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+      const result = await ws.listVectorTables();
+      const response = new ResponseObject().success(result);
+      return reply.code(response.statusCode).send(response.getResponse());
+    } catch (error) {
+      fastify.log.error(error);
+      const response = new ResponseObject().serverError(error.message || 'Failed to list vector tables');
+      return reply.code(response.statusCode).send(response.getResponse());
+    }
+  });
+
+  fastify.delete('/workspaces/:workspaceId/vector-tables/:table', {
+    onRequest: [fastify.authenticate, requireAdmin],
+    schema: {
+      params: {
+        type: 'object',
+        required: ['workspaceId', 'table'],
+        properties: { workspaceId: { type: 'string' }, table: { type: 'string' } },
+      },
+    },
+  }, async (request, reply) => {
+    try {
+      const ws = await resolveActiveWorkspace(request);
+      if (!ws) {
+        const response = new ResponseObject().badRequest('Workspace not found or not active');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+      const result = await ws.dropVectorTable(request.params.table);
+      if (!result?.dropped) {
+        const response = new ResponseObject().badRequest(result?.error || 'Failed to drop vector table');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+      const response = new ResponseObject().success(result, `Dropped superseded vector table '${result.name}'`);
+      return reply.code(response.statusCode).send(response.getResponse());
+    } catch (error) {
+      fastify.log.error(error);
+      const response = new ResponseObject().serverError(error.message || 'Failed to drop vector table');
+      return reply.code(response.statusCode).send(response.getResponse());
+    }
+  });
+
+  // Embedd queue control. Queues are per-workspace; these endpoints act on all
+  // of them (`?workspaceId=` narrows to one). Pause holds the backlog after the
+  // in-flight batch (enqueues keep accumulating, nothing is lost); resume drains
+  // it. Runtime state only — a restart clears the pause and reconcile re-drives
+  // anything missed. The escape hatch for CPU-bound bulk ingests.
   const embeddControl = (action) => async (request, reply) => {
     try {
       const embedd = fastify.workspaceManager.embedd;
@@ -488,7 +559,11 @@ export default async function adminRoutes(fastify, options) {
         const response = new ResponseObject().badRequest('Embedding service is disabled (CANVAS_EMBEDD_ENABLED=false)');
         return reply.code(response.statusCode).send(response.getResponse());
       }
-      const payload = action === 'status' ? await embedd.status() : embedd[action]();
+      const identifier = request.query?.workspaceId || null;
+      const wsId = identifier
+        ? (isUUID(identifier) ? identifier : fastify.workspaceManager.resolveWorkspaceId(request.user.id, identifier))
+        : null;
+      const payload = action === 'status' ? await embedd.status() : embedd[action](wsId);
       const response = new ResponseObject().success(payload);
       return reply.code(response.statusCode).send(response.getResponse());
     } catch (error) {
@@ -497,9 +572,12 @@ export default async function adminRoutes(fastify, options) {
       return reply.code(response.statusCode).send(response.getResponse());
     }
   };
+  const embeddControlSchema = {
+    querystring: { type: 'object', properties: { workspaceId: { type: 'string' } } },
+  };
   fastify.get('/embedd/status', { onRequest: [fastify.authenticate, requireAdmin] }, embeddControl('status'));
-  fastify.post('/embedd/pause', { onRequest: [fastify.authenticate, requireAdmin] }, embeddControl('pause'));
-  fastify.post('/embedd/resume', { onRequest: [fastify.authenticate, requireAdmin] }, embeddControl('resume'));
+  fastify.post('/embedd/pause', { onRequest: [fastify.authenticate, requireAdmin], schema: embeddControlSchema }, embeddControl('pause'));
+  fastify.post('/embedd/resume', { onRequest: [fastify.authenticate, requireAdmin], schema: embeddControlSchema }, embeddControl('resume'));
 
   // Compact + prune Lance tables and (re)build ANN indexes. `space`:
   //   'fts'          → the full-text (BM25) table

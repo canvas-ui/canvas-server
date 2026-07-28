@@ -178,6 +178,35 @@ class Workspace extends EventEmitter {
         return Workspace.#mergeConfigMap(WORKSPACE_SERVICES, this.#configStore.get('services') || {});
     }
 
+    /**
+     * embedd's config (`services.embedd`): `{ providers?, spaces?, rules? }`.
+     *
+     * This lives IN workspace.json on purpose. A workspace is meant to be
+     * self-contained and movable — stop it, tar it, scp it, run it under
+     * canvas-edge from a folder with no canvas-server at all — and which model
+     * its vectors were built with is part of what makes it readable elsewhere.
+     * Server and per-user config are *defaults* that a fresh workspace inherits;
+     * once set here, this layer wins and travels with the data.
+     *
+     * Empty ({}) means "inherit everything", which is the normal case.
+     */
+    get embeddConfig() {
+        const configured = (this.#configStore.get('services') || {}).embedd;
+        return configured && typeof configured === 'object' ? configured : {};
+    }
+
+    /**
+     * Single write authority for `services.embedd`. Validation happens above
+     * this (the route asks embedd to resolve the candidate first) — a workspace
+     * must never persist a config its own runtime would refuse.
+     */
+    setEmbeddConfig(config = {}) {
+        const services = this.#configStore.get('services') || {};
+        this.#configStore.set('services', { ...services, embedd: config });
+        this.emit('services.changed', { service: 'embedd', config });
+        return this.embeddConfig;
+    }
+
     get db() {
         if (!this.#db) throw new Error('Database not initialized');
         return this.#db;
@@ -196,23 +225,35 @@ class Workspace extends EventEmitter {
     async getStats() {
         if (!this.isActive || !this.#db) return null;
         const stats = await this.#db.getStats();
-        // Embedding progress: the embedd queue is shared across workspaces, but its
-        // pending count + this workspace's per-space embeddedDocs (semantic.vectorSpaces)
-        // let the UI show a re-embed in flight and how far it's got.
-        if (this.#embedd?.status) {
+        // Embedding progress. The queue is this workspace's own, so the backlog
+        // shown here is genuinely its work — re-indexing a 3-doc workspace no
+        // longer reports the server's other 800 pending jobs. Combined with the
+        // per-space embeddedDocs (semantic.vectorSpaces) the UI can show a
+        // re-embed in flight and how far it's got.
+        if (this.#embedd?.workspaceStatus) {
             try {
-                const es = await this.#embedd.status();
                 // Actual routing (what really embeds where) from the embedd router
                 // rules — notes/emails + text-file blobs → text, image/* → image.
                 // Surfaced so the UI shows reality, not synapsd's note-only gap default.
+                // This workspace's own router — what it actually embeds with,
+                // after workspace.json overrides the user/server defaults.
+                const router = (await this.#embedd.contextForWorkspace(this.id)).router;
                 const routing = {};
-                for (const r of (this.#embedd.router?.rules || [])) {
+                for (const r of (router?.rules || [])) {
                     const m = r.match || {};
                     const desc = m.schema != null ? String(m.schema)
                         : (m.contentType != null ? `mime ${String(m.contentType)}` : 'any');
                     (routing[r.space] ||= []).push(desc);
                 }
-                stats.embedder = { queue: es.queue, routing };
+                // Which provider/model fills each space — now that both are config,
+                // the UI should say what is actually running rather than imply the
+                // old hardcoded pair.
+                const spaces = {};
+                for (const sp of (router?.spaces || [])) {
+                    const rule = router.spaceRule(sp);
+                    if (rule) { spaces[sp] = { provider: rule.provider, model: rule.model, dim: rule.dim }; }
+                }
+                stats.embedder = { queue: this.#embedd.workspaceStatus(this.id), routing, spaces };
             } catch (_) { /* best effort */ }
         }
         return stats;
@@ -479,13 +520,32 @@ class Workspace extends EventEmitter {
             ]);
 
             const dbPath = this.dbPath;
+            // Resolve this workspace's embedding backends BEFORE synapsd starts:
+            // the vector spaces (tables + ledger keys) are latched at Db
+            // construction. workspace.json wins over the owner's defaults, so a
+            // moved/standalone workspace keeps embedding as its vectors were built.
+            const embeddSpaces = this.#embedd?.spaceConfigsForWorkspace
+                ? await this.#embedd.spaceConfigsForWorkspace(this.id, { userId: this.owner, config: this.embeddConfig }).catch((err) => {
+                    this.#logger.warn({ workspaceId: this.id, error: err.message }, 'embedd space config resolve failed; using defaults');
+                    return undefined;
+                })
+                : undefined;
             this.#db = new Db({
                 path: dbPath,
                 // synapsd owns no model; if the embedd service is present, hand it
                 // the query embedder so dense/hybrid search works. Absent → FTS.
                 semantic: this.#embedd
                     ? {
-                        embedQuery: (text, space) => this.#embedd.embedQuery(text, space),
+                        // Bound to the OWNER: a query must be embedded by the same
+                        // model that filled the space, or the kNN is noise.
+                        embedQuery: (text, space) => this.#embedd.embedQueryForWorkspace(this.id, text, space),
+                        // The embedd router owns each space's model + dim, so it also
+                        // owns where those vectors live: a space on its baseline model
+                        // keeps the original table, any other model gets its own table
+                        // AND its own presence/seen ledger. That is what makes a model
+                        // swap reversible — switch back and the previous vectors are
+                        // still there, still marked embedded, nothing to redo.
+                        spaces: embeddSpaces,
                         // Workspace-level search tuning (persisted in workspace.json
                         // under `semantic`). Undefined → synapsd defaults.
                         imageMaxDistance: (this.#configStore.get('semantic', {}) || {}).imageMaxDistance,
@@ -756,6 +816,35 @@ class Workspace extends EventEmitter {
         }
     }
 
+    /**
+     * Re-resolve this workspace's embedding backends and swap synapsd's vector
+     * spaces to match — applied live, no workspace restart.
+     *
+     * Writes are quiesced first: the workspace's embedding queue is paused and
+     * its in-flight batch allowed to finish, otherwise a batch straddling the
+     * swap would scatter half its chunks into the outgoing table.
+     */
+    async applyEmbeddSpaces() {
+        if (!this.#embedd || !this.isActive) { return { applied: false, reason: 'workspace not active' }; }
+        const spaces = await this.#embedd.spaceConfigsForWorkspace(this.id, {
+            userId: this.owner, config: this.embeddConfig,
+        });
+        this.#embedd.pause(this.id);
+        try {
+            await this.#embedd.drained(this.id);
+            const result = await this.#getActiveDb().setVectorSpaces(spaces);
+            this.#logger.info({ workspaceId: this.id, tables: result.tables }, 'Embedding vector spaces swapped');
+            return result;
+        } finally {
+            this.#embedd.resume(this.id);
+        }
+    }
+
+    /** Document ids under a `ctx://` / `dir://` path — scopes a partial re-embed. */
+    async documentIdsUnderScope(scope) {
+        return await this.#getActiveDb().documentIdsUnderScope(scope);
+    }
+
     /** Ledger read: docIds that match `schemas` but have no embedding for `space`. */
     async getUnembeddedDocIds(space = 'text', schemas = null) {
         return await this.#getActiveDb().getUnembeddedDocIds(space, schemas);
@@ -764,6 +853,21 @@ class Workspace extends EventEmitter {
     /** Wipe an embedding space (vectors + presence + seen) for a full re-embed. */
     async clearSpace(space = 'text') {
         return await this.#getActiveDb().clearSpace(space);
+    }
+
+    /**
+     * Dense-vector tables in this workspace, flagged with which are live. Tables
+     * a model swap left behind report `active:false` — they still hold their
+     * vectors so switching back is free, and this is how you find the ones worth
+     * reclaiming.
+     */
+    async listVectorTables() {
+        return await this.#getActiveDb().listVectorTables();
+    }
+
+    /** Drop a superseded model's vectors + ledger. Refuses live tables. */
+    async dropVectorTable(name) {
+        return await this.#getActiveDb().dropVectorTable(name);
     }
 
     // ── embedd registration + live enqueue ────────────────────────────────────
@@ -776,6 +880,7 @@ class Workspace extends EventEmitter {
             storeVectors: (docId, schema, updatedAt, chunks, opts) =>
                 this.storeDocumentEmbeddings(docId, schema, updatedAt, chunks, opts),
             getUnembedded: (space, schemas) => this.getUnembeddedDocIds(space, schemas),
+            documentIdsUnderScope: (scope) => this.documentIdsUnderScope(scope),
             clearSpace: (space) => this.clearSpace(space),
             onQueueDrained: () => {
                 // The shared queue drains after every trickle (a single note
@@ -786,7 +891,7 @@ class Workspace extends EventEmitter {
                 this.#embedStoreCount = 0;
                 return this.#optimizeSearchIndexes('queue-drained');
             },
-        });
+        }, { userId: this.owner, config: this.embeddConfig });
         // Live enqueue: new + content-updated docs. Blob ingestion also lands as
         // document.inserted (WorkspaceStoredIndex creates docs), so this covers
         // stored files too — no separate object:add subscription needed.

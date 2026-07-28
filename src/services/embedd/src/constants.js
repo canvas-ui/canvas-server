@@ -28,6 +28,23 @@ export const BASELINE_SPACES = {
     },
 };
 
+/**
+ * Strip trailing slashes without a regex.
+ *
+ * `/\/+$/` backtracks polynomially — on a string of n slashes the engine retries
+ * `\/+` from every position and fails `$` each time, which is O(n²). That was
+ * harmless while base URLs came from a config file an operator wrote, but they
+ * are user-supplied now (workspace/user embedding config), so a pathological
+ * value would burn CPU on every provider construction. Linear scan, no
+ * backtracking. (CodeQL js/polynomial-redos.)
+ */
+export function trimTrailingSlashes(value) {
+    const s = String(value ?? '');
+    let end = s.length;
+    while (end > 0 && s.charCodeAt(end - 1) === 47 /* '/' */) { end--; }
+    return s.slice(0, end);
+}
+
 /** Slug used in model-keyed table/ledger names. Mirrors synapsd's own slugging. */
 export function modelSlug(model) {
     return String(model || '').toLowerCase().replace(/[^a-z0-9._-]+/g, '-');

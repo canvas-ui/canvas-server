@@ -2,6 +2,7 @@
 
 import debugInstance from 'debug';
 const debug = debugInstance('canvas:embedd:openai');
+import { trimTrailingSlashes } from '../constants.js';
 
 /**
  * OpenAI-compatible embeddings provider — `POST {baseUrl}/v1/embeddings`.
@@ -82,7 +83,7 @@ export default class OpenAIProvider {
             throw new Error(`OpenAIProvider: unknown imageInput '${imageInput}' (known: ${[...IMAGE_INPUT_MODES].join(', ')})`);
         }
         if (id) { this.id = id; }
-        this.#baseUrl = String(baseUrl).replace(/\/+$/, '');
+        this.#baseUrl = trimTrailingSlashes(baseUrl);
         this.#apiKey = apiKey;
         this.#headers = headers || {};
         this.#imageInput = imageInput;
@@ -91,8 +92,25 @@ export default class OpenAIProvider {
 
     // Accept both `http://host:8000` and `http://host:8000/v1` — mirrors the
     // voice service's audioApiUrl so operators can paste either form.
+    //
+    // Hand-rolled rather than /\/v\d+$/ for the same reason as
+    // trimTrailingSlashes: an unanchored pattern ending in `\d+$` retries from
+    // every start position on a long digit run, and this string is user input.
+    #hasApiVersionSuffix() {
+        const url = this.#baseUrl;
+        const slash = url.lastIndexOf('/');
+        if (slash < 0 || slash === url.length - 1) { return false; }
+        if (url.charCodeAt(slash + 1) !== 118 /* 'v' */) { return false; }
+        if (slash + 2 >= url.length) { return false; }   // bare "/v"
+        for (let i = slash + 2; i < url.length; i++) {
+            const c = url.charCodeAt(i);
+            if (c < 48 || c > 57) { return false; }
+        }
+        return true;
+    }
+
     #url(endpoint) {
-        return /\/v\d+$/.test(this.#baseUrl) ? `${this.#baseUrl}/${endpoint}` : `${this.#baseUrl}/v1/${endpoint}`;
+        return this.#hasApiVersionSuffix() ? `${this.#baseUrl}/${endpoint}` : `${this.#baseUrl}/v1/${endpoint}`;
     }
 
     async #post(endpoint, body) {

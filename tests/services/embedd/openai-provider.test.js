@@ -164,3 +164,51 @@ test('openai: status on an unreachable host reports false instead of throwing', 
     const s = await p.status();
     assert.equal(s.reachable, false);
 });
+
+// ── URL normalization (CodeQL js/polynomial-redos) ───────────────────────────
+
+test('openai: pathological slash runs normalize in linear time', async () => {
+    // `/\/+$/` is O(n^2) on a string of n slashes, and baseUrl is user-supplied
+    // config since embedd became configurable. Guard the fix with a budget a
+    // backtracking implementation could not meet.
+    const evil = `http://gpu.local:8000${'/'.repeat(60000)}`;
+    const started = process.hrtime.bigint();
+    const p = new OpenAIProvider({ baseUrl: evil });
+    const ms = Number(process.hrtime.bigint() - started) / 1e6;
+    assert.ok(ms < 250, `normalization took ${ms.toFixed(1)}ms — looks like backtracking`);
+    const s = await p.status();
+    assert.equal(s.baseUrl, 'http://gpu.local:8000');
+});
+
+test('openai: a long digit run after /v does not backtrack', async () => {
+    const evil = `http://gpu.local:8000/v${'1'.repeat(60000)}x`;
+    const started = process.hrtime.bigint();
+    const p = new OpenAIProvider({ baseUrl: evil });
+    await withServer(() => embeddings([[1]]), async (url, seen) => {
+        // Reuse the real request path so #url() is exercised.
+        const q = new OpenAIProvider({ baseUrl: `${url}/v${'1'.repeat(20000)}x` });
+        await assert.rejects(() => q.embedText(['a'], { model: 'm' }));
+    });
+    const ms = Number(process.hrtime.bigint() - started) / 1e6;
+    assert.ok(ms < 2000, `version-suffix check took ${ms.toFixed(1)}ms`);
+    assert.ok(p instanceof OpenAIProvider);
+});
+
+test('openai: trailing slashes are stripped, /vN suffix still detected', async () => {
+    await withServer(() => embeddings([[1]]), async (url, seen) => {
+        const p = new OpenAIProvider({ baseUrl: `${url}/v1///` });
+        await p.embedText(['a'], { model: 'm' });
+        assert.equal(seen[0].url, '/v1/embeddings', 'no doubled /v1, no empty segment');
+    });
+    await withServer(() => embeddings([[1]]), async (url, seen) => {
+        const p = new OpenAIProvider({ baseUrl: `${url}//` });
+        await p.embedText(['a'], { model: 'm' });
+        assert.equal(seen[0].url, '/v1/embeddings');
+    });
+    // "/v" with no digits is not a version suffix.
+    await withServer(() => embeddings([[1]]), async (url, seen) => {
+        const p = new OpenAIProvider({ baseUrl: `${url}/v` });
+        await p.embedText(['a'], { model: 'm' });
+        assert.equal(seen[0].url, '/v/v1/embeddings');
+    });
+});

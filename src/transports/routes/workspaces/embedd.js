@@ -15,12 +15,14 @@ import { checkConfigEndpoints } from '../../../services/embedd/src/endpoint-guar
  * and per-user config are defaults a workspace inherits until it sets its own.
  *
  * The intended flow, which the model-keyed tables make non-destructive:
- *   1. PUT /config      switch this workspace to a new model/backend
+ *   1. PUT /config      switch this workspace to a new model/backend. Applied
+ *                       LIVE — vector spaces are lazily-built handles, not
+ *                       something pinned at startup, so no restart is needed.
  *   2. POST /reindex    fill the new space, optionally scoped to `ctx://…` or
  *                       `dir://…` so a model can be tried on one project first
  *   3. (unhappy path)   PUT /config back — the previous model's vectors AND its
- *                       "already embedded" ledger are untouched, so reverting
- *                       costs a restart, not a re-embed
+ *                       "already embedded" ledger are untouched, so reverting is
+ *                       instant and costs no re-embedding at all
  *   4. DELETE …/vector-tables/:table  reclaim the superseded model when done
  */
 export default async function workspaceEmbeddRoutes(fastify, options) {
@@ -126,16 +128,24 @@ export default async function workspaceEmbeddRoutes(fastify, options) {
             // than letting dense search quietly go thin.
             const moved = Object.keys(after).filter((sp) => before[sp]?.model !== after[sp]?.model || before[sp]?.dim !== after[sp]?.dim);
 
+            // Apply live. Vector spaces are lazily-built handles, not something
+            // pinned at startup, so a model switch does not need a restart —
+            // just quiesced writes, which applyEmbeddSpaces takes care of.
+            let swap = null;
+            if (moved.length > 0 && workspace.isActive) {
+                swap = await workspace.applyEmbeddSpaces();
+            }
+
             const r = new ResponseObject().updated({
                 workspace: redactConfig(next),
                 effective: redactConfig(resolved),
                 spaces: after,
                 movedSpaces: moved,
-                // Vector tables are latched when synapsd starts, so the switch
-                // takes effect on the next workspace start.
-                restartRequired: moved.length > 0 && workspace.isActive,
+                // Which Lance table each space now points at.
+                tables: swap?.tables || null,
+                applied: swap ? swap.applied !== false : true,
             }, moved.length > 0
-                ? `Embedding config saved — ${moved.join(', ')} now targets a new model; restart the workspace, then reindex to fill it`
+                ? `Embedding config saved — ${moved.join(', ')} now targets a new model and is live; reindex to fill it`
                 : 'Embedding config saved');
             return reply.code(r.statusCode).send(r.getResponse());
         } catch (error) {

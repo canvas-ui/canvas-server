@@ -816,6 +816,30 @@ class Workspace extends EventEmitter {
         }
     }
 
+    /**
+     * Re-resolve this workspace's embedding backends and swap synapsd's vector
+     * spaces to match — applied live, no workspace restart.
+     *
+     * Writes are quiesced first: the workspace's embedding queue is paused and
+     * its in-flight batch allowed to finish, otherwise a batch straddling the
+     * swap would scatter half its chunks into the outgoing table.
+     */
+    async applyEmbeddSpaces() {
+        if (!this.#embedd || !this.isActive) { return { applied: false, reason: 'workspace not active' }; }
+        const spaces = await this.#embedd.spaceConfigsForWorkspace(this.id, {
+            userId: this.owner, config: this.embeddConfig,
+        });
+        this.#embedd.pause(this.id);
+        try {
+            await this.#embedd.drained(this.id);
+            const result = await this.#getActiveDb().setVectorSpaces(spaces);
+            this.#logger.info({ workspaceId: this.id, tables: result.tables }, 'Embedding vector spaces swapped');
+            return result;
+        } finally {
+            this.#embedd.resume(this.id);
+        }
+    }
+
     /** Document ids under a `ctx://` / `dir://` path — scopes a partial re-embed. */
     async documentIdsUnderScope(scope) {
         return await this.#getActiveDb().documentIdsUnderScope(scope);

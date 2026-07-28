@@ -36,6 +36,28 @@ const CONFIG_NAME = 'embedd';
 
 export default async function embeddRoutes(fastify, options) {
 
+    // Rate limits. The plugin is registered once at the server root
+    // (transports/index.js) with `global: false`, which is what keeps it off
+    // everything that does not opt in — the paths that legitimately burst (CLI
+    // bulk uploads, WebDAV, the fs indexer) are untouched.
+    //
+    // Only the MUTATING routes opt in. The one this really protects is POST
+    // /test, which makes an OUTBOUND request per call: a far better
+    // amplification primitive than the config writes CodeQL flagged.
+    const writeLimit = {
+        rateLimit: {
+            max: Number(process.env.CANVAS_EMBEDD_CONFIG_RATE_MAX) || 30,
+            timeWindow: '1 minute',
+        },
+    };
+    // Tighter: each call reaches out to a third-party host.
+    const testLimit = {
+        rateLimit: {
+            max: Number(process.env.CANVAS_EMBEDD_TEST_RATE_MAX) || 10,
+            timeWindow: '1 minute',
+        },
+    };
+
     const embedd = () => fastify.workspaceManager?.embedd || null;
 
     const requireEmbedd = (reply) => {
@@ -108,7 +130,7 @@ export default async function embeddRoutes(fastify, options) {
         }
     });
 
-    fastify.put('/config', { onRequest: [fastify.authenticate] }, async (request, reply) => {
+    fastify.put('/config', { onRequest: [fastify.authenticate], config: writeLimit }, async (request, reply) => {
         if (!requireEmbedd(reply)) { return; }
         const body = request.body;
         if (!body || typeof body !== 'object' || Array.isArray(body)) {
@@ -162,7 +184,7 @@ export default async function embeddRoutes(fastify, options) {
 
     // Round-trips one real embedding call so "Test connection" means the model
     // answers, not merely that the host is up.
-    fastify.post('/test', { onRequest: [fastify.authenticate] }, async (request, reply) => {
+    fastify.post('/test', { onRequest: [fastify.authenticate], config: testLimit }, async (request, reply) => {
         if (!requireEmbedd(reply)) { return; }
         const { provider, model, modality = 'text' } = request.body || {};
         if (!provider || typeof provider !== 'object') {
@@ -214,7 +236,7 @@ export default async function embeddRoutes(fastify, options) {
         return reply.code(r.statusCode).send(r.getResponse());
     });
 
-    fastify.put('/defaults', { onRequest: [fastify.authenticate] }, async (request, reply) => {
+    fastify.put('/defaults', { onRequest: [fastify.authenticate], config: writeLimit }, async (request, reply) => {
         if (!requireEmbedd(reply)) { return; }
         if (!(await requireAdmin(request, reply))) { return; }
         const body = request.body;

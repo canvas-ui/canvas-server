@@ -27,6 +27,24 @@ import { checkConfigEndpoints } from '../../../services/embedd/src/endpoint-guar
  */
 export default async function workspaceEmbeddRoutes(fastify, options) {
 
+    // Opt-in rate limits. The plugin itself is registered once at the server
+    // root with `global: false` (see transports/index.js); routes opt in by
+    // declaring `config.rateLimit`.
+    const writeLimit = {
+        rateLimit: {
+            max: Number(process.env.CANVAS_EMBEDD_CONFIG_RATE_MAX) || 30,
+            timeWindow: '1 minute',
+        },
+    };
+    // A reindex can enqueue every document in the workspace; repeated calls
+    // during a drain are pure waste.
+    const reindexLimit = {
+        rateLimit: {
+            max: Number(process.env.CANVAS_EMBEDD_REINDEX_RATE_MAX) || 10,
+            timeWindow: '1 minute',
+        },
+    };
+
     const embedd = () => fastify.workspaceManager?.embedd || null;
 
     const guard = (request, reply) => {
@@ -89,6 +107,7 @@ export default async function workspaceEmbeddRoutes(fastify, options) {
 
     fastify.put('/config', {
         onRequest: [fastify.authenticate, requireWorkspaceWrite()],
+        config: writeLimit,
     }, async (request, reply) => {
         const workspace = guard(request, reply);
         if (!workspace) { return; }
@@ -159,6 +178,7 @@ export default async function workspaceEmbeddRoutes(fastify, options) {
     // model can be evaluated on one project before committing the workspace.
     fastify.post('/reindex', {
         onRequest: [fastify.authenticate, requireWorkspaceWrite()],
+        config: reindexLimit,
         schema: {
             body: {
                 type: 'object',
@@ -213,6 +233,7 @@ export default async function workspaceEmbeddRoutes(fastify, options) {
 
     fastify.delete('/vector-tables/:table', {
         onRequest: [fastify.authenticate, requireWorkspaceWrite()],
+        config: writeLimit,
     }, async (request, reply) => {
         const workspace = guard(request, reply);
         if (!workspace) { return; }

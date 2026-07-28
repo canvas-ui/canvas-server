@@ -7,6 +7,7 @@ import fastifySocketIO from 'fastify-socket.io';
 import fastifyStatic from '@fastify/static';
 import fastifyMultipart from '@fastify/multipart';
 import fastifyCors from '@fastify/cors';
+import fastifyRateLimit from '@fastify/rate-limit';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { env } from '../env.js';
@@ -251,6 +252,23 @@ export async function createServer(options = {}) {
     allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-App-Name', 'X-Selected-Session', 'Cache-Control', 'Depth', 'If', 'Overwrite', 'Destination'],
     exposedHeaders: ['Authorization', 'Content-Type', 'DAV', 'ETag', 'Lock-Token'],
     maxAge: 86400 // 24 hours
+  });
+
+  // Rate limiting — OPT-IN ONLY. `global: false` means this adds no hook to any
+  // route that does not declare `config.rateLimit`, so bulk paths (CLI uploads,
+  // WebDAV, the fs indexer) are completely untouched. That flag is the ONLY thing
+  // keeping it off them, so do not drop it.
+  //
+  // Registered once here because two separate route plugins need it
+  // (/rest/v2/embedd and /workspaces/:id/embedd). Per-plugin registration also
+  // works — @fastify/rate-limit is fastify-plugin wrapped but still applies its
+  // options per encapsulated scope — it just duplicates the setup.
+  //
+  // Keyed by authenticated user where there is one — several users behind a
+  // single NAT must not share a bucket — falling back to IP for anonymous routes.
+  await server.register(fastifyRateLimit, {
+    global: false,
+    keyGenerator: (request) => request.user?.id || request.ip,
   });
 
   // WebDAV routes (scoped plugins — own content-type parsers)

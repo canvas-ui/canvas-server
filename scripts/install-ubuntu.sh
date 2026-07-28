@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # This script installs and sets up the Canvas Server on an Ubuntu system.
-# It installs Node.js 20, clones the Canvas Server repository, and sets up the service.
+# It installs Node.js 22, clones the Canvas Server repository, and sets up the service.
 
 # Set default values for environment variables
 CANVAS_ROOT="${CANVAS_ROOT:-/opt/canvas-server}"
@@ -9,7 +9,7 @@ CANVAS_USER="${CANVAS_USER:-canvas}"
 CANVAS_GROUP="${CANVAS_GROUP:-www-data}"
 CANVAS_REPO_URL="${CANVAS_REPO_URL:-https://github.com/canvas-ui/canvas-server.git}"
 CANVAS_REPO_TARGET_BRANCH="${CANVAS_REPO_TARGET_BRANCH:-dev}"
-NODEJS_VERSION="${NODEJS_VERSION:-20}"
+NODEJS_VERSION="${NODEJS_VERSION:-22}"
 WEB_ADMIN_EMAIL="${WEB_ADMIN_EMAIL:-$(hostname)@cnvs.ai}"
 WEB_FQDN="${WEB_FQDN:-my.cnvs.ai}"
 
@@ -20,7 +20,7 @@ usage() {
     echo "  -u: Canvas user (default: canvas)"
     echo "  -g: Canvas group (default: www-data)"
     echo "  -b: Canvas repository branch (default: dev)"
-    echo "  -n: Node.js version (default: 20)"
+    echo "  -n: Node.js version (default: 22)"
     echo "  -e: Web admin email (default: $(hostname)@cnvs.ai)"
     echo "  -f: Web FQDN (default: my.cnvs.ai)"
     exit 1
@@ -61,7 +61,7 @@ handle_error() {
     exit $exit_code
 }
 
-# Function to install Node.js 20
+# Function to set up the NodeSource repository
 setup_nodejs_repository() {
     echo "Setting up Node.js $NODEJS_VERSION repository..."
 
@@ -240,7 +240,7 @@ if ! apt-get install -y apt-transport-https ca-certificates gnupg openssh-server
     handle_error "$?" "Failed to install system utilities"
 fi
 
-# Install Node.js 20
+# Install Node.js
 echo "Checking Node.js installation..."
 if [ ! $(command -v node) ] || [ ! $(node --version | grep -o "v$NODEJS_VERSION") ]; then
     echo "Node.js $NODEJS_VERSION not found or incorrect version. Installing..."

@@ -477,29 +477,6 @@ export default async function authRoutes(fastify, options) {
    * Stored in the per-user server-side device registry.
    */
 
-  async function getUniverseWorkspace(request, reply) {
-    const userId = request.user.id;
-    const universeId = await fastify.workspaceManager.resolveWorkspaceId(userId, 'universe');
-    if (!universeId) {
-      const response = new ResponseObject().serverError('Universe workspace not found');
-      reply.code(response.statusCode).send(response.getResponse());
-      return null;
-    }
-
-    const ws = await fastify.workspaceManager.getWorkspace(universeId, userId);
-    if (!ws) {
-      const response = new ResponseObject().serverError('Universe workspace not available');
-      reply.code(response.statusCode).send(response.getResponse());
-      return null;
-    }
-
-    if (!ws.isActive) {
-      await fastify.workspaceManager.startWorkspace(ws.id, userId);
-    }
-
-    return ws;
-  }
-
   async function revokeDeviceTokens(userId, deviceId) {
     const tokens = await fastify.authService.listTokens(userId);
     const matches = (tokens || []).filter((token) => token.type === 'device' && token.deviceId === deviceId);

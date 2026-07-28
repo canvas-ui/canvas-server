@@ -16,7 +16,8 @@ import { compareByUserOrder } from '../../utils/list-order.js';
 
 // Includes
 import Workspace from './Workspace.js';
-import { WorkspaceErrorCode, accessDenied, workspaceNotFound, workspaceNotReady } from './lib/errors.js';
+import { WorkspaceErrorCode, accessDenied, workspaceNotFound, workspaceNotReady, notImplemented } from './lib/errors.js';
+import { discoverWorkspaceCandidates, validateWorkspaceConfig } from './lib/scanner.js';
 import DotfileManager from './services/dotfile/index.js';
 import HookService from './services/hook/index.js';
 import GraphService from './services/graph/index.js';
@@ -29,9 +30,21 @@ import {
     WORKSPACE_CONFIG_FILENAME,
     WORKSPACE_DEFAULT_HOST,
     WORKSPACE_INTERNALS,
+    WORKSPACE_ORIGINS,
     WORKSPACE_STORED_DEFAULT,
     WORKSPACE_SERVICES,
 } from './lib/constants.js';
+
+// Fields that live only in the per-user index — they describe this server's
+// relationship to the workspace dir, not the workspace itself, so they are
+// never written into workspace.json (a transplanted dir must not carry them).
+const INDEX_ONLY_FIELDS = ['origin', 'importedFrom', 'lastScannedAt', 'remote'];
+
+function stripIndexOnlyFields(entry) {
+    const clean = { ...entry };
+    for (const field of INDEX_ONLY_FIELDS) delete clean[field];
+    return clean;
+}
 
 /**
  * Workspace Reference Utilities
@@ -106,7 +119,8 @@ function constructWorkspaceReference(userIdentifier, workspaceSlug, host = WORKS
  */
 class WorkspaceManager extends EventEmitter {
 
-    #indexStore;        // Persistent index
+    #indexFactory;      // Jim instance — per-user index files (db/users/<id>/workspaces.json)
+    #userIndexes = new Map(); // userId -> Conf (lazily opened per-user index)
     #users;             // Users service
     #roles;             // Roles service
     #contextManager;    // Context Manager
@@ -121,6 +135,7 @@ class WorkspaceManager extends EventEmitter {
     // Lookup Indexes (in-memory)
     #nameIndex = new Map();         // Key: userId@host:workspaceName -> workspaceId
     #referenceIndex = new Map();    // Key: fullReference -> workspaceId
+    #idIndex = new Map();           // Key: workspaceId -> owner userId
 
     // Services
     dotfileService = null;
@@ -138,11 +153,11 @@ class WorkspaceManager extends EventEmitter {
         });
 
         if (!options.defaultRootPath) throw new Error('defaultRootPath required');
-        if (!options.indexStore) throw new Error('indexStore required');
+        if (!options.indexFactory) throw new Error('indexFactory (jim) required');
         if (!options.users) throw new Error('users service required');
 
         this.#defaultRootPath = path.resolve(options.defaultRootPath);
-        this.#indexStore = options.indexStore;
+        this.#indexFactory = options.indexFactory;
         this.#users = options.users;
         this.#roles = options.roles;
         this.#embedd = options.embedd || null;
@@ -181,9 +196,23 @@ class WorkspaceManager extends EventEmitter {
         });
         await this.chatService.initialize();
 
-        // Scan/Validate index and rebuild lookups
-        await this.#scanWorkspaces();
+        // Rebuild lookups from the per-user index files first (scan needs the
+        // id/name indexes for collision detection), then discover/validate each
+        // user's on-disk workspaces — the index is a rebuildable cache of the
+        // workspace.json files.
         await this.#rebuildIndexes();
+        try {
+            const users = await this.#users.list();
+            for (const user of users) {
+                try {
+                    await this.scanUserWorkspaces(user.id);
+                } catch (err) {
+                    this.#logger.warn({ err, userId: user.id }, 'Workspace scan failed for user');
+                }
+            }
+        } catch (err) {
+            this.#logger.warn({ err }, 'Workspace discovery scan failed');
+        }
 
         this.#initialized = true;
         this.#logger.debug('WorkspaceManager initialized');
@@ -323,7 +352,6 @@ class WorkspaceManager extends EventEmitter {
     async listWorkspaces(userId) {
         if (!this.#initialized) throw new Error('Not initialized');
 
-        const all = this.#indexStore.store || {};
         const results = [];
         let userEmail = null;
 
@@ -336,8 +364,7 @@ class WorkspaceManager extends EventEmitter {
             }
         }
 
-        for (const key in all) {
-            const entry = all[key];
+        for (const [, entry] of this.#allEntries()) {
             const isOwner = !userId || entry.owner === userId;
             const sharedVia = userEmail ? (entry.acl?.users?.[userEmail] || null) : null;
             const hasSharedAccess = !!sharedVia;
@@ -392,6 +419,13 @@ class WorkspaceManager extends EventEmitter {
         // Link To pickers, CLI, ...) sees the same ordering: explicit `order`
         // first, unordered last, stable tiebreak on createdAt then name.
         return results.sort(compareByUserOrder);
+    }
+
+    // Every workspace entry across all users — the explicit form of the
+    // no-arg listWorkspaces() used by cross-user resolution (ACL middleware,
+    // public shares, token lookups).
+    async listAllWorkspaces() {
+        return this.listWorkspaces();
     }
 
     async hasWorkspace(workspaceId, userId) {
@@ -467,6 +501,9 @@ class WorkspaceManager extends EventEmitter {
         if (!entry) throw workspaceNotFound(`Workspace not found: ${workspaceId}`);
         if (userId && entry.owner !== userId) {
             throw accessDenied(`Access denied to workspace ${workspaceId}`);
+        }
+        if (entry.origin === WORKSPACE_ORIGINS.REMOTE) {
+            throw notImplemented(`Workspace ${workspaceId} is remote (${entry.host}) — remote workspaces are not yet supported`);
         }
 
         // 3. Instantiate
@@ -580,15 +617,22 @@ class WorkspaceManager extends EventEmitter {
         });
         conf.store = configData;
 
-        // Index it
-        // Key: userId/workspaceId
-        const indexKey = `${userId}/${workspaceId}`;
-        this.#indexStore.set(indexKey, configData);
+        // Index it in the owner's per-user index (key: workspaceId). The
+        // workspace.json above is the source of truth; the entry mirrors it
+        // plus index-only bookkeeping.
+        const origin = this.#classifyOrigin(workspaceDir);
+        this.#getUserIndex(userId).set(workspaceId, {
+            ...configData,
+            origin,
+            importedFrom: null,
+            lastScannedAt: null,
+            remote: null,
+        });
 
         // Update in-memory lookups
         this.#addToIndexes(userId, workspaceId, sanitizedName, host, reference);
 
-        this.#logger.debug({ workspaceId, userId }, 'Created workspace');
+        this.#logger.debug({ workspaceId, userId, origin }, 'Created workspace');
         return configData;
     }
 
@@ -606,14 +650,13 @@ class WorkspaceManager extends EventEmitter {
             return false;
         }
 
-        const indexKey = `${ownerUserId}/${workspaceId}`;
-        const all = this.#indexStore.store || {};
-        const existing = all[indexKey];
+        const userIndex = this.#getUserIndex(ownerUserId);
+        const existing = userIndex.get(workspaceId);
         if (!existing) {
             return false;
         }
 
-        const newConfig = {
+        const newEntry = {
             ...existing,
             ...updates,
             updatedAt: new Date().toISOString()
@@ -625,13 +668,14 @@ class WorkspaceManager extends EventEmitter {
                 cwd: path.dirname(existing.configPath),
                 accessPropertiesByDotNotation: false
             });
-            conf.store = newConfig;
+            // workspace.json never carries the index-only bookkeeping fields
+            conf.store = stripIndexOnlyFields(newEntry);
         } catch (err) {
             console.error(`Failed to persist workspace config for ${workspaceId}:`, err);
             return false;
         }
 
-        this.#indexStore.set(indexKey, newConfig);
+        userIndex.set(workspaceId, newEntry);
         return true;
     }
 
@@ -688,9 +732,7 @@ class WorkspaceManager extends EventEmitter {
         const normalizedCode = WorkspaceManager.#normalizeShareCode(code);
         if (!normalizedCode) return null;
 
-        const all = this.#indexStore.store || {};
-        for (const key in all) {
-            const entry = all[key];
+        for (const [, entry] of this.#allEntries()) {
             const share = entry?.publicCanvasShares?.[normalizedCode];
             if (!share) continue;
 
@@ -763,55 +805,148 @@ class WorkspaceManager extends EventEmitter {
         });
     }
 
-    /**
-     * Re-register a universe workspace from its on-disk config if it exists but is missing from the index.
-     * Creates a fresh one if no on-disk config is found.
-     * Returns the resolved workspace ID, or null on failure.
-     */
-    async repairUniverseWorkspace(userId, userEmail, universeWorkspacePath) {
-        const configPath = path.join(universeWorkspacePath, WORKSPACE_CONFIG_FILENAME);
+    async removeWorkspace(workspaceId, userId, destroyData = false) {
+        // Resolve via the index so broken workspaces (missing dir, legacy
+        // config) stay deletable — instantiation is best-effort for stop().
+        const entry = this.getWorkspaceIndexEntry(workspaceId, userId);
+        if (!entry) return false;
 
-        if (existsSync(configPath)) {
+        const ws = await this.getWorkspace(entry.id, userId);
+        if (ws) {
+            await ws.stop();
+        }
+        this.#unregisterWorkspaceInstance(entry.id);
+        this.#workspaces.delete(entry.id);
+
+        this.#getUserIndex(entry.owner).delete(entry.id);
+        this.#removeFromIndexes(entry.owner, entry.id, entry.name, entry.host || WORKSPACE_DEFAULT_HOST, entry.reference);
+
+        // Remote entries are index-only on this server — nothing to destroy.
+        if (destroyData && entry.origin !== WORKSPACE_ORIGINS.REMOTE && entry.rootPath && existsSync(entry.rootPath)) {
+            await fsPromises.rm(entry.rootPath, { recursive: true, force: true });
+        }
+
+        this.emit('workspace.deleted', { workspaceId: entry.id, userId: entry.owner });
+        return true;
+    }
+
+    /**
+     * Discovery / import
+     */
+
+    /**
+     * Scan a user's workspace directories (Workspaces/ + legacy workspaces/)
+     * for directories holding a valid workspace.json and (re)register them in
+     * the user's index. Transplanted directories get their rootPath rewritten,
+     * foreign owners are adopted (recorded as importedFrom), id collisions get
+     * a fresh id, name collisions an incremented suffix. Also validates
+     * existing index entries against disk.
+     * @returns {Promise<{discovered: [], adopted: [], updated: [], skipped: [], missing: []}>}
+     */
+    async scanUserWorkspaces(userId) {
+        const report = { discovered: [], adopted: [], updated: [], skipped: [], missing: [] };
+
+        let user = null;
+        try {
+            user = await this.#users.get(userId);
+        } catch {
+            user = null;
+        }
+        if (!user?.homePath) {
+            throw new Error(`Cannot scan workspaces: user not found: ${userId}`);
+        }
+
+        const home = path.resolve(user.homePath);
+        const roots = [path.join(home, 'Workspaces'), path.join(home, 'workspaces')];
+        const { candidates, skipped } = await discoverWorkspaceCandidates(roots);
+        report.skipped.push(...skipped);
+
+        for (const candidate of candidates) {
             try {
-                const raw = await fsPromises.readFile(configPath, 'utf8');
-                const configData = JSON.parse(raw);
-                if (configData?.id && configData?.owner === userId) {
-                    const indexKey = `${userId}/${configData.id}`;
-                    this.#indexStore.set(indexKey, { ...configData, rootPath: universeWorkspacePath, configPath });
-                    this.#addToIndexes(userId, configData.id, configData.name, configData.host || WORKSPACE_DEFAULT_HOST, configData.reference);
-                    this.#logger.info({ userId, workspaceId: configData.id }, 'Re-registered universe workspace from disk');
-                    return configData.id;
+                const result = await this.#indexWorkspaceFromDisk(userId, candidate, WORKSPACE_ORIGINS.LOCAL);
+                if (result) {
+                    report[result.kind].push({
+                        id: result.id,
+                        name: result.name,
+                        dir: candidate.dir,
+                        ...(result.importedFrom ? { importedFrom: result.importedFrom } : {}),
+                    });
                 }
-            } catch (e) {
-                this.#logger.warn({ err: e, userId }, 'Failed to read existing universe workspace config');
+            } catch (err) {
+                this.#logger.warn({ err, dir: candidate.dir, userId }, 'Failed to register scanned workspace');
+                report.skipped.push({ dir: candidate.dir, reason: err.message });
             }
         }
 
-        // No valid on-disk config — create fresh
-        const newConfig = await this.createUniverseWorkspace(userId, userEmail, universeWorkspacePath);
-        return newConfig?.id || null;
+        // Validate existing entries against disk
+        const userIndex = this.#getUserIndex(userId);
+        const store = userIndex.store || {};
+        for (const wsId in store) {
+            const entry = store[wsId];
+            if (!entry || entry.origin === WORKSPACE_ORIGINS.REMOTE) continue;
+
+            if (!entry.rootPath || !existsSync(entry.rootPath)) {
+                if (entry.status !== WORKSPACE_STATUS_CODES.NOT_FOUND) {
+                    userIndex.set(wsId, { ...entry, status: WORKSPACE_STATUS_CODES.NOT_FOUND });
+                }
+                report.missing.push({ id: wsId, name: entry.name, rootPath: entry.rootPath || null });
+            } else if (entry.status === WORKSPACE_STATUS_CODES.ACTIVE && !this.#workspaces.has(wsId)) {
+                // Reset stale active state (e.g. after a server restart)
+                userIndex.set(wsId, { ...entry, status: WORKSPACE_STATUS_CODES.INACTIVE });
+            } else if (entry.status === WORKSPACE_STATUS_CODES.NOT_FOUND) {
+                // Directory reappeared
+                userIndex.set(wsId, { ...entry, status: WORKSPACE_STATUS_CODES.AVAILABLE });
+            }
+        }
+
+        return report;
     }
 
-    async removeWorkspace(workspaceId, userId, destroyData = false) {
-        const ws = await this.getWorkspace(workspaceId, userId);
-        if (!ws) return false;
+    /**
+     * Register a workspace by absolute path (foreign-local support). The dir
+     * must contain a valid workspace.json. Paths inside the user's workspace
+     * dirs classify as `local`, anything else as `foreign-local`.
+     * @param {string} userId
+     * @param {string} absolutePath
+     * @param {Object} [options]
+     * @param {boolean} [options.adopt=true] - rewrite a foreign owner to userId
+     * @returns {Promise<Object>} the created index entry
+     */
+    async registerWorkspacePath(userId, absolutePath, options = {}) {
+        if (!this.#initialized) throw new Error('Not initialized');
+        const adopt = options.adopt !== false;
 
-        await ws.stop();
-        this.#unregisterWorkspaceInstance(workspaceId);
-        this.#workspaces.delete(workspaceId);
-
-        const entry = this.#findInIndex(workspaceId);
-        if (entry) {
-            const indexKey = `${entry.owner}/${entry.id}`;
-            this.#indexStore.delete(indexKey);
-            this.#removeFromIndexes(entry.owner, entry.name, entry.host || WORKSPACE_DEFAULT_HOST, entry.reference);
+        if (!absolutePath || !path.isAbsolute(absolutePath)) {
+            throw new Error('An absolute workspace path is required');
+        }
+        const dir = path.resolve(absolutePath);
+        if (!existsSync(dir)) {
+            throw new Error(`Workspace directory not found: ${dir}`);
+        }
+        const configPath = path.join(dir, WORKSPACE_CONFIG_FILENAME);
+        if (!existsSync(configPath)) {
+            throw new Error(`No ${WORKSPACE_CONFIG_FILENAME} found in: ${dir}`);
         }
 
-        if (destroyData && ws.rootPath) {
-            await fsPromises.rm(ws.rootPath, { recursive: true, force: true });
+        const config = JSON.parse(await fsPromises.readFile(configPath, 'utf8'));
+        const invalid = validateWorkspaceConfig(config);
+        if (invalid) {
+            throw new Error(`Invalid ${WORKSPACE_CONFIG_FILENAME}: ${invalid}`);
         }
 
-        return true;
+        // Reject an already-registered directory (any user)
+        for (const [, entry] of this.#allEntries()) {
+            if (entry?.rootPath && path.resolve(entry.rootPath) === dir) {
+                throw new Error(`Workspace directory already registered: ${dir} (workspace ${entry.id})`);
+            }
+        }
+
+        if (!adopt && config.owner !== userId) {
+            throw new Error(`Workspace at ${dir} is owned by ${config.owner}; pass adopt=true to take ownership`);
+        }
+
+        const result = await this.#indexWorkspaceFromDisk(userId, { dir, configPath, config }, this.#classifyOrigin(dir));
+        return this.#getUserIndex(userId).get(result.id);
     }
 
     /**
@@ -913,13 +1048,157 @@ class WorkspaceManager extends EventEmitter {
      * Private Methods
      */
 
+    // Lazily open a user's index file (db/users/<userId>/workspaces.json).
+    // Conf keeps the file content in memory, so this is a one-time cost per user.
+    #getUserIndex(userId) {
+        if (!this.#userIndexes.has(userId)) {
+            this.#userIndexes.set(userId, this.#indexFactory.getOrCreateIndex('workspaces', { scope: `users/${userId}` }));
+        }
+        return this.#userIndexes.get(userId);
+    }
+
+    // Union of users known to the Users service and indexes already opened
+    // (covers entries whose user record was deleted).
+    #knownUserIds() {
+        const ids = new Set(this.#userIndexes.keys());
+        for (const id of Object.keys(this.#users.indexStore?.store || {})) {
+            ids.add(id);
+        }
+        return ids;
+    }
+
+    // Iterate every [userId, entry] across all per-user indexes.
+    *#allEntries() {
+        for (const userId of this.#knownUserIds()) {
+            const store = this.#getUserIndex(userId).store || {};
+            for (const wsId in store) {
+                if (store[wsId]) yield [userId, store[wsId]];
+            }
+        }
+    }
+
+    #classifyOrigin(dir) {
+        // Anything under the users root (a user home) is a normal local
+        // workspace; arbitrary paths elsewhere on this machine are foreign-local.
+        const resolved = path.resolve(dir);
+        return resolved.startsWith(this.#defaultRootPath + path.sep)
+            ? WORKSPACE_ORIGINS.LOCAL
+            : WORKSPACE_ORIGINS.FOREIGN_LOCAL;
+    }
+
     #findInIndex(workspaceId) {
-        const all = this.#indexStore.store;
-        for (const key in all) {
-            const entry = all[key];
-            if (entry && entry.id === workspaceId) return entry;
+        const ownerId = this.#idIndex.get(workspaceId);
+        if (ownerId) {
+            const entry = this.#getUserIndex(ownerId).get(workspaceId);
+            if (entry) return entry;
+        }
+        // Fallback linear scan (entry added out-of-band); repair the id index on hit.
+        for (const [userId, entry] of this.#allEntries()) {
+            if (entry.id === workspaceId) {
+                this.#idIndex.set(workspaceId, userId);
+                return entry;
+            }
         }
         return null;
+    }
+
+    /**
+     * Register/refresh one on-disk workspace dir in the user's index.
+     * Handles adoption (foreign owner), id collisions (fresh uuid for live
+     * duplicates, replacement for stale entries), name collisions (suffix),
+     * and path drift (transplanted dirs). Writes back to workspace.json only
+     * when something actually changed.
+     * @returns {{kind: 'discovered'|'adopted'|'updated', id, name, importedFrom}|null} null when already indexed and unchanged
+     */
+    async #indexWorkspaceFromDisk(userId, { dir, configPath, config }, origin) {
+        const cfg = { ...stripIndexOnlyFields(config) };
+        const host = cfg.host || WORKSPACE_DEFAULT_HOST;
+        const userIndex = this.#getUserIndex(userId);
+        let changed = false;
+        let importedFrom = null;
+        let kind = 'discovered';
+
+        // ID collision handling
+        const existingOwner = this.#idIndex.get(cfg.id);
+        const existingEntry = existingOwner ? this.#getUserIndex(existingOwner).get(cfg.id) : null;
+        const samePath = existingEntry?.rootPath && path.resolve(existingEntry.rootPath) === path.resolve(dir);
+
+        if (existingEntry && existingOwner === userId && samePath) {
+            kind = 'updated'; // already indexed — refresh below, report only if changed
+        } else if (existingEntry && existingOwner === userId && (!existingEntry.rootPath || !existsSync(existingEntry.rootPath))) {
+            // Stale entry pointing at a gone dir — this dir replaces it (moved workspace)
+            this.#removeFromIndexes(userId, cfg.id, existingEntry.name, existingEntry.host || WORKSPACE_DEFAULT_HOST, existingEntry.reference);
+            kind = 'updated';
+        } else if (existingEntry) {
+            // Live duplicate (copied dir, same or different user) — newcomer gets a fresh id
+            this.#logger.warn({ dir, duplicateOf: cfg.id, existingOwner }, 'Workspace id collision — assigning new id');
+            cfg.id = uuidv4();
+            changed = true;
+        }
+
+        // Owner adoption — the dir lives under this user's control now
+        if (cfg.owner !== userId) {
+            importedFrom = cfg.owner || null;
+            cfg.owner = userId;
+            changed = true;
+            if (kind === 'discovered') kind = 'adopted';
+            this.#logger.info({ dir, userId, importedFrom }, 'Adopting workspace from foreign owner');
+        }
+
+        // Name collision within the user — suffix until unambiguous
+        const baseName = this.#sanitizeWorkspaceName(cfg.name) || 'workspace';
+        let name = baseName;
+        let suffix = 1;
+        while (true) {
+            const holder = this.#nameIndex.get(`${userId}@${host}:${name}`);
+            if (!holder || holder === cfg.id) break;
+            suffix += 1;
+            name = `${baseName}-${suffix}`;
+        }
+        if (name !== cfg.name) {
+            this.#logger.warn({ dir, from: cfg.name, to: name }, 'Workspace name adjusted on registration');
+            cfg.name = name;
+            changed = true;
+        }
+
+        // Reference + path drift (transplanted/copied dirs)
+        const expectedReference = constructWorkspaceReference(userId, cfg.name, host);
+        if (cfg.reference !== expectedReference) {
+            cfg.reference = expectedReference;
+            changed = true;
+        }
+        if (cfg.rootPath !== dir || cfg.configPath !== configPath) {
+            cfg.rootPath = dir;
+            cfg.configPath = configPath;
+            changed = true;
+        }
+
+        if (changed) {
+            cfg.updatedAt = new Date().toISOString();
+            const conf = new Conf({
+                configName: path.basename(configPath, '.json'),
+                cwd: dir,
+                accessPropertiesByDotNotation: false
+            });
+            conf.store = cfg;
+        }
+
+        const previous = userIndex.get(cfg.id) || null;
+        const isActive = this.#workspaces.has(cfg.id);
+        userIndex.set(cfg.id, {
+            ...cfg,
+            status: isActive ? WORKSPACE_STATUS_CODES.ACTIVE : WORKSPACE_STATUS_CODES.AVAILABLE,
+            origin,
+            importedFrom: importedFrom ?? previous?.importedFrom ?? null,
+            lastScannedAt: new Date().toISOString(),
+            remote: previous?.remote ?? null,
+        });
+        this.#addToIndexes(userId, cfg.id, cfg.name, host, cfg.reference);
+
+        if (kind === 'updated' && previous && !changed) {
+            return null; // routine rescan of an unchanged workspace
+        }
+        return { kind, id: cfg.id, name: cfg.name, importedFrom };
     }
 
     async #createPublicShareCode() {
@@ -1016,30 +1295,15 @@ class WorkspaceManager extends EventEmitter {
         return `public-share:${code}`;
     }
 
-    async #scanWorkspaces() {
-        // Minimal scan to ensure paths exist
-        const all = this.#indexStore.store;
-        for (const key in all) {
-            const entry = all[key];
-            if (!existsSync(entry.rootPath)) {
-                entry.status = WORKSPACE_STATUS_CODES.NOT_FOUND;
-            } else if (entry.status === WORKSPACE_STATUS_CODES.ACTIVE) {
-                entry.status = WORKSPACE_STATUS_CODES.INACTIVE; // Reset active state
-            }
-            this.#indexStore.set(key, entry);
-        }
-    }
-
     async #rebuildIndexes() {
         this.#nameIndex.clear();
         this.#referenceIndex.clear();
+        this.#idIndex.clear();
 
-        const all = this.#indexStore.store;
-        for (const key in all) {
-            const entry = all[key];
+        for (const [userId, entry] of this.#allEntries()) {
             if (entry.owner && entry.name) {
                 this.#addToIndexes(
-                    entry.owner,
+                    userId,
                     entry.id,
                     entry.name,
                     entry.host || WORKSPACE_DEFAULT_HOST,
@@ -1047,21 +1311,23 @@ class WorkspaceManager extends EventEmitter {
                 );
             }
         }
-        this.#logger.debug({ names: this.#nameIndex.size, references: this.#referenceIndex.size }, 'Rebuilt indexes');
+        this.#logger.debug({ names: this.#nameIndex.size, references: this.#referenceIndex.size, ids: this.#idIndex.size }, 'Rebuilt indexes');
     }
 
     #addToIndexes(userId, workspaceId, name, host, reference) {
         const nameKey = `${userId}@${host}:${name}`;
         this.#nameIndex.set(nameKey, workspaceId);
+        this.#idIndex.set(workspaceId, userId);
 
         if (reference) {
             this.#referenceIndex.set(reference, workspaceId);
         }
     }
 
-    #removeFromIndexes(userId, name, host, reference) {
+    #removeFromIndexes(userId, workspaceId, name, host, reference) {
         const nameKey = `${userId}@${host}:${name}`;
         this.#nameIndex.delete(nameKey);
+        this.#idIndex.delete(workspaceId);
         if (reference) {
             this.#referenceIndex.delete(reference);
         }

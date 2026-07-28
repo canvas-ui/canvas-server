@@ -193,10 +193,16 @@ class Users extends EventEmitter {
                 status: userData.status || 'active',
             });
 
-            // Create a default context for the user
-            await this.#contextManager.createContext(user.id, '/', {
-                id: 'default',
-            });
+            // Create an initial context for the user — an ordinary context
+            // (deletable like any other), provisioned purely for UX. A failure
+            // here must not roll back the user.
+            try {
+                await this.#contextManager.createContext(user.id, '/', {
+                    id: 'default',
+                });
+            } catch (contextError) {
+                logger.warn(`Failed to create initial context for user ${user.id}: ${contextError.message}`);
+            }
 
             // Auto-generate global API token for the user
             if (this.#authService) {
@@ -399,70 +405,30 @@ class Users extends EventEmitter {
      * Utils
      */
 
+    /**
+     * @deprecated The universe workspace is an ordinary (deletable) workspace
+     * now — nothing is repaired or auto-started on login anymore; workspaces
+     * start on demand (ContextManager.getContext / workspace routes). Kept as
+     * a cheap no-op because auth strategies still call it on every login;
+     * call sites will be removed in a follow-up.
+     */
     async ensureUserUniverseWorkspaceIsRunning(userId) {
         if (!this.#initialized) {
             throw new Error('Users service not initialized');
         }
-
-        const user = await this.get(userId);
-        if (!user) {
-            throw new Error(`User not found: ${userId}`);
-        }
-
-        let universeId = this.#workspaceManager.resolveWorkspaceId(user.id, 'universe');
-
-        if (!universeId) {
-            // Auto-repair: universe workspace missing from index — re-register from disk or create fresh
-            console.warn(`Universe workspace missing for user ${user.email} — attempting repair`);
-            const universeWorkspacePath = path.join(path.resolve(user.homePath), 'workspaces', 'universe');
-            try {
-                await this.#workspaceManager.repairUniverseWorkspace(user.id, user.email, universeWorkspacePath);
-                universeId = this.#workspaceManager.resolveWorkspaceId(user.id, 'universe');
-            } catch (e) {
-                console.error(`Failed to repair universe workspace for user ${user.email}: ${e.message}`);
-            }
-        }
-
-        if (!universeId) {
-            console.warn(`Universe workspace unavailable for user ${user.email} — continuing without it`);
-            return false;
-        }
-
-        const universeWorkspace = await this.#workspaceManager.getWorkspace(universeId, user.id);
-
-        if (!universeWorkspace) {
-            console.warn(`Universe workspace could not be loaded for user: ${user.email}`);
-            return false;
-        }
-
-        if (!universeWorkspace.isActive) {
-            await this.#workspaceManager.startWorkspace(universeId, user.id);
-        }
-
-        return true;
+        return this.has(userId);
     }
 
+    /**
+     * @deprecated The default context is an ordinary (deletable) context now —
+     * a user with zero contexts is a valid state and nothing is recreated on
+     * login. No-op for the same reason as above.
+     */
     async ensureDefaultUserContextExists(userId) {
         if (!this.#initialized) {
             throw new Error('Users service not initialized');
         }
-
-        const user = await this.get(userId);
-        if (!user) {
-            throw new Error(`User not found: ${userId}`);
-        }
-
-        if (this.#contextManager.hasContext(userId, 'default')) {
-            return true;
-        }
-
-        // Create a default context for the user if it doesn't exist
-        await this.#contextManager.createContext(userId, '/', {
-            id: 'default',
-            autoCreate: true,
-        });
-
-        return true;
+        return this.has(userId);
     }
 
     /**
@@ -480,7 +446,10 @@ class Users extends EventEmitter {
             throw new Error(`User home directory already exists: ${userHomePath}`);
         }
 
-        const universeWorkspacePath = path.join(userHomePath, 'workspaces', 'universe');
+        // Canonical location is <home>/Workspaces (the dir the discovery scan
+        // watches); the legacy lowercase workspaces/ dir is still scanned for
+        // existing users.
+        const universeWorkspacePath = path.join(userHomePath, 'Workspaces', 'universe');
         await this.#workspaceManager.createUniverseWorkspace(userId, userEmail, universeWorkspacePath);
 
         return userHomePath;
@@ -506,21 +475,7 @@ class Users extends EventEmitter {
         // Store the user instance
         this.#saveEntry(user.id, user);
 
-        // Start the universe workspace
-        const universeId = this.#workspaceManager.resolveWorkspaceId(user.id, 'universe');
-        if (universeId) {
-            try {
-                const workspace = await this.#workspaceManager.startWorkspace(universeId, user.id);
-                if (!workspace) {
-                    throw new Error(`Failed to start universe workspace for user ${user.name} (${user.email})`);
-                }
-            } catch (e) {
-                console.warn(`Could not start universe workspace for user ${user.name} (${user.email}): ${e.message}`);
-            }
-        } else {
-             console.warn(`Universe workspace ID not found for user ${user.name} (${user.email}) during initialization.`);
-        }
-
+        // Workspaces start on demand — no auto-start of any workspace here.
         return user;
     }
 

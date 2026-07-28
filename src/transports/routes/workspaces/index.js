@@ -254,6 +254,58 @@ export default async function workspaceRoutes(fastify, options) {
     }
   });
 
+  // Rescan the user's workspace directories — discovers transplanted/copied
+  // workspace dirs (poor-man's import: drop a dir into Workspaces/ and scan).
+  fastify.post('/scan', {
+    onRequest: [fastify.authenticate]
+  }, async (request, reply) => {
+    if (!validateUserWithResponse(request, reply)) {
+      return;
+    }
+    try {
+      const report = await fastify.workspaceManager.scanUserWorkspaces(request.user.id);
+      const response = new ResponseObject().success(report, 'Workspace scan completed');
+      return reply.code(response.statusCode).send(response.getResponse());
+    } catch (error) {
+      fastify.log.error(error);
+      const response = new ResponseObject().serverError(error.message || 'Workspace scan failed');
+      return reply.code(response.statusCode).send(response.getResponse());
+    }
+  });
+
+  // Register a workspace by absolute path (foreign-local workspaces living
+  // outside the user's Workspaces directory).
+  fastify.post('/register', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      body: {
+        type: 'object',
+        required: ['path'],
+        properties: {
+          path: { type: 'string' },
+          adopt: { type: 'boolean' }
+        }
+      }
+    }
+  }, async (request, reply) => {
+    if (!validateUserWithResponse(request, reply)) {
+      return;
+    }
+    try {
+      const entry = await fastify.workspaceManager.registerWorkspacePath(
+        request.user.id,
+        request.body.path,
+        { adopt: request.body.adopt !== false }
+      );
+      const response = new ResponseObject().created(entry, 'Workspace registered successfully');
+      return reply.code(response.statusCode).send(response.getResponse());
+    } catch (error) {
+      fastify.log.error(error);
+      const response = new ResponseObject().serverError(error.message || 'Failed to register workspace');
+      return reply.code(response.statusCode).send(response.getResponse());
+    }
+  });
+
   // Get workspace details
   fastify.get('/:id', {
     onRequest: [fastify.authenticate, resolveWorkspaceAddress, requireWorkspaceRead()],
@@ -402,11 +454,8 @@ export default async function workspaceRoutes(fastify, options) {
       return;
     }
     try {
-      // Prevent deletion of universe workspace
-      if (request.params.id === 'universe') {
-        const responseObject = new ResponseObject().forbidden('Universe workspace cannot be deleted');
-        return reply.code(responseObject.statusCode).send(responseObject.getResponse());
-      }
+      // Any workspace is deletable — including the auto-provisioned
+      // "universe" one; it is an ordinary workspace.
 
       // Only owners can delete workspaces
       if (!request.workspaceAccess.isOwner) {

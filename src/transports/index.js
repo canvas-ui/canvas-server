@@ -22,9 +22,8 @@ import {
 } from './auth/strategies.js';
 
 // Routes
+import { decorateServices, mountWorkspacesApi, mountContextsApi } from './api-contract.js';
 import authRoutes from './routes/auth.js';
-import workspaceRoutes from './routes/workspaces/index.js';
-import contextRoutes from './routes/contexts/index.js';
 import agentRoutes from './routes/agents/index.js';
 import pubRoutes from './routes/pub/index.js';
 import pingRoute from './routes/ping.js';
@@ -179,18 +178,7 @@ export async function createServer(options = {}) {
   });
 
   // Make managers available
-  if (options.users) server.decorate('users', options.users);
-  if (options.workspaceManager) server.decorate('workspaceManager', options.workspaceManager);
-  if (options.contextManager) server.decorate('contextManager', options.contextManager);
-  if (options.dotfileManager) server.decorate('dotfileManager', options.dotfileManager);
-  if (options.roles) server.decorate('roles', options.roles);
-  if (options.agents) server.decorate('agents', options.agents);
-  if (options.authService) server.decorate('authService', options.authService);
-  if (options.deviceRegistry) server.decorate('deviceRegistry', options.deviceRegistry);
-  if (options.userConfig) server.decorate('userConfig', options.userConfig);
-  if (options.messaging) server.decorate('messaging', options.messaging);
-  if (options.chatRouter) server.decorate('chatRouter', options.chatRouter);
-  if (options.voice) server.decorate('voice', options.voice);
+  decorateServices(server, options);
 
   // Handle WebDAV OPTIONS before CORS plugin intercepts them
   const davUrlPattern = /^\/workspaces\/[^/]+\/dav(\/|$)/;
@@ -352,8 +340,8 @@ export async function createServer(options = {}) {
   server.register(authRoutes, { prefix: '/rest/v2/auth' });
   server.register(menuRoutes, { prefix: '/rest/v2', onRequest: [server.authenticate] });
   server.register(withoutAgentTokens(userRoutes), { prefix: '/rest/v2/users' });
-  server.register(workspaceRoutes, { prefix: '/rest/v2/workspaces' });
-  server.register(withoutAgentTokens(contextRoutes), { prefix: '/rest/v2/contexts' });
+  mountWorkspacesApi(server);
+  mountContextsApi(server, { preHandlers: [rejectAgentTokens] });
   server.register(agentRoutes, { prefix: '/rest/v2/agents' });
   server.register(pubRoutes, { prefix: '/rest/v2/pub' });
   server.register(schemaRoutes, { prefix: '/rest/v2/schemas' });
@@ -440,25 +428,6 @@ export async function createServer(options = {}) {
 export async function startTransportServer(options = {}) {
   // Create and configure the Fastify server
   const fastify = await createServer(options);
-
-  // These decorations are now handled in createServer, but we'll keep them here
-  // to ensure backward compatibility, only adding if they don't already exist
-  if (!fastify.hasDecorator('users') && options.users)
-    fastify.decorate('users', options.users);
-  if (!fastify.hasDecorator('workspaceManager') && options.workspaceManager)
-    fastify.decorate('workspaceManager', options.workspaceManager);
-  if (!fastify.hasDecorator('contextManager') && options.contextManager)
-    fastify.decorate('contextManager', options.contextManager);
-  if (!fastify.hasDecorator('dotfileManager') && options.dotfileManager)
-    fastify.decorate('dotfileManager', options.dotfileManager);
-  if (!fastify.hasDecorator('roles') && options.roles)
-    fastify.decorate('roles', options.roles);
-  if (!fastify.hasDecorator('agents') && options.agents)
-    fastify.decorate('agents', options.agents);
-  if (!fastify.hasDecorator('authService') && options.authService)
-    fastify.decorate('authService', options.authService);
-  if (!fastify.hasDecorator('deviceRegistry') && options.deviceRegistry)
-    fastify.decorate('deviceRegistry', options.deviceRegistry);
 
   // Start listening
   const port = options.port || env.server.api.port;

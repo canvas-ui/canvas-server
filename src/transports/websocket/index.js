@@ -5,6 +5,8 @@ import { authService } from '../auth/strategies.js';
 import registerContextWebSocket from './channels/context.js';
 import registerWorkspaceWebSocket from './channels/workspace.js';
 import registerAgentWebSocket from './channels/agent.js';
+import registerEdgeWebSocket from './channels/edge.js';
+import EdgeRegistry from '../../edge/registry.js';
 
 const logger = createLogger('canvas-server:websocket:main');
 
@@ -23,6 +25,7 @@ export default function setupWebSocketHandlers(fastify) {
   const connectionAttempts = new Map(); // ip → { count, timestamp }
 
   logger.debug('🚀 Setting up WebSocket handlers...');
+  fastify.decorate('edges', new EdgeRegistry());
   setupPublicCanvasNamespace(fastify, io);
 
   /* ---------------- Authentication middleware ---------------- */
@@ -293,6 +296,7 @@ export default function setupWebSocketHandlers(fastify) {
     registerWorkspaceWebSocket(fastify, socket);
     logger.debug(`📋 Registering agent WebSocket for socket ${socket.id}`);
     registerAgentWebSocket(fastify, socket);
+    registerEdgeWebSocket(fastify, socket);
 
     socket.emit('authenticated', { userId: user.id, email: user.email });
     logger.debug(`✅ Sent authentication confirmation to ${socket.id}`);

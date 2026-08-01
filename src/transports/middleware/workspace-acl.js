@@ -182,7 +182,7 @@ export function createWorkspaceACLMiddleware(requiredPermission = 'read', { allo
       if (isJwtToken && userId) {
         const userAccess = await tryUserAccess(
           request.server.workspaceManager,
-          request.server.userManager,
+          request.server.users,
           workspaceId,
           userId,
           requiredPermission
@@ -387,7 +387,7 @@ async function loadWorkspaceForTokenAccess(workspaceManager, workspaceEntry) {
 async function tryUserAccess(workspaceManager, userManager, workspaceIdentifier, userId, requiredPermission) {
   try {
     // Get user email to check against workspace ACL
-    const user = await userManager.getUser(userId);
+    const user = await userManager.get(userId);
     if (!user || !user.email) {
       logger.debug(`User not found or missing email: ${userId}`);
       return null;

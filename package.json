@@ -84,6 +84,7 @@
     "randomcolor": "^0.6.2",
     "sharp": "^0.35.3",
     "socket.io": "^4.8.3",
+    "socket.io-client": "^4.8.3",
     "ulid": "^3.0.2",
     "undici": "^8.7.0",
     "uuid": "^11.1.1",

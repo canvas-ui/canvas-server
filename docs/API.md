@@ -397,16 +397,28 @@ Storage listings contain `workspace:home`, `workspace:data`, `s3`, and any user-
 ### Export / Import (portability)
 
 A workspace is a self-describing folder; export archives the whole folder
-(tar.gz, streamed — GB-scale safe) into the user's `Exports/` dir. The
-workspace must be **stopped** (409 `WORKSPACE_ACTIVE` otherwise); owner-only.
+(tar.gz, streamed — GB-scale safe) into the owner's `Exports/` dir. The
+workspace must be **stopped** (409 `WORKSPACE_ACTIVE` otherwise). The
+`:id`-scoped routes are `read`-ACL-gated: owners always pass, and **workspace
+share tokens** pass for their bound workspace — which is what lets another
+canvas-server pull a workspace with only `{url, token}` (see `/import`).
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| POST | `/workspaces/:id/export` | `authenticate` | Archive a stopped workspace → `{ name, size, createdAt, url }` |
-| GET | `/workspaces/exports` | `authenticate` | List the user's export archives (name, size, createdAt, url) |
+| GET | `/workspaces/token-info` | `authenticate` | Resolve a presented workspace share token → `{ workspaceId, workspaceName, permissions }` |
+| POST | `/workspaces/:id/export` | `authenticate` + ACL read | Archive a stopped workspace → `{ name, size, createdAt, url }` |
+| GET | `/workspaces/:id/exports` | `authenticate` + ACL read | List that workspace's export archives |
+| GET | `/workspaces/:id/exports/:name` | `authenticate` + ACL read | Download one of that workspace's archives (streamed) |
+| DELETE | `/workspaces/:id/exports/:name` | `authenticate` + ACL read | Remove one of that workspace's archives |
+| GET | `/workspaces/exports` | `authenticate` | List ALL the user's export archives (name, size, createdAt, url) |
 | GET | `/workspaces/exports/:name` | `authenticate` | Download an archive (`Content-Length` + `Content-Disposition`) |
 | DELETE | `/workspaces/exports/:name` | `authenticate` | Remove an archive |
-| POST | `/workspaces/import` | `authenticate` | Import: body `{ "export": "<archive name>" }` (from Exports), or `{ "path": "/abs/path" }` — a server-side folder (registered in place) or `.tar.gz` (extracted into the user's `Workspaces/`) |
+| POST | `/workspaces/import` | `authenticate` | Import: body `{ "export": "<archive name>" }` (from Exports), `{ "path": "/abs/path" }` — a server-side folder (registered in place) or `.tar.gz` (extracted into the user's `Workspaces/`), or `{ "url": "https://…", "token": "canvas-workspace-…" }` — **pull from a remote canvas-server**: resolves the token (`/token-info`), exports there, streams the archive down (kept in local `Exports/`), best-effort-deletes the remote copy, imports locally |
+
+Cross-server flow (e.g. `home@NAS` → VPS, or `work@work-instance` → local PC):
+mint a share token on the source (`POST /workspaces/:id/tokens`, read is
+enough), stop the workspace there, then on the destination
+`POST /workspaces/import { url, token }`. The workspace keeps its id.
 
 ### Services
 

@@ -41,6 +41,7 @@ import messagingRoutes from './routes/messaging/index.js';
 import messagingWebhookRoutes from './routes/messaging/webhooks.js';
 import voiceRoutes from './routes/voice/index.js';
 import { rejectAgentTokens } from './middleware/agent-acl.js';
+import { enforceWorkspaceTokenScope } from './middleware/workspace-acl.js';
 import { proxyRemoteWorkspaces } from './middleware/edge-proxy.js';
 
 // WebSocket handlers
@@ -180,6 +181,10 @@ export async function createServer(options = {}) {
 
   // Make managers available
   decorateServices(server, options);
+
+  // Workspace share tokens are clamped to their one workspace across the
+  // whole REST surface (they authenticate as the owner otherwise).
+  server.addHook('preHandler', enforceWorkspaceTokenScope);
 
   // Handle WebDAV OPTIONS before CORS plugin intercepts them
   const davUrlPattern = /^\/workspaces\/[^/]+\/dav(\/|$)/;

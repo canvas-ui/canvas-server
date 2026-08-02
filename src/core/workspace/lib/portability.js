@@ -4,6 +4,8 @@ import fs from 'node:fs';
 import fsPromises from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 
 /**
  * Workspace export/import — a workspace is a self-describing folder, so
@@ -114,6 +116,71 @@ export async function deleteExport(manager, userEmail, name) {
     if (err.code === 'ENOENT') return false;
     throw err;
   }
+}
+
+/**
+ * Pull a workspace from another canvas-server instance using a workspace
+ * share token, then import it locally. The whole flow needs only {url, token}:
+ *
+ *   1. GET  /workspaces/token-info            → which workspace the token is bound to
+ *   2. POST /workspaces/:id/export            → archive it (source must be stopped)
+ *   3. GET  /workspaces/:id/exports/:name     → stream the archive down (GB-safe)
+ *   4. best-effort DELETE of the remote archive
+ *   5. importWorkspace() on the local copy (kept in the user's Exports dir)
+ *
+ * Returns the registered index entry.
+ */
+export async function importWorkspaceFromRemote(manager, { userId, userEmail, url, token, fetchImpl = fetch }) {
+  if (!/^https?:\/\//.test(url || '')) throw fail('A http(s) remote url is required', 'BAD_REQUEST', 400);
+  if (!token) throw fail('A workspace share token is required', 'BAD_REQUEST', 400);
+
+  const base = url.replace(/\/+$/, '');
+  const headers = { Authorization: `Bearer ${token}` };
+  const api = async (route, options = {}) => {
+    let res;
+    try {
+      res = await fetchImpl(`${base}${route}`, { ...options, headers });
+    } catch (err) {
+      throw fail(`Remote unreachable: ${base} (${err.message})`, 'REMOTE_UNREACHABLE', 502);
+    }
+    const body = await res.json().catch(() => null);
+    if (!res.ok) {
+      throw fail(`Remote error (${route}): ${body?.message || res.statusText}`, 'REMOTE_ERROR', res.status);
+    }
+    return body?.payload;
+  };
+
+  const info = await api('/rest/v2/workspaces/token-info');
+  if (!info?.workspaceId) throw fail('Remote did not resolve the token to a workspace', 'REMOTE_ERROR', 502);
+
+  const exported = await api(`/rest/v2/workspaces/${info.workspaceId}/export`, { method: 'POST' });
+  if (!exported?.name) throw fail('Remote export did not return an archive name', 'REMOTE_ERROR', 502);
+
+  const dir = exportsDir(manager, userEmail);
+  await fsPromises.mkdir(dir, { recursive: true });
+  const localArchive = exportFilePath(manager, userEmail, exported.name);
+  const archiveRoute = `/rest/v2/workspaces/${info.workspaceId}/exports/${encodeURIComponent(exported.name)}`;
+
+  let download;
+  try {
+    download = await fetchImpl(`${base}${archiveRoute}`, { headers });
+  } catch (err) {
+    throw fail(`Remote unreachable: ${base} (${err.message})`, 'REMOTE_UNREACHABLE', 502);
+  }
+  if (!download.ok || !download.body) {
+    throw fail(`Archive download failed: ${download.status}`, 'REMOTE_ERROR', download.status || 502);
+  }
+  try {
+    await pipeline(Readable.fromWeb(download.body), fs.createWriteStream(localArchive));
+  } catch (err) {
+    await fsPromises.rm(localArchive, { force: true }).catch(() => {});
+    throw fail(`Archive download failed: ${err.message}`, 'REMOTE_ERROR', 502);
+  }
+
+  // the source keeps no leftovers; failure here is not fatal
+  try { await fetchImpl(`${base}${archiveRoute}`, { method: 'DELETE', headers }); } catch { /* best-effort */ }
+
+  return importWorkspace(manager, { userId, userEmail, source: localArchive });
 }
 
 /**

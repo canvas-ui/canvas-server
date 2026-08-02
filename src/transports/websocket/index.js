@@ -74,14 +74,30 @@ export default function setupWebSocketHandlers(fastify) {
           user = await fastify.users.get(deviceRes.userId);
         } else {
           const apiRes = await authService.verifyApiToken(token);
-          if (!apiRes) {
-            const error = new Error('Invalid token');
-            logger.debug(`❌ Invalid Canvas token for ${clientIp}`);
-            next(error);
-            socket.disconnect(true);
-            return;
+          if (apiRes) {
+            user = await fastify.users.get(apiRes.userId);
+          } else {
+            // Workspace share tokens (canvas-workspace-*) connect as the
+            // workspace owner but the socket is clamped to that single
+            // workspace via socket.workspaceBinding (subscriptions, event
+            // fan-out and edge announces all enforce it).
+            const share = token.startsWith('canvas-workspace-')
+              ? fastify.workspaceManager?.resolveWorkspaceShareToken(token)
+              : null;
+            if (!share) {
+              const error = new Error('Invalid token');
+              logger.debug(`❌ Invalid Canvas token for ${clientIp}`);
+              next(error);
+              socket.disconnect(true);
+              return;
+            }
+            user = await fastify.users.get(share.owner);
+            socket.workspaceBinding = {
+              workspaceId: share.workspaceId,
+              workspaceName: share.workspaceName,
+              permissions: share.permissions,
+            };
           }
-          user = await fastify.users.get(apiRes.userId);
         }
       } else {
         logger.debug(`🎫 Verifying JWT token for ${clientIp}`);
@@ -210,6 +226,22 @@ export default function setupWebSocketHandlers(fastify) {
           return;
         }
 
+        // Workspace-share-token sockets may only subscribe to their workspace.
+        if (socket.workspaceBinding) {
+          const binding = socket.workspaceBinding;
+          const allowed = channel === `workspace:${binding.workspaceId}`
+            || channel === `workspace:${binding.workspaceName}`;
+          if (!allowed) {
+            socket.emit('error', {
+              channel,
+              code: 'ACCESS_DENIED',
+              retryable: false,
+              message: 'Workspace token is not bound to this channel',
+            });
+            return;
+          }
+        }
+
         // Basic ACL checks for context / workspace channels
         if (channel.startsWith('context:')) {
           const contextId = channel.split(':')[1];
@@ -289,13 +321,17 @@ export default function setupWebSocketHandlers(fastify) {
       }
     });
 
-    // Register push modules
-    logger.debug(`📋 Registering context WebSocket for socket ${socket.id}`);
-    registerContextWebSocket(fastify, socket);
+    // Register push modules. Workspace-share-token sockets only get the
+    // workspace + edge channels — contexts and agents are out of scope for
+    // a single-workspace principal.
+    if (!socket.workspaceBinding) {
+      logger.debug(`📋 Registering context WebSocket for socket ${socket.id}`);
+      registerContextWebSocket(fastify, socket);
+      logger.debug(`📋 Registering agent WebSocket for socket ${socket.id}`);
+      registerAgentWebSocket(fastify, socket);
+    }
     logger.debug(`📋 Registering workspace WebSocket for socket ${socket.id}`);
     registerWorkspaceWebSocket(fastify, socket);
-    logger.debug(`📋 Registering agent WebSocket for socket ${socket.id}`);
-    registerAgentWebSocket(fastify, socket);
     registerEdgeWebSocket(fastify, socket);
 
     socket.emit('authenticated', { userId: user.id, email: user.email });

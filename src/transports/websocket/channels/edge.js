@@ -24,6 +24,16 @@ export default function registerEdgeWebSocket(fastify, socket) {
 
   socket.on('edge:announce', (announce = {}) => {
     try {
+      // Share-token sockets may only announce as the workspace their token
+      // is bound to (workspace id doubles as tunnel instanceId).
+      const binding = socket.workspaceBinding;
+      if (binding && announce?.instanceId !== binding.workspaceId) {
+        socket.emit('edge:err', {
+          code: 'EDGE_ANNOUNCE_FAILED',
+          message: 'Workspace token is not bound to this instance',
+        });
+        return;
+      }
       const instanceId = edges.register(socket, announce);
       logger.info(`Edge announced: ${instanceId} (${announce.runtime || 'unknown'}) for user ${socket.user.id}`);
       socket.emit('edge:announced', { instanceId });
@@ -41,6 +51,11 @@ export default function registerEdgeWebSocket(fastify, socket) {
     // Only workspace-namespace events may be relayed; fan-out access control
     // stays with the workspace channel's per-socket ACL check.
     if (typeof name !== 'string' || !name.startsWith('workspace')) return;
+    // Share-token sockets may only relay events for their bound workspace.
+    const binding = socket.workspaceBinding;
+    if (binding
+      && payload?.workspaceId !== binding.workspaceId
+      && payload?.workspaceName !== binding.workspaceName) return;
     try {
       fastify.workspaceManager?.emit(name, payload);
     } catch (err) {

@@ -297,33 +297,25 @@ export async function verifyApiToken(request, reply) {
   }
 
   // If user token not found, try resource-level token (workspace, context, etc.)
+  // Workspace share tokens identify their workspace by themselves (hash lookup
+  // across workspace ACLs) — no route params involved. request.user becomes
+  // the workspace owner, clamped to the one workspace by the ACL middleware.
   if (!tokenResult && token.startsWith('canvas-workspace-')) {
-    request.log.debug('Attempting workspace token verification');
-
-    // Extract workspace identifier from route params (if available)
-    const workspaceName = request.params?.workspace || request.params?.name;
-
-    if (workspaceName && request.server.workspaceManager) {
-      try {
-        const workspace = await request.server.workspaceManager.get(workspaceName);
-        const workspaceTokenData = workspace.verifyToken(token);
-
-        if (workspaceTokenData) {
-          // Workspace token is valid - need to get workspace owner as the user
-          const owner = workspace.owner;
-          tokenResult = {
-            userId: owner,
-            workspaceId: workspace.id,
-            workspaceName: workspace.name,
-            permissions: workspaceTokenData.permissions,
-            tokenType: 'workspace'
-          };
-          isResourceToken = true;
-          request.log.debug({ workspaceId: workspace.id }, 'Workspace token verified');
-        }
-      } catch (wsError) {
-        request.log.warn({ err: wsError }, 'Workspace token verification failed');
+    try {
+      const share = request.server.workspaceManager?.resolveWorkspaceShareToken(token);
+      if (share) {
+        tokenResult = {
+          userId: share.owner,
+          workspaceId: share.workspaceId,
+          workspaceName: share.workspaceName,
+          permissions: share.permissions,
+          tokenType: 'workspace'
+        };
+        isResourceToken = true;
+        request.log.debug({ workspaceId: share.workspaceId }, 'Workspace share token verified');
       }
+    } catch (wsError) {
+      request.log.warn({ err: wsError }, 'Workspace token verification failed');
     }
   }
 

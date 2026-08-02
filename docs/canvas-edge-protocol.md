@@ -76,11 +76,19 @@ is self-describing, and its remotes travel with it:
 
 The user creates a token in canvas-server and configures it here; the `ws`
 runtime (`src/edge/runtime.js` → `connectRemotes()`) reads it and dials every
-enabled remote on start. The token is opaque to the edge — today a user API
-token or device token (both pass websocket auth); workspace-scoped share
-tokens (`/workspaces/:id/tokens`) can slot in once socket auth accepts them,
-with no config change. The workspace id doubles as the tunnel instanceId: a
+enabled remote on start. The token is opaque to the edge — a user API token,
+device token, or workspace-scoped share token (`/workspaces/:id/tokens`) all
+pass both REST and websocket auth. Share tokens are the least-privilege
+option: the socket authenticates as the workspace owner but is **clamped to
+the one workspace** (`socket.workspaceBinding`) — subscriptions, event
+fan-out, edge announces (`instanceId` must equal the bound workspace id) and
+relayed `edge:event`s are all restricted to it, and on the REST side the
+token only reaches `/rest/v2/workspaces/:id/*` for its bound workspace with
+its granted permissions. The workspace id doubles as the tunnel instanceId: a
 ws runtime hosts exactly one workspace, so its identity is the workspace's.
+Note this means a share-token edge must announce as the workspace the token
+was minted for — i.e. the server-side workspace and the edge workspace are
+the same workspace (same id, e.g. exported from / registered on the server).
 
 Storage note: a remote workspace's files are just another data source — sync
 belongs to stored (as with any backend), not to the tunnel.

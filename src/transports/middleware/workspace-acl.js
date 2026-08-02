@@ -86,6 +86,40 @@ export function createWorkspaceACLMiddleware(requiredPermission = 'read', { allo
         return; // Continue to route handler
       }
 
+      // 1c. Workspace share tokens: resolved at auth time to the owning
+      // workspace (request.user is the owner). Enforce the binding — the
+      // token grants access to exactly one workspace, never the owner's
+      // other workspaces.
+      if (request.resourceToken?.type === 'workspace') {
+        const binding = request.resourceToken;
+        const matchesBinding = workspaceId === binding.workspaceId
+          || workspaceId === binding.workspaceName;
+
+        if (!matchesBinding) {
+          const response = new ResponseObject().forbidden('Workspace token is not bound to this workspace');
+          return reply.code(response.statusCode).send(response.getResponse());
+        }
+        if (!binding.permissions?.includes(requiredPermission)) {
+          const response = new ResponseObject().forbidden(`Workspace token lacks required permission: ${requiredPermission}`);
+          return reply.code(response.statusCode).send(response.getResponse());
+        }
+
+        const workspace = await request.server.workspaceManager.getWorkspace(binding.workspaceId, request.user?.id);
+        if (!workspace) {
+          const response = new ResponseObject().notFound(`Workspace not found: ${workspaceId}`);
+          return reply.code(response.statusCode).send(response.getResponse());
+        }
+
+        request.workspace = workspace;
+        request.workspaceAccess = {
+          permissions: binding.permissions,
+          isOwner: false,
+          isShareToken: true,
+          description: 'Workspace share token',
+        };
+        return; // Continue to route handler
+      }
+
       // 2. Extract token from request (should already be validated by fastify.authenticate)
       const authHeader = request.headers.authorization;
       if (!authHeader?.startsWith('Bearer ')) {
@@ -107,19 +141,23 @@ export function createWorkspaceACLMiddleware(requiredPermission = 'read', { allo
         userId = request.user.id;
         logger.debug(`Using JWT token for user: ${userId}`);
       } else {
-        // For API tokens, verify through authService
-        let tokenResult;
-        try {
-          tokenResult = await request.server.authService.verifyApiToken(token);
-          if (!tokenResult) {
-            throw new Error('Invalid API token');
+        // canvas-* tokens (user API or device) were already verified by
+        // fastify.authenticate, which set request.user — trust it. Only
+        // re-derive through authService when it is somehow absent.
+        userId = request.user?.id;
+        if (!userId) {
+          try {
+            const tokenResult = await request.server.authService.verifyApiToken(token);
+            if (!tokenResult) {
+              throw new Error('Invalid API token');
+            }
+            userId = tokenResult.userId;
+          } catch (error) {
+            logger.debug(`API token verification failed: ${error.message}`);
+            throw new Error(`Token verification failed: ${error.message}`);
           }
-          userId = tokenResult.userId;
-          logger.debug(`Using API token for user: ${userId}`);
-        } catch (error) {
-          logger.debug(`API token verification failed: ${error.message}`);
-          throw new Error(`Token verification failed: ${error.message}`);
         }
+        logger.debug(`Using canvas token for user: ${userId}`);
       }
 
       // 4. Try owner access first (fastest path)
@@ -495,6 +533,31 @@ async function loadWorkspaceForUserAccess(workspaceManager, workspaceEntry, user
     logger.debug(`Error loading workspace for user access: ${error.message}`);
     return null;
   }
+}
+
+/**
+ * Global scope clamp for workspace share tokens. They authenticate as the
+ * workspace owner, so without this every authenticate-only route (documents
+ * of other workspaces, contexts, agents, ...) would be reachable. A share
+ * token may only address /rest/v2/workspaces/* routes bound to its workspace.
+ * Registered as a root-level preHandler in transports/index.js.
+ */
+export async function enforceWorkspaceTokenScope(request, reply) {
+  const binding = request.resourceToken;
+  if (binding?.type !== 'workspace') return;
+
+  const url = (request.raw?.url || request.url || '').split('?')[0];
+  const workspaceId = request.params?.id;
+  const inWorkspacesApi = url.startsWith('/rest/v2/workspaces/');
+  const matchesBinding = workspaceId === binding.workspaceId
+    || workspaceId === binding.workspaceName;
+
+  if (inWorkspacesApi && matchesBinding) return;
+  // Self-describing endpoint: lets a token holder discover its workspace.
+  if (url === '/rest/v2/workspaces/token-info') return;
+
+  const response = new ResponseObject().forbidden('Workspace token is only valid for its bound workspace');
+  return reply.code(response.statusCode).send(response.getResponse());
 }
 
 /**

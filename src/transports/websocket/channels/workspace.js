@@ -57,6 +57,18 @@ export default function registerWorkspaceWebSocket(fastify, socket) {
       ].filter(Boolean);
       const userId = socket.user?.id;
 
+      // Share-token sockets authenticate as the owner but are bound to one
+      // workspace: only events explicitly tagged with that workspace pass.
+      const binding = socket.workspaceBinding;
+      if (binding) {
+        const matchesBinding = workspaceIdentifiers.some(
+          (identifier) => identifier === binding.workspaceId || identifier === binding.workspaceName
+        );
+        if (!matchesBinding || !binding.permissions?.includes('read')) {
+          return;
+        }
+      }
+
       if (workspaceIdentifiers.length === 0) {
         socket.emit(eventName, eventPayload);
         return;

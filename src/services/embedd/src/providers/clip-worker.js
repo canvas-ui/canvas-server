@@ -19,7 +19,12 @@
  */
 
 import os from 'node:os';
-import { AutoTokenizer, AutoProcessor, SiglipTextModel, SiglipVisionModel, RawImage, env } from '@huggingface/transformers';
+import {
+    AutoConfig, AutoTokenizer, AutoProcessor,
+    SiglipTextModel, SiglipVisionModel,
+    CLIPTextModelWithProjection, CLIPVisionModelWithProjection,
+    RawImage, env,
+} from '@huggingface/transformers';
 
 const MODEL = process.env.CANVAS_CLIP_MODEL || 'Xenova/siglip-base-patch16-224';
 // fp32 for retrieval quality: SigLIP's cross-modal match band is narrow
@@ -40,18 +45,35 @@ const DTYPE = process.env.CANVAS_CLIP_DTYPE || 'fp32';
 const THREADS = Math.max(1, Number(process.env.CANVAS_EMBED_THREADS) || Math.min(4, os.cpus().length || 4));
 const SESSION_OPTIONS = { intraOpNumThreads: THREADS, interOpNumThreads: 1 };
 
+// Dual-tower model classes per architecture family. The family is read from
+// the model's own config (model_type), so one worker binary serves both SigLIP
+// (e.g. Xenova/siglip-base-patch16-224, 768-d) and CLIP (e.g.
+// Xenova/clip-vit-base-patch32, 512-d) checkpoints — the CLIP classes carry the
+// projection head, which is what puts text and image in the SAME space (and at
+// the model's true joint dim, e.g. 512 for ViT-B/32 rather than the 768 of the
+// unprojected text tower).
+const FAMILIES = {
+    siglip: { text: SiglipTextModel, vision: SiglipVisionModel, padding: 'max_length' },
+    clip: { text: CLIPTextModelWithProjection, vision: CLIPVisionModelWithProjection, padding: true },
+};
+
 let modelsPromise = null;
 function models() {
     if (!modelsPromise) {
         modelsPromise = (async () => {
             if (process.env.CANVAS_CLIP_CACHE) { env.cacheDir = process.env.CANVAS_CLIP_CACHE; }
+            const config = await AutoConfig.from_pretrained(MODEL);
+            const family = FAMILIES[config.model_type];
+            if (!family) {
+                throw new Error(`unsupported multimodal architecture '${config.model_type}' for '${MODEL}' (supported: ${Object.keys(FAMILIES).join(', ')})`);
+            }
             const [tokenizer, textModel, processor, visionModel] = await Promise.all([
                 AutoTokenizer.from_pretrained(MODEL),
-                SiglipTextModel.from_pretrained(MODEL, { dtype: DTYPE, session_options: SESSION_OPTIONS }),
+                family.text.from_pretrained(MODEL, { dtype: DTYPE, session_options: SESSION_OPTIONS }),
                 AutoProcessor.from_pretrained(MODEL),
-                SiglipVisionModel.from_pretrained(MODEL, { dtype: DTYPE, session_options: SESSION_OPTIONS }),
+                family.vision.from_pretrained(MODEL, { dtype: DTYPE, session_options: SESSION_OPTIONS }),
             ]);
-            return { tokenizer, textModel, processor, visionModel };
+            return { tokenizer, textModel, processor, visionModel, padding: family.padding };
         })();
     }
     return modelsPromise;
@@ -99,12 +121,14 @@ async function handle(msg) {
         if (kind === 'image') {
             const imgs = await Promise.all(payload.map((buf) => RawImage.fromBlob(new Blob([buf]))));
             const res = await m.visionModel(await m.processor(imgs));
-            out = toRows(res.pooler_output || res.image_embeds || res.last_hidden_state);
+            out = toRows(res.image_embeds || res.pooler_output || res.last_hidden_state);
         } else {
-            // SigLIP requires fixed-length (64) padding.
-            const inputs = m.tokenizer(payload, { padding: 'max_length', truncation: true });
+            // SigLIP requires fixed-length (64) padding; CLIP pads to longest.
+            const inputs = m.tokenizer(payload, { padding: m.padding, truncation: true });
             const res = await m.textModel(inputs);
-            out = toRows(res.pooler_output || res.text_embeds || res.last_hidden_state);
+            // Projection output first: text_embeds is the joint-space vector for
+            // CLIP; SigLIP's pooler_output already is.
+            out = toRows(res.text_embeds || res.pooler_output || res.last_hidden_state);
         }
         process.send({ id, vectors: out.vectors, dim: out.dim });
     } catch (e) {

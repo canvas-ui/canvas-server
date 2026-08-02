@@ -12,6 +12,7 @@ import {
   deleteExport,
   exportFilePath,
   importWorkspace,
+  importWorkspaceFromRemote,
 } from '../../../src/core/workspace/lib/portability.js';
 
 const EMAIL = 'tester@canvas.local';
@@ -121,6 +122,65 @@ test('import cleans up the extraction when registration fails', async () => {
   const archive = exportFilePath(manager, EMAIL, item.name);
   await assert.rejects(importWorkspace(manager, { userId: USER, userEmail: EMAIL, source: archive }), /index says no/);
   assert.ok(!fs.existsSync(path.join(root, EMAIL, 'Workspaces', 'my-ws')));
+});
+
+test('remote import pulls token-info → export → archive and registers locally', async () => {
+  // build a real archive to serve as the "remote" export
+  const item = await exportWorkspace(manager, { userId: USER, userEmail: EMAIL, workspaceId: 'ws-1' });
+  const archiveBytes = fs.readFileSync(exportFilePath(manager, EMAIL, item.name));
+  fs.rmSync(wsDir, { recursive: true });
+  fs.rmSync(exportFilePath(manager, EMAIL, item.name));
+
+  const calls = [];
+  const fetchImpl = async (url, options = {}) => {
+    calls.push({ url, method: options.method || 'GET' });
+    if (url.endsWith('/rest/v2/workspaces/token-info')) {
+      return { ok: true, status: 200, json: async () => ({ payload: { workspaceId: 'remote-ws', workspaceName: 'my-ws' } }) };
+    }
+    if (url.endsWith('/rest/v2/workspaces/remote-ws/export')) {
+      return { ok: true, status: 201, json: async () => ({ payload: { name: item.name } }) };
+    }
+    if (url.includes('/exports/') && (options.method || 'GET') === 'GET') {
+      return { ok: true, status: 200, body: new Blob([archiveBytes]).stream() };
+    }
+    return { ok: true, status: 200, json: async () => ({}) };
+  };
+
+  const entry = await importWorkspaceFromRemote(manager, {
+    userId: USER, userEmail: EMAIL, url: 'https://src.example/', token: 'canvas-workspace-x', fetchImpl,
+  });
+  assert.equal(entry.id, 'imported-id');
+  assert.ok(fs.existsSync(path.join(root, EMAIL, 'Workspaces', 'my-ws', 'workspace.json')));
+  // downloaded archive is kept in the local Exports dir (visible/removable)
+  assert.ok(fs.existsSync(exportFilePath(manager, EMAIL, item.name)));
+  // remote archive cleanup was attempted
+  assert.ok(calls.some((c) => c.method === 'DELETE' && c.url.includes('/exports/')));
+  // every remote call carried the share token in the right shape of routes
+  assert.equal(calls[0].url, 'https://src.example/rest/v2/workspaces/token-info');
+});
+
+test('remote import surfaces remote failures with their status', async () => {
+  const fetchImpl = async (url) => {
+    if (url.endsWith('/token-info')) {
+      return { ok: true, status: 200, json: async () => ({ payload: { workspaceId: 'remote-ws' } }) };
+    }
+    return { ok: false, status: 409, json: async () => ({ message: 'Workspace active' }) };
+  };
+  await assert.rejects(
+    importWorkspaceFromRemote(manager, { userId: USER, userEmail: EMAIL, url: 'http://src.example', token: 't', fetchImpl }),
+    (err) => err.code === 'REMOTE_ERROR' && err.statusCode === 409 && /Workspace active/.test(err.message)
+  );
+});
+
+test('remote import validates its inputs', async () => {
+  await assert.rejects(
+    importWorkspaceFromRemote(manager, { userId: USER, userEmail: EMAIL, url: 'ftp://nope', token: 't' }),
+    (err) => err.statusCode === 400
+  );
+  await assert.rejects(
+    importWorkspaceFromRemote(manager, { userId: USER, userEmail: EMAIL, url: 'https://ok.example', token: '' }),
+    (err) => err.statusCode === 400
+  );
 });
 
 test('import rejects non-archive files and missing sources', async () => {

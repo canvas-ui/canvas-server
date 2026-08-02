@@ -5,7 +5,7 @@ import EventEmitter from 'eventemitter2';
 import randomcolor from 'randomcolor';
 import path from 'path';
 import * as fsPromises from 'fs/promises';
-import { existsSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import Conf from 'conf';
 import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
@@ -435,6 +435,42 @@ class WorkspaceManager extends EventEmitter {
         if (!entry) return false;
         if (userId && entry.owner !== userId) return false;
         return true;
+    }
+
+    /**
+     * Resolve a workspace share token (canvas-workspace-*) to the workspace it
+     * grants access to. Single source of truth for REST auth, websocket auth
+     * and the ACL middleware — the token alone identifies the workspace, no
+     * route params needed. Returns null for unknown or expired tokens.
+     * @param {string} tokenValue - Raw token value
+     * @returns {Object|null} { workspaceId, workspaceName, owner, permissions, tokenData }
+     */
+    resolveWorkspaceShareToken(tokenValue) {
+        if (!tokenValue || typeof tokenValue !== 'string') return null;
+
+        const hashKey = `sha256:${crypto.createHash('sha256').update(tokenValue).digest('hex')}`;
+        for (const [, entry] of this.#allEntries()) {
+            // workspace.json is the source of truth for the ACL — the index
+            // copy is a registration-time snapshot. Prefer the loaded
+            // instance, fall back to reading the config file.
+            let acl = this.#workspaces.get(entry.id)?.acl;
+            if (!acl && entry.configPath && existsSync(entry.configPath)) {
+                try {
+                    acl = JSON.parse(readFileSync(entry.configPath, 'utf8'))?.acl;
+                } catch { /* unreadable config — treat as no ACL */ }
+            }
+            const tokenData = acl?.tokens?.[hashKey];
+            if (!tokenData) continue;
+            if (tokenData.expiresAt && new Date(tokenData.expiresAt) < new Date()) return null;
+            return {
+                workspaceId: entry.id,
+                workspaceName: entry.name,
+                owner: entry.owner,
+                permissions: tokenData.permissions || ['read'],
+                tokenData,
+            };
+        }
+        return null;
     }
 
     /**

@@ -2,6 +2,7 @@
 
 import ResponseObject from '../../ResponseObject.js';
 import { requireWorkspaceRead, requireWorkspaceWrite } from '../../middleware/workspace-acl.js';
+import { stripDeviceFeatureTags } from '../../../utils/device-features.js';
 
 /**
  * Workspace dotfiles routes (CRUD, status, init).
@@ -126,7 +127,7 @@ export default async function workspaceDotfilesRoutes(fastify, options) {
 
       const inserted = await workspace.putMany(documentArray, {
         context: contextSelector,
-        features: ['data/abstraction/dotfile', ...(request.body.features || [])],
+        features: ['data/abstraction/dotfile', ...stripDeviceFeatureTags(request.body.features || [])],
       });
 
       const responseObject = new ResponseObject().created(inserted, 'Dotfiles created successfully');

@@ -3,7 +3,7 @@
 import ResponseObject from '../../ResponseObject.js';
 import { parseDocumentId } from '../../../utils/documentId.js';
 import { validateUser } from '../../auth/strategies.js';
-import { mergeDeviceFeatureTags } from '../../../utils/device-features.js';
+import { stripDeviceFeatureTags } from '../../../utils/device-features.js';
 
 export default async function documentRoutes(fastify, options) {
   function buildAttributes(query) {
@@ -16,8 +16,14 @@ export default async function documentRoutes(fastify, options) {
     return attrs;
   }
 
+  // `device/*` is engine-owned: synapsd DERIVES presence from a document's
+  // locations. Clients neither assert it nor have it injected on their behalf —
+  // we only strip what they should not be sending. Everything else passes
+  // through verbatim, including the whole optional `client/*` namespace
+  // (client/app/firefox, client/device/os/*, …) which consumers populate, or
+  // don't, entirely at their own discretion.
   function enforceClientTags(request, features = []) {
-    return mergeDeviceFeatureTags(features, request.client);
+    return stripDeviceFeatureTags(features);
   }
 
   fastify.addHook('preHandler', async (request, reply) => {

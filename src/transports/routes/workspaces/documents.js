@@ -2,7 +2,7 @@
 
 import ResponseObject from '../../ResponseObject.js';
 import { parseDocumentId, parseDocumentIdArray } from '../../../utils/documentId.js';
-import { mergeDeviceFeatureTags } from '../../../utils/device-features.js';
+import { stripDeviceFeatureTags } from '../../../utils/device-features.js';
 import { parseByteRange } from '../../lib/http-range.js';
 import { resolveContentType } from '../../lib/mime.js';
 
@@ -42,8 +42,14 @@ function readCookie(request, name) {
  * @param {Object} options - Plugin options
  */
 export default async function workspaceDocumentRoutes(fastify, options) {
+  // `device/*` is engine-owned: synapsd DERIVES presence from a document's
+  // locations. Clients neither assert it nor have it injected on their behalf —
+  // we only strip what they should not be sending. Everything else passes
+  // through verbatim, including the whole optional `client/*` namespace
+  // (client/app/firefox, client/device/os/*, …) which consumers populate, or
+  // don't, entirely at their own discretion.
   function enforceClientTags(request, features = []) {
-    return mergeDeviceFeatureTags(features, request.client);
+    return stripDeviceFeatureTags(features);
   }
 
   function resolveContextSelector(workspace, source = {}, fallbackPath = '/') {
@@ -661,7 +667,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       const result = await workspace.putMany(itemsToUpdate, {
         context: updateTreeType === 'directory' ? null : updateSelector,
         directory: updateTreeType === 'directory' ? updateSelector : null,
-        features: request.body.features || [],
+        features: enforceClientTags(request, request.body.features || []),
       });
       if (!result) {
         const responseObject = new ResponseObject().badRequest('Failed to update documents');

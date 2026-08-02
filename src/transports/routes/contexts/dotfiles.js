@@ -2,6 +2,7 @@
 
 import ResponseObject from '../../ResponseObject.js';
 import { validateUser } from '../../auth/strategies.js';
+import { stripDeviceFeatureTags } from '../../../utils/device-features.js';
 
 /**
  * Context Dotfile routes handler for the API
@@ -131,7 +132,7 @@ export default async function contextDotfileRoutes(fastify, options) {
         data: df
       }));
 
-      const result = await context.putMany(request.user.id, documentArray, ['data/abstraction/dotfile', ...(request.body.features || [])]);
+      const result = await context.putMany(request.user.id, documentArray, ['data/abstraction/dotfile', ...stripDeviceFeatureTags(request.body.features || [])]);
 
       const response = new ResponseObject().created(result, 'Dotfiles inserted successfully');
       return reply.code(response.statusCode).send(response.getResponse());
@@ -176,7 +177,7 @@ export default async function contextDotfileRoutes(fastify, options) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
-      const result = await context.putMany(request.user.id, request.body.documents, ['data/abstraction/dotfile', ...(request.body.features || [])]);
+      const result = await context.putMany(request.user.id, request.body.documents, ['data/abstraction/dotfile', ...stripDeviceFeatureTags(request.body.features || [])]);
       const response = new ResponseObject().updated(result, 'Dotfiles updated successfully');
       return reply.code(response.statusCode).send(response.getResponse());
     } catch (error) {

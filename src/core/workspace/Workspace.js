@@ -1704,11 +1704,10 @@ class Workspace extends EventEmitter {
         if (normalized.startsWith('internal/') || normalized === 'internal') {
             throw new Error(`Refusing to delete bitmap "${key}": internal/* bitmaps are protected (engine-managed).`);
         }
-        // rel/* are typed doc<->doc relation edges (managed by the document
-        // lifecycle / relations index). Dropping them silently breaks links.
-        if (normalized.startsWith('rel/') || normalized === 'rel') {
-            throw new Error(`Refusing to delete bitmap "${key}": rel/* bitmaps are protected (relation edges).`);
-        }
+        // NOTE: the old rel/* guard is gone with the bitmaps it protected —
+        // typed doc<->doc edges live in the dupsort edge plane (synapsd
+        // indexes/edges/) since refactor-v3, and 'rel/' is no longer an allowed
+        // bitmap prefix, so such a key cannot exist to be deleted.
         const db = this.#getActiveDb();
         const existing = await db.bitmapIndex.getBitmap(normalized, false);
         if (!existing) return false;

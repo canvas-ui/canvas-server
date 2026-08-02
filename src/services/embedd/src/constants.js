@@ -18,6 +18,11 @@ export const TEXT_SPACE = 'text';
  * config became data. A space still running its baseline model keeps the
  * ORIGINAL Lance table, so making the model configurable does not orphan a
  * single existing vector. Any other model gets a model-keyed table.
+ *
+ * HISTORICAL, not the current defaults: router.DEFAULT_SPACES has since moved
+ * (image → CLIP ViT-B/32 @512), so even a fresh no-config workspace now runs a
+ * non-baseline image model in a model-keyed table. These entries must never
+ * change — they name what pre-config workspaces actually built.
  */
 export const BASELINE_SPACES = {
     text: { model: 'bge-small-en-v1.5', dim: 384, table: 'vec_text' },

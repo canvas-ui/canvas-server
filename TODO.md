@@ -275,8 +275,49 @@ Tasks:
 
 ## Remote workspaces
 
-- Open a remote workspace functionality does not work, either the share tokens do not work or the api endpoints do not work, regardless, workspaces are not really required to sit locally on the server, we will soon implement our canvas-edge runtime which will autoregister to a canvas-server instance and will presumably run locally at the user - we should handle that scenario transparently (maybe a think middleware that would keep all integration talkint to the same rest api but handle proxying to remote workspaces transparently)
-Question is what protocol(s) to support, we currently use http+ws
+- [x] **FIXED 2026-08-02** — the share-token auth gap was the culprit: workspace share tokens
+  (`canvas-workspace-*`) were rejected by both REST and websocket auth. They are now first-class,
+  single-workspace-clamped principals (see `WorkspaceManager.resolveWorkspaceShareToken`,
+  `enforceWorkspaceTokenScope`, `socket.workspaceBinding`). The transparent proxying middleware
+  exists too (`middleware/edge-proxy.js` over the edge tunnel, `docs/canvas-edge-protocol.md`);
+  protocol = existing http+socket.io. Cross-server pull also works:
+  `POST /workspaces/import { url, token }`.
+
+## Workspace sync (design notes, non-MVP — parked 2026-08-02)
+
+Use-cases: (a) offline secondary copy / backup to remote, (b) work on the workstation, move to
+the same-network laptop or a cloud instance. Files and db sync **separately**: files via
+stored.syncd (per-backend targets, rsync/S3 semantics fine), the db never file-syncs live.
+
+**Load-bearing data-model facts (why this is tractable):**
+- **Bitmaps and indexes are derived state — never sync them.** Replicate documents + tree ops
+  only; every replica re-derives its own indexes locally. Small sync surface, version-skew
+  tolerant.
+- **Documents are immutable — every edit creates a new document (new checksum).** So document
+  replication is append-only content-addressed transfer: no in-place merge conflicts at the
+  document level; "conflict" reduces to which checksum a tree/head reference points at.
+
+**Three tiers, build in order, each subsumes the previous:**
+1. **Backup (one-way, single-master)** — snapshot shipping, not replication. LMDB hot backup
+   (`mdb_env_copy` — consistent copy while running) + stored file delta + workspace.json, shipped
+   to a dumb receiver that never opens the copy for writes. Export/import is the cold version of
+   this already; backup = "export without stopping, scheduled, incremental files". Declare in
+   `remotes[]`: `{ url, token, role: "backup" }`.
+2. **Handoff (sequential multi-master)** — mastership moves as a lease recorded in the index /
+   workspace.json. Handoff = flush+stop on A → delta-ship (cheap when tier 1 keeps the replica
+   warm) → start on B. Git-like: transfer, not merge; zero conflict logic. NB the same-network
+   "move to laptop" case often needs **no sync at all** — the laptop is a client of the live
+   workspace via the edge tunnel + share tokens (works today).
+3. **Concurrent multi-master** — synapsd oplog: append-only feed of document-insert + tree ops
+   with hybrid clocks, replicated peer-to-peer over the existing edge channel. Thanks to
+   immutable documents this is mostly content-addressed set union + per-reference LWW. Only
+   build on real offline-concurrent demand; design should fall out of the synapsd refactor,
+   not precede it.
+
+**Placement:** workspace-scoped syncd service (self-sufficiency: a `ws` edge binary must sync
+without canvas-server; `remotes[]` travels with the workspace). canvas-server contributes only
+transport (tunnel) + auth (share tokens). Edge-case to fix on the way: anything absolute in the
+db becomes workspace-relative at write time (import/relocation already proves the folder moves).
 
 ## Workspace runtime
 
@@ -364,7 +405,14 @@ Lets design a `canvas-edge` service module with the following functionality
 
 ### Import/export workspace(s)
 
-We need to reintroduce the importWorkspace() and exportWorkspace() methods in our workspace manager.
+**LANDED 2026-08-02** — `src/core/workspace/lib/portability.js` + `routes/workspaces/portability.js`:
+tar.gz export (streamed, stopped-only), `:id`-scoped download/delete (read-ACL, share-token
+capable), import from Exports archive / server-side folder / **remote pull** `{url, token}`.
+Workspace id (uuid in workspace.json) survives the move. Original sketch below for reference —
+the zip format and owner-rewrite/rename-on-collision ideas were dropped (tar.gz only; same-id or
+same-name collisions are rejected instead of auto-renamed).
+
+Original: We need to reintroduce the importWorkspace() and exportWorkspace() methods in our workspace manager.
 
 The design should be as follows(I'm open to suggestsions here):
 - importWorkspace(): Takes a zip or tar/tar.gz as input. Server uploads it into the users workspaces dir with a random temporary name, once extracted, we'd search for a valid workspace.json, then rewrite the owner/sanitize the config, rename the workspace folder to the real workspace name or workspace.N if we colide and import that workspace into the index.

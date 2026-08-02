@@ -186,12 +186,23 @@ export default async function embeddRoutes(fastify, options) {
     // answers, not merely that the host is up.
     fastify.post('/test', { onRequest: [fastify.authenticate], config: testLimit }, async (request, reply) => {
         if (!requireEmbedd(reply)) { return; }
-        const { provider, model, modality = 'text' } = request.body || {};
+        const { provider, model, modality = 'text', probe = false } = request.body || {};
         if (!provider || typeof provider !== 'object') {
             const r = new ResponseObject().badRequest('`provider` object required');
             return reply.code(r.statusCode).send(r.getResponse());
         }
         try {
+            // Probe: report whether the model is already in the local cache, so
+            // the UI can say "downloading" (a first test can take minutes)
+            // instead of an indistinct "testing". Pure filesystem check — no
+            // outbound request, no model load. `cached: null` = not knowable
+            // (remote providers download nothing; local ones without a cacheDir).
+            if (probe) {
+                const instance = embedd().providerFor(provider);
+                const cached = typeof instance.modelCached === 'function' ? instance.modelCached(model) : null;
+                const r = new ResponseObject().success({ cached, modality }, 'Cache probed');
+                return reply.code(r.statusCode).send(r.getResponse());
+            }
             const target = provider.baseUrl || provider.host;
             if (target) {
                 const verdict = await checkEndpoint(target, policy());

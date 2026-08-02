@@ -164,9 +164,13 @@ test('spaceConfigs: baseline models keep the original Lance tables', async () =>
     const sc = await e.spaceConfigsFor(null);
     // An explicit `table` pins the space to its pre-config table, so existing
     // vectors stay attached. This is the guarantee that making the model
-    // configurable orphans nothing.
+    // configurable orphans nothing. Text still runs its baseline model; image's
+    // DEFAULT moved off the baseline (SigLIP → CLIP ViT-B/32), so it gets a
+    // model-keyed table and vec_image stays untouched for pre-config workspaces.
     assert.equal(sc.text.table, 'vec_text');
-    assert.equal(sc.image.table, 'vec_image');
+    assert.equal(sc.image.table, undefined, 'non-baseline default → model-keyed table, vec_image preserved');
+    assert.equal(sc.image.model, 'Xenova/clip-vit-base-patch32');
+    assert.equal(sc.image.dim, 512);
     assert.equal(sc.image.annIndex, false, 'cross-modal kNN stays an exact scan');
     await e.stop();
 });
@@ -181,8 +185,8 @@ test('spaceConfigs: ledger keys are always (space, model) with the model as the 
     // key had (it was text's bitmap AND image's parent path).
     assert.equal(sc.text.bitmapKey, 'internal/embed/vectors/text/bge-small-en-v1.5');
     assert.equal(sc.text.seenKey, 'internal/embed/seen/text/bge-small-en-v1.5');
-    assert.equal(sc.image.bitmapKey, 'internal/embed/vectors/image/xenova-siglip-base-patch16-224');
-    assert.equal(sc.image.seenKey, 'internal/embed/seen/image/xenova-siglip-base-patch16-224');
+    assert.equal(sc.image.bitmapKey, 'internal/embed/vectors/image/xenova-clip-vit-base-patch32');
+    assert.equal(sc.image.seenKey, 'internal/embed/seen/image/xenova-clip-vit-base-patch32');
     // Both ledgers share one root, so `internal/embed` lists every embedding
     // bitmap and `internal/embed/vectors/text` lists every text model.
     for (const cfg of Object.values(sc)) {

@@ -26,7 +26,7 @@ import {
     RawImage, env,
 } from '@huggingface/transformers';
 
-const MODEL = process.env.CANVAS_CLIP_MODEL || 'Xenova/siglip-base-patch16-224';
+const MODEL = process.env.CANVAS_CLIP_MODEL || 'Xenova/clip-vit-base-patch32';
 // fp32 for retrieval quality: SigLIP's cross-modal match band is narrow
 // (matches ~0.85–0.95 cosine distance vs noise ~0.94+), and q8 quantization
 // error eats into exactly that margin. Set CANVAS_CLIP_DTYPE=q8 for a smaller

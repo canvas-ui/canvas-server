@@ -47,7 +47,12 @@ export const DEFAULT_RULES = [
 /** Backends: which model fills each space. The configurable half. */
 export const DEFAULT_SPACES = {
     text: { provider: 'onnx', model: 'bge-small-en-v1.5', dim: 384, chunk: true, maxLength: 512 },
-    image: { provider: 'clip', model: 'Xenova/siglip-base-patch16-224', dim: 768, chunk: false },
+    // CLIP ViT-B/32 (512-d) — retrieves noticeably better than the previous
+    // SigLIP default. NOTE: deliberately NOT the baseline model
+    // (constants.BASELINE_SPACES stays SigLIP@768/vec_image), so this space
+    // resolves to a model-keyed table: pre-existing workspaces keep their SigLIP
+    // vectors intact in vec_image and need a reindex to fill the new space.
+    image: { provider: 'clip', model: 'Xenova/clip-vit-base-patch32', dim: 512, chunk: false },
 };
 
 function matches(rule, input) {

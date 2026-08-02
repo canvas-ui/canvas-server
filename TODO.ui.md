@@ -134,9 +134,6 @@ three surfaces) and `components/workspace/embedd-settings-panel.tsx`.
   *absent* when untouched, NOT an empty string, or it will blank the secret.
 - **A rejected endpoint is a 400 with a reason** (`Rejected embedding endpoint —
   …`). Show it verbatim; it names the offending provider.
-- **Error text from a backend is deliberately vague for non-admins** (`backend
-  returned HTTP 502`). That is not a bug to work around — the full body is an
-  SSRF read channel and is only logged server-side.
 - **Do not hardcode `text` and `image`.** Spaces are config; audio/spatial slot
   in with no server change and the UI should follow.
 

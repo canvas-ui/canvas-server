@@ -191,6 +191,18 @@ export default class OnnxProvider {
         return w;
     }
 
+    /**
+     * Whether the model is already extracted into the fastembed cache — i.e.
+     * whether the next call will serve or first download. `null` = unknowable
+     * (no cacheDir configured).
+     */
+    modelCached(model) {
+        if (!this.#cacheDir) { return null; }
+        const id = MODEL_IDS[model || 'bge-small-en-v1.5'] || model;
+        try { return fs.existsSync(path.join(this.#cacheDir, id)); }
+        catch (_) { return null; }
+    }
+
     async embedText(texts, { model, dim, maxLength } = {}) {
         const w = this.#worker({ model, dim, maxLength });
         const vectors = await w.embedPassages(texts);

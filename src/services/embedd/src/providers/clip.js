@@ -2,6 +2,7 @@
 
 import { fork } from 'child_process';
 import { fileURLToPath } from 'url';
+import fs from 'fs';
 import path from 'path';
 import debugInstance from 'debug';
 const debug = debugInstance('canvas:embedd:clip');
@@ -27,7 +28,7 @@ const debug = debugInstance('canvas:embedd:clip');
 
 const WORKER_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), 'clip-worker.js');
 
-const DEFAULT_MODEL = 'Xenova/siglip-base-patch16-224';
+const DEFAULT_MODEL = 'Xenova/clip-vit-base-patch32';
 
 export default class ClipProvider {
 
@@ -58,6 +59,19 @@ export default class ClipProvider {
     /** The model a call resolves to — rule.model ← provider spec ← env ← default. */
     #resolveModel(model) {
         return model || this.#model || process.env.CANVAS_CLIP_MODEL || DEFAULT_MODEL;
+    }
+
+    /**
+     * Whether the model's weights are already in the on-disk cache — i.e.
+     * whether the next call will serve or first download. `null` = unknowable
+     * (no cacheDir configured, so transformers.js uses its own default cache).
+     * transformers.js caches under `<cacheDir>/<org>/<name>/…`, mirroring the
+     * hub repo path.
+     */
+    modelCached(model) {
+        if (!this.#cacheDir) { return null; }
+        try { return fs.existsSync(path.join(this.#cacheDir, ...this.#resolveModel(model).split('/'))); }
+        catch (_) { return null; }
     }
 
     #ensureWorker(model) {
@@ -99,9 +113,11 @@ export default class ClipProvider {
         // The worker runs one ORT inference at a time; a wedged worker (or a
         // dropped IPC reply) would otherwise leave this promise unsettled forever
         // and hang the awaiting search/embed. Time it out and respawn a clean
-        // worker so the next call recovers. Generous default to cover a cold
-        // first-call model load; override with CANVAS_CLIP_TIMEOUT_MS.
-        const timeoutMs = Math.max(1000, Number(process.env.CANVAS_CLIP_TIMEOUT_MS) || 60000);
+        // worker so the next call recovers. A model that is not in the cache yet
+        // spends the call DOWNLOADING weights (minutes, not seconds), so the
+        // cold case gets a far longer leash; override with CANVAS_CLIP_TIMEOUT_MS.
+        const cold = this.modelCached(resolved) === false;
+        const timeoutMs = Math.max(1000, Number(process.env.CANVAS_CLIP_TIMEOUT_MS) || (cold ? 600000 : 60000));
         return new Promise((resolve, reject) => {
             const timer = setTimeout(() => {
                 if (!entry.pending.has(id)) { return; }

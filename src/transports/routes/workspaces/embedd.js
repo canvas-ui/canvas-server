@@ -105,6 +105,20 @@ export default async function workspaceEmbeddRoutes(fastify, options) {
         }
     });
 
+    // Live queue state for THIS workspace — pending/draining/paused. Cheap
+    // in-memory readout; the Embedding settings tab polls it for its status
+    // strip (the heavyweight per-table stats stay on the db-stats endpoint).
+    fastify.get('/status', {
+        onRequest: [fastify.authenticate, requireWorkspaceRead()],
+    }, async (request, reply) => {
+        const workspace = guard(request, reply);
+        if (!workspace) { return; }
+        const r = new ResponseObject().found({
+            queue: embedd().workspaceStatus(workspace.id),
+        });
+        return reply.code(r.statusCode).send(r.getResponse());
+    });
+
     fastify.put('/config', {
         onRequest: [fastify.authenticate, requireWorkspaceWrite()],
         config: writeLimit,

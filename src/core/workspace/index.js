@@ -338,6 +338,7 @@ class WorkspaceManager extends EventEmitter {
      */
 
     get users() { return this.#users; }
+    get rootPath() { return this.#defaultRootPath; }
     get roles() { return this.#roles; }
     get embedd() { return this.#embedd; }
 

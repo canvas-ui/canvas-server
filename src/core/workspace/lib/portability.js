@@ -1,0 +1,167 @@
+'use strict';
+
+import fs from 'node:fs';
+import fsPromises from 'node:fs/promises';
+import path from 'node:path';
+import { spawn } from 'node:child_process';
+
+/**
+ * Workspace export/import — a workspace is a self-describing folder, so
+ * portability is archiving and registration, nothing more.
+ *
+ * Exports land in the user's own directory (`<root>/<email>/Exports/`) as
+ * tar.gz archives of the whole workspace folder. Archiving/extraction shells
+ * out to tar and streams — workspaces grow into GBs, nothing may buffer in
+ * memory. Import registers a folder in place (registerWorkspacePath) or
+ * extracts an archive into the user's Workspaces dir first.
+ */
+
+const EXPORTS_DIRNAME = 'Exports';
+const ARCHIVE_RE = /\.(tar\.gz|tgz)$/;
+// mirrors the archive naming below; also our path-traversal guard for :name params
+const SAFE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*\.(tar\.gz|tgz)$/;
+
+function run(cmd, args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) resolve(stdout);
+      else reject(new Error(`${cmd} exited with ${code}: ${stderr.trim()}`));
+    });
+  });
+}
+
+function fail(message, code, statusCode) {
+  const err = new Error(message);
+  err.code = code;
+  err.statusCode = statusCode;
+  return err;
+}
+
+export function exportsDir(manager, userEmail) {
+  if (!userEmail) throw fail('user email required', 'BAD_REQUEST', 400);
+  return path.join(manager.rootPath, userEmail, EXPORTS_DIRNAME);
+}
+
+export function exportFilePath(manager, userEmail, name) {
+  if (!SAFE_NAME_RE.test(name || '')) throw fail(`Invalid export name: ${name}`, 'BAD_REQUEST', 400);
+  return path.join(exportsDir(manager, userEmail), name);
+}
+
+async function getEntryOrThrow(manager, userId, workspaceId) {
+  const entries = await manager.listWorkspaces(userId);
+  const entry = entries.find((candidate) => candidate.id === workspaceId || candidate.name === workspaceId);
+  if (!entry) throw fail(`Workspace not found: ${workspaceId}`, 'WORKSPACE_NOT_FOUND', 404);
+  return entry;
+}
+
+/** Archive a stopped workspace's folder into the user's Exports dir. */
+export async function exportWorkspace(manager, { userId, userEmail, workspaceId }) {
+  const entry = await getEntryOrThrow(manager, userId, workspaceId);
+  if (entry.owner && entry.owner !== userId) {
+    throw fail('Only the workspace owner can export it', 'FORBIDDEN', 403);
+  }
+  if (entry.status === 'active' || entry.isActive) {
+    throw fail(`Workspace ${entry.name} is active — stop it before exporting`, 'WORKSPACE_ACTIVE', 409);
+  }
+  if (!entry.rootPath || !fs.existsSync(entry.rootPath)) {
+    throw fail(`Workspace directory not found: ${entry.rootPath}`, 'WORKSPACE_NOT_FOUND', 404);
+  }
+
+  const dir = exportsDir(manager, userEmail);
+  await fsPromises.mkdir(dir, { recursive: true });
+
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const name = `${entry.name || entry.id}-${stamp}.tar.gz`;
+  const outFile = path.join(dir, name);
+
+  await run('tar', ['-C', path.dirname(entry.rootPath), '-czf', outFile, path.basename(entry.rootPath)]);
+
+  const stat = await fsPromises.stat(outFile);
+  return { name, size: stat.size, createdAt: stat.mtime.toISOString(), workspaceId: entry.id };
+}
+
+/** List the user's export archives, newest first, with sizes. */
+export async function listExports(manager, userEmail) {
+  const dir = exportsDir(manager, userEmail);
+  let names;
+  try {
+    names = await fsPromises.readdir(dir);
+  } catch (err) {
+    if (err.code === 'ENOENT') return [];
+    throw err;
+  }
+  const items = [];
+  for (const name of names) {
+    if (!ARCHIVE_RE.test(name)) continue;
+    const stat = await fsPromises.stat(path.join(dir, name)).catch(() => null);
+    if (stat?.isFile()) items.push({ name, size: stat.size, createdAt: stat.mtime.toISOString() });
+  }
+  return items.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+export async function deleteExport(manager, userEmail, name) {
+  const file = exportFilePath(manager, userEmail, name);
+  try {
+    await fsPromises.unlink(file);
+    return true;
+  } catch (err) {
+    if (err.code === 'ENOENT') return false;
+    throw err;
+  }
+}
+
+/**
+ * Import a workspace from a server-side source:
+ *  - a folder containing workspace.json → registered in place
+ *  - a .tar.gz/.tgz archive → extracted into the user's Workspaces dir, then registered
+ * Returns the registered index entry.
+ */
+export async function importWorkspace(manager, { userId, userEmail, source }) {
+  if (!source || !path.isAbsolute(source)) {
+    throw fail('An absolute source path is required', 'BAD_REQUEST', 400);
+  }
+  const stat = await fsPromises.stat(source).catch(() => null);
+  if (!stat) throw fail(`Source not found: ${source}`, 'SOURCE_NOT_FOUND', 404);
+
+  if (stat.isDirectory()) {
+    return manager.registerWorkspacePath(userId, source);
+  }
+
+  if (!ARCHIVE_RE.test(source)) {
+    throw fail(`Unsupported source (need a folder or .tar.gz): ${source}`, 'BAD_REQUEST', 400);
+  }
+
+  // archives must contain exactly one top-level workspace folder
+  const listing = await run('tar', ['-tzf', source]);
+  const topLevel = new Set(listing.split('\n').filter(Boolean).map((line) => line.split('/')[0]));
+  if (topLevel.size !== 1) {
+    throw fail(`Archive must contain a single workspace folder, found: ${[...topLevel].join(', ')}`, 'BAD_ARCHIVE', 400);
+  }
+  const [folderName] = topLevel;
+  if (folderName.startsWith('.') || folderName.includes('..')) {
+    throw fail(`Unsafe archive folder name: ${folderName}`, 'BAD_ARCHIVE', 400);
+  }
+
+  const workspacesDir = path.join(manager.rootPath, userEmail, 'Workspaces');
+  const target = path.join(workspacesDir, folderName);
+  if (fs.existsSync(target)) {
+    throw fail(`Target already exists: ${target}`, 'TARGET_EXISTS', 409);
+  }
+
+  await fsPromises.mkdir(workspacesDir, { recursive: true });
+  await run('tar', ['-C', workspacesDir, '-xzf', source]);
+
+  try {
+    return await manager.registerWorkspacePath(userId, target);
+  } catch (err) {
+    // registration failed — do not leave an orphaned extraction behind
+    await fsPromises.rm(target, { recursive: true, force: true }).catch(() => {});
+    throw err;
+  }
+}

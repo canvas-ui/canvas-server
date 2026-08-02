@@ -394,6 +394,20 @@ Storage listings contain `workspace:home`, `workspace:data`, `s3`, and any user-
 |--------|------|------|-----|-------------|
 | DELETE | `/workspaces/:id/thumbnails` | `authenticate` | write | Clear all cached thumbnails (`thumb:*` in the stored cache) — regenerated on demand; → `{ removed }` |
 
+### Export / Import (portability)
+
+A workspace is a self-describing folder; export archives the whole folder
+(tar.gz, streamed — GB-scale safe) into the user's `Exports/` dir. The
+workspace must be **stopped** (409 `WORKSPACE_ACTIVE` otherwise); owner-only.
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| POST | `/workspaces/:id/export` | `authenticate` | Archive a stopped workspace → `{ name, size, createdAt, url }` |
+| GET | `/workspaces/exports` | `authenticate` | List the user's export archives (name, size, createdAt, url) |
+| GET | `/workspaces/exports/:name` | `authenticate` | Download an archive (`Content-Length` + `Content-Disposition`) |
+| DELETE | `/workspaces/exports/:name` | `authenticate` | Remove an archive |
+| POST | `/workspaces/import` | `authenticate` | Import: body `{ "export": "<archive name>" }` (from Exports), or `{ "path": "/abs/path" }` — a server-side folder (registered in place) or `.tar.gz` (extracted into the user's `Workspaces/`) |
+
 ### Services
 
 | Method | Path | Auth | Description |

@@ -86,6 +86,7 @@ export default async function workspaceRoutes(fastify, options) {
   });
 
   // Register sub-routes
+  fastify.register(import('./portability.js'));
   fastify.register(import('./documents.js'), {
     prefix: '/:id/documents',
     onRequest: [resolveWorkspaceAddress]

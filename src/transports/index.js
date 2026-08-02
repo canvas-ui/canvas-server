@@ -41,6 +41,7 @@ import messagingRoutes from './routes/messaging/index.js';
 import messagingWebhookRoutes from './routes/messaging/webhooks.js';
 import voiceRoutes from './routes/voice/index.js';
 import { rejectAgentTokens } from './middleware/agent-acl.js';
+import { proxyRemoteWorkspaces } from './middleware/edge-proxy.js';
 
 // WebSocket handlers
 import setupWebSocketHandlers from './websocket/index.js';
@@ -340,7 +341,7 @@ export async function createServer(options = {}) {
   server.register(authRoutes, { prefix: '/rest/v2/auth' });
   server.register(menuRoutes, { prefix: '/rest/v2', onRequest: [server.authenticate] });
   server.register(withoutAgentTokens(userRoutes), { prefix: '/rest/v2/users' });
-  mountWorkspacesApi(server);
+  mountWorkspacesApi(server, { preHandlers: [proxyRemoteWorkspaces] });
   mountContextsApi(server, { preHandlers: [rejectAgentTokens] });
   server.register(agentRoutes, { prefix: '/rest/v2/agents' });
   server.register(pubRoutes, { prefix: '/rest/v2/pub' });

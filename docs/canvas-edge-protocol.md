@@ -63,6 +63,28 @@ Subsequent runs: connect with the device token, emit `edge:announce`, done.
 Revocation = deleting the device token server-side; the edge falls back to
 local-only mode and keeps retrying pairing-required.
 
+### Workspace-configured remotes (auto-registration)
+
+A workspace can carry its own registration in workspace.json — the workspace
+is self-describing, and its remotes travel with it:
+
+```jsonc
+"remotes": [
+  { "url": "https://my.cnvs.ai", "token": "canvas-…", "enabled": true }
+]
+```
+
+The user creates a token in canvas-server and configures it here; the `ws`
+runtime (`src/edge/runtime.js` → `connectRemotes()`) reads it and dials every
+enabled remote on start. The token is opaque to the edge — today a user API
+token or device token (both pass websocket auth); workspace-scoped share
+tokens (`/workspaces/:id/tokens`) can slot in once socket auth accepts them,
+with no config change. The workspace id doubles as the tunnel instanceId: a
+ws runtime hosts exactly one workspace, so its identity is the workspace's.
+
+Storage note: a remote workspace's files are just another data source — sync
+belongs to stored (as with any backend), not to the tunnel.
+
 ## Announce payload
 
 ```jsonc

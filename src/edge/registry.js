@@ -42,6 +42,22 @@ export class EdgeRegistry {
     return userId ? all.filter((e) => e.userId === userId) : all;
   }
 
+  /**
+   * Find the connected edge that exports a given resource (by export id or
+   * name), scoped to its owning user — a user can only reach their own edges.
+   */
+  findByExport(type, identifier, userId) {
+    if (!identifier || !userId) return null;
+    for (const [instanceId, edge] of this.#edges) {
+      if (edge.userId !== userId) continue;
+      const exportsList = Array.isArray(edge.announce?.exports) ? edge.announce.exports : [];
+      const match = exportsList.find((entry) => entry?.type === type
+        && (entry.id === identifier || entry.name === identifier));
+      if (match) return { instanceId, export: match };
+    }
+    return null;
+  }
+
   /** Drop every edge announced over this socket, failing its in-flight requests. */
   removeBySocket(socketId) {
     const removed = [];

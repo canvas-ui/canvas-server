@@ -13,13 +13,12 @@ const SCHEMA_PREFIX = 'data/abstraction/';
 
 export const SCHEMAS = Object.freeze({
     application: `${SCHEMA_PREFIX}application`,
-    bucket: `${SCHEMA_PREFIX}bucket`,
-    contact: `${SCHEMA_PREFIX}contact`,
     device: `${SCHEMA_PREFIX}device`,
     document: `${SCHEMA_PREFIX}document`,
     dotfile: `${SCHEMA_PREFIX}dotfile`,
     email: `${SCHEMA_PREFIX}email`,
     file: `${SCHEMA_PREFIX}file`,
+    identity: `${SCHEMA_PREFIX}identity`,
     link: `${SCHEMA_PREFIX}link`,
     message: `${SCHEMA_PREFIX}message`,
     note: `${SCHEMA_PREFIX}note`,

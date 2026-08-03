@@ -17,6 +17,7 @@ export const SCHEMAS = Object.freeze({
     document: `${SCHEMA_PREFIX}document`,
     dotfile: `${SCHEMA_PREFIX}dotfile`,
     email: `${SCHEMA_PREFIX}email`,
+    event: `${SCHEMA_PREFIX}event`,
     file: `${SCHEMA_PREFIX}file`,
     identity: `${SCHEMA_PREFIX}identity`,
     link: `${SCHEMA_PREFIX}link`,
@@ -150,10 +151,13 @@ class Classification {
     isNote() { return this.isSchema('note'); }
     isTodo() { return this.isSchema('todo'); }
     isMessage() { return this.isSchema('message'); }
+    isEvent() { return this.isSchema('event'); }
 
     // ── Content / mime predicates ───────────────────────────────────────────
     isText() {
-        if (this.isNote() || this.isTodo()) { return true; }
+        // Events join notes/todos: their title + description are inline text with
+        // no contentType, so without this they would never reach the embedder.
+        if (this.isNote() || this.isTodo() || this.isEvent()) { return true; }
         return typeof this.mime === 'string' && this.mime.startsWith('text/');
     }
     isImage() { return typeof this.mime === 'string' && this.mime.startsWith('image/'); }

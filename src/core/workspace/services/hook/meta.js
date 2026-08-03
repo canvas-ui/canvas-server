@@ -162,7 +162,7 @@ export const HOOK_ACTIONS = Object.freeze([
 
 export const CLASSIFIER_SURFACE = Object.freeze({
     predicates: [
-        'isTab()', 'isEmail()', 'isFile()', 'isNote()', 'isTodo()', 'isMessage()', "isSchema('tab')",
+        'isTab()', 'isEmail()', 'isFile()', 'isNote()', 'isTodo()', 'isMessage()', 'isEvent()', "isSchema('tab')",
         'isLink()', 'isYoutube()', 'isArxiv()', 'isImageUrl()', "hostMatches('youtube.com')", "urlMatches('substring'|RegExp)",
         'isText()', 'isImage()', 'isAudio()', 'isVideo()', 'isPdf()', 'isBlob()', "mimeMatches('image/*')",
         "sentTo('invoice@corp.tld')", "hasAttachment('application/pdf'?)",

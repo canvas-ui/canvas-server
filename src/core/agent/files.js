@@ -41,6 +41,7 @@ const CANVAS_SKILL = {
         '- `data/abstraction/tab` — browser tabs (data.url, data.title)',
         '- `data/abstraction/file` — indexed files',
         '- `data/abstraction/todo` — todo items',
+        '- `data/abstraction/event` — calendar entries, alerts and activity logs (data.title, data.type, data.start, data.end)',
         '',
         '## Examples',
         '- "Any new emails?" → `canvas_find { "schema": "data/abstraction/email", "limit": 10 }` (results are newest-first)',

@@ -191,8 +191,8 @@ export class WorkspaceMailIndex extends EventEmitter {
 
         const features = Email.getFeatureBitmapArray(emailDoc, { mailboxPath: folder });
         // Canonical source-backend tag (observability/selection, not a purge driver).
-        // Mirrors WorkspaceStoredIndex#buildFeatures: data/backend/imap/<account>.
-        if (account) features.push(`data/backend/imap/${account}`);
+        // data/backend/imap/<account> is DERIVED by synapsd from the message's
+        // imap:// location (scheme + authority), not asserted here.
         return { payload, emailDoc, features };
     }
 

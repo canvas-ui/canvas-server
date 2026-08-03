@@ -28,11 +28,9 @@ import { DEFAULT_SYNC_EXCLUSIONS } from './constants.js';
  */
 
 const HOME_STORED_BACKEND = 'workspace:home';
-const HOME_BACKEND_FEATURE = 'data/backend/home';
 // The default local content-addressable blob store. Connectors persist blobs
 // here (persistBlob) and address them by stored://workspace:data/<key>.
 const DATA_BLOB_BACKEND = 'workspace:data';
-const DATA_BLOB_FEATURE = 'data/backend/data';
 // Local drivers whose bytes are written in-process (no remote SyncQueue): they
 // are registered eagerly and toggled live by config.
 const LOCAL_DRIVERS = new Set(['file', 'cacache']);
@@ -46,7 +44,6 @@ const NO_LOCATION_FEATURE = 'data/no-location';
 
 export class WorkspaceStoredIndex {
     static HOME_STORED_BACKEND = HOME_STORED_BACKEND;
-    static HOME_BACKEND_FEATURE = HOME_BACKEND_FEATURE;
     static DATA_BLOB_BACKEND = DATA_BLOB_BACKEND;
 
     #rootPath;
@@ -911,7 +908,6 @@ export class WorkspaceStoredIndex {
         const primaryChecksum = checksumArray[0];
         const existingDocument = await db.getByChecksumString(primaryChecksum).catch(() => null);
         const documentData = this.#buildDocument(storedFile, checksumArray, backends, existingDocument, meta);
-        const features = this.#buildFeatures(backends);
         // Stale-path cleanup is scoped to the backends tree: user-filed
         // placements live in other trees and must never be unlinked here.
         const currentBackendPaths = existingDocument?.id
@@ -922,7 +918,9 @@ export class WorkspaceStoredIndex {
             existingDocument?.id ? { ...documentData, id: existingDocument.id } : documentData,
             // context:null keeps backend mirrors out of the context root — they
             // surface there only when a user files them explicitly.
-            { context: null, directory: this.#getBackendsTreeSelector(backendPaths), features },
+            // No feature assertion: data/backend/* is DERIVED by synapsd from
+            // locations[] (URL scheme+authority, or location.metadata.backend).
+            { context: null, directory: this.#getBackendsTreeSelector(backendPaths) },
         );
 
         await this.#removeStalePaths(docId, currentBackendPaths, backendPaths);
@@ -979,15 +977,17 @@ export class WorkspaceStoredIndex {
         const currentBackendPaths = await db.listDocumentTreePaths(doc.id, BACKENDS_TREE_NAME).catch(() => []);
 
         if (remaining.length === 0) {
+            // v3: asserted features live at the document ROOT, not under metadata.
             const features = Array.from(new Set([
-                ...(Array.isArray(doc.metadata?.features) ? doc.metadata.features : []),
+                ...(Array.isArray(doc.features) ? doc.features : []),
                 NO_LOCATION_FEATURE,
             ]));
             await this.#put({
                 id: doc.id,
                 locations: [],
                 orphanedAt: doc.orphanedAt || new Date().toISOString(),
-                metadata: { ...(doc.metadata || {}), features },
+                features,
+                metadata: { ...(doc.metadata || {}) },
             }, { context: null });
             // Backend-mirror paths untick (the file is no longer there); curated
             // placements in every other tree stay untouched. Thumbnails stay too
@@ -1349,9 +1349,7 @@ export class WorkspaceStoredIndex {
                 // (locations: []) — metadata/checksums stay searchable. Marked
                 // as orphaned so it's filterable and subject to retention GC.
                 doc.orphanedAt = doc.orphanedAt || new Date().toISOString();
-                if (doc.metadata) {
-                    doc.metadata.features = Array.from(new Set([...(doc.metadata.features || []), NO_LOCATION_FEATURE]));
-                }
+                doc.features = Array.from(new Set([...(doc.features || []), NO_LOCATION_FEATURE]));
                 await this.#put(doc, { context: null });
             } else {
                 await db.delete(doc.id);
@@ -1409,23 +1407,6 @@ export class WorkspaceStoredIndex {
         ));
     }
 
-    #buildFeatures(backends = []) {
-        const features = [];
-        for (const backend of backends) {
-            if (backend.backend === HOME_STORED_BACKEND) {
-                features.push(HOME_BACKEND_FEATURE);
-            } else if (backend.backend === DATA_BLOB_BACKEND) {
-                features.push(DATA_BLOB_FEATURE);
-            }
-            // Canonical source-backend tag on every ingested doc. Lets the UI
-            // count/select "everything from backend X" independent of where the
-            // doc now lives in the tree. Observability/selection only — purge stays
-            // scoped to the backends-tree path, never this bitmap.
-            if (backend.backend) features.push(`data/backend/${backend.backend}`);
-            if (backend?.source?.provider) features.push(`data/source/${backend.source.provider}`);
-        }
-        return Array.from(new Set(features));
-    }
 
     // A file doc is a pure blob: identity is the checksum, bytes live in
     // `stored` (referenced by canonical stored:// URLs), and size/mime are
@@ -1443,11 +1424,7 @@ export class WorkspaceStoredIndex {
         const metadata = { ...(existingDocument?.metadata || {}) };
         if (Number.isFinite(size)) metadata.size = size; else delete metadata.size;
         if (typeof mime === 'string' && mime.length > 0) metadata.contentType = mime;
-        // Re-bind: this upsert carries locations, so a previously orphaned doc
-        // loses its no-location marker (feature drop unticks the bitmap).
-        if (Array.isArray(metadata.features) && metadata.features.includes(NO_LOCATION_FEATURE)) {
-            metadata.features = metadata.features.filter((f) => f !== NO_LOCATION_FEATURE);
-        }
+
         // Edit-succession breadcrumb (predecessor's primary checksum) — becomes
         // a first-class relation edge once edge indexes land.
         const prevChecksum = storedFile.previous?.checksums
@@ -1479,6 +1456,12 @@ export class WorkspaceStoredIndex {
             metadata,
             // Locations exist by construction here — clear any orphan marker.
             orphanedAt: null,
+            // Re-bind: this upsert carries locations, so a previously orphaned doc
+            // loses its no-location marker (the feature drop unticks the bitmap).
+            // v3: asserted features live at the document ROOT, so the marker is
+            // dropped here rather than out of metadata.features.
+            features: (Array.isArray(existingDocument?.features) ? existingDocument.features : [])
+                .filter((feature) => feature !== NO_LOCATION_FEATURE),
         };
 
         // Content-derived date (EXIF capture time) → the default 'content' timeline

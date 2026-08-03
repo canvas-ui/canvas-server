@@ -195,7 +195,10 @@ describe('WorkspaceMailIndex', () => {
         for (const call of putManyCalls) {
             assert.equal(call.options.context, null);
             assert.equal(String(call.options.directory), '/imap/alice@example.com/inbox');
-            assert.ok(call.options.features.includes('data/backend/imap/alice@example.com'));
+            // data/backend/imap/<account> is no longer asserted here — synapsd
+            // derives it from the message's imap://<account>/<folder>;UID=<n>
+            // provenance location (scheme + authority).
+            assert.ok(!(call.options.features || []).some((f) => f.startsWith('data/backend/')));
         }
         const attachmentGroup = putManyCalls.find((c) => c.records.length === 1);
         assert.ok(attachmentGroup.options.features.some((f) => f.includes('attachment')), `expected attachment feature, got ${attachmentGroup.options.features}`);

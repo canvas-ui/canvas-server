@@ -101,6 +101,7 @@ const CONSOLE_PRETTY = loggingConfig.console?.pretty ?? isDev;
  */
 
 function stripAnsi(value) {
+    // eslint-disable-next-line no-control-regex -- ESC is the point: this strips ANSI SGR codes.
     return String(value).replace(/\u001b\[[0-9;]*m/g, '');
 }
 

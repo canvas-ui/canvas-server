@@ -18,7 +18,7 @@ export default [
     },
     js.configs.recommended,
     {
-        files: ['**/*.js'],
+        files: ['**/*.js', '**/*.mjs', '**/*.cjs'],
         ignores: IGNORE_PATTERNS,
         languageOptions: {
             ecmaVersion: 'latest',
@@ -47,7 +47,7 @@ export default [
         },
     },
     {
-        files: ['**/*.test.js'],
+        files: ['**/*.test.js', '**/*.test.mjs'],
         ignores: IGNORE_PATTERNS,
         languageOptions: {
             globals: {

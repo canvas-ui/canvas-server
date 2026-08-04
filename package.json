@@ -11,8 +11,8 @@
     "update-submodules": "git submodule update --init --remote && git submodule foreach \"git add .\" && npm install --ignore-scripts && git add package-lock.json",
     "build": "npm run build -w src/ui/web",
     "postinstall": "npm run build -w src/ui/web",
-    "lint": "eslint \"**/*.{js,ts}\"",
-    "lint:fix": "eslint \"**/*.{js,ts}\" --fix",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
     "test": "node --test \"tests/**/*.test.js\""
   },
   "workspaces": [

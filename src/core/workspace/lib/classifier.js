@@ -31,7 +31,7 @@ const YOUTUBE_RE = /(?:youtube\.com\/watch\?|youtu\.be\/|youtube\.com\/shorts\/)
 
 // Filename-extension → mime, for file blobs whose contentType was never captured
 // at ingest (e.g. filesystem-indexed files on fs:home) and so fell back to the
-// BaseDocument default 'application/json'. Focused on the types embedding cares
+// Document default 'application/json'. Focused on the types embedding cares
 // about (image/*, text/*) plus a few common ones. Lowercase extension keys.
 const EXT_MIME = Object.freeze({
     jpg: 'image/jpeg', jpeg: 'image/jpeg', jpe: 'image/jpeg', png: 'image/png',

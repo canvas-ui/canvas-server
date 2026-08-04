@@ -1024,7 +1024,7 @@ class Workspace extends EventEmitter {
         for (const k of ['exif', 'dimensions', 'media']) {
             if (extracted[k] && typeof extracted[k] === 'object') { patch[k] = extracted[k]; }
         }
-        // metadata patches shallow-merge top-level keys (BaseDocument.update), so
+        // metadata patches shallow-merge top-level keys (Document.update), so
         // `geo` is replaced wholesale — resolve the winner first, and only write
         // when it actually changes to avoid a no-op update.
         const geo = pickGeo(meta.geo, extracted.geo, { incomingSource: 'exif' });

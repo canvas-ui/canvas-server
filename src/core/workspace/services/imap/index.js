@@ -6,7 +6,7 @@ import fs from 'fs/promises';
 import crypto from 'crypto';
 import { simpleParser } from 'mailparser';
 import ImapBackend from './ImapBackend.js';
-import Email from '../../../../services/synapsd/src/schemas/abstractions/Email.js';
+import Email from '../../../../services/synapsd/src/schemas/core/Email.js';
 import { parseLocationUrl } from '../../../../services/synapsd/src/utils/path-helpers.js';
 import { getBackendEmailContext, normalizeSegment } from '../../../../utils/backend-documents.js';
 

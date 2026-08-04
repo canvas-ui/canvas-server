@@ -1,6 +1,21 @@
 'use strict';
 
+/**
+ * RUN THIS BY HAND. It used to execute on every server boot from Server.js;
+ * one-time migrations were pulled out of boot paths 2026-08-04 (see
+ * services/synapsd/TODO.md — the same sweep removed synapsd's in-engine
+ * migrations). It is idempotent and marker-guarded, so re-running is a no-op.
+ *
+ *   node scripts/migrate-001-per-user-indexes.js [--db <dir>] [--users <dir>]
+ *
+ * Defaults match a standard server layout ($CANVAS_SERVER_HOME/db and
+ * $CANVAS_USER_HOME); pass the flags for anything else. Back up db/ first — it
+ * renames the originals to *.migrated-<date> rather than deleting them, but a
+ * backup costs nothing.
+ */
+
 import path from 'path';
+import { fileURLToPath } from 'url';
 import * as fsPromises from 'fs/promises';
 import { existsSync } from 'fs';
 
@@ -150,3 +165,26 @@ async function runPerUserIndexMigration({ dbPath, usersRootPath, logger = consol
 }
 
 export { runPerUserIndexMigration, MIGRATION_ID };
+
+// CLI entry — skipped when imported (the test drives the function directly).
+if (process.argv[1] && import.meta.url === new URL(`file://${path.resolve(process.argv[1])}`).href) {
+    const arg = (name, fallback) => {
+        const i = process.argv.indexOf(`--${name}`);
+        return i > -1 && process.argv[i + 1] ? process.argv[i + 1] : fallback;
+    };
+    const serverHome = process.env.CANVAS_SERVER_HOME || path.join(process.cwd(), 'server');
+    const dbPath = arg('db', path.join(serverHome, 'db'));
+    const usersRootPath = arg('users', process.env.CANVAS_USER_HOME || path.join(serverHome, 'users'));
+
+    console.log(`[migration] ${MIGRATION_ID}\n  db:    ${dbPath}\n  users: ${usersRootPath}`);
+    runPerUserIndexMigration({ dbPath, usersRootPath })
+        .then((result) => {
+            console.log(result.ran
+                ? `[migration] done — ${result.workspaces} workspace, ${result.contexts} context entries`
+                : '[migration] nothing to do (already applied, or no legacy indexes present)');
+        })
+        .catch((error) => {
+            console.error(`[migration] FAILED: ${error.message}`);
+            process.exitCode = 1;
+        });
+}

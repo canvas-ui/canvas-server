@@ -4,7 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 
-import { runPerUserIndexMigration } from '../../../src/utils/migrations/001-per-user-indexes.js';
+import { runPerUserIndexMigration } from '../../../scripts/migrate-001-per-user-indexes.js';
 
 const quietLogger = { debug() {}, info() {}, warn() {}, error() {} };
 

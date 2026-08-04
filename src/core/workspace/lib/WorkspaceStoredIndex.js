@@ -142,7 +142,6 @@ export class WorkspaceStoredIndex {
         if (this.#stored) return;
 
         try {
-            await this.#migrateLegacyStoredLayout();
             this.#stored = new Stored({
                 // Configured runtime root (default db/stored) — NOT a hidden
                 // .stored/. Holds Stored's metadata index; the blob cache is
@@ -172,35 +171,6 @@ export class WorkspaceStoredIndex {
         }
     }
 
-    /**
-     * One-time migration off the legacy hidden `<root>/.stored/` layout. Older
-     * builds kept Stored's index at `.stored/index` (and, before the cache
-     * redirect, its cache at `.stored/cache`). Relocate the index to the
-     * configured location and drop the stale hidden dir so no `.stored/` lingers.
-     * Runs before Stored opens the index; best-effort and idempotent.
-     */
-    async #migrateLegacyStoredLayout() {
-        const legacyRoot = path.join(this.#rootPath, '.stored');
-        const legacyIndex = path.join(legacyRoot, 'index');
-        const targetIndex = path.join(this.#storedRootPath, 'index');
-        try {
-            const [hasLegacy, hasTarget] = await Promise.all([
-                fs.stat(legacyIndex).then(() => true, () => false),
-                fs.stat(targetIndex).then(() => true, () => false),
-            ]);
-            // Only move when the new location is empty — never clobber a live index.
-            if (hasLegacy && !hasTarget) {
-                await fs.mkdir(this.#storedRootPath, { recursive: true });
-                await fs.rename(legacyIndex, targetIndex);
-                this.#logger.info({ workspaceId: this.#workspaceId, from: legacyIndex, to: targetIndex }, 'Migrated Stored index off legacy .stored/');
-            }
-            // Remove the now-stale hidden dir (its cache/ was superseded by the
-            // workspace cache redirect; index/ has moved or is superseded).
-            await fs.rm(legacyRoot, { recursive: true, force: true }).catch(() => {});
-        } catch (error) {
-            this.#logger.warn({ workspaceId: this.#workspaceId, error: error.message }, 'Legacy .stored migration skipped');
-        }
-    }
 
     async stop() {
         this.#unbindEvents();

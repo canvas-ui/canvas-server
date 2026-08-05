@@ -15,14 +15,88 @@ https://demo.cnvs.ai/pub/c/v64cxh0i
 
 Data from all sources is indexed and abstracted away from its physical location. Users construct virtual context or directory trees on top of that data. Storage backends (local, NAS, S3) are managed transparently - writes hit local cache first, then sync to backends based on rules.
 
+## Requirements
+
+- Node.js **20.18+** (22 LTS is what the container image runs) and npm
+- git — the repo uses submodules, and each workspace keeps its hooks in a git repo
+- Docker (optional) — only for the containerized install and for [roles](#roles)
+
 ## Install & Run
 
 ```bash
 git clone https://github.com/canvas-ui/canvas-server /path/to/canvas-server
 cd /path/to/canvas-server
-npm run update-submodules
-npm install
-npm run dev
+npm run update-submodules      # pulls synapsd, stored, embedd, the web UI, …
+npm install                    # also builds the web UI (postinstall)
+npm start                      # or: npm run dev  (debug logging, NODE_ENV=development)
+```
+
+The server listens on **http://localhost:8001** — API, web UI and WebDAV share
+the port. On the **first** start it creates the admin user and prints its
+credentials once:
+
+```
+================================================================================
+Canvas Admin User
+================================================================================
+Email: admin@canvas.local
+Password: <generated>
+API Token: canvas-…
+================================================================================
+```
+
+Set `CANVAS_ADMIN_EMAIL` / `CANVAS_ADMIN_PASSWORD` before that first start to
+choose them yourself; afterwards, `CANVAS_ADMIN_RESET=true` re-applies a changed
+password on the next start. Credentials are also recoverable from the log
+(`$CANVAS_SERVER_HOME/log/canvas-server.log`).
+
+### Where your data lives
+
+By default everything stays inside the checkout — `./server` (config, index db,
+caches) and `./server/users/<email>` (per-user homes). For a personal install,
+run it in **user mode** to keep data out of the repo:
+
+```bash
+npm start -- --user            # server → ~/.canvas/server, users → ~/.canvas
+```
+
+Each user has three module roots — workspaces, roles and agents — which default
+to `<userHome>/{Workspaces,Roles,Agents}` and can be pointed anywhere:
+
+```bash
+CANVAS_USER_WORKSPACES=~/Workspaces \
+CANVAS_USER_ROLES=~/Roles \
+CANVAS_USER_AGENTS=~/Agents \
+npm start -- --user
+```
+
+Those are server-wide defaults; a single user can override their own at any time
+with `PUT /rest/v2/users/me/paths`. Relocating is not a move — existing
+workspaces keep working where they are, and only discovery plus newly created
+workspaces follow the new root.
+
+### Running it as a service
+
+```bash
+# systemd --user unit, adjust the paths
+$ nano ~/.config/systemd/user/canvas-server.service
+[Unit]
+Description=Canvas Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/canvas-server
+ExecStart=/usr/bin/env node ./src/init.js --user
+Restart=on-failure
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=default.target
+
+$ systemctl --user daemon-reload
+$ systemctl --user enable --now canvas-server
 ```
 
 ## Docker
@@ -75,6 +149,10 @@ instance, unset those three and every user gets their own
 Other one-liners: `docker:down`, `docker:restart`, `docker:shell`, `docker:config`.
 
 ## Environment
+
+Every setting has a default; nothing below is required. Paths shown are the
+container's — a bare-metal install defaults to `./server` and `./server/users`,
+or `~/.canvas/server` and `~/.canvas` when started with `--user`.
 
 ```bash
 NODE_ENV=production
@@ -351,13 +429,24 @@ Configure in `./server/config/roles.json` or via REST API / Web UI.
 
 ```bash
 cd /path/to/canvas-server
-npm run stop
-rm -rf ./node_modules
+# stop the running instance first (Ctrl-C, or: systemctl --user stop canvas-server)
 git pull origin main
 npm run update-submodules
-npm install
+npm install                    # rebuilds the web UI
 npm start
 ```
+
+Containerized instances update the same way, minus the npm steps:
+
+```bash
+cd /path/to/canvas-server
+git pull origin main
+npm run update-submodules
+npm run docker:build && npm run docker:up
+```
+
+Your data is untouched by an update: it lives in `$CANVAS_SERVER_HOME` and the
+module roots, never in `node_modules` or the image.
 
 ---
 This project is funded by [Augmentd Labs](https://augmentd.eu/en/labs)

@@ -58,6 +58,11 @@ export function docName(doc) {
     if (doc.schema === NOTE_SCHEMA) return `${sanitize(doc.data?.title || `note-${doc.id}`)}.md`;
     if (doc.schema === TODO_SCHEMA) return `${sanitize(doc.data?.title || `todo-${doc.id}`)}.todo.json`;
     if (doc.schema === TAB_SCHEMA)  return `${sanitize(doc.data?.title || doc.data?.url || `tab-${doc.id}`)}.url`;
+    // Uploaded files carry their real name on the location; the location KEY is
+    // a content hash, so falling through to locationBasename() first would show
+    // every uploaded file as a hash.
+    const declared = (doc.locations || []).map((location) => location?.metadata?.filename).find(Boolean);
+    if (declared) return sanitize(declared);
     const fromLocation = locationBasename(doc); // blobs: name comes from a location key
     if (fromLocation) return fromLocation;
     const schema = (doc.schema || 'doc').split('/').pop();
@@ -81,6 +86,23 @@ function sanitize(s) {
         .replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '') // drop lone surrogates
         .replace(/[/\\:*?"<>|]|\p{Cc}/gu, '_');
     return [...cleaned].slice(0, 120).join(''); // slice by code point, never split a pair
+}
+
+/**
+ * Sidecar files a desktop client writes on its own initiative — Finder's
+ * AppleDouble/.DS_Store, Windows' desktop.ini, editor swap files. They are
+ * bookkeeping for the client, never user content, and must not become
+ * documents: a `cp -r` of any folder from a Mac would otherwise litter the
+ * workspace with them.
+ */
+export function isClientDropping(name) {
+    const base = String(name || '');
+    return base === '.DS_Store'
+        || base === 'desktop.ini'
+        || base === 'Thumbs.db'
+        || base.startsWith('._')
+        || base.startsWith('.~lock.')
+        || /^~\$/.test(base);
 }
 
 // ── Path normalization shared by all virtual FS impls ──────────────────────

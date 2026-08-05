@@ -7,7 +7,9 @@ import crypto from 'crypto';
 import { createLogger } from '../../utils/log.js';
 import { internalPathMatcher } from '../../core/workspace/lib/internal-paths.js';
 import TreeFS from './TreeFS.js';
+import { isClientDropping, norm } from './vfs-shared.js';
 import VirtualContextsFS from './VirtualContextsFS.js';
+import TrashFS from './TrashFS.js';
 
 const logger = createLogger('webdav');
 
@@ -45,6 +47,9 @@ const ROOTS = [
   { name: 'Home', isDir: true, size: 0 },
   { name: 'Contexts', isDir: true, size: 0 },
   { name: 'Trees', isDir: true, size: 0 },
+  // Physically a path in the default directory tree; presented here because a
+  // workspace is the "drive" and drag-to-trash needs a visible target.
+  { name: 'Trash', isDir: true, size: 0 },
 ];
 
 // ── WebDAV Handler ──────────────────────────────────────────────────────────
@@ -82,48 +87,16 @@ export class WebDAVHandler {
         return await this._handleHome(res, { method, prefix: prefix + '/Home', rel: homeRel, homePath, headers, body, workspace });
       }
 
-      // ── Route: /Contexts/* → per-context abstraction folders ────────
-      if (rel === '/Contexts' || rel.startsWith('/Contexts/')) {
-        if (!workspace?.isActive) return send(res, 503, 'Workspace not active');
-        if (!contextManager) return send(res, 503, 'Context manager not available');
-        const vRel = rel === '/Contexts' ? '/' : rel.slice('/Contexts'.length);
-        const vfs = new VirtualContextsFS(workspace, userId, contextManager);
-        return await this._handleVirtual(res, { method, prefix, rel, vRel, headers, body, vfs, treeType: 'contexts' });
-      }
-
-      // ── Route: /Trees/* → named tree views ───────────────────────────
-      if (rel === '/Trees' || rel.startsWith('/Trees/')) {
-        if (!workspace?.isActive) return send(res, 503, 'Workspace not active');
-        const treesRel = rel === '/Trees' ? '/' : rel.slice('/Trees'.length);
-        const parts = treesRel.split('/').filter(Boolean);
-
-        if (parts.length === 0) {
-          const trees = await workspace.listTrees();
-          const vfs = {
-            stat: async (vPath) => vPath === '/' ? { isDir: true, name: 'Trees', size: 0 } : null,
-            readdir: async () => trees.map((tree) => ({ name: tree.name, isDir: true, size: 0 })),
-            getContent: async () => null,
-          };
-          return await this._handleVirtual(res, { method, prefix, rel, vRel: '/', headers, body, vfs, treeType: 'trees' });
-        }
-
-        let tree = null;
-        try {
-          tree = workspace.getTree(parts[0]);
-        } catch {
-          return send(res, 404, 'Tree not found');
-        }
-        const treePath = '/' + parts.slice(1).join('/');
-        const vfs = new TreeFS(workspace, tree);
+      // ── Route: /Contexts, /Trees, /Trash → index-backed virtual trees ──
+      const target = await this._resolveVirtual(rel, { workspace, userId, contextManager });
+      if (target?.error) return send(res, target.error.code, target.error.message);
+      if (target) {
         return await this._handleVirtual(res, {
-          method,
-          prefix,
-          rel,
-          vRel: parts.length > 1 ? treePath : '/',
-          headers,
-          body,
-          vfs,
-          treeType: tree.type,
+          method, prefix, rel, headers, body,
+          vfs: target.vfs,
+          vRel: target.vRel,
+          treeType: target.treeType,
+          resolveTarget: (destRel) => this._resolveVirtual(destRel, { workspace, userId, contextManager }),
         });
       }
 
@@ -137,7 +110,67 @@ export class WebDAVHandler {
     }
   }
 
-  // ── DAV root (3 virtual directories) ──────────────────────────────────
+  /**
+   * Map a DAV path onto the virtual filesystem that serves it. One resolver for
+   * both the request path and a MOVE's Destination, so a move can cross roots
+   * (Trees → Trash, tree → tree) without the two disagreeing about what a path
+   * means. Returns null for paths that are not index-backed (/, /Home).
+   */
+  async _resolveVirtual(rel, { workspace, userId, contextManager }) {
+    const inRoot = (name) => rel === `/${name}` || rel.startsWith(`/${name}/`);
+    const relTo = (name) => (rel === `/${name}` ? '/' : rel.slice(name.length + 1));
+
+    if (inRoot('Contexts')) {
+      if (!workspace?.isActive) return { error: { code: 503, message: 'Workspace not active' } };
+      if (!contextManager) return { error: { code: 503, message: 'Context manager not available' } };
+      return {
+        vfs: new VirtualContextsFS(workspace, userId, contextManager),
+        vRel: relTo('Contexts'),
+        treeType: 'contexts',
+      };
+    }
+
+    if (inRoot('Trash')) {
+      if (!workspace?.isActive) return { error: { code: 503, message: 'Workspace not active' } };
+      return { vfs: new TrashFS(workspace), vRel: relTo('Trash'), treeType: 'trash' };
+    }
+
+    if (inRoot('Trees')) {
+      if (!workspace?.isActive) return { error: { code: 503, message: 'Workspace not active' } };
+      const parts = relTo('Trees').split('/').filter(Boolean);
+
+      if (parts.length === 0) {
+        const trees = await workspace.listTrees();
+        return {
+          vfs: {
+            stat: async (vPath) => vPath === '/' ? { isDir: true, name: 'Trees', size: 0 } : null,
+            readdir: async () => trees.map((tree) => ({ name: tree.name, isDir: true, size: 0 })),
+            getContent: async () => null,
+          },
+          vRel: '/',
+          treeType: 'trees',
+        };
+      }
+
+      let tree = null;
+      try {
+        tree = workspace.getTree(parts[0]);
+      } catch {
+        return { error: { code: 404, message: 'Tree not found' } };
+      }
+      if (!tree) return { error: { code: 404, message: 'Tree not found' } };
+
+      return {
+        vfs: new TreeFS(workspace, tree),
+        vRel: parts.length > 1 ? '/' + parts.slice(1).join('/') : '/',
+        treeType: tree.type,
+      };
+    }
+
+    return null;
+  }
+
+  // ── DAV root (virtual directories) ──────────────────────────────────
 
   async _handleRoot(res, { method, prefix, headers, body }) {
     if (method === 'OPTIONS') return this._options({ res });
@@ -386,7 +419,7 @@ export class WebDAVHandler {
 
   // ── Virtual tree handlers ──────────────────────────────────────────────
 
-  async _handleVirtual(res, { method, prefix, rel, vRel, workspace, headers, body, vfs: prebuiltVfs, treeType }) {
+  async _handleVirtual(res, { method, prefix, rel, vRel, workspace, headers, body, vfs: prebuiltVfs, treeType, resolveTarget }) {
     const vfs = prebuiltVfs || new TreeFS(workspace, workspace.getDefaultContextTree());
 
     try {
@@ -397,9 +430,9 @@ export class WebDAVHandler {
         case 'GET':      return await this._vGet(res, { vRel, vfs, treeType });
         case 'HEAD':     return await this._vHead(res, { vRel, vfs });
         case 'PUT':      return await this._vPut(res, { vRel, body, vfs });
-        case 'DELETE':   return await this._vDelete(res, { vRel, vfs });
+        case 'DELETE':   return await this._vDelete(res, { vRel, vfs, treeType });
         case 'MKCOL':    return await this._vMkcol(res, { vRel, vfs });
-        case 'MOVE':     return await this._vMove(res, { vRel, vfs, prefix, headers });
+        case 'MOVE':     return await this._vMove(res, { vRel, vfs, prefix, headers, treeType, resolveTarget });
         case 'LOCK':     return await this._vLock(res, { prefix, rel, headers, body });
         case 'UNLOCK':   return await this._unlock({ res, headers });
         default:         return send(res, 405, 'Method Not Allowed');
@@ -491,14 +524,25 @@ export class WebDAVHandler {
 
   async _vPut(res, { vRel, body, vfs }) {
     if (typeof vfs.put !== 'function') return send(res, 403, 'This virtual tree is read-only');
+    // Finder/Explorer sidecars are client bookkeeping, never documents. Accept
+    // and drop them: a 403 would make a plain `cp -r` from a Mac look failed.
+    if (isClientDropping(path.posix.basename(norm(vRel)))) {
+      await readBodyBuffer(body, 16 * 1024 * 1024).catch(() => null);
+      return send(res, 201);
+    }
     const buf = await readBodyBuffer(body, 16 * 1024 * 1024);
     const result = await vfs.put(vRel, buf);
     send(res, result?.created === false ? 204 : 201);
   }
 
-  async _vDelete(res, { vRel, vfs }) {
+  async _vDelete(res, { vRel, vfs, treeType }) {
     if (typeof vfs.del !== 'function') return send(res, 403, 'This virtual tree is read-only');
-    await vfs.del(vRel);
+    if (isClientDropping(path.posix.basename(norm(vRel)))) return send(res, 204);
+    // Under a tree, `rm` detaches from the path and — if that was the last
+    // placement — files the document into the trash, so nothing a delete
+    // touches becomes unreachable. Contexts are a VIEW: detaching from one is
+    // not deletion, so no trash there. Inside the trash, delete destroys.
+    await vfs.del(vRel, { trashIfOrphaned: treeType === 'context' || treeType === 'directory' });
     send(res, 204);
   }
 
@@ -508,28 +552,41 @@ export class WebDAVHandler {
     send(res, 201);
   }
 
-  async _vMove(res, { vRel, vfs, prefix, headers }) {
-    if (typeof vfs.put !== 'function' || typeof vfs.del !== 'function') return send(res, 403, 'This virtual tree is read-only');
+  /**
+   * MOVE is a change of membership, not a transfer of bytes: file the document
+   * at the destination, unfile it at the source. Both halves are id-level, so a
+   * 4GB blob moves as cheaply as a note, and because every virtual FS answers
+   * the same two verbs it works across trees and across roots — including
+   * Trees → Trash (remove it everywhere) and Trash → Trees (restore).
+   */
+  async _vMove(res, { vRel, vfs, prefix, headers, resolveTarget }) {
     const dest = headers['destination'];
     if (!dest) return send(res, 400, 'Destination header required');
+
     let destUrl;
     try { destUrl = new URL(dest, `http://${headers['host']}`); }
     catch { return send(res, 400, 'Invalid Destination'); }
+
     const destDecoded = decodeURIComponent(destUrl.pathname);
     const destRel = destDecoded.startsWith(prefix) ? (destDecoded.slice(prefix.length) || '/') : null;
     if (!destRel) return send(res, 502, 'Destination outside scope');
 
-    // Strip /Trees/<tree> or /Contexts prefix to get vfs-relative path
-    const m = destRel.match(/^\/(Trees\/[^/]+|Contexts)(\/.*)?$/);
-    if (!m) return send(res, 502, 'Destination not in same virtual tree');
-    const destVRel = m[2] || '/';
+    if (isClientDropping(path.posix.basename(norm(vRel)))) return send(res, 201);
 
-    const content = await vfs.getContent(vRel);
-    if (!content) return send(res, 404, 'Source not found');
-    const buf = content.buffer || (content.stream ? await streamToBuffer(content.stream) : null);
-    if (!buf) return send(res, 500);
-    await vfs.put(destVRel, buf);
-    await vfs.del(vRel);
+    const target = typeof resolveTarget === 'function' ? await resolveTarget(destRel) : null;
+    if (!target || target.error) return send(res, 502, 'Destination not in an index-backed tree');
+    if (typeof target.vfs.linkDoc !== 'function' || typeof vfs.docAt !== 'function') {
+      return send(res, 403, 'This virtual tree does not support moving');
+    }
+
+    const doc = await vfs.docAt(vRel);
+    if (!doc) return send(res, 404, 'Source not found');
+
+    await target.vfs.linkDoc(target.vRel, doc);
+    // The document is filed at the destination before it is unfiled here, so a
+    // failure leaves it findable in both places rather than in neither. The
+    // source unlink never trashes: it did not orphan anything.
+    if (typeof vfs.unlinkDoc === 'function') { await vfs.unlinkDoc(vRel, doc, { trashIfOrphaned: false }); }
     send(res, 201);
   }
 
@@ -570,11 +627,6 @@ async function readBodyBuffer(body, maxBytes = Infinity) {
   return Buffer.alloc(0);
 }
 
-async function streamToBuffer(stream) {
-  const chunks = [];
-  for await (const chunk of stream) chunks.push(chunk);
-  return Buffer.concat(chunks);
-}
 
 // ── Response helpers ────────────────────────────────────────────────────────
 

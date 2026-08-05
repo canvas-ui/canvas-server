@@ -227,17 +227,44 @@ response that existed as a 400, a 404 and a 500 simultaneously.*
   against a running server too, which is what caught the already-detached and
   failed-restore cases.
 
-### Phase 2 — WebDAV
+### Phase 2 — WebDAV — **LANDED 2026-08-05**
 
-1. `DELETE` in `Trees/**` → `trashIfOrphaned: true`; in `Contexts/**` → detach.
-2. `MOVE` becomes a **doc-id re-tag**. Today `_vMove()` reads the whole body into
-   memory and does `put` + `del` (`server.js:511`) — correct only for the three
-   writable extensions and catastrophic for a large blob. Re-tag by id wherever
-   source and destination are both index-backed; **stream** only where bytes must
-   genuinely move (into or out of `Home/`).
-3. `MOVE` into `Trash/` → unlink from all paths + trash. `MOVE` out → restore.
-4. Expose `Trash/` as a fourth root.
-5. Ignore Finder/Explorer droppings (`.DS_Store`, `._*`) — never documents.
+- **One resolver for both the request path and a MOVE Destination**
+  (`WebDAVHandler#_resolveVirtual`). That is what lets a move cross roots without
+  the two sides disagreeing about what a path means; the old `_vMove` had its own
+  regex and could only move within one virtual tree.
+- **`MOVE` is a doc-id re-tag.** Every virtual FS answers `docAt` / `linkDoc` /
+  `unlinkDoc`, so a move is link-there + unlink-here — in that order, so a
+  failure leaves the document findable in both places rather than neither. A 4GB
+  blob now moves as cheaply as a note (the old code buffered the whole body).
+  A rename in place is the same call: `linkDoc` updates `data.filename` when the
+  destination basename differs, keeping id, content and checksums.
+- **`Trash/` is a real root** (`TrashFS`), flat by design. `MOVE` onto it unfiles
+  from *every* placement (the explicit "remove it everywhere" gesture, unlike a
+  plain delete); `MOVE` out restores — the re-filing itself un-trashes, since
+  Workspace drops the trash tick on any link to a real path. `DELETE` inside it
+  destroys; `PUT` into it is 403.
+- **`DELETE` under a tree carries `trashIfOrphaned`**; contexts detach only.
+- **Client sidecars** (`.DS_Store`, `._*`, `desktop.ini`, lock/`~$` files) are
+  accepted and dropped rather than 403'd — a `cp -r` from a Mac must not look
+  failed — and never become documents.
+- Tests: `tests/transports/webdav/trees-trash.test.js` (8), driving the real
+  handler against a real workspace. Also verified over HTTP against a running
+  server with a throwaway workspace: PUT → MOVE → DELETE → Trash → MOVE out →
+  drag-to-trash → permanent delete, plus the sidecar and 403 cases.
+
+Two bugs surfaced on the way, both pre-existing and both fixed:
+
+- **`DirectoryTree.list()` could never return a document.**
+  `getDocumentsByIdArray` always answers with an envelope (`{ data, count,
+  error }`), and `list()` guarded with `Array.isArray(docs) ? … : []` — so it
+  returned `[]` every time. WebDAV listings of a directory tree showed folders
+  but never files, `TreeFS#findDoc` never found an existing document (so a
+  re-PUT forked a new one instead of updating), and deleting a document 404'd.
+  Fixed in synapsd with a regression test.
+- **`docName()` showed uploaded files as content hashes** — it fell through to
+  the location KEY (a hash) instead of `locations[].metadata.filename`, which is
+  where every upload surface already puts the real name.
 
 ### Phase 3 — canvas-fuse
 

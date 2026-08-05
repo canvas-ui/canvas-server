@@ -79,14 +79,20 @@ export default class TreeFS {
         return { created: !existing };
     }
 
-    async del(vPath) {
+    /**
+     * `rm` detaches from THIS path — the document survives in the store and in
+     * every other path it is filed under. `trashIfOrphaned` adds the mount rule:
+     * if this was its last placement it lands in the trash rather than becoming
+     * reachable only through the flat workspace-wide list.
+     */
+    async del(vPath, { trashIfOrphaned = false } = {}) {
         const n = norm(vPath);
         const parent = path.posix.dirname(n);
         const filename = path.posix.basename(n);
 
         const doc = await this.#findDoc(parent, filename);
         if (doc) {
-            await this.#ws.unlink(doc.id, this.#target(parent));
+            await this.#ws.unlink(doc.id, this.#target(parent), { trashIfOrphaned });
             return { deleted: 'doc' };
         }
         if (this.#tree.pathExists(n)) {
@@ -94,6 +100,46 @@ export default class TreeFS {
             return { deleted: 'path' };
         }
         throw httpError(404, 'Not Found');
+    }
+
+    // ── Re-tag API (MOVE) ────────────────────────────────────────────────────
+    // A move is a change of membership, never a transfer of bytes: file the
+    // document at the destination, unfile it at the source. Both halves work on
+    // the document id, so a 4GB blob moves as cheaply as a note — and it works
+    // across trees and across roots, since every virtual FS speaks the same two
+    // verbs.
+
+    /** The document behind a path, or null. */
+    async docAt(vPath) {
+        const info = await this.stat(norm(vPath));
+        return info && !info.isDir ? info.doc : null;
+    }
+
+    /**
+     * File an existing document at `vPath`. When the destination basename
+     * differs from the document's current name this is also a rename, which is
+     * a filename update — the document keeps its id, content and checksums.
+     */
+    async linkDoc(vPath, doc) {
+        const n = norm(vPath);
+        const parent = path.posix.dirname(n);
+        const filename = path.posix.basename(n);
+        if (!filename || parent === n) { throw httpError(400, 'Invalid path'); }
+
+        if (!this.#tree.pathExists(parent)) { await this.#tree.insertPath(parent); }
+        await this.#ws.link(doc.id, this.#target(parent));
+
+        if (docName(doc) !== filename) {
+            await this.#ws.put({ ...doc, data: { ...(doc.data || {}), filename } }, this.#target(parent));
+        }
+        return { linked: true };
+    }
+
+    /** Unfile a document from `vPath`'s directory. */
+    async unlinkDoc(vPath, doc, { trashIfOrphaned = false } = {}) {
+        const parent = path.posix.dirname(norm(vPath));
+        await this.#ws.unlink(doc.id, this.#target(parent), { trashIfOrphaned });
+        return { unlinked: true };
     }
 
     async mkcol(vPath) {

@@ -3,8 +3,9 @@
 import path from 'path';
 import {
     docEntries, docName, docSize, httpError, inferDocFromFile,
-    norm, resolveDocContent,
+    norm, renamedRecord, resolveDocContent,
 } from './vfs-shared.js';
+import Workspace from '../../core/workspace/Workspace.js';
 
 /**
  * Virtual filesystem adapter for a workspace tree (context OR directory type).
@@ -22,6 +23,11 @@ export default class TreeFS {
         this.#ws = workspace;
         this.#tree = tree;
     }
+
+    // Identity, so a MOVE can tell "same tree" (a folder move is a tree
+    // operation) from "different tree" (only documents can cross).
+    get treeId() { return this.#tree.id; }
+    get treeName() { return this.#tree.name; }
 
     // ── Read API ─────────────────────────────────────────────────────────────
 
@@ -45,10 +51,15 @@ export default class TreeFS {
         if (n !== '/' && !this.#tree.pathExists(n)) { return null; }
 
         const used = new Set();
-        const dirs = (await this.#tree.listDirectories(n)).map((name) => {
-            used.add(name);
-            return { name, isDir: true, size: 0 };
-        });
+        const dirs = (await this.#tree.listDirectories(n))
+            // The trash is a real path in this tree, but it has its own root in
+            // the DAV layout — showing it here too would offer two doors into
+            // the same folder, one of which ignores the trash semantics.
+            .filter((name) => !this.#isTrashPath(path.posix.join(n, name)))
+            .map((name) => {
+                used.add(name);
+                return { name, isDir: true, size: 0 };
+            });
         const files = docEntries(await this.#list(n), used);
         return [...dirs, ...files];
     }
@@ -129,8 +140,11 @@ export default class TreeFS {
         if (!this.#tree.pathExists(parent)) { await this.#tree.insertPath(parent); }
         await this.#ws.link(doc.id, this.#target(parent));
 
+        // A different basename at the destination is a rename. Where that name
+        // is recorded depends on the schema (a File names itself in metadata,
+        // JSON abstractions in data) — renamedRecord() owns that rule.
         if (docName(doc) !== filename) {
-            await this.#ws.put({ ...doc, data: { ...(doc.data || {}), filename } }, this.#target(parent));
+            await this.#ws.put(renamedRecord(doc, filename), this.#target(parent));
         }
         return { linked: true };
     }
@@ -149,7 +163,34 @@ export default class TreeFS {
         return { created: true };
     }
 
+    // ── Folder operations ────────────────────────────────────────────────────
+    // Moving or renaming a FOLDER is a tree operation, not a document one: the
+    // node moves and every document filed under it comes along, untouched.
+
+    async movePath(fromVPath, toVPath) {
+        const from = norm(fromVPath);
+        const to = norm(toVPath);
+        if (this.#isTrashPath(from) || this.#isTrashPath(to)) { throw httpError(403, 'The trash is not a tree folder'); }
+        if (!this.#tree.pathExists(from)) { throw httpError(404, 'Not Found'); }
+        await this.#tree.movePath(from, to);
+        return { moved: 'path' };
+    }
+
+    async copyPath(fromVPath, toVPath) {
+        const from = norm(fromVPath);
+        const to = norm(toVPath);
+        if (this.#isTrashPath(from) || this.#isTrashPath(to)) { throw httpError(403, 'The trash is not a tree folder'); }
+        if (!this.#tree.pathExists(from)) { throw httpError(404, 'Not Found'); }
+        await this.#tree.copyPath(from, to, true);
+        return { copied: 'path' };
+    }
+
     // ── Private helpers ──────────────────────────────────────────────────────
+
+    #isTrashPath(candidate) {
+        return this.#tree.name === Workspace.DIRECTORY_TREE_NAME && norm(candidate) === Workspace.TRASH_PATH;
+    }
+
 
     async #list(treePath) {
         try {

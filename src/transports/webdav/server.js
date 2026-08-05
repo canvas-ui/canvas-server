@@ -433,6 +433,7 @@ export class WebDAVHandler {
         case 'DELETE':   return await this._vDelete(res, { vRel, vfs, treeType });
         case 'MKCOL':    return await this._vMkcol(res, { vRel, vfs });
         case 'MOVE':     return await this._vMove(res, { vRel, vfs, prefix, headers, treeType, resolveTarget });
+        case 'COPY':     return await this._vCopy(res, { vRel, vfs, prefix, headers, resolveTarget });
         case 'LOCK':     return await this._vLock(res, { prefix, rel, headers, body });
         case 'UNLOCK':   return await this._unlock({ res, headers });
         default:         return send(res, 405, 'Method Not Allowed');
@@ -559,34 +560,84 @@ export class WebDAVHandler {
    * the same two verbs it works across trees and across roots — including
    * Trees → Trash (remove it everywhere) and Trash → Trees (restore).
    */
-  async _vMove(res, { vRel, vfs, prefix, headers, resolveTarget }) {
+  /** Parse a Destination header into a path relative to this DAV mount. */
+  _destinationRel(headers, prefix) {
     const dest = headers['destination'];
-    if (!dest) return send(res, 400, 'Destination header required');
-
+    if (!dest) return { error: { code: 400, message: 'Destination header required' } };
     let destUrl;
     try { destUrl = new URL(dest, `http://${headers['host']}`); }
-    catch { return send(res, 400, 'Invalid Destination'); }
+    catch { return { error: { code: 400, message: 'Invalid Destination' } }; }
+    const decoded = decodeURIComponent(destUrl.pathname);
+    if (!decoded.startsWith(prefix)) return { error: { code: 502, message: 'Destination outside scope' } };
+    return { rel: decoded.slice(prefix.length) || '/' };
+  }
 
-    const destDecoded = decodeURIComponent(destUrl.pathname);
-    const destRel = destDecoded.startsWith(prefix) ? (destDecoded.slice(prefix.length) || '/') : null;
-    if (!destRel) return send(res, 502, 'Destination outside scope');
+  async _vMove(res, { vRel, vfs, prefix, headers, resolveTarget }) {
+    const { rel: destRel, error } = this._destinationRel(headers, prefix);
+    if (error) return send(res, error.code, error.message);
 
     if (isClientDropping(path.posix.basename(norm(vRel)))) return send(res, 201);
 
     const target = typeof resolveTarget === 'function' ? await resolveTarget(destRel) : null;
     if (!target || target.error) return send(res, 502, 'Destination not in an index-backed tree');
-    if (typeof target.vfs.linkDoc !== 'function' || typeof vfs.docAt !== 'function') {
-      return send(res, 403, 'This virtual tree does not support moving');
+
+    const doc = typeof vfs.docAt === 'function' ? await vfs.docAt(vRel) : null;
+
+    // A folder is not a document: moving or renaming one is a tree operation,
+    // and every document filed under it comes along untouched. Only possible
+    // within one tree — across trees the nodes have nothing in common.
+    if (!doc) {
+      const info = typeof vfs.stat === 'function' ? await vfs.stat(vRel) : null;
+      if (!info) return send(res, 404, 'Source not found');
+      if (!info.isDir) return send(res, 404, 'Source not found');
+      if (typeof vfs.movePath !== 'function' || vfs.treeId !== target.vfs?.treeId) {
+        return send(res, 502, 'Folders can only be moved within the same tree');
+      }
+      await vfs.movePath(vRel, target.vRel);
+      return send(res, 201);
     }
 
-    const doc = await vfs.docAt(vRel);
-    if (!doc) return send(res, 404, 'Source not found');
+    if (typeof target.vfs.linkDoc !== 'function') {
+      return send(res, 403, 'This virtual tree does not support moving');
+    }
 
     await target.vfs.linkDoc(target.vRel, doc);
     // The document is filed at the destination before it is unfiled here, so a
     // failure leaves it findable in both places rather than in neither. The
     // source unlink never trashes: it did not orphan anything.
     if (typeof vfs.unlinkDoc === 'function') { await vfs.unlinkDoc(vRel, doc, { trashIfOrphaned: false }); }
+    send(res, 201);
+  }
+
+  /**
+   * COPY is the half of MOVE without the unlink — which is exactly what a
+   * document already supports, because a document lives at as many paths as you
+   * like. No bytes are duplicated: the same document gains a placement.
+   */
+  async _vCopy(res, { vRel, vfs, prefix, headers, resolveTarget }) {
+    const { rel: destRel, error } = this._destinationRel(headers, prefix);
+    if (error) return send(res, error.code, error.message);
+
+    if (isClientDropping(path.posix.basename(norm(vRel)))) return send(res, 201);
+
+    const target = typeof resolveTarget === 'function' ? await resolveTarget(destRel) : null;
+    if (!target || target.error) return send(res, 502, 'Destination not in an index-backed tree');
+
+    const doc = typeof vfs.docAt === 'function' ? await vfs.docAt(vRel) : null;
+    if (!doc) {
+      const info = typeof vfs.stat === 'function' ? await vfs.stat(vRel) : null;
+      if (!info?.isDir) return send(res, 404, 'Source not found');
+      if (typeof vfs.copyPath !== 'function' || vfs.treeId !== target.vfs?.treeId) {
+        return send(res, 502, 'Folders can only be copied within the same tree');
+      }
+      await vfs.copyPath(vRel, target.vRel);
+      return send(res, 201);
+    }
+
+    if (typeof target.vfs.linkDoc !== 'function') {
+      return send(res, 403, 'This virtual tree does not support copying');
+    }
+    await target.vfs.linkDoc(target.vRel, doc);
     send(res, 201);
   }
 

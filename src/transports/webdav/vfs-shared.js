@@ -7,6 +7,7 @@ import path from 'path';
 const NOTE_SCHEMA = 'data/schema/note';
 const TODO_SCHEMA = 'data/schema/task';
 const TAB_SCHEMA  = 'data/schema/tab';
+const FILE_SCHEMA = 'data/schema/file';
 
 /**
  * Infer schema + parsed data payload from a filename + body for PUT.
@@ -50,30 +51,71 @@ function extractUrlFromShortcut(text) {
 // ── Filename round-tripping ─────────────────────────────────────────────────
 
 /**
- * Round-trip docName: ensures notes/todos/tabs use stable, extension-bearing
- * filenames so re-PUT targets the existing doc instead of creating a new one.
+ * The name a consumer should display for a document.
+ *
+ * The same bytes may be called something different at every location, and
+ * `locations` is append-ordered and rebuilt per backend scan — so position must
+ * never decide. (Before this resolver a file could rename itself to a content
+ * hash simply because a mirror was added and landed at index 0.) The order is:
+ *
+ *   1. the document's own name (`metadata.filename`) — set by a rename;
+ *   2. `data.filename` — the same idea for JSON abstractions (note/todo/tab);
+ *   3. the name on the canvas-owned copy (`stored://workspace:*`), which we set
+ *      at ingest;
+ *   4. any location name, by a STABLE sort (url), never array order;
+ *   5. the URL basename, but only for schemes whose path really is a name —
+ *      never for content-addressed `stored://`, whose key is a hash;
+ *   6. a schema-derived fallback.
+ *
+ * Mirrored in the web UI (`src/lib/document-display.ts`); keep them in step.
  */
+export function displayFilename(doc) {
+    if (!doc) return null;
+
+    if (doc.metadata?.filename) return sanitize(doc.metadata.filename);
+    if (doc.data?.filename) return sanitize(doc.data.filename);
+
+    const locations = Array.isArray(doc.locations) ? doc.locations.filter(Boolean) : [];
+    const owned = locations.find((location) => /^stored:\/\/workspace:/i.test(location.url || ''));
+    if (owned?.metadata?.filename) return sanitize(owned.metadata.filename);
+
+    const stable = [...locations].sort((a, b) => String(a.url || '').localeCompare(String(b.url || '')));
+    const named = stable.find((location) => location.metadata?.filename);
+    if (named) return sanitize(named.metadata.filename);
+
+    for (const location of stable) {
+        const base = nameBearingBasename(location.url);
+        if (base) return base;
+    }
+    return null;
+}
+
 export function docName(doc) {
-    if (doc.data?.filename) return doc.data.filename; // notes/todos/tabs written via WebDAV
+    const resolved = displayFilename(doc);
+    if (resolved) return resolved;
     if (doc.schema === NOTE_SCHEMA) return `${sanitize(doc.data?.title || `note-${doc.id}`)}.md`;
     if (doc.schema === TODO_SCHEMA) return `${sanitize(doc.data?.title || `todo-${doc.id}`)}.todo.json`;
     if (doc.schema === TAB_SCHEMA)  return `${sanitize(doc.data?.title || doc.data?.url || `tab-${doc.id}`)}.url`;
-    // Uploaded files carry their real name on the location; the location KEY is
-    // a content hash, so falling through to locationBasename() first would show
-    // every uploaded file as a hash.
-    const declared = (doc.locations || []).map((location) => location?.metadata?.filename).find(Boolean);
-    if (declared) return sanitize(declared);
-    const fromLocation = locationBasename(doc); // blobs: name comes from a location key
-    if (fromLocation) return fromLocation;
     const schema = (doc.schema || 'doc').split('/').pop();
     return `${schema}_${doc.id}.json`;
 }
 
-// Basename of the first location's key (everything after scheme://backend/).
-function locationBasename(doc) {
-    const url = (doc.locations || [])[0]?.url;
-    if (!url) return null;
-    const afterScheme = url.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '');
+/**
+ * Where a rename is recorded. For a File the document's name is `metadata`
+ * (`data` is reserved for JSON docs and core/File.js keeps it empty); every
+ * other schema names itself in `data.filename`.
+ */
+export function renamedRecord(doc, filename) {
+    return doc.schema === FILE_SCHEMA
+        ? { ...doc, metadata: { ...(doc.metadata || {}), filename } }
+        : { ...doc, data: { ...(doc.data || {}), filename } };
+}
+
+// Basename of a location URL, for schemes where the path IS a name. A
+// `stored://` key is a content hash, so it never yields one.
+function nameBearingBasename(url) {
+    if (!url || /^stored:\/\//i.test(url)) return null;
+    const afterScheme = String(url).replace(/^[a-z][a-z0-9+.-]*:\/\//i, '');
     const slash = afterScheme.indexOf('/');
     const key = slash >= 0 ? afterScheme.slice(slash + 1) : afterScheme;
     const base = key.split('/').filter(Boolean).pop();

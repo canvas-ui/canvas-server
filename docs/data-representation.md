@@ -121,6 +121,42 @@ uploaded through the UI currently surfaces over WebDAV as a hash. `docName()`
 must prefer `locations[0].metadata.filename`, which is where every upload
 surface already puts the real name.
 
+## 2b. What a file is called — **DECIDED + LANDED 2026-08-05**
+
+The same bytes may be called something different at every location (an IMAP
+attachment, a copy on a NAS, the upload name). Those are facts about *copies*.
+The document needs one name, resolved deterministically:
+
+1. **`metadata.filename`** — the document's own name, written by a rename
+   through any surface. Absent until someone renames.
+2. `data.filename` — the same idea for JSON abstractions (note/todo/tab).
+3. The name on the **canvas-owned** copy (`stored://workspace:*`), set at ingest.
+4. Any location name, by a **stable sort** (url) — never array order.
+5. The URL basename, but only for schemes whose path really is a name; a
+   `stored://` key is a content hash and never yields one.
+6. A schema-derived fallback (`note-123.md`).
+
+**Position must never decide.** `locations` is append-ordered
+(`mergeDocumentLocations`) and rebuilt per backend scan, and mirror/device
+entries carry `metadata.backend` rather than a filename — so the old
+`locations[0]` rule let a file rename itself to a **content hash** the moment a
+mirror landed in front of it.
+
+**A rename is a statement about the document, not about one copy** — hence
+document level, not a `primary: true` flag on a location (the flagged copy can
+vanish with its backend). Every location keeps whatever that backend really
+calls the bytes, and they all stay searchable via `locationUrls`.
+
+Consequence, accepted: one display name per document, so the mounts behave like
+**hard links** — a document filed in three paths shows one name, and renaming in
+any of them renames everywhere. Per-placement names would need per-placement
+metadata, which bitmaps cannot carry; out of scope unless it hurts in practice.
+
+Implementation: `displayFilename()` / `renamedRecord()` in
+`transports/webdav/vfs-shared.js`, mirrored in the web UI's
+`lib/document-display.ts`; `core/File.js` indexes `metadata.filename` for FTS
+(additive — documents without it index exactly as before, no reindex needed).
+
 ## 3. Verb table
 
 | FS action | `Home/` | `Contexts/**` | `Trees/**` | `Trash/` |
@@ -265,6 +301,30 @@ Two bugs surfaced on the way, both pre-existing and both fixed:
 - **`docName()` showed uploaded files as content hashes** — it fell through to
   the location KEY (a hash) instead of `locations[].metadata.filename`, which is
   where every upload surface already puts the real name.
+
+### Phase 2b — WebDAV completions — **PARTLY LANDED 2026-08-05**
+
+Landed:
+- **COPY** — dispatched for the index-backed roots (it was falling through to
+  405). It is MOVE without the unlink, which is what a document already
+  supports: no bytes are duplicated, the document gains a placement.
+- **Folder MOVE/rename** — `docAt()` answers null for a collection, so folder
+  moves used to 404. A folder move is a *tree* operation (`movePath`/`copyPath`),
+  and the documents filed under it come along untouched. Within one tree only:
+  across trees the nodes have nothing in common, which is an honest 502.
+- **The trash path no longer shows up inside its own tree.** It has its own DAV
+  root; listing it under `Trees/directory/` too would be a second door into the
+  same folder, one that bypasses the trash semantics. (The web UI still shows
+  `.trash` in its tree view — see below.)
+
+Still open on this phase:
+- **`Home/` ↔ index-backed moves.** The one case where bytes must genuinely
+  move: `Home/ → Trees/` is an ingest (persistBlob + a File document), the
+  reverse is a materialization. Today it answers 502. Shares its machinery with
+  "a file is a file" (§2) — do them together.
+- **The web UI hides nothing:** `.trash` appears as an ordinary folder in the
+  directory tree, and nothing there lists/restores/empties the trash. The mounts
+  and the UI now disagree about what a delete does.
 
 ### Phase 3 — canvas-fuse
 

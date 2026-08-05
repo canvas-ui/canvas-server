@@ -201,6 +201,46 @@ describe('webdav trees + trash', () => {
         assert.equal((await dav('DELETE', '/Trees/directory/notes/._resource')).statusCode, 204);
     });
 
+    test('COPY files the same document at a second path — no duplicate', async () => {
+        await putNote('/Trees/directory/copysrc/shared-copy.todo.json', '{"a":9}');
+        const doc = await ws.db.list({ context: null, directory: { tree: 'directory', path: '/copysrc' } })
+            .then((docs) => docs.find((d) => d.data?.filename === 'shared-copy.todo.json'));
+
+        const res = await dav('COPY', '/Trees/directory/copysrc/shared-copy.todo.json', {
+            headers: { destination: `${PREFIX}/Trees/directory/copydst/shared-copy.todo.json`, host: 'localhost' },
+        });
+        assert.equal(res.statusCode, 201);
+
+        // One document, two placements — the source keeps its copy.
+        assert.deepEqual((await dirPaths(doc.id)).sort(), ['/copydst', '/copysrc']);
+        assert.ok((await listNames('/Trees/directory/copysrc')).includes('shared-copy.todo.json'));
+        assert.ok((await listNames('/Trees/directory/copydst')).includes('shared-copy.todo.json'));
+    });
+
+    test('MOVE renames a folder, and its documents come along', async () => {
+        await putNote('/Trees/directory/oldname/inside.todo.json', '{"a":10}');
+        const doc = await ws.db.list({ context: null, directory: { tree: 'directory', path: '/oldname' } })
+            .then((docs) => docs.find((d) => d.data?.filename === 'inside.todo.json'));
+
+        const res = await dav('MOVE', '/Trees/directory/oldname', {
+            headers: { destination: `${PREFIX}/Trees/directory/newname`, host: 'localhost' },
+        });
+        assert.equal(res.statusCode, 201);
+
+        assert.deepEqual(await dirPaths(doc.id), ['/newname']);
+        assert.ok((await listNames('/Trees/directory/newname')).includes('inside.todo.json'));
+    });
+
+    test('the trash path is not offered a second time inside its own tree', async () => {
+        // It has its own root; listing it here too would be a second door into
+        // the same folder, one that bypasses the trash semantics.
+        await putNote('/Trees/directory/hidden/gone-soon.todo.json', '{"a":11}');
+        await dav('DELETE', '/Trees/directory/hidden/gone-soon.todo.json');
+        assert.ok((await listNames('/Trash')).includes('gone-soon.todo.json'));
+
+        assert.equal((await listNames('/Trees/directory')).includes('.trash'), false);
+    });
+
     test('the trash is not a write target', async () => {
         const res = await putNote('/Trash/nope.todo.json', '{"a":1}');
         assert.equal(res.statusCode, 403);

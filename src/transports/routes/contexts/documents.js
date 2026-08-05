@@ -53,6 +53,9 @@ export default async function documentRoutes(fastify, options) {
           limit: { type: 'integer', default: 200 },
           offset: { type: 'integer' },
           page: { type: 'integer' },
+          // Return document ids instead of documents — the cheap read a client
+          // uses to check whether a cached result set is still current.
+          idsOnly: { type: 'boolean', default: false },
           // Document lists default to newest first; search results stay ranked.
           order: { type: 'string', enum: ['asc', 'desc'], default: 'desc' },
           // Sort a listing by a named timeline (e.g. 'content' = EXIF capture
@@ -88,6 +91,7 @@ export default async function documentRoutes(fastify, options) {
         page: request.query.page,
         order: request.query.order,
         sortBy: request.query.sortBy,
+        idsOnly: request.query.idsOnly,
       };
 
       const searchQuery = request.query.q || request.query.search;

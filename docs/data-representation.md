@@ -317,14 +317,45 @@ Landed:
   same folder, one that bypasses the trash semantics. (The web UI still shows
   `.trash` in its tree view — see below.)
 
-Still open on this phase:
-- **`Home/` ↔ index-backed moves.** The one case where bytes must genuinely
-  move: `Home/ → Trees/` is an ingest (persistBlob + a File document), the
-  reverse is a materialization. Today it answers 502. Shares its machinery with
-  "a file is a file" (§2) — do them together.
-- **The web UI hides nothing:** `.trash` appears as an ordinary folder in the
-  directory tree, and nothing there lists/restores/empties the trash. The mounts
-  and the UI now disagree about what a delete does.
+**The file-write path — LANDED 2026-08-05.** "A file is a file" (§2) is real:
+
+- `inferDocFromFile()` now answers only for `.todo.json` / `.url`; everything
+  else — markdown included — becomes a **File document** whose bytes go to the
+  local blob store via `persistBlob`.
+- `applyBodyToDoc()` is its counterpart for documents that already exist:
+  saving over a note edits the note. Editing through a mount must never change
+  what a document *is*.
+- Re-writing a file keeps the document id and placements and moves the checksum.
+- `Home/ ↔ Trees/` both ways: ingest on the way in (`_ingestFromHome`),
+  materialize on the way out (`_materializeToHome`). A MOVE into Home unfiles
+  with the normal rule, so a last placement lands in the trash and stays
+  recoverable — and if the home backend indexes the new file, content addressing
+  resolves it back to the same document, which un-trashes it.
+- Re-ingesting identical bytes resolves to the **same document** with a second
+  placement, not a duplicate — the premise in §0, now covered by a test.
+
+Two bugs found and fixed while building it:
+- **A rename in place undid itself.** MOVE is link-there + unlink-here, and when
+  "there" and "here" are the same folder the unlink removed the document from
+  the folder it had just been renamed in — i.e. every F2 in a file manager.
+- **In-folder COPY silently renamed the original.** A duplicate resolves to the
+  same document by checksum, and a document has one name, so "duplicate here"
+  cannot mean anything: it now answers 409 instead of quietly doing the wrong
+  thing.
+
+**Web UI parity — LANDED 2026-08-05.** The mounts and the UI now agree about
+what a delete does:
+
+- **Settings → Trash** (`components/workspace/trash-panel.tsx`): what is in the
+  trash, where each document came from and when, per-item Restore and permanent
+  delete, and a two-click Empty. Restore is disabled with a reason when nothing
+  was recorded to restore to, rather than failing on click.
+- The UI's **remove** action now sends `trashIfOrphaned` — but only the two
+  user-initiated handlers. The move/drag paths deliberately do not: they file at
+  the destination first, so the source unlink orphans nothing.
+- `.trash` is pruned from the tree in `getCachedWorkspaceTreeByName`, the one
+  seam every tree consumer passes through. Pruned at the ROOT only — a user
+  folder called `.trash` deeper in a tree is theirs to see.
 
 ### Phase 3 — canvas-fuse
 

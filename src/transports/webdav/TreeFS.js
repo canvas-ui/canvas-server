@@ -2,8 +2,8 @@
 
 import path from 'path';
 import {
-    docEntries, docName, docSize, httpError, inferDocFromFile,
-    norm, renamedRecord, resolveDocContent,
+    applyBodyToDoc, docEntries, docName, docSize, fileDocumentFromBlob, httpError,
+    inferDocFromFile, norm, renamedRecord, resolveDocContent,
 } from './vfs-shared.js';
 import Workspace from '../../core/workspace/Workspace.js';
 
@@ -72,21 +72,59 @@ export default class TreeFS {
 
     // ── Write API ────────────────────────────────────────────────────────────
 
+    /**
+     * Write a file into a tree path.
+     *
+     * A file is a file: anything without a canvas-native meaning becomes a File
+     * document whose bytes go to the local blob store. `.todo.json` and `.url`
+     * still create their abstractions (see inferDocFromFile), and an EXISTING
+     * document is updated in its own schema — saving over a note edits the
+     * note, it does not convert it to a file.
+     */
     async put(vPath, body) {
         const n = norm(vPath);
         const parent = path.posix.dirname(n);
         const filename = path.posix.basename(n);
         if (!filename || parent === n) { throw httpError(400, 'Invalid path'); }
 
+        if (!this.#tree.pathExists(parent)) { await this.#tree.insertPath(parent); }
+        const target = this.#target(parent);
+        const existing = await this.#findDoc(parent, filename);
+
+        if (existing) {
+            const updated = applyBodyToDoc(existing, filename, body);
+            if (updated) {
+                await this.#ws.put({ ...updated, data: { ...updated.data, filename } }, target);
+                return { created: false };
+            }
+            // Bytes: a new blob, same document id — the checksum moves with the
+            // content, the placements and the name stay put.
+            const blob = await this.#ws.persistBlob(body);
+            await this.#ws.put(fileDocumentFromBlob(blob, filename, existing), target);
+            return { created: false };
+        }
+
         const inferred = inferDocFromFile(filename, body);
-        if (!inferred) { throw httpError(403, 'Only .md / .todo.json / .url are writable here'); }
+        if (inferred) {
+            await this.#ws.put({ schema: inferred.schema, data: { ...inferred.data, filename } }, target);
+            return { created: true };
+        }
+
+        const blob = await this.#ws.persistBlob(body);
+        await this.#ws.put(fileDocumentFromBlob(blob, filename), target);
+        return { created: true };
+    }
+
+    /** File an already-persisted blob at `vPath` (the Home → tree ingest path). */
+    async putFile(vPath, blob) {
+        const n = norm(vPath);
+        const parent = path.posix.dirname(n);
+        const filename = path.posix.basename(n);
+        if (!filename || parent === n) { throw httpError(400, 'Invalid path'); }
 
         if (!this.#tree.pathExists(parent)) { await this.#tree.insertPath(parent); }
-
         const existing = await this.#findDoc(parent, filename);
-        const data = { ...(existing?.data || {}), ...inferred.data, filename };
-        const record = existing ? { ...existing, data } : { schema: inferred.schema, data };
-        await this.#ws.put(record, this.#target(parent));
+        await this.#ws.put(fileDocumentFromBlob(blob, filename, existing), this.#target(parent));
         return { created: !existing };
     }
 

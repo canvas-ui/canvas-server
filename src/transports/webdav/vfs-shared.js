@@ -10,8 +10,14 @@ const TAB_SCHEMA  = 'data/schema/tab';
 const FILE_SCHEMA = 'data/schema/file';
 
 /**
- * Infer schema + parsed data payload from a filename + body for PUT.
- * Returns { schema, data } or null if the extension is not writable.
+ * Which schema a NEW file implies, or null when it is just a file.
+ *
+ * `.todo.json` and `.url` keep a canvas meaning because they are not general
+ * formats: a browser emits `.url` when you drag a link out of the address bar,
+ * and `.todo.json` only ever comes from our own renderer. **`.md` does not** —
+ * markdown is a general document format, so a new `.md` is a FILE. Rendering
+ * markdown as a note is a UI decision, not a storage one.
+ *
  * Throws on malformed JSON / url bodies.
  */
 export function inferDocFromFile(filename, body) {
@@ -25,11 +31,6 @@ export function inferDocFromFile(filename, body) {
         return { schema: TODO_SCHEMA, data: { title, ...parsed } };
     }
 
-    if (lower.endsWith('.md')) {
-        const title = name.slice(0, -3);
-        return { schema: NOTE_SCHEMA, data: { title, content: text } };
-    }
-
     if (lower.endsWith('.url')) {
         const title = name.slice(0, -4);
         const url = extractUrlFromShortcut(text);
@@ -38,6 +39,57 @@ export function inferDocFromFile(filename, body) {
     }
 
     return null;
+}
+
+/**
+ * Apply a new body to an EXISTING document, in its own schema.
+ *
+ * Editing through a mount must never change what a document IS: a note that
+ * already exists stays a note when you save `notes.md` over it, even though a
+ * new `.md` would now be created as a file. Returns null for documents whose
+ * body is bytes (files) — the caller persists a blob for those.
+ */
+export function applyBodyToDoc(existing, filename, body) {
+    const text = Buffer.isBuffer(body) ? body.toString('utf-8') : String(body ?? '');
+
+    if (existing.schema === NOTE_SCHEMA) {
+        return { ...existing, data: { ...(existing.data || {}), content: text } };
+    }
+    if (existing.schema === TODO_SCHEMA) {
+        const parsed = text.trim() ? JSON.parse(text) : {};
+        return { ...existing, data: { ...(existing.data || {}), ...parsed } };
+    }
+    if (existing.schema === TAB_SCHEMA) {
+        const url = extractUrlFromShortcut(text);
+        if (!url) throw new Error('Empty or invalid .url shortcut body');
+        return { ...existing, data: { ...(existing.data || {}), url } };
+    }
+    return null;
+}
+
+/**
+ * The File document for a persisted blob. `data` stays empty (core/File.js
+ * reserves it for JSON docs); the name lives on the location AND, once a
+ * document has been named, in metadata — see displayFilename().
+ */
+export function fileDocumentFromBlob(blob, filename, existing = null) {
+    const record = {
+        ...(existing || {}),
+        schema: FILE_SCHEMA,
+        data: {},
+        checksumArray: blob.checksum ? [`sha256/${blob.checksum}`] : (existing?.checksumArray || []),
+        locations: [{ url: blob.url, metadata: { filename } }],
+        metadata: {
+            ...(existing?.metadata || {}),
+            contentType: blob.mimeType || mimeFor(filename),
+            size: blob.size,
+            ...(blob.metadata || {}),
+        },
+    };
+    // A document that was explicitly renamed keeps that name; otherwise the
+    // location name speaks for it and metadata stays clean.
+    if (existing?.metadata?.filename) { record.metadata.filename = existing.metadata.filename; }
+    return record;
 }
 
 // Accepts a plain URL on its own line or a Windows [InternetShortcut] body.

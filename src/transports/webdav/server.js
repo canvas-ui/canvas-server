@@ -84,11 +84,21 @@ export class WebDAVHandler {
       // ── Route: /Home/* → raw filesystem ─────────────────────────────
       if (rel === '/Home' || rel.startsWith('/Home/')) {
         const homeRel = rel === '/Home' ? '/' : rel.slice('/Home'.length);
-        return await this._handleHome(res, { method, prefix: prefix + '/Home', rel: homeRel, homePath, headers, body, workspace });
+        return await this._handleHome(res, {
+          method,
+          prefix: prefix + '/Home',
+          mountPrefix: prefix,
+          rel: homeRel,
+          homePath,
+          headers,
+          body,
+          workspace,
+          resolveTarget: (destRel) => this._resolveVirtual(destRel, { workspace, userId, contextManager, homePath }),
+        });
       }
 
       // ── Route: /Contexts, /Trees, /Trash → index-backed virtual trees ──
-      const target = await this._resolveVirtual(rel, { workspace, userId, contextManager });
+      const target = await this._resolveVirtual(rel, { workspace, userId, contextManager, homePath });
       if (target?.error) return send(res, target.error.code, target.error.message);
       if (target) {
         return await this._handleVirtual(res, {
@@ -96,7 +106,7 @@ export class WebDAVHandler {
           vfs: target.vfs,
           vRel: target.vRel,
           treeType: target.treeType,
-          resolveTarget: (destRel) => this._resolveVirtual(destRel, { workspace, userId, contextManager }),
+          resolveTarget: (destRel) => this._resolveVirtual(destRel, { workspace, userId, contextManager, homePath }),
         });
       }
 
@@ -116,9 +126,21 @@ export class WebDAVHandler {
    * (Trees → Trash, tree → tree) without the two disagreeing about what a path
    * means. Returns null for paths that are not index-backed (/, /Home).
    */
-  async _resolveVirtual(rel, { workspace, userId, contextManager }) {
+  async _resolveVirtual(rel, { workspace, userId, contextManager, homePath }) {
     const inRoot = (name) => rel === `/${name}` || rel.startsWith(`/${name}/`);
     const relTo = (name) => (rel === `/${name}` ? '/' : rel.slice(name.length + 1));
+
+    // Home is a real filesystem, not an index-backed tree. It resolves to a
+    // path rather than a vfs, so a MOVE between the two can tell that this is
+    // the one case where bytes genuinely have to move.
+    if (inRoot('Home')) {
+      if (!homePath) return { error: { code: 502, message: 'Home is not available' } };
+      const vRel = relTo('Home');
+      const abs = path.resolve(homePath, '.' + vRel);
+      const relative = path.relative(homePath, abs);
+      if (relative.startsWith('..') || path.isAbsolute(relative)) return { error: { code: 403, message: 'Forbidden' } };
+      return { kind: 'home', abs, vRel };
+    }
 
     if (inRoot('Contexts')) {
       if (!workspace?.isActive) return { error: { code: 503, message: 'Workspace not active' } };
@@ -197,7 +219,7 @@ export class WebDAVHandler {
 
   // ── /Home — raw filesystem methods ────────────────────────────────────
 
-  async _handleHome(res, { method, prefix, rel, homePath, headers, body, workspace }) {
+  async _handleHome(res, { method, prefix, mountPrefix, rel, homePath, headers, body, workspace, resolveTarget }) {
     const abs = path.resolve(homePath, '.' + rel);
     const relative = path.relative(homePath, abs);
     if (relative.startsWith('..') || path.isAbsolute(relative)) return send(res, 403, 'Forbidden');
@@ -209,7 +231,7 @@ export class WebDAVHandler {
     const isHidden = internalPathMatcher(homePath, workspace);
     if (isHidden(abs)) return send(res, 404, 'Not Found');
 
-    const ctx = { res, abs, rel, prefix, homePath, headers, body, workspace, isHidden };
+    const ctx = { res, abs, rel, prefix, mountPrefix, homePath, headers, body, workspace, isHidden, resolveTarget };
 
     switch (method) {
       case 'OPTIONS':   return this._options(ctx);
@@ -339,7 +361,7 @@ export class WebDAVHandler {
     send(res, 201);
   }
 
-  async _copyMove({ res, abs, prefix, homePath, headers, isHidden = () => false }, isMove) {
+  async _copyMove({ res, abs, prefix, mountPrefix, homePath, headers, workspace, isHidden = () => false, resolveTarget }, isMove) {
     const dest = headers['destination'];
     if (!dest) return send(res, 400, 'Destination header required');
 
@@ -349,6 +371,17 @@ export class WebDAVHandler {
 
     const destDecoded = decodeURIComponent(destUrl.pathname);
     const destRel = destDecoded.startsWith(prefix) ? (destDecoded.slice(prefix.length) || '/') : null;
+
+    // Leaving Home for an index-backed root is an INGEST: this is one of the
+    // two places where bytes genuinely move rather than a membership changing.
+    if (!destRel && mountPrefix && destDecoded.startsWith(mountPrefix)) {
+      return await this._ingestFromHome(res, {
+        abs, workspace, isMove,
+        destRel: destDecoded.slice(mountPrefix.length) || '/',
+        resolveTarget,
+      });
+    }
+
     if (!destRel) return send(res, 502, 'Destination outside WebDAV scope');
 
     const destAbs = path.resolve(homePath, '.' + destRel);
@@ -373,6 +406,53 @@ export class WebDAVHandler {
     }
 
     send(res, destExisted ? 204 : 201);
+  }
+
+  /**
+   * Home → Trees/Contexts. The file's bytes are persisted into the local blob
+   * store (content-addressed, so re-ingesting the same file resolves to the
+   * same document) and filed at the destination path as a File document.
+   */
+  async _ingestFromHome(res, { abs, workspace, destRel, isMove, resolveTarget }) {
+    const target = typeof resolveTarget === 'function' ? await resolveTarget(destRel) : null;
+    if (!target || target.error || target.kind === 'home') return send(res, 502, 'Destination not in an index-backed tree');
+    if (typeof target.vfs?.putFile !== 'function') return send(res, 403, 'This virtual tree cannot receive files');
+
+    let stat;
+    try { stat = await fs.stat(abs); }
+    catch { return send(res, 404, 'Not Found'); }
+    if (stat.isDirectory()) return send(res, 502, 'Only files can be filed into a tree');
+
+    const blob = await workspace.persistBlob(createReadStream(abs));
+    await target.vfs.putFile(target.vRel, blob);
+    if (isMove) { await fs.rm(abs, { force: true }); }
+    send(res, 201);
+  }
+
+  /**
+   * Trees/Contexts → Home. The document's content is written into the home
+   * drive as a real file. On MOVE the document is then unfiled with the normal
+   * mount rule, so if that was its last placement it lands in the trash and
+   * stays recoverable — and if the home backend indexes the new file, content
+   * addressing resolves it back to the same document, which un-trashes it.
+   */
+  async _materializeToHome(res, { vfs, vRel, target, isMove, doc }) {
+    const content = await vfs.getContent(vRel);
+    if (!content) return send(res, 404, 'Source not found');
+
+    await fs.mkdir(path.dirname(target.abs), { recursive: true });
+    if (content.stream) {
+      await pipeline(content.stream, createWriteStream(target.abs));
+    } else if (content.buffer) {
+      await fs.writeFile(target.abs, content.buffer);
+    } else {
+      return send(res, 500);
+    }
+
+    if (isMove && doc && typeof vfs.unlinkDoc === 'function') {
+      await vfs.unlinkDoc(vRel, doc, { trashIfOrphaned: true });
+    }
+    send(res, 201);
   }
 
   async _lock({ res, abs, prefix, rel, headers, body }) {
@@ -560,6 +640,14 @@ export class WebDAVHandler {
    * the same two verbs it works across trees and across roots — including
    * Trees → Trash (remove it everywhere) and Trash → Trees (restore).
    */
+  // Same tree AND same folder — i.e. the source and destination differ only in
+  // filename, so the operation is a rename, not a move between places.
+  _sameContainer(srcVfs, destVfs, srcVRel, destVRel) {
+    const sameTree = Boolean(srcVfs?.treeId) && srcVfs.treeId === destVfs?.treeId;
+    if (!sameTree) return false;
+    return path.posix.dirname(norm(srcVRel)) === path.posix.dirname(norm(destVRel));
+  }
+
   /** Parse a Destination header into a path relative to this DAV mount. */
   _destinationRel(headers, prefix) {
     const dest = headers['destination'];
@@ -583,6 +671,11 @@ export class WebDAVHandler {
 
     const doc = typeof vfs.docAt === 'function' ? await vfs.docAt(vRel) : null;
 
+    if (target.kind === 'home') {
+      if (!doc) return send(res, 502, 'Only files can be moved into Home');
+      return await this._materializeToHome(res, { vfs, vRel, target, isMove: true, doc });
+    }
+
     // A folder is not a document: moving or renaming one is a tree operation,
     // and every document filed under it comes along untouched. Only possible
     // within one tree — across trees the nodes have nothing in common.
@@ -602,10 +695,16 @@ export class WebDAVHandler {
     }
 
     await target.vfs.linkDoc(target.vRel, doc);
-    // The document is filed at the destination before it is unfiled here, so a
-    // failure leaves it findable in both places rather than in neither. The
-    // source unlink never trashes: it did not orphan anything.
-    if (typeof vfs.unlinkDoc === 'function') { await vfs.unlinkDoc(vRel, doc, { trashIfOrphaned: false }); }
+
+    // A rename in place (same container, same folder) is ONLY the rename —
+    // unfiling the source here would remove the document from the very folder
+    // it was just renamed in, which is what a file manager's F2 does all day.
+    if (!this._sameContainer(vfs, target.vfs, vRel, target.vRel) && typeof vfs.unlinkDoc === 'function') {
+      // The document is filed at the destination before it is unfiled here, so a
+      // failure leaves it findable in both places rather than in neither. The
+      // source unlink never trashes: it did not orphan anything.
+      await vfs.unlinkDoc(vRel, doc, { trashIfOrphaned: false });
+    }
     send(res, 201);
   }
 
@@ -624,6 +723,12 @@ export class WebDAVHandler {
     if (!target || target.error) return send(res, 502, 'Destination not in an index-backed tree');
 
     const doc = typeof vfs.docAt === 'function' ? await vfs.docAt(vRel) : null;
+
+    if (target.kind === 'home') {
+      if (!doc) return send(res, 502, 'Only files can be copied into Home');
+      return await this._materializeToHome(res, { vfs, vRel, target, isMove: false, doc });
+    }
+
     if (!doc) {
       const info = typeof vfs.stat === 'function' ? await vfs.stat(vRel) : null;
       if (!info?.isDir) return send(res, 404, 'Source not found');
@@ -637,6 +742,15 @@ export class WebDAVHandler {
     if (typeof target.vfs.linkDoc !== 'function') {
       return send(res, 403, 'This virtual tree does not support copying');
     }
+
+    // "Duplicate here" has no meaning in a content-addressed store: the copy
+    // would resolve to the same document by checksum, and a document has one
+    // name — so the operation would rename the original rather than duplicate
+    // it. Say so instead of quietly doing the wrong thing.
+    if (this._sameContainer(vfs, target.vfs, vRel, target.vRel)) {
+      return send(res, 409, 'A document cannot be duplicated within the same folder — the copy is the same document');
+    }
+
     await target.vfs.linkDoc(target.vRel, doc);
     send(res, 201);
   }

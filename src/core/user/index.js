@@ -617,7 +617,11 @@ class Users extends EventEmitter {
             const reservedNames = [
                 'admin', 'administrator', 'root', 'system', 'support', 'help',
                 'api', 'www', 'mail', 'ftp', 'localhost', 'test', 'demo',
-                'canvas', 'universe', 'workspace', 'context', 'user', 'users'
+                'canvas', 'universe', 'workspace', 'context', 'user', 'users',
+                // `me` addresses the authenticated caller in the REST API
+                // (/rest/v2/users/me/...); a user of that name would be
+                // unaddressable the day a /users/:id route lands.
+                'me'
             ];
 
             if (reservedNames.includes(username)) {

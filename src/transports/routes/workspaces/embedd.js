@@ -208,7 +208,7 @@ export default async function workspaceEmbeddRoutes(fastify, options) {
         const workspace = guard(request, reply);
         if (!workspace) { return; }
         if (!workspace.isActive) {
-            const r = new ResponseObject().badRequest('Workspace is not active');
+            const r = new ResponseObject().workspaceNotActive();
             return reply.code(r.statusCode).send(r.getResponse());
         }
         try {

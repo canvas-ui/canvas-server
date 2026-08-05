@@ -1,8 +1,25 @@
-# Dependencies
+# Local runtime data — the server/ tree of a dev checkout holds every workspace
+# and index on this machine (tens of GB); it must never enter the build context.
+server/
+users/
+data/
+multiverse/
+runtimes/
+
+# Dependencies (root and every workspace)
 node_modules/
+**/node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# Client UIs that are not part of the server image. `src/ui/web` is (it is the
+# web client the server serves); the CLI's package.json stays so `npm ci` can
+# resolve the workspace, but its build output does not.
+src/ui/fuse/
+src/ui/desktop/
+src/ui/cli/dist/
+extensions/browser-extensions/dist/
 
 # Build outputs
 build/

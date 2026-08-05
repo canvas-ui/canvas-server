@@ -121,6 +121,9 @@ export const env = {
     },
     admin: {
         email: process.env.CANVAS_ADMIN_EMAIL || 'admin@canvas.local',
+        // Username for the bootstrap admin. Empty → derived from the email's
+        // local part (admin@canvas.local → "admin").
+        name: process.env.CANVAS_ADMIN_NAME || null,
         password: process.env.CANVAS_ADMIN_PASSWORD || null, // null will trigger auto-generation
         forceReset: process.env.CANVAS_ADMIN_RESET === 'true' || false
     }

@@ -1,37 +1,80 @@
-version: '3.8'
+# Canvas Server — local container.
+#
+#   npm run docker:env     write a .env you can edit (host paths, admin, uid)
+#   npm run docker:build
+#   npm run docker:up      → http://localhost:8001
+#   npm run docker:logs    admin password + API token are printed on first run
+#
+# Every value below comes from .env (see .env.example). The defaults keep all
+# state inside ./data/ so `docker compose up` works with no .env at all.
+
 services:
-  app:
+  canvas-server:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: canvas-server
+      args:
+        NODE_VERSION: ${NODE_VERSION:-22}
     image: canvas-server:latest
+    container_name: ${CANVAS_CONTAINER_NAME:-canvas-server}
+
+    # Run as the host user so bind-mounted directories (~/Workspaces …) are
+    # writable and files land owned by you, not by root.
+    user: "${CANVAS_UID:-1000}:${CANVAS_GID:-1000}"
+
     ports:
-      - "8001:8001"  # API port
+      - "${CANVAS_HOST_PORT:-8001}:8001"
+
     environment:
       NODE_ENV: ${NODE_ENV:-production}
       LOG_LEVEL: ${LOG_LEVEL:-info}
-      CANVAS_SERVER_MODE: ${CANVAS_SERVER_MODE:-standalone}
-      CANVAS_SERVER_HOME: ${CANVAS_SERVER_HOME:-/opt/canvas-server/server}
-      CANVAS_USER_HOME: ${CANVAS_USER_HOME:-/opt/canvas-server/users}
+
+      # Bootstrap admin — created on first run, password + API token printed to
+      # the log. CANVAS_ADMIN_RESET=true re-applies the password on next start.
       CANVAS_ADMIN_EMAIL: ${CANVAS_ADMIN_EMAIL:-admin@canvas.local}
-      CANVAS_ADMIN_PASSWORD: ${CANVAS_ADMIN_PASSWORD:-$(openssl rand -base64 16)}
+      CANVAS_ADMIN_NAME: ${CANVAS_ADMIN_NAME:-}
+      CANVAS_ADMIN_PASSWORD: ${CANVAS_ADMIN_PASSWORD:-}
       CANVAS_ADMIN_RESET: ${CANVAS_ADMIN_RESET:-false}
-      CANVAS_DISABLE_API: ${CANVAS_DISABLE_API:-false}
-      CANVAS_API_PORT: ${CANVAS_API_PORT:-8001}
-      CANVAS_API_HOST: ${CANVAS_API_HOST:-0.0.0.0}
-      CANVAS_DISABLE_WEB: ${CANVAS_DISABLE_WEB:-false}
-      CANVAS_WEB_PORT: ${CANVAS_WEB_PORT:-8001}
-      CANVAS_WEB_HOST: ${CANVAS_WEB_HOST:-0.0.0.0}
-      CANVAS_JWT_SECRET: ${CANVAS_JWT_SECRET:-$(openssl rand -base64 32)}
+
+      # Container-internal roots (the mounts below put them on the host).
+      CANVAS_SERVER_HOME: /opt/canvas-server/server
+      CANVAS_USER_HOME: /opt/canvas-server/users
+
+      # Per-user module roots. Fixed container paths, each backed by one host
+      # directory — the single-user setup. For a multi-user instance drop these
+      # three and every user gets their own <userHome>/{Workspaces,Roles,Agents}
+      # (or set them to templates such as "{USER_HOME}/workspaces").
+      CANVAS_USER_WORKSPACES: ${CANVAS_USER_WORKSPACES:-/opt/canvas-server/users/workspaces}
+      CANVAS_USER_ROLES: ${CANVAS_USER_ROLES:-/opt/canvas-server/users/roles}
+      CANVAS_USER_AGENTS: ${CANVAS_USER_AGENTS:-/opt/canvas-server/users/agents}
+
+      CANVAS_API_PORT: 8001
+      CANVAS_WEB_PORT: 8001
+      CANVAS_JWT_SECRET: ${CANVAS_JWT_SECRET:-}
       CANVAS_JWT_TOKEN_EXPIRY: ${CANVAS_JWT_TOKEN_EXPIRY:-7d}
+
+      # Embedding service — CPU-local by default. Point OLLAMA_HOST at a
+      # reachable Ollama (host.docker.internal / a LAN box) or disable it.
+      CANVAS_EMBEDD_ENABLED: ${CANVAS_EMBEDD_ENABLED:-true}
+      OLLAMA_HOST: ${OLLAMA_HOST:-}
+
     volumes:
-      - ${CANVAS_SERVER_HOME:-./server}:/opt/canvas-server/server
-      - ${CANVAS_USER_HOME:-./users}:/opt/canvas-server/users
+      # Server state: config (incl. the generated jwt.secret), the index db,
+      # caches. This is the dir you back up.
+      - ${CANVAS_HOST_SERVER_HOME:-./data/server}:/opt/canvas-server/server
+      # Per-user homes (<usersRoot>/<email>/…).
+      - ${CANVAS_HOST_USER_HOME:-./data/users}:/opt/canvas-server/users
+      # The three module roots, mounted over the users root above. Docker
+      # applies the deeper destinations last, so these win where they overlap.
+      - ${CANVAS_HOST_WORKSPACES:-./data/users/workspaces}:/opt/canvas-server/users/workspaces
+      - ${CANVAS_HOST_ROLES:-./data/users/roles}:/opt/canvas-server/users/roles
+      - ${CANVAS_HOST_AGENTS:-./data/users/agents}:/opt/canvas-server/users/agents
+
     restart: unless-stopped
+
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8001/ping"]
+      test: ["CMD", "curl", "-fsS", "http://localhost:8001/rest/v2/ping"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 40s
+      start_period: 60s

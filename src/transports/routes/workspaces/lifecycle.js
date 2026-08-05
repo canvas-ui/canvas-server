@@ -62,7 +62,7 @@ export default async function workspaceLifecycleRoutes(fastify, options) {
     try {
       const workspace = request.workspace;
       if (!workspace.isActive) {
-        const responseObject = new ResponseObject().badRequest('Workspace is not active');
+        const responseObject = new ResponseObject().workspaceNotActive();
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());
       }
       const stats = await workspace.getStats();
@@ -144,7 +144,7 @@ export default async function workspaceLifecycleRoutes(fastify, options) {
     try {
       const workspace = request.workspace;
       if (!workspace.isActive) {
-        const responseObject = new ResponseObject().badRequest('Workspace is not active');
+        const responseObject = new ResponseObject().workspaceNotActive();
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());
       }
       const stats = await workspace.getStats();
@@ -185,7 +185,7 @@ export default async function workspaceLifecycleRoutes(fastify, options) {
     try {
       const workspace = request.workspace;
       if (!workspace.isActive) {
-        const r = new ResponseObject().badRequest('Workspace is not active');
+        const r = new ResponseObject().workspaceNotActive();
         return reply.code(r.statusCode).send(r.getResponse());
       }
       const result = await workspace.setSearchTuning(request.body || {});

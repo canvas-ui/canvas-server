@@ -13,6 +13,29 @@ export default class ResponseObject {
         this.debug = null;
         // Optional per-line match counts (compound search); same opt-in rule.
         this.lines = null;
+        // Optional machine-readable error code (e.g. WORKSPACE_NOT_ACTIVE), for
+        // conditions a client must react to rather than just display. Same
+        // opt-in rule: only serialized when set.
+        this.code = null;
+    }
+
+    /**
+     * Canonical "this workspace exists but is stopped" condition.
+     *
+     * Clients act on this one — a query against a sleeping workspace starts it
+     * and replays itself — so it must look identical no matter which route
+     * noticed. Match on `code`; the message is stable but is for humans.
+     */
+    static WORKSPACE_NOT_ACTIVE = 'WORKSPACE_NOT_ACTIVE';
+    static WORKSPACE_NOT_ACTIVE_MESSAGE = 'Workspace is not active. Start the workspace first.';
+
+    /**
+     * True for the error Workspace throws from its own guards (`Workspace not
+     * active`), so a catch block can map it to the canonical response instead
+     * of a 500. Deliberately narrow: `Agent is not active` must not match.
+     */
+    static isWorkspaceNotActiveError(error) {
+        return /workspace (is )?not active/i.test(error?.message || '');
     }
 
     // Static factories — allows `ResponseObject.error(msg)` without `new`
@@ -27,6 +50,7 @@ export default class ResponseObject {
     static unauthorized(message, payload, statusCode) { return new ResponseObject().unauthorized(message, payload, statusCode); }
     static forbidden(message, payload, statusCode) { return new ResponseObject().forbidden(message, payload, statusCode); }
     static conflict(message, payload, statusCode) { return new ResponseObject().conflict(message, payload, statusCode); }
+    static workspaceNotActive(payload) { return new ResponseObject().workspaceNotActive(payload); }
     static serverError(message, payload, statusCode) { return new ResponseObject().serverError(message, payload, statusCode); }
     static tooManyRequests(message, payload, statusCode) { return new ResponseObject().tooManyRequests(message, payload, statusCode); }
 
@@ -151,6 +175,20 @@ export default class ResponseObject {
         return this;
     }
 
+    // Workspace Not Active: the workspace exists and the caller may use it, it
+    // just isn't running. 409 (not 400/404/500) — the request is well formed
+    // and the resource exists; it conflicts with the workspace's current state.
+    // The message is a fixed string on purpose: identical bytes from every
+    // route is the whole point.
+    workspaceNotActive(payload = null) {
+        this.status = 'error';
+        this.statusCode = 409;
+        this.message = ResponseObject.WORKSPACE_NOT_ACTIVE_MESSAGE;
+        this.payload = payload;
+        this.code = ResponseObject.WORKSPACE_NOT_ACTIVE;
+        return this;
+    }
+
     // Server Error: Internal server error
     serverError(message = 'Internal server error', payload = null, statusCode = 500) {
         this.status = 'error';
@@ -180,6 +218,7 @@ export default class ResponseObject {
             totalCount: this.totalCount,
             ...(this.debug != null ? { debug: this.debug } : {}),
             ...(this.lines != null ? { lines: this.lines } : {}),
+            ...(this.code != null ? { code: this.code } : {}),
         };
     }
 }

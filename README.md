@@ -30,8 +30,49 @@ npm run dev
 ```bash
 git clone https://github.com/canvas-ui/canvas-server /path/to/canvas-server
 cd /path/to/canvas-server
-CANVAS_SERVER_HOME=~/.canvas docker-compose up --build
+./scripts/install-docker.sh          # or: npm run docker:install
 ```
+
+That asks for the admin account, the port and which folders to mount, writes
+`.env`, builds the image (Debian-based; the first build pulls a few hundred MB of
+prebuilt native binaries) and starts the container. `--yes` accepts every default,
+`--no-build` writes `.env` only. Re-running it offers to keep your existing config.
+
+The individual steps, if you would rather drive them yourself:
+
+```bash
+npm run docker:env      # write .env with your uid/gid + $HOME paths
+npm run docker:build
+npm run docker:up       # http://localhost:8001
+npm run docker:logs     # admin password + API token, printed on first run
+```
+
+Either way `.env` is the whole configuration — the admin account and where each
+mount points:
+
+```bash
+CANVAS_ADMIN_EMAIL=you@example.com
+CANVAS_ADMIN_NAME=                    # empty → derived from the email
+CANVAS_ADMIN_PASSWORD=                # empty → generated and printed once
+CANVAS_ADMIN_RESET=false              # true → re-apply the password on next start
+
+CANVAS_HOST_SERVER_HOME=$HOME/.canvas/server   # config/, db/, cache/ — back this up
+CANVAS_HOST_USER_HOME=$HOME/.canvas/users      # per-user homes
+CANVAS_HOST_WORKSPACES=$HOME/Workspaces        # ─┐ the three per-user modules,
+CANVAS_HOST_ROLES=$HOME/Roles                  #  │ each one host dir ⇄ one
+CANVAS_HOST_AGENTS=$HOME/Agents                # ─┘ container dir
+
+CANVAS_UID=1000                       # container runs as you, so mounts stay yours
+CANVAS_GID=1000
+```
+
+The container runs as your uid:gid, so workspaces created inside it are ordinary
+files you own. The module mounts back the server-wide roots
+(`CANVAS_USER_WORKSPACES` and friends) — the single-user setup. For a multi-user
+instance, unset those three and every user gets their own
+`<userHome>/{Workspaces,Roles,Agents}` instead of one shared directory.
+
+Other one-liners: `docker:down`, `docker:restart`, `docker:shell`, `docker:config`.
 
 ## Environment
 
@@ -40,8 +81,17 @@ NODE_ENV=production
 LOG_LEVEL=info
 CANVAS_SERVER_HOME=/opt/canvas-server/server
 CANVAS_USER_HOME=/opt/canvas-server/users
+
+# Per-user module roots. Empty → <userHome>/{Workspaces,Roles,Agents}.
+# Absolute, ~-prefixed, or templated with {USER_HOME} / {HOME}. A user's own
+# override (PUT /rest/v2/users/me/paths) wins over these.
+CANVAS_USER_WORKSPACES=         # e.g. ~/Workspaces on a personal instance
+CANVAS_USER_ROLES=
+CANVAS_USER_AGENTS=
+
 CANVAS_ADMIN_EMAIL=admin@canvas.local
-CANVAS_ADMIN_PASSWORD=          # required on first run
+CANVAS_ADMIN_NAME=              # empty → derived from the email local part
+CANVAS_ADMIN_PASSWORD=          # empty → generated and printed on first run
 CANVAS_ADMIN_RESET=false
 CANVAS_API_PORT=8001
 CANVAS_API_HOST=0.0.0.0

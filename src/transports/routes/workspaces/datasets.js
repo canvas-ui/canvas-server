@@ -29,7 +29,7 @@ export default async function workspaceDatasetRoutes(fastify, options) {
     }
 
     if (!workspace.isActive) {
-      const responseObject = new ResponseObject().badRequest('Workspace is not active. Start the workspace first.');
+      const responseObject = new ResponseObject().workspaceNotActive();
       reply.code(responseObject.statusCode).send(responseObject.getResponse());
       return null;
     }

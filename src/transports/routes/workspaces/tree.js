@@ -43,7 +43,12 @@ export default async function workspaceTreeRoutes(fastify) {
       }
       return { workspace, tree };
     } catch (error) {
-      const responseObject = new ResponseObject().notFound(error.message || 'Tree not found');
+      // getTree() reaches into the workspace DB, so on a stopped workspace it
+      // throws before it can tell whether the tree exists — that is not a
+      // missing tree.
+      const responseObject = ResponseObject.isWorkspaceNotActiveError(error)
+        ? new ResponseObject().workspaceNotActive()
+        : new ResponseObject().notFound(error.message || 'Tree not found');
       reply.code(responseObject.statusCode).send(responseObject.getResponse());
       return null;
     }

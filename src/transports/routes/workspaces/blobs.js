@@ -33,7 +33,7 @@ export default async function blobRoutes(fastify) {
       return null;
     }
     if (!workspace.isActive) {
-      const r = new ResponseObject().badRequest('Workspace is not active. Start the workspace first.');
+      const r = new ResponseObject().workspaceNotActive();
       reply.code(r.statusCode).send(r.getResponse());
       return null;
     }

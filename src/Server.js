@@ -389,7 +389,8 @@ class Server extends EventEmitter {
                 // Create new admin user
                 logger.debug({ adminEmail }, 'Creating new admin user');
                 user = await this.#users.create({
-                    name: this.#generateUsernameFromEmail(adminEmail), // Generate proper username
+                    // CANVAS_ADMIN_NAME wins; otherwise derive from the email.
+                    name: env.admin.name || this.#generateUsernameFromEmail(adminEmail),
                     email: adminEmail,
                     userType: 'admin',
                     status: 'active'

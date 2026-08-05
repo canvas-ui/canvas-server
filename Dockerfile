@@ -1,60 +1,76 @@
-# Use Node.js 20 Alpine for smaller image size
-FROM node:20-alpine
+# syntax=docker/dockerfile:1
 
-# Install system dependencies
-RUN apk add --no-cache \
-    git \
-    curl \
-    openssl \
-    bash
+# Canvas Server image.
+#
+# Build:  npm run docker:build      (or: docker compose build)
+# Run:    npm run docker:up         (or: docker compose up -d)
+#
+# Debian slim rather than Alpine on purpose: lmdb and onnxruntime-node ship
+# prebuilt glibc binaries, so the image builds without compiling native addons
+# from source (musl has no prebuilds for onnxruntime).
+ARG NODE_VERSION=22
 
-# Set working directory
+# ── Build stage ─────────────────────────────────────────────────────────────
+FROM node:${NODE_VERSION}-bookworm-slim AS builder
+
 WORKDIR /opt/canvas-server
 
-# Copy package files first for better layer caching
-COPY package*.json ./
-COPY bin/ ./bin/
+# Toolchain for the native modules that have no prebuild for this platform.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 make g++ ca-certificates git \
+    && rm -rf /var/lib/apt/lists/*
 
-# Copy source code
-COPY src/ ./src/
-COPY extensions/ ./extensions/
+# The repo is a workspace root — every workspace manifest has to be present for
+# `npm ci`, so the source is copied before installing (see .dockerignore for
+# what is kept out).
+COPY . .
 
-# Create necessary directories
-RUN mkdir -p \
-    server/config \
-    server/cache \
-    server/db \
-    server/var \
-    server/roles \
-    server/data \
-    server/users
+# postinstall builds the web UI, which needs the workspaces' devDependencies.
+# The cache mount matters here: the native deps (onnxruntime-node, lmdb) pull a
+# few hundred MB of prebuilt binaries — without it every rebuild re-downloads
+# them. First build slow, every one after that fast.
+RUN --mount=type=cache,target=/root/.npm,sharing=locked npm ci
+# …and the runtime does not, so drop them again before they are copied out.
+RUN npm prune --omit=dev
 
-# Install dependencies
-RUN npm ci --only=production && npm cache clean --force
+# ── Runtime stage ───────────────────────────────────────────────────────────
+FROM node:${NODE_VERSION}-bookworm-slim AS runtime
 
-# Build UI components
-RUN npm run build
+# curl: healthcheck. openssl: JWT secret generation in the entrypoint.
+# git: the workspace dotfile/git service shells out to it.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl openssl git tini ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
-# Create non-root user for security
-RUN addgroup -g 1001 -S nodejs && \
-    adduser -S nodejs -u 1001
+WORKDIR /opt/canvas-server
+COPY --from=builder /opt/canvas-server ./
 
-# Change ownership of the app directory
-RUN chown -R nodejs:nodejs /opt/canvas-server
+# Container-internal layout. Both trees are meant to be bind-mounted from the
+# host (see docker-compose.yml) — nothing below them survives a rebuild.
+ENV NODE_ENV=production \
+    CANVAS_SERVER_HOME=/opt/canvas-server/server \
+    CANVAS_USER_HOME=/opt/canvas-server/users \
+    CANVAS_API_HOST=0.0.0.0 \
+    CANVAS_WEB_HOST=0.0.0.0 \
+    HOME=/tmp
 
-# Switch to non-root user
-USER nodejs
+# The entrypoint is executable regardless of how the repo was checked out
+# (git tracked it as 0644, and Windows/zip checkouts drop the bit entirely).
+RUN chmod +x bin/*.sh
 
-# Expose ports
+RUN mkdir -p server users && chmod 777 server users
+
+# Never root by default. compose overrides this with the HOST user's uid:gid
+# (CANVAS_UID/CANVAS_GID), which is what makes a bind-mounted ~/Workspaces
+# writable without a chown dance — everything the app needs at runtime is
+# world-readable, so any uid works.
+USER node
+
 EXPOSE 8001
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD curl -f http://localhost:8001/ping || exit 1
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -fsS http://localhost:${CANVAS_API_PORT:-8001}/rest/v2/ping || exit 1
 
-# Set entrypoint
-ENTRYPOINT ["bin/start-server.sh"]
-
-# Default command
-CMD ["npm", "run", "start"]
-
+# tini reaps the processes hooks/roles spawn.
+ENTRYPOINT ["/usr/bin/tini", "--", "bin/start-server.sh"]
+CMD ["node", "./src/init.js"]

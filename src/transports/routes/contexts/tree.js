@@ -52,8 +52,8 @@ export default async function treeRoutes(fastify) {
         return reply.code(response.statusCode).send(response.getResponse());
     } catch (error) {
       fastify.log.error(`Get tree error for context ${contextId}: ${error.message}`);
-      if (error.message.includes('is not active or DB is not initialized') || error.message.includes('is not active. Cannot perform tree operation')) {
-        const response = new ResponseObject().error(`Workspace for context ${contextId} is not active. Cannot perform tree operation.`);
+      if (ResponseObject.isWorkspaceNotActiveError(error)) {
+        const response = new ResponseObject().workspaceNotActive();
         return reply.code(response.statusCode).send(response.getResponse());
       }
       const response = new ResponseObject().error('Failed to get context tree');
@@ -89,8 +89,8 @@ export default async function treeRoutes(fastify) {
       return reply.code(response.statusCode).send(response.getResponse());
     } catch (error) {
       fastify.log.error(`Get tree paths error for context ${contextId}: ${error.message}`);
-      if (error.message.includes('is not active') || error.message.includes('is not active or DB is not initialized')) {
-        const response = new ResponseObject().error(`Workspace for context ${contextId} is not active. Cannot perform tree operation.`);
+      if (ResponseObject.isWorkspaceNotActiveError(error)) {
+        const response = new ResponseObject().workspaceNotActive();
         return reply.code(response.statusCode).send(response.getResponse());
       }
       const response = new ResponseObject().error('Failed to get context tree paths');
@@ -148,8 +148,8 @@ export default async function treeRoutes(fastify) {
         return reply.code(response.statusCode).send(response.getResponse());
     } catch (error) {
       fastify.log.error(`Insert path error for context ${contextId}: ${error.message}`);
-      if (error.message.includes('is not active')) {
-        const response = new ResponseObject().error(`Workspace for context ${contextId} is not active. Cannot perform tree operation.`);
+      if (ResponseObject.isWorkspaceNotActiveError(error)) {
+        const response = new ResponseObject().workspaceNotActive();
         return reply.code(response.statusCode).send(response.getResponse());
       }
       const response = new ResponseObject().error('Failed to insert tree path');
@@ -203,8 +203,8 @@ export default async function treeRoutes(fastify) {
         return reply.code(response.statusCode).send(response.getResponse());
     } catch (error) {
       fastify.log.error(`Remove path error for context ${contextId}: ${error.message}`);
-       if (error.message.includes('is not active')) {
-        const response = new ResponseObject().error(`Workspace for context ${contextId} is not active. Cannot perform tree operation.`);
+      if (ResponseObject.isWorkspaceNotActiveError(error)) {
+        const response = new ResponseObject().workspaceNotActive();
         return reply.code(response.statusCode).send(response.getResponse());
       }
       const response = new ResponseObject().error('Failed to remove tree path');
@@ -314,8 +314,8 @@ export default async function treeRoutes(fastify) {
         return reply.code(response.statusCode).send(response.getResponse());
     } catch (error) {
       fastify.log.error(`Move path error for context ${contextId}: ${error.message}`);
-      if (error.message.includes('is not active')) {
-        const response = new ResponseObject().error(`Workspace for context ${contextId} is not active. Cannot perform tree operation.`);
+      if (ResponseObject.isWorkspaceNotActiveError(error)) {
+        const response = new ResponseObject().workspaceNotActive();
         return reply.code(response.statusCode).send(response.getResponse());
       }
       const response = new ResponseObject().error('Failed to move tree path');
@@ -371,8 +371,8 @@ export default async function treeRoutes(fastify) {
         return reply.code(response.statusCode).send(response.getResponse());
     } catch (error) {
       fastify.log.error(`Copy path error for context ${contextId}: ${error.message}`);
-      if (error.message.includes('is not active')) {
-        const response = new ResponseObject().error(`Workspace for context ${contextId} is not active. Cannot perform tree operation.`);
+      if (ResponseObject.isWorkspaceNotActiveError(error)) {
+        const response = new ResponseObject().workspaceNotActive();
         return reply.code(response.statusCode).send(response.getResponse());
       }
       const response = new ResponseObject().error('Failed to copy tree path');
@@ -424,8 +424,8 @@ export default async function treeRoutes(fastify) {
       return reply.code(response.statusCode).send(response.getResponse());
     } catch (error) {
       fastify.log.error(`Merge layer error for context ${contextId}: ${error.message}`);
-      if (error.message.includes('is not active')) {
-        const response = new ResponseObject().error(`Workspace for context ${contextId} is not active. Cannot perform tree operation.`);
+      if (ResponseObject.isWorkspaceNotActiveError(error)) {
+        const response = new ResponseObject().workspaceNotActive();
         return reply.code(response.statusCode).send(response.getResponse());
       }
       const response = new ResponseObject().error('Failed to merge layer');
@@ -477,8 +477,8 @@ export default async function treeRoutes(fastify) {
       return reply.code(response.statusCode).send(response.getResponse());
     } catch (error) {
       fastify.log.error(`Subtract layer error for context ${contextId}: ${error.message}`);
-      if (error.message.includes('is not active')) {
-        const response = new ResponseObject().error(`Workspace for context ${contextId} is not active. Cannot perform tree operation.`);
+      if (ResponseObject.isWorkspaceNotActiveError(error)) {
+        const response = new ResponseObject().workspaceNotActive();
         return reply.code(response.statusCode).send(response.getResponse());
       }
       const response = new ResponseObject().error('Failed to subtract layer');

@@ -23,7 +23,7 @@ export default async function workspaceTimelineRoutes(fastify, options) {
     }
 
     if (!workspace.isActive) {
-      const ro = new ResponseObject().badRequest('Workspace is not active');
+      const ro = new ResponseObject().workspaceNotActive();
       reply.code(ro.statusCode).send(ro.getResponse());
       return null;
     }

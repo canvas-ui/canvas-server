@@ -21,13 +21,26 @@ export default async function adminRoutes(fastify, options) {
   const isUUID = (value) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 
   /** Resolve `:workspaceId` to a started workspace, or null. */
-  const resolveActiveWorkspace = async (request) => {
+  // Resolves the workspace and requires it to be running. Answers for itself —
+  // 404 when there is no such workspace, the canonical WORKSPACE_NOT_ACTIVE
+  // when it is merely stopped — and returns null once it has replied.
+  const resolveActiveWorkspace = async (request, reply) => {
     const identifier = request.params.workspaceId;
     const workspaceId = isUUID(identifier)
       ? identifier
       : fastify.workspaceManager.resolveWorkspaceId(request.user.id, identifier);
     const ws = workspaceId ? await fastify.workspaceManager.getWorkspace(workspaceId, request.user.id) : null;
-    return ws?.isActive ? ws : null;
+    if (!ws) {
+      const response = new ResponseObject().notFound('Workspace not found');
+      reply.code(response.statusCode).send(response.getResponse());
+      return null;
+    }
+    if (!ws.isActive) {
+      const response = new ResponseObject().workspaceNotActive();
+      reply.code(response.statusCode).send(response.getResponse());
+      return null;
+    }
+    return ws;
   };
 
   /**
@@ -363,8 +376,12 @@ export default async function adminRoutes(fastify, options) {
       const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(identifier);
       const workspaceId = isUUID ? identifier : fastify.workspaceManager.resolveWorkspaceId(request.user.id, identifier);
       const ws = workspaceId ? await fastify.workspaceManager.getWorkspace(workspaceId, request.user.id) : null;
-      if (!ws?.isActive) {
-        const response = new ResponseObject().badRequest('Workspace not found or not active');
+      if (!ws) {
+        const response = new ResponseObject().notFound('Workspace not found');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+      if (!ws.isActive) {
+        const response = new ResponseObject().workspaceNotActive();
         return reply.code(response.statusCode).send(response.getResponse());
       }
       const result = await ws.db.reindexCrudTimelines();
@@ -389,8 +406,12 @@ export default async function adminRoutes(fastify, options) {
       const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(identifier);
       const workspaceId = isUUID ? identifier : fastify.workspaceManager.resolveWorkspaceId(request.user.id, identifier);
       const ws = workspaceId ? await fastify.workspaceManager.getWorkspace(workspaceId, request.user.id) : null;
-      if (!ws?.isActive) {
-        const response = new ResponseObject().badRequest('Workspace not found or not active');
+      if (!ws) {
+        const response = new ResponseObject().notFound('Workspace not found');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+      if (!ws.isActive) {
+        const response = new ResponseObject().workspaceNotActive();
         return reply.code(response.statusCode).send(response.getResponse());
       }
       const result = await ws.db.reindexMimeBitmaps();
@@ -421,8 +442,12 @@ export default async function adminRoutes(fastify, options) {
       const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(identifier);
       const workspaceId = isUUID ? identifier : fastify.workspaceManager.resolveWorkspaceId(request.user.id, identifier);
       const ws = workspaceId ? await fastify.workspaceManager.getWorkspace(workspaceId, request.user.id) : null;
-      if (!ws?.isActive) {
-        const response = new ResponseObject().badRequest('Workspace not found or not active');
+      if (!ws) {
+        const response = new ResponseObject().notFound('Workspace not found');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+      if (!ws.isActive) {
+        const response = new ResponseObject().workspaceNotActive();
         return reply.code(response.statusCode).send(response.getResponse());
       }
       const result = await ws.db.reindexSearchIndex({ rebuild: request.query.rebuild === true });
@@ -456,8 +481,12 @@ export default async function adminRoutes(fastify, options) {
       const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(identifier);
       const workspaceId = isUUID ? identifier : fastify.workspaceManager.resolveWorkspaceId(request.user.id, identifier);
       const ws = workspaceId ? await fastify.workspaceManager.getWorkspace(workspaceId, request.user.id) : null;
-      if (!ws?.isActive) {
-        const response = new ResponseObject().badRequest('Workspace not found or not active');
+      if (!ws) {
+        const response = new ResponseObject().notFound('Workspace not found');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+      if (!ws.isActive) {
+        const response = new ResponseObject().workspaceNotActive();
         return reply.code(response.statusCode).send(response.getResponse());
       }
       const embedd = fastify.workspaceManager.embedd;
@@ -502,11 +531,8 @@ export default async function adminRoutes(fastify, options) {
     schema: { params: { type: 'object', required: ['workspaceId'], properties: { workspaceId: { type: 'string' } } } },
   }, async (request, reply) => {
     try {
-      const ws = await resolveActiveWorkspace(request);
-      if (!ws) {
-        const response = new ResponseObject().badRequest('Workspace not found or not active');
-        return reply.code(response.statusCode).send(response.getResponse());
-      }
+      const ws = await resolveActiveWorkspace(request, reply);
+      if (!ws) { return; }
       const result = await ws.listVectorTables();
       const response = new ResponseObject().success(result);
       return reply.code(response.statusCode).send(response.getResponse());
@@ -528,11 +554,8 @@ export default async function adminRoutes(fastify, options) {
     },
   }, async (request, reply) => {
     try {
-      const ws = await resolveActiveWorkspace(request);
-      if (!ws) {
-        const response = new ResponseObject().badRequest('Workspace not found or not active');
-        return reply.code(response.statusCode).send(response.getResponse());
-      }
+      const ws = await resolveActiveWorkspace(request, reply);
+      if (!ws) { return; }
       const result = await ws.dropVectorTable(request.params.table);
       if (!result?.dropped) {
         const response = new ResponseObject().badRequest(result?.error || 'Failed to drop vector table');
@@ -596,8 +619,12 @@ export default async function adminRoutes(fastify, options) {
       const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(identifier);
       const workspaceId = isUUID ? identifier : fastify.workspaceManager.resolveWorkspaceId(request.user.id, identifier);
       const ws = workspaceId ? await fastify.workspaceManager.getWorkspace(workspaceId, request.user.id) : null;
-      if (!ws?.isActive) {
-        const response = new ResponseObject().badRequest('Workspace not found or not active');
+      if (!ws) {
+        const response = new ResponseObject().notFound('Workspace not found');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+      if (!ws.isActive) {
+        const response = new ResponseObject().workspaceNotActive();
         return reply.code(response.statusCode).send(response.getResponse());
       }
       const { space = null } = request.body || {};

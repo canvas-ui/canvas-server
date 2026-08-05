@@ -3,6 +3,9 @@ monorepo
 # dotenv environment variables file
 .env
 .env*
+# …except the documented container template (`npm run docker:env` turns it
+# into a real .env), which belongs in the repo.
+!.env.example
 
 # Portable runtimes
 /runtimes/**

@@ -28,8 +28,14 @@ export default async function contextBlobRoutes(fastify) {
       return reply.code(r.statusCode).send(r.getResponse());
     }
     const workspace = await fastify.workspaceManager.getWorkspace(context.workspaceId, request.user.id);
-    if (!workspace?.isActive) {
-      const r = new ResponseObject().badRequest('Backing workspace not found or not active. Start the workspace first.');
+    // Missing and stopped are different answers: the caller can do something
+    // about the second one.
+    if (!workspace) {
+      const r = new ResponseObject().notFound('Backing workspace not found');
+      return reply.code(r.statusCode).send(r.getResponse());
+    }
+    if (!workspace.isActive) {
+      const r = new ResponseObject().workspaceNotActive();
       return reply.code(r.statusCode).send(r.getResponse());
     }
 

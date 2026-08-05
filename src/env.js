@@ -162,15 +162,19 @@ function getServerHome() {
     }
 }
 
+/**
+ * User homes are server runtime state, so they live under the server home —
+ * which is what keeps all three deployment shapes right without branching here:
+ *
+ *   server / remote   <install>/server/users
+ *   local portable    <install>/server/users   — travels with the folder
+ *   local installed   ~/.canvas/server/users   (--user; ~/Canvas on Windows)
+ *
+ * The rest of ~/.canvas/ (or ~/Canvas/) belongs to the client apps and their
+ * caches; the server must not colonize it. Deployments that genuinely need the
+ * two split — a users tree on separate storage, or the container, where each
+ * root is its own bind mount — set CANVAS_USER_HOME explicitly.
+ */
 function getUserHome() {
-    if (SERVER_MODE === 'user') {
-        const homeDir = os.homedir();
-        if (process.platform === 'win32') {
-            return path.join(homeDir, 'Canvas');
-        } else {
-            return path.join(homeDir, '.canvas');
-        }
-    }
-
     return path.join(SERVER_HOME, 'users');
 }

@@ -36,17 +36,22 @@ services:
       CANVAS_ADMIN_PASSWORD: ${CANVAS_ADMIN_PASSWORD:-}
       CANVAS_ADMIN_RESET: ${CANVAS_ADMIN_RESET:-false}
 
-      # Container-internal roots (the mounts below put them on the host).
+      # Container-internal roots (the mounts below put them on the host). User
+      # homes are server runtime state, hence under the server home.
       CANVAS_SERVER_HOME: /opt/canvas-server/server
-      CANVAS_USER_HOME: /opt/canvas-server/users
+      CANVAS_USER_HOME: /opt/canvas-server/server/users
 
       # Per-user module roots. Fixed container paths, each backed by one host
       # directory — the single-user setup. For a multi-user instance drop these
       # three and every user gets their own <userHome>/{Workspaces,Roles,Agents}
       # (or set them to templates such as "{USER_HOME}/workspaces").
-      CANVAS_USER_WORKSPACES: ${CANVAS_USER_WORKSPACES:-/opt/canvas-server/users/workspaces}
-      CANVAS_USER_ROLES: ${CANVAS_USER_ROLES:-/opt/canvas-server/users/roles}
-      CANVAS_USER_AGENTS: ${CANVAS_USER_AGENTS:-/opt/canvas-server/users/agents}
+      #
+      # They deliberately sit OUTSIDE <serverHome>/users: docker creates the
+      # parent of every bind mount as root, and users/ has to stay writable by
+      # the container user (it is where per-user homes are created).
+      CANVAS_USER_WORKSPACES: ${CANVAS_USER_WORKSPACES:-/opt/canvas-server/modules/workspaces}
+      CANVAS_USER_ROLES: ${CANVAS_USER_ROLES:-/opt/canvas-server/modules/roles}
+      CANVAS_USER_AGENTS: ${CANVAS_USER_AGENTS:-/opt/canvas-server/modules/agents}
 
       CANVAS_API_PORT: 8001
       CANVAS_WEB_PORT: 8001
@@ -62,13 +67,16 @@ services:
       # Server state: config (incl. the generated jwt.secret), the index db,
       # caches. This is the dir you back up.
       - ${CANVAS_HOST_SERVER_HOME:-./data/server}:/opt/canvas-server/server
-      # Per-user homes (<usersRoot>/<email>/…).
-      - ${CANVAS_HOST_USER_HOME:-./data/users}:/opt/canvas-server/users
-      # The three module roots, mounted over the users root above. Docker
-      # applies the deeper destinations last, so these win where they overlap.
-      - ${CANVAS_HOST_WORKSPACES:-./data/users/workspaces}:/opt/canvas-server/users/workspaces
-      - ${CANVAS_HOST_ROLES:-./data/users/roles}:/opt/canvas-server/users/roles
-      - ${CANVAS_HOST_AGENTS:-./data/users/agents}:/opt/canvas-server/users/agents
+      # Per-user homes need no mount of their own: they live at
+      # <serverHome>/users, inside the mount above. Giving them one would also
+      # make docker pre-create that directory as root, which the container user
+      # then could not write into.
+      #
+      # The three module roots DO get their own mounts — the whole point is that
+      # they can live anywhere on the host.
+      - ${CANVAS_HOST_WORKSPACES:-./data/modules/workspaces}:/opt/canvas-server/modules/workspaces
+      - ${CANVAS_HOST_ROLES:-./data/modules/roles}:/opt/canvas-server/modules/roles
+      - ${CANVAS_HOST_AGENTS:-./data/modules/agents}:/opt/canvas-server/modules/agents
 
     restart: unless-stopped
 

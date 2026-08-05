@@ -126,8 +126,8 @@ if [ "${KEEP_ENV:-false}" != "true" ]; then
 
     bold "Storage"
     info "Server state (config, index db, caches) — the directory worth backing up."
+    info "Per-user homes live inside it, at <server home>/users."
     ask HOST_SERVER_HOME "Server home" "$HOME/.canvas/server"
-    ask HOST_USER_HOME   "User homes"  "$HOME/.canvas/users"
     echo
 
     bold "Your folders"
@@ -141,9 +141,9 @@ if [ "${KEEP_ENV:-false}" != "true" ]; then
     else
         # No pinned roots: every user gets <userHome>/{Workspaces,Roles,Agents}
         # inside the mounted users home — the multi-user shape.
-        HOST_WORKSPACES="$HOST_USER_HOME/.modules/workspaces"
-        HOST_ROLES="$HOST_USER_HOME/.modules/roles"
-        HOST_AGENTS="$HOST_USER_HOME/.modules/agents"
+        HOST_WORKSPACES="$HOST_SERVER_HOME/modules/workspaces"
+        HOST_ROLES="$HOST_SERVER_HOME/modules/roles"
+        HOST_AGENTS="$HOST_SERVER_HOME/modules/agents"
         MOUNT_MODULES=false
     fi
     echo
@@ -178,7 +178,6 @@ if [ "${KEEP_ENV:-false}" != "true" ]; then
     write_env CANVAS_ADMIN_NAME "$ADMIN_NAME"
     write_env CANVAS_ADMIN_PASSWORD "$ADMIN_PASSWORD"
     write_env CANVAS_HOST_SERVER_HOME "$HOST_SERVER_HOME"
-    write_env CANVAS_HOST_USER_HOME "$HOST_USER_HOME"
     write_env CANVAS_HOST_WORKSPACES "$HOST_WORKSPACES"
     write_env CANVAS_HOST_ROLES "$HOST_ROLES"
     write_env CANVAS_HOST_AGENTS "$HOST_AGENTS"
@@ -192,13 +191,13 @@ if [ "${KEEP_ENV:-false}" != "true" ]; then
     fi
 
     # The compose mounts are bind mounts: docker would create them as root.
-    mkdir -p "$HOST_SERVER_HOME" "$HOST_USER_HOME" "$HOST_WORKSPACES" "$HOST_ROLES" "$HOST_AGENTS"
+    mkdir -p "$HOST_SERVER_HOME/users" "$HOST_WORKSPACES" "$HOST_ROLES" "$HOST_AGENTS"
 
     bold "Wrote $ENV_FILE"
     info "admin       $ADMIN_NAME <$ADMIN_EMAIL>"
     info "url         http://localhost:$HOST_PORT"
     info "server      $HOST_SERVER_HOME"
-    info "users       $HOST_USER_HOME"
+    info "users       $HOST_SERVER_HOME/users"
     info "workspaces  $HOST_WORKSPACES"
     info "roles       $HOST_ROLES"
     info "agents      $HOST_AGENTS"

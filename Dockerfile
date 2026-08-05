@@ -49,7 +49,7 @@ COPY --from=builder /opt/canvas-server ./
 # host (see docker-compose.yml) — nothing below them survives a rebuild.
 ENV NODE_ENV=production \
     CANVAS_SERVER_HOME=/opt/canvas-server/server \
-    CANVAS_USER_HOME=/opt/canvas-server/users \
+    CANVAS_USER_HOME=/opt/canvas-server/server/users \
     CANVAS_API_HOST=0.0.0.0 \
     CANVAS_WEB_HOST=0.0.0.0 \
     HOME=/tmp
@@ -58,7 +58,7 @@ ENV NODE_ENV=production \
 # (git tracked it as 0644, and Windows/zip checkouts drop the bit entirely).
 RUN chmod +x bin/*.sh
 
-RUN mkdir -p server users && chmod 777 server users
+RUN mkdir -p server/users modules && chmod -R 777 server modules
 
 # Never root by default. compose overrides this with the HOST user's uid:gid
 # (CANVAS_UID/CANVAS_GID), which is what makes a bind-mounted ~/Workspaces

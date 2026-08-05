@@ -30,7 +30,6 @@ const substitutions = {
     CANVAS_UID: typeof process.getuid === 'function' ? String(process.getuid()) : '1000',
     CANVAS_GID: typeof process.getgid === 'function' ? String(process.getgid()) : '1000',
     CANVAS_HOST_SERVER_HOME: path.join(home, '.canvas', 'server'),
-    CANVAS_HOST_USER_HOME: path.join(home, '.canvas', 'users'),
     CANVAS_HOST_WORKSPACES: path.join(home, 'Workspaces'),
     CANVAS_HOST_ROLES: path.join(home, 'Roles'),
     CANVAS_HOST_AGENTS: path.join(home, 'Agents'),

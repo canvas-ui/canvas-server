@@ -8,7 +8,7 @@
 set -e
 
 SERVER_HOME=${CANVAS_SERVER_HOME:-/opt/canvas-server/server}
-USER_HOME=${CANVAS_USER_HOME:-/opt/canvas-server/users}
+USER_HOME=${CANVAS_USER_HOME:-$SERVER_HOME/users}
 
 # Bind mounts arrive empty on first run; the server expects these to exist.
 mkdir -p \

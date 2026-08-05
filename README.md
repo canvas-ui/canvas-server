@@ -52,13 +52,17 @@ password on the next start. Credentials are also recoverable from the log
 
 ### Where your data lives
 
-By default everything stays inside the checkout — `./server` (config, index db,
-caches) and `./server/users/<email>` (per-user homes). For a personal install,
-run it in **user mode** to keep data out of the repo:
+All server state lives under one root, `$CANVAS_SERVER_HOME` — config, the index
+db, caches, and `users/<email>/` (the per-user homes). By default that is
+`./server` inside the checkout. For a personal install, run it in **user mode**
+to keep data out of the repo:
 
 ```bash
-npm start -- --user            # server → ~/.canvas/server, users → ~/.canvas
+npm start -- --user            # → ~/.canvas/server (users in ~/.canvas/server/users)
 ```
+
+Everything under `~/.canvas/` other than `server/` is reserved for the client
+apps and their caches; the server never writes there.
 
 Each user has three module roots — workspaces, roles and agents — which default
 to `<userHome>/{Workspaces,Roles,Agents}` and can be pointed anywhere:
@@ -130,8 +134,7 @@ CANVAS_ADMIN_NAME=                    # empty → derived from the email
 CANVAS_ADMIN_PASSWORD=                # empty → generated and printed once
 CANVAS_ADMIN_RESET=false              # true → re-apply the password on next start
 
-CANVAS_HOST_SERVER_HOME=$HOME/.canvas/server   # config/, db/, cache/ — back this up
-CANVAS_HOST_USER_HOME=$HOME/.canvas/users      # per-user homes
+CANVAS_HOST_SERVER_HOME=$HOME/.canvas/server   # config/, db/, cache/, users/ — back this up
 CANVAS_HOST_WORKSPACES=$HOME/Workspaces        # ─┐ the three per-user modules,
 CANVAS_HOST_ROLES=$HOME/Roles                  #  │ each one host dir ⇄ one
 CANVAS_HOST_AGENTS=$HOME/Agents                # ─┘ container dir
@@ -151,14 +154,15 @@ Other one-liners: `docker:down`, `docker:restart`, `docker:shell`, `docker:confi
 ## Environment
 
 Every setting has a default; nothing below is required. Paths shown are the
-container's — a bare-metal install defaults to `./server` and `./server/users`,
-or `~/.canvas/server` and `~/.canvas` when started with `--user`.
+container's — a bare-metal install defaults to `./server`, or `~/.canvas/server`
+when started with `--user`. `CANVAS_USER_HOME` follows the server home
+(`<serverHome>/users`) unless you set it explicitly.
 
 ```bash
 NODE_ENV=production
 LOG_LEVEL=info
 CANVAS_SERVER_HOME=/opt/canvas-server/server
-CANVAS_USER_HOME=/opt/canvas-server/users
+CANVAS_USER_HOME=/opt/canvas-server/server/users   # default: <serverHome>/users
 
 # Per-user module roots. Empty → <userHome>/{Workspaces,Roles,Agents}.
 # Absolute, ~-prefixed, or templated with {USER_HOME} / {HOME}. A user's own

@@ -109,7 +109,7 @@ export default async function workspaceServicesRoutes(fastify, options) {
             }
 
             // Read config file from workspace/config/{serviceName}.json
-            const configPath = path.join(workspace.rootPath, 'config', `${serviceName}.json`);
+            const configPath = path.join(workspace.configDir, `${serviceName}.json`);
 
             try {
                 const configContent = await fs.readFile(configPath, 'utf-8');
@@ -153,7 +153,7 @@ export default async function workspaceServicesRoutes(fastify, options) {
             }
 
             // Ensure config directory exists
-            const configDir = path.join(workspace.rootPath, 'config');
+            const configDir = workspace.configDir;
             await fs.mkdir(configDir, { recursive: true });
 
             // Write config file

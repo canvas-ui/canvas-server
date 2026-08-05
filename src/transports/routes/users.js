@@ -12,6 +12,43 @@ import UserConfigStore from '../../core/user/ConfigStore.js';
  */
 export default async function userRoutes(fastify, options) {
 
+    // ── Module roots ────────────────────────────────────────────────────────
+    // Where this user's workspaces, roles and agents live on disk. The three
+    // top-level per-user modules are independently relocatable — a personal
+    // instance points them at ~/Workspaces, ~/Roles, ~/Agents.
+
+    fastify.get('/me/paths', { onRequest: [fastify.authenticate] }, async (request, reply) => {
+        try {
+            const paths = fastify.users.getUserPaths(request.user.id);
+            // Resolved paths plus the explicit overrides behind them, so a UI can
+            // show which modules are relocated and which follow the default.
+            const overrides = fastify.users.indexStore.get(request.user.id)?.paths || {};
+            return reply.send(ResponseObject.found({ paths, overrides }));
+        } catch (error) {
+            request.log.error(error);
+            return reply.code(500).send(ResponseObject.error(error.message));
+        }
+    });
+
+    // Partial update: only the modules present in the body are touched, and
+    // `null` clears an override (back to the server default). Relocating is not
+    // a move — existing workspaces/agents stay where they are and keep working;
+    // discovery and newly created entries follow the new root.
+    fastify.put('/me/paths', { onRequest: [fastify.authenticate] }, async (request, reply) => {
+        const body = request.body;
+        if (!body || typeof body !== 'object' || Array.isArray(body)) {
+            return reply.code(400).send(ResponseObject.badRequest('Expected a JSON object of {workspaces, roles, agents}'));
+        }
+        try {
+            const paths = await fastify.users.setUserPaths(request.user.id, body);
+            return reply.send(ResponseObject.updated({ paths }));
+        } catch (error) {
+            request.log.error(error);
+            // Bad path values are the caller's mistake, not a server fault.
+            return reply.code(400).send(ResponseObject.badRequest(error.message));
+        }
+    });
+
     fastify.get('/me/config/:name', { onRequest: [fastify.authenticate] }, async (request, reply) => {
         const { name } = request.params;
 

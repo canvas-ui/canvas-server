@@ -5,6 +5,7 @@ import { pipeline } from 'stream/promises';
 import path from 'path';
 import crypto from 'crypto';
 import { createLogger } from '../../utils/log.js';
+import { internalPathMatcher } from '../../core/workspace/lib/internal-paths.js';
 import TreeFS from './TreeFS.js';
 import VirtualContextsFS from './VirtualContextsFS.js';
 
@@ -168,7 +169,14 @@ export class WebDAVHandler {
     const relative = path.relative(homePath, abs);
     if (relative.startsWith('..') || path.isAbsolute(relative)) return send(res, 403, 'Forbidden');
 
-    const ctx = { res, abs, rel, prefix, homePath, headers, body, workspace };
+    // The workspace's own runtime dirs (`.workspace/` in the home layout, where
+    // the exported drive IS the workspace root) do not exist as far as DAV is
+    // concerned: they are hidden from listings and unreachable by any method,
+    // so a client cannot browse — or delete — the workspace out from under itself.
+    const isHidden = internalPathMatcher(homePath, workspace);
+    if (isHidden(abs)) return send(res, 404, 'Not Found');
+
+    const ctx = { res, abs, rel, prefix, homePath, headers, body, workspace, isHidden };
 
     switch (method) {
       case 'OPTIONS':   return this._options(ctx);
@@ -192,7 +200,7 @@ export class WebDAVHandler {
     send(res, 200);
   }
 
-  async _propfind({ res, abs, rel, prefix, headers, body }) {
+  async _propfind({ res, abs, rel, prefix, headers, body, isHidden = () => false }) {
     await readBody(body, XML_BODY_LIMIT);
     const depth = headers['depth'] ?? '1';
 
@@ -207,6 +215,7 @@ export class WebDAVHandler {
         const children = await fs.readdir(abs, { withFileTypes: true });
         for (const child of children) {
           try {
+            if (isHidden(path.join(abs, child.name))) continue;
             const childStat = await fs.stat(path.join(abs, child.name));
             entries.push(propEntry(childStat, prefix, path.posix.join(rel, child.name)));
           } catch { /* skip inaccessible */ }
@@ -229,13 +238,13 @@ export class WebDAVHandler {
       `  </D:response>\n</D:multistatus>`);
   }
 
-  async _get({ res, abs }) {
+  async _get({ res, abs, isHidden = () => false }) {
     let stat;
     try { stat = await fs.stat(abs); }
     catch { return send(res, 404, 'Not Found'); }
 
     if (stat.isDirectory()) {
-      const children = await fs.readdir(abs);
+      const children = (await fs.readdir(abs)).filter((name) => !isHidden(path.join(abs, name)));
       const html = `<!DOCTYPE html><html><body><h1>Index</h1><ul>${children.map(c => `<li><a href="${esc(encodeURIComponent(c))}">${esc(c)}</a></li>`).join('')}</ul></body></html>`;
       return sendBody(res, 200, html, 'text/html; charset=utf-8');
     }
@@ -297,7 +306,7 @@ export class WebDAVHandler {
     send(res, 201);
   }
 
-  async _copyMove({ res, abs, prefix, homePath, headers }, isMove) {
+  async _copyMove({ res, abs, prefix, homePath, headers, isHidden = () => false }, isMove) {
     const dest = headers['destination'];
     if (!dest) return send(res, 400, 'Destination header required');
 
@@ -312,6 +321,7 @@ export class WebDAVHandler {
     const destAbs = path.resolve(homePath, '.' + destRel);
     const destRelative = path.relative(homePath, destAbs);
     if (destRelative.startsWith('..') || path.isAbsolute(destRelative)) return send(res, 403, 'Forbidden');
+    if (isHidden(destAbs)) return send(res, 403, 'Forbidden');
 
     const overwrite = (headers['overwrite'] || 'T').toUpperCase() === 'T';
     let destExisted = true;

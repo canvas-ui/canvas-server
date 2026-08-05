@@ -214,6 +214,10 @@ export default async function workspaceRoutes(fastify, options) {
           order: { type: 'number' },
           homeScreen: { type: 'object' },
           type: { type: 'string', enum: ['workspace', 'universe'] },
+          // Folder structure, fixed at creation:
+          //  full — runtime dirs visible at the root, user drive in home/
+          //  home — the root IS the user's drive, internals in .workspace/
+          layout: { type: 'string', enum: ['full', 'home'] },
           metadata: { type: 'object' },
           acl: { type: 'object' },
           links: { type: 'object' },
@@ -231,6 +235,7 @@ export default async function workspaceRoutes(fastify, options) {
         request.user.id,
         {
           type: request.body.type || 'workspace',
+          layout: request.body.layout,
           label: request.body.label || request.body.name,
           description: request.body.description || '',
           color: request.body.color,

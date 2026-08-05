@@ -17,8 +17,9 @@ import { compareByUserOrder } from '../../utils/list-order.js';
 // Includes
 import Workspace from './Workspace.js';
 import { WorkspaceErrorCode, accessDenied, workspaceNotFound, workspaceNotReady, notImplemented } from './lib/errors.js';
-import { discoverWorkspaceCandidates, validateWorkspaceConfig } from './lib/scanner.js';
+import { discoverWorkspaceCandidates, validateWorkspaceConfig, findWorkspaceConfigPath, workspaceConfigPathFor } from './lib/scanner.js';
 import DotfileManager from './services/dotfile/index.js';
+import { USER_MODULE_DIRS } from '../user/lib/paths.js';
 import HookService from './services/hook/index.js';
 import GraphService from './services/graph/index.js';
 import ChatService from './services/chat/index.js';
@@ -26,13 +27,16 @@ import ChatService from './services/chat/index.js';
 // Constants
 import {
     WORKSPACE_STATUS_CODES,
-    WORKSPACE_DIRECTORIES,
     WORKSPACE_CONFIG_FILENAME,
     WORKSPACE_DEFAULT_HOST,
-    WORKSPACE_INTERNALS,
+    WORKSPACE_INTERNAL_DIRNAME,
+    WORKSPACE_LAYOUTS,
     WORKSPACE_ORIGINS,
-    WORKSPACE_STORED_DEFAULT,
-    WORKSPACE_SERVICES,
+    normalizeWorkspaceLayout,
+    workspaceDirectories,
+    workspaceInternals,
+    workspaceServices,
+    workspaceStoredDefault,
 } from './lib/constants.js';
 
 // Fields that live only in the per-user index — they describe this server's
@@ -591,24 +595,28 @@ class WorkspaceManager extends EventEmitter {
         }
 
         const workspaceId = uuidv4(); // Or nanoid if preferred
+        const layout = normalizeWorkspaceLayout(options.layout);
 
-        let workspaceDir;
-        if (options.rootPath) {
-            workspaceDir = options.rootPath;
-        } else if (options.userEmail) {
-            workspaceDir = path.join(this.#defaultRootPath, options.userEmail, 'Workspaces', sanitizedName);
-        } else {
-            workspaceDir = path.join(this.#defaultRootPath, 'workspaces', sanitizedName);
-        }
+        const workspaceDir = options.rootPath
+            || path.join(await this.userWorkspacesPath(userId, options.userEmail), sanitizedName);
 
         if (existsSync(workspaceDir)) {
-            throw new Error(`Workspace directory already exists: ${workspaceDir}`);
+            // A `home`-layout workspace is meant to wrap a folder the user
+            // already has (that's the roaming-profile case): adopting it costs
+            // nothing but a `.workspace/` dir. `full` would scatter home/, db/,
+            // data/ … through their files, so it keeps refusing.
+            if (findWorkspaceConfigPath(workspaceDir)) {
+                throw new Error(`Directory is already a workspace: ${workspaceDir}`);
+            }
+            if (layout !== WORKSPACE_LAYOUTS.HOME) {
+                throw new Error(`Workspace directory already exists: ${workspaceDir}`);
+            }
         }
 
         await fsPromises.mkdir(workspaceDir, { recursive: true });
-        await this.#createSubdirectories(workspaceDir);
+        await this.#createSubdirectories(workspaceDir, layout);
 
-        const configPath = path.join(workspaceDir, WORKSPACE_CONFIG_FILENAME);
+        const configPath = workspaceConfigPathFor(workspaceDir, layout);
 
         const reference = constructWorkspaceReference(userId, sanitizedName, host);
 
@@ -616,6 +624,9 @@ class WorkspaceManager extends EventEmitter {
             id: workspaceId,
             name: sanitizedName,
             label: options.label || sanitizedName,
+            // Folder structure — fixed at creation, drives the internals/services
+            // defaults below and where workspace.json itself lives.
+            layout,
             description: options.description || '',
             owner: userId,
             color: options.color || randomcolor(),
@@ -633,23 +644,24 @@ class WorkspaceManager extends EventEmitter {
             metadata: options.metadata || {},
             acl: options.acl || { tokens: {}, users: {} },
             roles: options.roles || [],
-            internals: { ...WORKSPACE_INTERNALS },
+            internals: { ...workspaceInternals(layout) },
             // services.stored carries the storage config (root/cache/sync/backends);
-            // deep-clone — the stored default nests maps a shallow copy would alias.
+            // the layout builders already return fresh (deep-cloned) objects.
             services: options.services || {
-                ...structuredClone(WORKSPACE_SERVICES),
+                ...workspaceServices(layout),
                 stored: {
-                    ...structuredClone(WORKSPACE_STORED_DEFAULT),
+                    ...workspaceStoredDefault(layout),
                     ...(options.dataBackends ? { backends: options.dataBackends } : {}),
                 },
             },
             links: options.links || {},
         };
 
-        // Store config
+        // Store config (in `.workspace/` for the home layout — hence dirname,
+        // not workspaceDir)
         const conf = new Conf({
             configName: path.basename(configPath, '.json'),
-            cwd: workspaceDir,
+            cwd: path.dirname(configPath),
             accessPropertiesByDotNotation: false
         });
         conf.store = configData;
@@ -894,7 +906,10 @@ class WorkspaceManager extends EventEmitter {
         }
 
         const home = path.resolve(user.homePath);
-        const roots = [path.join(home, 'Workspaces'), path.join(home, 'workspaces')];
+        // The user's configured workspaces root (which may sit anywhere —
+        // ~/Workspaces on a personal instance), plus the in-home legacy
+        // lowercase dir that older installs still use.
+        const roots = [await this.userWorkspacesPath(userId), path.join(home, 'workspaces')];
         const { candidates, skipped } = await discoverWorkspaceCandidates(roots);
         report.skipped.push(...skipped);
 
@@ -940,6 +955,32 @@ class WorkspaceManager extends EventEmitter {
     }
 
     /**
+     * Where this user's workspaces live — their `workspaces` module root.
+     * Single authority for both discovery and default placement of new
+     * workspaces; falls back to <userHome>/Workspaces when the users service
+     * cannot resolve it (older callers, stub services).
+     * @param {string} userId
+     * @param {string} [userEmail] - only used by the last-resort fallback
+     * @returns {Promise<string>}
+     */
+    async userWorkspacesPath(userId, userEmail = null) {
+        try {
+            const resolved = this.#users.getUserPaths?.(userId)?.workspaces;
+            if (resolved) return resolved;
+        } catch (err) {
+            this.#logger.debug({ userId, error: err.message }, 'Falling back to the in-home workspaces root');
+        }
+        // Fallbacks for callers/services that predate the module-root resolver.
+        try {
+            const user = await this.#users.get(userId);
+            if (user?.homePath) return path.join(user.homePath, USER_MODULE_DIRS.workspaces);
+        } catch { /* unknown user — fall through to the email-based default */ }
+        return userEmail
+            ? path.join(this.#defaultRootPath, userEmail, USER_MODULE_DIRS.workspaces)
+            : path.join(this.#defaultRootPath, 'workspaces');
+    }
+
+    /**
      * Register a workspace by absolute path (foreign-local support). The dir
      * must contain a valid workspace.json. Paths inside the user's workspace
      * dirs classify as `local`, anything else as `foreign-local`.
@@ -960,8 +1001,9 @@ class WorkspaceManager extends EventEmitter {
         if (!existsSync(dir)) {
             throw new Error(`Workspace directory not found: ${dir}`);
         }
-        const configPath = path.join(dir, WORKSPACE_CONFIG_FILENAME);
-        if (!existsSync(configPath)) {
+        // Either layout: <dir>/workspace.json or <dir>/.workspace/workspace.json
+        const configPath = findWorkspaceConfigPath(dir);
+        if (!configPath) {
             throw new Error(`No ${WORKSPACE_CONFIG_FILENAME} found in: ${dir}`);
         }
 
@@ -1155,6 +1197,17 @@ class WorkspaceManager extends EventEmitter {
         let importedFrom = null;
         let kind = 'discovered';
 
+        // Layout: the config is authoritative, but a workspace.json sitting in
+        // `.workspace/` can only be a home-layout one — infer and stamp it so a
+        // hand-built (or pre-layout) dir resolves its paths correctly.
+        const inferredLayout = path.basename(path.dirname(configPath)) === WORKSPACE_INTERNAL_DIRNAME
+            ? WORKSPACE_LAYOUTS.HOME
+            : WORKSPACE_LAYOUTS.FULL;
+        if (normalizeWorkspaceLayout(cfg.layout) !== inferredLayout || !cfg.layout) {
+            cfg.layout = inferredLayout;
+            changed = true;
+        }
+
         // ID collision handling
         const existingOwner = this.#idIndex.get(cfg.id);
         const existingEntry = existingOwner ? this.#getUserIndex(existingOwner).get(cfg.id) : null;
@@ -1214,7 +1267,7 @@ class WorkspaceManager extends EventEmitter {
             cfg.updatedAt = new Date().toISOString();
             const conf = new Conf({
                 configName: path.basename(configPath, '.json'),
-                cwd: dir,
+                cwd: path.dirname(configPath), // `.workspace/` in the home layout
                 accessPropertiesByDotNotation: false
             });
             conf.store = cfg;
@@ -1407,9 +1460,10 @@ class WorkspaceManager extends EventEmitter {
         this.hookService?.untrackWorkspace(workspaceId);
     }
 
-    async #createSubdirectories(dir) {
-        for (const key in WORKSPACE_DIRECTORIES) {
-            await fsPromises.mkdir(path.join(dir, WORKSPACE_DIRECTORIES[key]), { recursive: true });
+    async #createSubdirectories(dir, layout) {
+        const directories = workspaceDirectories(layout);
+        for (const key in directories) {
+            await fsPromises.mkdir(path.join(dir, directories[key]), { recursive: true });
         }
     }
 

@@ -4,7 +4,31 @@ import path from 'path';
 import * as fsPromises from 'fs/promises';
 import { existsSync } from 'fs';
 
-import { WORKSPACE_CONFIG_FILENAME } from './constants.js';
+import { WORKSPACE_CONFIG_FILENAME, WORKSPACE_INTERNAL_DIRNAME, WORKSPACE_LAYOUTS } from './constants.js';
+
+/**
+ * Where a workspace's config file lives for a given layout:
+ *   full — <dir>/workspace.json
+ *   home — <dir>/.workspace/workspace.json  (the root belongs to the user)
+ */
+function workspaceConfigPathFor(dir, layout) {
+    return layout === WORKSPACE_LAYOUTS.HOME
+        ? path.join(dir, WORKSPACE_INTERNAL_DIRNAME, WORKSPACE_CONFIG_FILENAME)
+        : path.join(dir, WORKSPACE_CONFIG_FILENAME);
+}
+
+/**
+ * Find an existing workspace config in `dir`, checking both layouts. Returns
+ * the absolute path or null. `full` wins if (pathologically) both exist — it is
+ * the layout the older tooling writes.
+ */
+function findWorkspaceConfigPath(dir) {
+    for (const layout of [WORKSPACE_LAYOUTS.FULL, WORKSPACE_LAYOUTS.HOME]) {
+        const candidate = workspaceConfigPathFor(dir, layout);
+        if (existsSync(candidate)) return candidate;
+    }
+    return null;
+}
 
 /**
  * Workspace discovery — filesystem side only. Walks the immediate
@@ -52,8 +76,8 @@ async function discoverWorkspaceCandidates(roots) {
             }
             if (seenDirs.has(realDir)) continue;
 
-            const configPath = path.join(dir, WORKSPACE_CONFIG_FILENAME);
-            if (!existsSync(configPath)) continue;
+            const configPath = findWorkspaceConfigPath(dir);
+            if (!configPath) continue;
 
             let config;
             try {
@@ -77,4 +101,4 @@ async function discoverWorkspaceCandidates(roots) {
     return { candidates, skipped };
 }
 
-export { discoverWorkspaceCandidates, validateWorkspaceConfig };
+export { discoverWorkspaceCandidates, validateWorkspaceConfig, findWorkspaceConfigPath, workspaceConfigPathFor };

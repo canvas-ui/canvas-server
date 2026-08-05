@@ -12,11 +12,48 @@ const WORKSPACE_DEFAULT_HOST = 'canvas.local';
 // - user.email@remote.server.com:shared-workspace/subfolder
 const WORKSPACE_CONFIG_FILENAME = 'workspace.json';
 
+// Hidden per-workspace internals dir used by the `home` layout. Everything the
+// workspace needs to run (config, db, cache, data, git, var, roles) lives
+// below it, so the workspace ROOT can be handed to the user as a plain folder.
+const WORKSPACE_INTERNAL_DIRNAME = '.workspace';
+
+/**
+ * Folder-structure variants a workspace can be created with. Recorded in
+ * workspace.json as `layout`, fixed at creation time (both are fully supported
+ * at runtime — every path still resolves through `internals`/`services`, this
+ * only decides the DEFAULTS those maps are seeded with).
+ *
+ *  full — the classic layout. Every runtime dir is a visible child of the
+ *         workspace root, the user's drive is `$WORKSPACE_ROOT/home`:
+ *           $WS/workspace.json
+ *           $WS/{home,data,db,cache,git,var,config,roles}
+ *
+ *  home — workspace-as-a-roaming-profile. The workspace ROOT *is* the user's
+ *         home drive (what WebDAV exports, what `workspace:home` indexes), and
+ *         everything else hides in `$WORKSPACE_ROOT/.workspace/`:
+ *           $WS/**                      <- the user's files, nothing else
+ *           $WS/.workspace/workspace.json
+ *           $WS/.workspace/{data,db,cache,git,var,config,roles}
+ *         `.workspace` is always excluded from the indexed backends (see
+ *         WORKSPACE_INTERNAL_EXCLUSIONS), so the workspace never indexes itself.
+ */
+const WORKSPACE_LAYOUTS = {
+    FULL: 'full',
+    HOME: 'home',
+};
+
+const WORKSPACE_DEFAULT_LAYOUT = WORKSPACE_LAYOUTS.FULL;
+
+function normalizeWorkspaceLayout(layout) {
+    return layout === WORKSPACE_LAYOUTS.HOME ? WORKSPACE_LAYOUTS.HOME : WORKSPACE_DEFAULT_LAYOUT;
+}
+
 // Default on-disk layout, relative to the workspace root. Every entry is an
 // override point: a workspace.json `directories` map can remap any of these
 // (absolute, workspace-relative, or a `{WORKSPACE_ROOT}` template) — e.g. stash
 // all runtime dirs under `.workspace/` and leave the root itself as the user's
-// home. Resolved through Workspace#resolveDir; nothing here is a hidden dir.
+// home (which is exactly what the `home` layout below does). Resolved through
+// Workspace#resolveDir; nothing here is a hidden dir.
 const WORKSPACE_DIRECTORIES = {
     db: 'db',
     config: 'config',
@@ -34,6 +71,22 @@ const WORKSPACE_DIRECTORIES = {
     varHooks: 'var/hooks', // hook/rule run log (runs.jsonl)
     varTmp: 'var/tmp', // scratch space for hook scripts (CANVAS_WORK_DIR)
 };
+
+// `home` layout equivalent of WORKSPACE_DIRECTORIES: the same set of dirs,
+// tucked under `.workspace/` — except `home`, which IS the workspace root.
+const WORKSPACE_DIRECTORIES_HOME = Object.fromEntries(
+    Object.entries(WORKSPACE_DIRECTORIES).map(([key, rel]) => [
+        key,
+        key === 'home' ? '.' : `${WORKSPACE_INTERNAL_DIRNAME}/${rel}`,
+    ]),
+);
+
+/** Default dir map (relative to the workspace root) for a layout. */
+function workspaceDirectories(layout) {
+    return normalizeWorkspaceLayout(layout) === WORKSPACE_LAYOUTS.HOME
+        ? WORKSPACE_DIRECTORIES_HOME
+        : WORKSPACE_DIRECTORIES;
+}
 
 const WORKSPACE_GIT_BARE_DIR = 'bare.git';
 
@@ -57,6 +110,17 @@ const DEFAULT_SYNC_EXCLUSIONS = [
     '**/CachedData/**',
 ];
 
+// Structural exclusions prepended to every enumerable file backend's ignore
+// list, on top of DEFAULT_SYNC_EXCLUSIONS and regardless of layout. In the
+// `home` layout the home backend's root IS the workspace root, so without this
+// the workspace would index its own db/cache/git. Dotfiles are excluded by
+// default anyway; these are the load-bearing patterns, spelled out so they
+// survive any future relaxation of the dotfile rule.
+const WORKSPACE_INTERNAL_EXCLUSIONS = [
+    WORKSPACE_INTERNAL_DIRNAME,
+    `${WORKSPACE_INTERNAL_DIRNAME}/**`,
+];
+
 // Workspace INTERNALS — the non-service runtime dirs a workspace.json
 // `internals` map can remap (absolute, workspace-relative, or a
 // `{WORKSPACE_ROOT}` template). Storage locations (home/data/cache) are NOT
@@ -67,6 +131,21 @@ const WORKSPACE_INTERNALS = {
     var: '{WORKSPACE_ROOT}/var',
     tmp: '{WORKSPACE_ROOT}/var/tmp',
 };
+
+// Same map for the `home` layout — every internal dir under `.workspace/`.
+const WORKSPACE_INTERNALS_HOME = {
+    db: `{WORKSPACE_ROOT}/${WORKSPACE_INTERNAL_DIRNAME}/db`,
+    config: `{WORKSPACE_ROOT}/${WORKSPACE_INTERNAL_DIRNAME}/config`,
+    var: `{WORKSPACE_ROOT}/${WORKSPACE_INTERNAL_DIRNAME}/var`,
+    tmp: `{WORKSPACE_ROOT}/${WORKSPACE_INTERNAL_DIRNAME}/var/tmp`,
+};
+
+/** `internals` defaults for a layout. */
+function workspaceInternals(layout) {
+    return normalizeWorkspaceLayout(layout) === WORKSPACE_LAYOUTS.HOME
+        ? WORKSPACE_INTERNALS_HOME
+        : WORKSPACE_INTERNALS;
+}
 
 // Storage backends only (services.stored.backends default). stored's cache is
 // NOT a backend — it is a first-class stored property (services.stored.cache).
@@ -117,6 +196,30 @@ const WORKSPACE_STORED_DEFAULT = {
     backends: { ...WORKSPACE_STORAGE_BACKENDS },
 };
 
+/**
+ * `services.stored.backends` defaults for a layout. The `home` layout points
+ * workspace:home at the workspace root itself (that root is the roaming drive)
+ * and moves the managed blob store into `.workspace/data`.
+ */
+function workspaceStorageBackends(layout) {
+    const backends = structuredClone(WORKSPACE_STORAGE_BACKENDS);
+    if (normalizeWorkspaceLayout(layout) !== WORKSPACE_LAYOUTS.HOME) { return backends; }
+    backends['workspace:home'].root = '{WORKSPACE_ROOT}';
+    backends['workspace:data'].root = `{WORKSPACE_ROOT}/${WORKSPACE_INTERNAL_DIRNAME}/data`;
+    return backends;
+}
+
+/** `services.stored` defaults for a layout. */
+function workspaceStoredDefault(layout) {
+    const dirs = workspaceDirectories(layout);
+    return {
+        ...structuredClone(WORKSPACE_STORED_DEFAULT),
+        root: `{WORKSPACE_ROOT}/${dirs.stored}`,
+        cache: `{WORKSPACE_ROOT}/${dirs.cache}`,
+        backends: workspaceStorageBackends(layout),
+    };
+}
+
 // Available workspace services
 const WORKSPACE_SERVICES = {
     stored: { ...WORKSPACE_STORED_DEFAULT },
@@ -142,6 +245,15 @@ const WORKSPACE_SERVICES = {
         backend: 'workspace:home',
     },
 };
+
+/** `services` defaults for a layout (stored + git roots follow the layout). */
+function workspaceServices(layout) {
+    const dirs = workspaceDirectories(layout);
+    const services = structuredClone(WORKSPACE_SERVICES);
+    services.stored = workspaceStoredDefault(layout);
+    services.git.root = `{WORKSPACE_ROOT}/${dirs.git}`;
+    return services;
+}
 
 // How this server relates to a workspace directory. Index-only — never
 // written into workspace.json (a transplanted dir must not carry the previous
@@ -172,6 +284,7 @@ const WORKSPACE_CONFIG_TEMPLATE = {
     owner: null, // User ID (email)
     type: 'workspace', // "workspace" or "universe" (user home directory)
     label: 'Workspace',
+    layout: WORKSPACE_DEFAULT_LAYOUT, // 'full' | 'home' — see WORKSPACE_LAYOUTS
     color: null,
     icon: null, // URL string
     homeScreen: {}, // Arbitrary JSON for UI defaults
@@ -191,7 +304,19 @@ export {
     DEFAULT_SYNC_EXCLUSIONS,
     WORKSPACE_DEFAULT_HOST,
     WORKSPACE_CONFIG_FILENAME,
+    WORKSPACE_INTERNAL_DIRNAME,
+    WORKSPACE_INTERNAL_EXCLUSIONS,
+    WORKSPACE_LAYOUTS,
+    WORKSPACE_DEFAULT_LAYOUT,
+    normalizeWorkspaceLayout,
+    workspaceDirectories,
+    workspaceInternals,
+    workspaceStorageBackends,
+    workspaceStoredDefault,
+    workspaceServices,
     WORKSPACE_DIRECTORIES,
+    WORKSPACE_DIRECTORIES_HOME,
+    WORKSPACE_INTERNALS_HOME,
     WORKSPACE_GIT_BARE_DIR,
     WORKSPACE_ORIGINS,
     WORKSPACE_STATUS_CODES,

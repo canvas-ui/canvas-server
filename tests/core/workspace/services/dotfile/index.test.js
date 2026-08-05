@@ -15,6 +15,9 @@ describe('DotfileManager seed backfill', () => {
         workspace = {
             id: 'ws-backfill',
             rootPath,
+            // Layout-aware paths come off the Workspace instance now (a home-layout
+            // workspace keeps its git dir in .workspace/git).
+            gitPath: path.join(rootPath, 'git'),
             hooksPath: path.join(rootPath, 'git', 'hooks'),
         };
         manager = new DotfileManager({

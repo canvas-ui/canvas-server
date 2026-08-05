@@ -1,6 +1,5 @@
 'use strict';
 
-import path from 'path';
 import { promises as fs } from 'fs';
 import { WebDAVHandler } from '../webdav/server.js';
 import ResponseObject from '../ResponseObject.js';
@@ -30,7 +29,9 @@ export default async function webdavRoutes(fastify) {
       catch (err) { logger.warn({ err, workspaceId }, 'Failed to auto-start workspace for WebDAV'); }
     }
 
-    const homePath = ws.homePath || path.join(ws.rootPath, 'home');
+    // The workspace decides where its home drive lives — `home/` under the
+    // root (full layout) or the root itself (home layout).
+    const homePath = ws.homePath;
     await fs.mkdir(homePath, { recursive: true }).catch(() => {});
     return { homePath, workspace: ws, contextManager: fastify.contextManager };
   });

@@ -7,7 +7,7 @@ import { existsSync } from 'fs';
 import * as fsPromises from 'fs/promises';
 import EventEmitter from 'eventemitter2';
 import { createLogger } from '../../../../utils/log.js';
-import { WORKSPACE_DIRECTORIES, WORKSPACE_GIT_BARE_DIR } from '../../lib/constants.js';
+import { WORKSPACE_GIT_BARE_DIR } from '../../lib/constants.js';
 import WorkspaceGitRepo from '../../lib/WorkspaceGitRepo.js';
 import { enabledName } from '../hook/naming.js';
 
@@ -92,7 +92,9 @@ class DotfileManager extends EventEmitter {
     }
 
     #getGitDir(workspace) {
-        return path.join(workspace.rootPath, WORKSPACE_DIRECTORIES.git);
+        // Layout-aware (`git/` vs `.workspace/git/`), and honours a remapped
+        // services.git.root.
+        return workspace.gitPath;
     }
 
     #getBareRepoPath(workspace) {

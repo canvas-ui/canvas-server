@@ -142,7 +142,8 @@ function normalizeAgentName(name) {
  * Agents Service
  *
  * Orchestrates agent lifecycle (create/open/start/stop/restart/delete/update/list).
- * Agents live at: {server.root}/users/{user.email}/agents/{agent-slug}/
+ * Agents live under the owner's `agents` module root — by default
+ * {user.home}/Agents/{agent-slug}, relocatable per user (see core/user/lib/paths.js).
  */
 class Agents extends EventEmitter {
 
@@ -208,6 +209,22 @@ class Agents extends EventEmitter {
     }
 
     /**
+     * Where this user's agents live. Falls back to the legacy
+     * {defaultRootPath}/{email}/agents when the users service cannot resolve
+     * it — existing agents are indexed by absolute rootPath either way, so a
+     * relocation never strands them.
+     */
+    #userAgentsPath(userId, userEmail) {
+        try {
+            const resolved = this.#users.getUserPaths?.(userId)?.agents;
+            if (resolved) return resolved;
+        } catch (error) {
+            logger.debug(`Falling back to the legacy agents root for ${userId}: ${error.message}`);
+        }
+        return path.join(this.#defaultRootPath, userEmail, 'agents');
+    }
+
+    /**
      * Public API — Lifecycle
      */
 
@@ -240,8 +257,9 @@ class Agents extends EventEmitter {
             throw new Error(`Agent "${agentName}" already exists for user ${userId} on host ${host}`);
         }
 
-        // Path: {defaultRootPath}/{user.email}/agents/{slug}
-        const agentDir = options.agentPath || path.join(this.#defaultRootPath, ownerEmail, 'agents', slug);
+        // The owner's configured agents root (default {user.home}/Agents), so a
+        // personal instance can keep its agents in ~/Agents.
+        const agentDir = options.agentPath || path.join(this.#userAgentsPath(owner, ownerEmail), slug);
 
         const agentConfig = this.#mergeAgentConfig(DEFAULT_AGENT_CONFIG.config, options.config || {});
         const configPath = path.join(agentDir, AGENT_DIRECTORIES.config, AGENT_CONFIG_FILENAME);

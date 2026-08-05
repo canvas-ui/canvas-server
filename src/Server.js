@@ -213,6 +213,9 @@ class Server extends EventEmitter {
     async #initializeCoreServices() {
         this.#users = new Users({
             rootPath: env.user.home,
+            // Server-wide defaults for the per-user module roots (workspaces,
+            // roles, agents). A user's own overrides win; see core/user/lib/paths.js.
+            pathDefaults: env.user.paths,
             indexStore: jim.createIndex('users'),
             logger: createLogger('users'),
         });
@@ -270,6 +273,9 @@ class Server extends EventEmitter {
         this.#workspaceManager.setRoles(this.#roles); // Late injection if method exists
 
         this.#agents = new Agents({
+            // Legacy fallback only — agent dirs resolve through the owner's
+            // `agents` module root (users.getUserPaths), which is what a user
+            // repoints at ~/Agents.
             defaultRootPath: path.join(env.server.home, 'users'),
             indexStore: jim.createIndex('agents'),
             users: this.#users,

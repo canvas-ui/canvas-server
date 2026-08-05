@@ -28,12 +28,14 @@ import { getServerDevice } from '../device/ServerDevice.js';
 // Constants
 import {
     WORKSPACE_STATUS_CODES,
-    WORKSPACE_DIRECTORIES,
     WORKSPACE_GIT_BARE_DIR,
-    WORKSPACE_INTERNALS,
-    WORKSPACE_STORAGE_BACKENDS,
-    WORKSPACE_STORED_DEFAULT,
-    WORKSPACE_SERVICES,
+    WORKSPACE_INTERNAL_DIRNAME,
+    WORKSPACE_LAYOUTS,
+    normalizeWorkspaceLayout,
+    workspaceDirectories,
+    workspaceInternals,
+    workspaceStoredDefault,
+    workspaceServices,
 } from './lib/constants.js';
 
 /*
@@ -124,6 +126,20 @@ class Workspace extends EventEmitter {
     get homeScreen() { return this.#configStore.get('homeScreen', {}); }
     get links() { return this.#configStore.get('links', {}); }
     get type() { return this.#configStore.get('type', 'workspace'); }
+    /**
+     * On-disk folder structure this workspace was created with:
+     *   'full' — visible runtime dirs at the root, user drive in `home/`
+     *   'home' — the root IS the user's roaming drive, internals in `.workspace/`
+     * Fixed at creation; only decides the DEFAULTS behind `internals`/`services`,
+     * which remain the authority for every resolved path.
+     */
+    get layout() { return normalizeWorkspaceLayout(this.#configStore.get('layout')); }
+    /** Hidden internals dir (`home` layout). Null for the `full` layout. */
+    get internalsPath() {
+        return this.layout === WORKSPACE_LAYOUTS.HOME
+            ? path.join(this.#rootPath, WORKSPACE_INTERNAL_DIRNAME)
+            : null;
+    }
     get owner() { return this.#configStore.get('owner'); }
     get rootPath() { return this.#rootPath; }
     get status() { return this.#status; }
@@ -139,24 +155,25 @@ class Workspace extends EventEmitter {
     // a fake 'stored.cache' backend; #migrateConfigSchema rewrites that on
     // start, the read-side fallback here covers pre-migration reads.
     #storedConfig() {
+        const defaults = workspaceStoredDefault(this.layout);
         const configured = (this.#configStore.get('services') || {}).stored;
         if (configured && typeof configured === 'object') {
             return {
-                ...WORKSPACE_STORED_DEFAULT,
+                ...defaults,
                 ...configured,
                 // #mergeConfigMap is one level deep — materialize the nested
                 // backends map explicitly against the storage defaults.
-                backends: Workspace.#mergeConfigMap(WORKSPACE_STORAGE_BACKENDS, configured.backends || {}),
+                backends: Workspace.#mergeConfigMap(defaults.backends, configured.backends || {}),
             };
         }
         const legacy = this.#configStore.get('dataBackends') || {};
         const { 'stored.cache': legacyCache, ...legacyBackends } = legacy;
         const legacyDirs = this.#configStore.get('directories', {}) || {};
         return {
-            ...WORKSPACE_STORED_DEFAULT,
-            root: legacyDirs.stored ?? WORKSPACE_STORED_DEFAULT.root,
-            cache: legacyCache?.root ?? legacyDirs.cache ?? WORKSPACE_STORED_DEFAULT.cache,
-            backends: Workspace.#mergeConfigMap(WORKSPACE_STORAGE_BACKENDS, legacyBackends),
+            ...defaults,
+            root: legacyDirs.stored ?? defaults.root,
+            cache: legacyCache?.root ?? legacyDirs.cache ?? defaults.cache,
+            backends: Workspace.#mergeConfigMap(defaults.backends, legacyBackends),
         };
     }
 
@@ -175,7 +192,7 @@ class Workspace extends EventEmitter {
     }
 
     get services() {
-        return Workspace.#mergeConfigMap(WORKSPACE_SERVICES, this.#configStore.get('services') || {});
+        return Workspace.#mergeConfigMap(workspaceServices(this.layout), this.#configStore.get('services') || {});
     }
 
     /**
@@ -299,7 +316,9 @@ class Workspace extends EventEmitter {
         const legacy = this.#configStore.get('directories', {}) || {};
         // internals uses `tmp` for what the legacy directories map called varTmp.
         const internalsKey = key === 'varTmp' ? 'tmp' : key;
-        return this.#resolveWorkspacePath(internals[internalsKey] ?? legacy[key] ?? WORKSPACE_DIRECTORIES[key]);
+        // Layout only supplies the fallback: an explicit internals/directories
+        // entry always wins, so a hand-edited workspace.json stays authoritative.
+        return this.#resolveWorkspacePath(internals[internalsKey] ?? legacy[key] ?? workspaceDirectories(this.layout)[key]);
     }
 
     // Single authority for a storage backend's byte-root: stored's backend config
@@ -339,8 +358,73 @@ class Workspace extends EventEmitter {
         return path.join(this.gitPath, WORKSPACE_GIT_BARE_DIR);
     }
 
+    // Derived from gitPath, not resolved independently: hooks live INSIDE the
+    // git working dir, so a remapped/relocated git root (or the `home` layout's
+    // .workspace/git) must take them with it.
     get hooksPath() {
-        return this.#resolveDir('hooks');
+        const configured = (this.#configStore.get('internals', {}) || {}).hooks
+            ?? (this.#configStore.get('directories', {}) || {}).hooks;
+        return configured ? this.#resolveWorkspacePath(configured) : path.join(this.gitPath, 'hooks');
+    }
+
+    /** Git working-dir scripts (rule/hook scripts), sibling of hooks/. */
+    get scriptsPath() {
+        return path.join(this.gitPath, 'scripts');
+    }
+
+    /** Per-workspace service config dir (`config/*.json`). */
+    get configDir() {
+        return this.#resolveDir('config');
+    }
+
+    get rolesPath() {
+        return this.#resolveDir('roles');
+    }
+
+    get varPath() {
+        return this.#resolveDir('var');
+    }
+
+    /**
+     * Every absolute path this workspace uses for its own runtime state. The
+     * indexed file backends exclude anything in here that falls under their
+     * root — the workspace must never index its own db/cache/git, which is what
+     * would otherwise happen in the `home` layout where the home backend's root
+     * IS the workspace root.
+     */
+    get internalPaths() {
+        return [
+            this.internalsPath,
+            this.dbPath,
+            this.storedRootPath,
+            this.cachePath,
+            this.dataPath,
+            this.gitPath,
+            this.configDir,
+            this.varPath,
+            this.rolesPath,
+        ].filter(Boolean);
+    }
+
+    // Cheap start-time sanity check. A hand-edited (or half-migrated) config can
+    // point an internal dir at a place the home backend would happily index; the
+    // exclusions above already neutralise it, so this only warns — a workspace
+    // must still start.
+    #assertLayoutSane() {
+        const home = this.homePath;
+        if (this.layout !== WORKSPACE_LAYOUTS.HOME) { return; }
+        if (path.resolve(home) !== path.resolve(this.#rootPath)) {
+            this.#logger.warn({ workspaceId: this.id, home, root: this.#rootPath },
+                'home-layout workspace: workspace:home root is not the workspace root');
+        }
+        const internals = this.internalsPath;
+        for (const dir of this.internalPaths) {
+            if (dir === internals) { continue; }
+            if (!path.resolve(dir).startsWith(path.resolve(internals) + path.sep)) {
+                this.#logger.warn({ workspaceId: this.id, dir },
+                    'home-layout workspace: internal dir lives outside .workspace/ (excluded from indexing, but visible to the user)');
+            }
+        }
     }
 
     isDataBackendEnabled(backendName) {
@@ -481,12 +565,13 @@ class Workspace extends EventEmitter {
             const services = this.#configStore.get('services') || {};
             const legacy = this.#configStore.get('dataBackends');
             const legacyDirs = this.#configStore.get('directories', {}) || {};
+            const storedDefaults = workspaceStoredDefault(this.layout);
             if (!services.stored && legacy && typeof legacy === 'object') {
                 const { 'stored.cache': legacyCache, ...backends } = legacy;
                 const stored = {
-                    ...WORKSPACE_STORED_DEFAULT,
-                    root: legacyDirs.stored ?? WORKSPACE_STORED_DEFAULT.root,
-                    cache: legacyCache?.root ?? legacyDirs.cache ?? WORKSPACE_STORED_DEFAULT.cache,
+                    ...storedDefaults,
+                    root: legacyDirs.stored ?? storedDefaults.root,
+                    cache: legacyCache?.root ?? legacyDirs.cache ?? storedDefaults.cache,
                     backends,
                 };
                 this.#configStore.set('services', { ...services, stored });
@@ -496,12 +581,19 @@ class Workspace extends EventEmitter {
                 this.#configStore.delete('dataBackends');
             }
             if (!this.#configStore.get('internals')) {
+                const internalDefaults = workspaceInternals(this.layout);
                 this.#configStore.set('internals', {
-                    db: legacyDirs.db ?? WORKSPACE_INTERNALS.db,
-                    config: legacyDirs.config ?? WORKSPACE_INTERNALS.config,
-                    var: legacyDirs.var ?? WORKSPACE_INTERNALS.var,
-                    tmp: legacyDirs.varTmp ?? WORKSPACE_INTERNALS.tmp,
+                    db: legacyDirs.db ?? internalDefaults.db,
+                    config: legacyDirs.config ?? internalDefaults.config,
+                    var: legacyDirs.var ?? internalDefaults.var,
+                    tmp: legacyDirs.varTmp ?? internalDefaults.tmp,
                 });
+            }
+            // Pre-layout workspaces have no `layout` key; stamping the resolved
+            // value (always 'full' for them) keeps the file self-describing and
+            // makes the field readable without knowing the default.
+            if (!this.#configStore.get('layout')) {
+                this.#configStore.set('layout', this.layout);
             }
         } catch (err) {
             this.#logger.warn({ workspaceId: this.id, error: err.message }, 'workspace.json schema migration skipped');
@@ -512,7 +604,12 @@ class Workspace extends EventEmitter {
         this.#logger.debug({ workspaceId: this.id }, 'Starting workspace');
         try {
             this.#migrateConfigSchema();
+            this.#assertLayoutSane();
             await Promise.all([
+                // `home` layout: the internals dir must exist before anything
+                // below it is created, and it is the one dir the user's drive
+                // (= the root) must never surface.
+                ...(this.internalsPath ? [fsPromises.mkdir(this.internalsPath, { recursive: true })] : []),
                 fsPromises.mkdir(this.cachePath, { recursive: true }),
                 fsPromises.mkdir(this.dataPath, { recursive: true }),
                 fsPromises.mkdir(this.homePath, { recursive: true }),
@@ -2331,6 +2428,11 @@ class Workspace extends EventEmitter {
             homePath: this.homePath,
             storedRootPath: this.storedRootPath,
             dataBackends: this.dataBackends,
+            // Never index ourselves: any of the workspace's own runtime dirs
+            // that happens to live inside an indexed backend root is excluded
+            // structurally. Load-bearing for the `home` layout (home backend
+            // root == workspace root), harmless for `full`.
+            internalPaths: this.internalPaths,
             workspaceId: this.id,
             // This server's device identity — authority for the device-scoped
             // file:// locations of external fs mounts.

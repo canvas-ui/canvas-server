@@ -10,6 +10,7 @@ const logger = createLogger('user-manager:user');
 
 // Constants
 import { USER_STATUS_CODES } from './index.js';
+import { resolveUserPaths, USER_MODULES } from './lib/paths.js';
 
 /**
  * User Class
@@ -25,6 +26,10 @@ class User extends EventEmitter {
     #authMetadata;
     #homePath;
     #avatar;
+    // Per-user module roots: explicit overrides + the server-wide defaults they
+    // fall back to. Resolved on read (see `paths`), never frozen at construction.
+    #pathOverrides;
+    #pathDefaults;
 
     // Runtime state
     #status = 'inactive'; // inactive, active, disabled, deleted
@@ -39,6 +44,8 @@ class User extends EventEmitter {
      * @param {string} options.authMethod - User auth method (local, imap, ldap, oauth2, etc.)
      * @param {Object} [options.authMetadata] - Additional auth metadata (server, domain, provider, etc.)
      * @param {string} options.homePath - User home path (Universe workspace)
+     * @param {Object} [options.paths] - Per-module root overrides ({workspaces, roles, agents})
+     * @param {Object} [options.pathDefaults] - Server-wide module-root defaults (env.user.paths)
      * @param {string} [options.userType='user'] - User type ('user' or 'admin')
      * @param {string} [options.status='inactive'] - User status
      */
@@ -63,6 +70,8 @@ class User extends EventEmitter {
         this.#authMetadata = options.authMetadata || {};
         this.#avatar = options.avatar;
         this.#homePath = path.resolve(options.homePath); // Ensure absolute path
+        this.#pathOverrides = options.paths && typeof options.paths === 'object' ? options.paths : {};
+        this.#pathDefaults = options.pathDefaults && typeof options.pathDefaults === 'object' ? options.pathDefaults : {};
         this.#userType = options.userType || 'user';
         this.#status = options.status || 'inactive';
         logger.debug(`User instance created: ${this.#id} (${this.#name} - ${this.#email}) via ${this.#authMethod} with home path: ${this.#homePath}`);
@@ -79,6 +88,29 @@ class User extends EventEmitter {
     get authMethod() { return this.#authMethod; }
     get authMetadata() { return this.#authMetadata; }
     get homePath() { return this.#homePath; }
+    /**
+     * Absolute roots of the three per-user modules — {workspaces, roles, agents}.
+     * This is the single authority: discovery, creation and the frontend all
+     * read it rather than joining 'Workspaces' onto a home path themselves.
+     */
+    get paths() {
+        return resolveUserPaths({
+            homePath: this.#homePath,
+            overrides: this.#pathOverrides,
+            defaults: this.#pathDefaults,
+        });
+    }
+    /** The user's own overrides only (what is persisted; unset modules absent). */
+    get pathOverrides() {
+        const out = {};
+        for (const module of USER_MODULES) {
+            if (this.#pathOverrides?.[module]) { out[module] = this.#pathOverrides[module]; }
+        }
+        return out;
+    }
+    get workspacesPath() { return this.paths.workspaces; }
+    get rolesPath() { return this.paths.roles; }
+    get agentsPath() { return this.paths.agents; }
     get avatar() { return this.#avatar; }
     get status() { return this.#status; }
     get uptime() { return Date.now() - this.#startTime; }
@@ -149,6 +181,11 @@ class User extends EventEmitter {
             authMethod: this.#authMethod,
             authMetadata: this.#authMetadata,
             homePath: this.#homePath,
+            // OVERRIDES only — toJSON is what gets persisted to the user index,
+            // and writing the resolved paths back would freeze them as explicit
+            // overrides, so a later change of the server default would no longer
+            // apply. Resolved values come from `paths` / users.getUserPaths().
+            paths: this.pathOverrides,
             avatar: this.#avatar,
             status: this.#status
         };

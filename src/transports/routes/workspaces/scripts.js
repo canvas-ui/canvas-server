@@ -32,7 +32,9 @@ function validateScriptPath(inputPath) {
 }
 
 function scriptsRoot(workspace) {
-  return path.join(workspace.rootPath, 'git', 'scripts');
+  // Layout-aware: the git dir is `git/` at the root (full layout) or
+  // `.workspace/git/` (home layout).
+  return workspace.scriptsPath;
 }
 
 async function listScriptFiles(basePath) {

@@ -10,7 +10,7 @@ import { parseLocationUrl, deviceFileUrl } from '../../../services/synapsd/src/u
 import { mimeFromLocations } from './classifier.js';
 import { pickGeo } from './geo.js';
 import { BACKENDS_TREE_NAME, normalizeSegment } from '../../../utils/backend-documents.js';
-import { DEFAULT_SYNC_EXCLUSIONS } from './constants.js';
+import { DEFAULT_SYNC_EXCLUSIONS, WORKSPACE_INTERNAL_EXCLUSIONS } from './constants.js';
 
 /*
  * WorkspaceStoredIndex — watches a workspace home directory and syncs file
@@ -51,6 +51,10 @@ export class WorkspaceStoredIndex {
     #dataPath;
     #homePath;
     #storedRootPath;
+    // Absolute paths of the workspace's own runtime dirs. Any that fall under
+    // an indexed backend's root are excluded from watch/list/scan — see
+    // #structuralExclusions.
+    #internalPaths;
     #dataBackends;
     #workspaceId;
     // Current server device ({deviceId, name}) — the file://<deviceId>/<path>
@@ -91,7 +95,7 @@ export class WorkspaceStoredIndex {
     // each successful resync; also used by explicit gcOrphanedDocuments calls.
     #getOrphanRetentionDays;
 
-    constructor({ rootPath, cachePath, dataPath, homePath, storedRootPath, dataBackends = {}, workspaceId, device = null, logger, put, unlink, getBackendsTreeSelector, getDb, describeImapLocation = null, destroyImapLocation = null, lockBackendNode = null, unlockBackendNode = null, insertBackendPath = null, onResyncStateChange = null, persistBackendConfig = null, getOrphanRetentionDays = null }) {
+    constructor({ rootPath, cachePath, dataPath, homePath, storedRootPath, internalPaths = [], dataBackends = {}, workspaceId, device = null, logger, put, unlink, getBackendsTreeSelector, getDb, describeImapLocation = null, destroyImapLocation = null, lockBackendNode = null, unlockBackendNode = null, insertBackendPath = null, onResyncStateChange = null, persistBackendConfig = null, getOrphanRetentionDays = null }) {
         if (!dataPath || !homePath) throw new Error('dataPath and homePath are required');
         if (!put || !unlink || !getBackendsTreeSelector || !getDb) throw new Error('put, unlink, getBackendsTreeSelector, getDb are required');
 
@@ -100,6 +104,10 @@ export class WorkspaceStoredIndex {
         this.#dataPath = dataPath;
         this.#homePath = homePath;
         this.#storedRootPath = storedRootPath || path.join(this.#rootPath, 'db', 'stored');
+        this.#internalPaths = [
+            ...new Set([this.#cachePath, this.#dataPath, this.#storedRootPath, ...internalPaths]
+                .filter(Boolean).map((p) => path.resolve(p))),
+        ];
         this.#dataBackends = dataBackends;
         this.#workspaceId = workspaceId;
         this.#device = device;
@@ -560,10 +568,11 @@ export class WorkspaceStoredIndex {
     // Shared registration config: resolved root + effective exclusions (defaults
     // ∪ per-backend user patterns) wired into the driver's shared ignore matcher.
     #backendRegistrationConfig(backendName, config = {}) {
+        const root = this.#resolveBackendRoot(backendName, config);
         return {
             ...config,
-            root: this.#resolveBackendRoot(backendName, config),
-            ignored: this.#effectiveExclusions(config),
+            root,
+            ignored: this.#effectiveExclusions(config, root),
             // External (device-anchored) mounts must never auto-create their
             // mountpoint: a created-empty dir at an unmounted path would make
             // "absent" scan as "empty". Managed workspace stores may create.
@@ -574,16 +583,38 @@ export class WorkspaceStoredIndex {
         };
     }
 
-    #effectiveExclusions(config = {}) {
+    #effectiveExclusions(config = {}, backendRoot = null) {
         if (config.driver !== 'file') return undefined;
         const user = Array.isArray(config.exclude) ? config.exclude.filter((p) => typeof p === 'string' && p.trim()) : [];
-        return [...DEFAULT_SYNC_EXCLUSIONS, ...user];
+        return [...this.#structuralExclusions(backendRoot), ...DEFAULT_SYNC_EXCLUSIONS, ...user];
     }
 
-    /** Effective exclusion patterns for a backend (defaults + user), for the API. */
+    /**
+     * Root-anchored patterns for the workspace's own runtime dirs that live
+     * inside this backend's root. The `home` layout puts the home backend's
+     * root AT the workspace root, so `.workspace/` (and anything a config
+     * remapped out of it) has to be pruned explicitly — dotfiles are excluded
+     * by default too, but that rule is user-facing policy while this one is
+     * structural: without it the workspace indexes its own database.
+     */
+    #structuralExclusions(backendRoot) {
+        const patterns = [...WORKSPACE_INTERNAL_EXCLUSIONS];
+        if (!backendRoot) return patterns;
+        const root = path.resolve(backendRoot);
+        for (const internal of this.#internalPaths) {
+            if (internal === root || !internal.startsWith(root + path.sep)) continue;
+            const rel = path.relative(root, internal).split(path.sep).join('/');
+            if (!rel || rel.startsWith('..')) continue;
+            patterns.push(rel, `${rel}/**`);
+        }
+        return [...new Set(patterns)];
+    }
+
+    /** Effective exclusion patterns for a backend (structural + defaults + user), for the API. */
     getEffectiveExclusions(backendName) {
         const config = this.#dataBackends[backendName];
-        return config ? (this.#effectiveExclusions(config) ?? []) : [];
+        if (!config) return [];
+        return this.#effectiveExclusions(config, this.#resolveBackendRoot(backendName, config)) ?? [];
     }
 
     #isConfiguredLocalBackend(backendName) {

@@ -5,6 +5,7 @@ import { pipeline } from 'stream/promises';
 import path from 'path';
 import ResponseObject from '../../ResponseObject.js';
 import { requireWorkspaceRead, requireWorkspaceWrite } from '../../middleware/workspace-acl.js';
+import { internalPathMatcher } from '../../../core/workspace/lib/internal-paths.js';
 
 const MIME = {
   '.html': 'text/html', '.css': 'text/css', '.js': 'application/javascript',
@@ -19,10 +20,16 @@ const MIME = {
 };
 const mime = (p) => MIME[path.extname(p).toLowerCase()] || 'application/octet-stream';
 
-function resolveSafe(homePath, relPath) {
+// Resolve a client-supplied path against the workspace's home drive. Returns
+// null for anything outside it AND for the workspace's own internals — in the
+// `home` layout those live inside the exported tree, and browsing (let alone
+// deleting) them is never a user operation.
+function resolveSafe(workspace, relPath) {
+  const homePath = workspace.homePath;
   const abs = path.resolve(homePath, relPath);
   const rel = path.relative(homePath, abs);
   if (rel.startsWith('..') || path.isAbsolute(rel)) return null;
+  if (internalPathMatcher(homePath, workspace)(abs)) return null;
   return abs;
 }
 
@@ -46,7 +53,7 @@ export default async function homeRoutes(fastify) {
   fastify.get('/', {
     onRequest: [fastify.authenticate, requireWorkspaceRead()],
   }, async (request, reply) => {
-    return listDir(request.workspace.homePath, '.', reply);
+    return listDir(request.workspace, '.', reply);
   });
 
   fastify.get('/*', {
@@ -54,9 +61,9 @@ export default async function homeRoutes(fastify) {
   }, async (request, reply) => {
     const workspace = request.workspace;
     const relPath = request.params['*'];
-    if (!relPath) return listDir(workspace.homePath, '.', reply);
+    if (!relPath) return listDir(workspace, '.', reply);
 
-    const abs = resolveSafe(workspace.homePath, relPath);
+    const abs = resolveSafe(workspace, relPath);
     if (!abs) return reply.code(403).send(new ResponseObject().forbidden('Path traversal').getResponse());
 
     let stat;
@@ -71,7 +78,7 @@ export default async function homeRoutes(fastify) {
     }
 
     if (stat.isDirectory()) {
-      return listDir(workspace.homePath, relPath, reply);
+      return listDir(workspace, relPath, reply);
     }
 
     const entry = await statEntry(abs, path.basename(relPath));
@@ -90,7 +97,7 @@ export default async function homeRoutes(fastify) {
     const relPath = request.params['*'];
     if (!relPath) return reply.code(400).send(new ResponseObject().badRequest('Path required').getResponse());
 
-    const abs = resolveSafe(request.workspace.homePath, relPath);
+    const abs = resolveSafe(request.workspace, relPath);
     if (!abs) return reply.code(403).send(new ResponseObject().forbidden('Path traversal').getResponse());
 
     await fs.mkdir(path.dirname(abs), { recursive: true });
@@ -119,7 +126,7 @@ export default async function homeRoutes(fastify) {
       return reply.code(400).send(new ResponseObject().badRequest('path required in body').getResponse());
     }
 
-    const abs = resolveSafe(request.workspace.homePath, dirPath);
+    const abs = resolveSafe(request.workspace, dirPath);
     if (!abs) return reply.code(403).send(new ResponseObject().forbidden('Path traversal').getResponse());
 
     await fs.mkdir(abs, { recursive: true });
@@ -137,7 +144,7 @@ export default async function homeRoutes(fastify) {
     const relPath = request.params['*'];
     if (!relPath) return reply.code(400).send(new ResponseObject().badRequest('Path required').getResponse());
 
-    const abs = resolveSafe(request.workspace.homePath, relPath);
+    const abs = resolveSafe(request.workspace, relPath);
     if (!abs) return reply.code(403).send(new ResponseObject().forbidden('Path traversal').getResponse());
 
     try {
@@ -154,14 +161,16 @@ export default async function homeRoutes(fastify) {
   // Helpers
   // ─────────────────────────────────────────────────────────────────────────
 
-  async function listDir(homePath, relPath, reply) {
-    const abs = resolveSafe(homePath, relPath);
+  async function listDir(workspace, relPath, reply) {
+    const abs = resolveSafe(workspace, relPath);
     if (!abs) return reply.code(403).send(new ResponseObject().forbidden('Path traversal').getResponse());
+    const isInternal = internalPathMatcher(workspace.homePath, workspace);
 
     let entries;
     try {
       const dirents = await fs.readdir(abs, { withFileTypes: true });
       entries = await Promise.all(dirents.map(async (d) => {
+        if (isInternal(path.join(abs, d.name))) return null;
         try { return await statEntry(path.join(abs, d.name), d.name); }
         catch { return null; }
       }));

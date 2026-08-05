@@ -35,6 +35,7 @@ beforeEach(() => {
     entries: [{ id: 'ws-1', name: 'my-ws', owner: USER, status: 'inactive', isActive: false, rootPath: wsDir }],
     registered: [],
     async listWorkspaces() { return this.entries; },
+    async userWorkspacesPath(userId, userEmail) { return path.join(root, userEmail, 'Workspaces'); },
     async registerWorkspacePath(userId, absolutePath) {
       this.registered.push({ userId, absolutePath });
       return { id: 'imported-id', rootPath: absolutePath };

@@ -41,7 +41,18 @@ export const env = {
         },
     },
     user: {
-        home: USER_HOME
+        home: USER_HOME,
+        // Server-wide defaults for the three per-user module roots. Empty →
+        // <userHome>/{Workspaces,Roles,Agents}. Values may be absolute,
+        // `~`-prefixed, or use {USER_HOME} / {HOME} — so a personal instance
+        // can run with CANVAS_USER_WORKSPACES=~/Workspaces and keep its
+        // workspaces where the user actually looks for them. A user's own
+        // override (the `paths` map in their record) still wins over these.
+        paths: {
+            workspaces: process.env.CANVAS_USER_WORKSPACES || null,
+            roles: process.env.CANVAS_USER_ROLES || null,
+            agents: process.env.CANVAS_USER_AGENTS || null,
+        },
     },
     embedd: {
         // Server-managed embedding service (shared model runtimes, one queue per

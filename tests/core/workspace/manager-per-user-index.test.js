@@ -78,6 +78,29 @@ test('createWorkspace writes to the per-user index file keyed by workspaceId', a
   assert.deepEqual(list.map((w) => w.name), ['projectx']);
 });
 
+test('new workspaces land in the user\'s configured workspaces root', async (t) => {
+  // A personal instance points the workspaces module at ~/Workspaces; both
+  // creation and discovery must follow it, not <usersRoot>/<email>/Workspaces.
+  const { tmp, user, users, manager } = await makeEnv();
+  t.after(() => rmSync(tmp, { recursive: true, force: true }));
+
+  const relocated = path.join(tmp, 'home-of-user', 'Workspaces');
+  users.getUserPaths = () => ({
+    workspaces: relocated,
+    roles: path.join(tmp, 'home-of-user', 'Roles'),
+    agents: path.join(tmp, 'home-of-user', 'Agents'),
+  });
+
+  const ws = await manager.createWorkspace('relocated', user.id, { userEmail: user.email });
+  assert.equal(ws.rootPath, path.join(relocated, 'relocated'));
+
+  // …and a scan finds it there (it is not under the default root at all).
+  const report = await manager.scanUserWorkspaces(user.id);
+  assert.equal(report.missing.length, 0);
+  const list = await manager.listWorkspaces(user.id);
+  assert.deepEqual(list.map((w) => w.name), ['relocated']);
+});
+
 test('a workspace named universe is deletable like any other', async (t) => {
   const { tmp, user, manager } = await makeEnv();
   t.after(() => rmSync(tmp, { recursive: true, force: true }));

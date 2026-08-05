@@ -215,7 +215,9 @@ export async function importWorkspace(manager, { userId, userEmail, source }) {
     throw fail(`Unsafe archive folder name: ${folderName}`, 'BAD_ARCHIVE', 400);
   }
 
-  const workspacesDir = path.join(manager.rootPath, userEmail, 'Workspaces');
+  // The user's configured workspaces root — an import lands where that user's
+  // workspaces actually live, not where they lived by default.
+  const workspacesDir = await manager.userWorkspacesPath(userId, userEmail);
   const target = path.join(workspacesDir, folderName);
   if (fs.existsSync(target)) {
     throw fail(`Target already exists: ${target}`, 'TARGET_EXISTS', 409);

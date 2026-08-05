@@ -3,6 +3,7 @@
 // Utils
 import path from 'path';
 import { existsSync } from 'fs';
+import fsPromises from 'fs/promises';
 import EventEmitter from 'eventemitter2';
 import validator from 'validator';
 import { generateNanoid } from '../../utils/id.js';
@@ -13,6 +14,7 @@ const logger = createLogger('user-manager');
 
 // Includes
 import User from './User.js';
+import { resolveUserPaths, applyPathOverrides, USER_MODULES } from './lib/paths.js';
 
 /**
  * Constants
@@ -29,6 +31,7 @@ class Users extends EventEmitter {
 
     #rootPath;      // User $home directory
     #indexStore;    // User index store
+    #pathDefaults;  // Server-wide per-module root defaults (env.user.paths)
 
     // Runtime
     #users = new Map();     // Initialized User Instances, keeps this implementation as slim as possible
@@ -41,6 +44,8 @@ class Users extends EventEmitter {
      * Create a new Users service
      * @param {Object} options - Manager options
      * @param {string} options.rootPath - Root path for user homes
+     * @param {Object} [options.pathDefaults] - Server-wide module-root defaults
+     *   ({workspaces, roles, agents}); a user's own `paths` override wins over these
      * @param {Object} [options.workspaceManager] - Workspace manager (can be set later)
      * @param {Object} [options.authManager] - Auth manager (can be set later)
      */
@@ -56,6 +61,7 @@ class Users extends EventEmitter {
 
         this.#rootPath = options.rootPath;
         this.#indexStore = options.indexStore;
+        this.#pathDefaults = options.pathDefaults || {};
         this.#workspaceManager = options.workspaceManager; // Can be initially undefined
         this.#contextManager = options.contextManager; // Can be initially undefined
 
@@ -69,6 +75,18 @@ class Users extends EventEmitter {
     async initialize() {
         if (this.#initialized) { return true; }
 
+        // Materialize each user's module dirs. Cheap (mkdir -p x3 per user) and
+        // it is what makes a repointed server — CANVAS_USER_WORKSPACES=~/Workspaces
+        // on a personal instance — show up as real folders for users that
+        // already existed, instead of only for the next one created.
+        for (const userId of Object.keys(this.#indexStore.store || {})) {
+            try {
+                await this.ensureUserDirectories(userId);
+            } catch (error) {
+                logger.warn(`Could not create module directories for user ${userId}: ${error.message}`);
+            }
+        }
+
         logger.debug(`Users service initialized with ${this.#indexStore.size} user(s) in index`);
         this.#initialized = true;
         return this;
@@ -79,6 +97,7 @@ class Users extends EventEmitter {
      */
 
     get rootPath() { return this.#rootPath; }
+    get pathDefaults() { return { ...this.#pathDefaults }; }
     get users() { return Array.from(this.#users.values()); }
     get indexStore() { return this.#indexStore; }
     get workspaceManager() { return this.#workspaceManager; }
@@ -175,6 +194,9 @@ class Users extends EventEmitter {
                 name,
                 email,
                 homePath: userHomePath,
+                // Optional per-module root overrides ({workspaces, roles, agents});
+                // absent means "follow the server defaults".
+                paths: applyPathOverrides({}, userData.paths || {}, userHomePath),
                 userType: userData.userType || 'user',
                 status: 'pending',
                 createdAt: new Date().toISOString(),
@@ -432,6 +454,64 @@ class Users extends EventEmitter {
     }
 
     /**
+     * Absolute roots of this user's three modules — {workspaces, roles, agents}.
+     * The single authority for "where does this user's stuff live": workspace
+     * discovery, agent creation and the frontend all go through here instead of
+     * joining directory names onto a home path.
+     *
+     * Reads straight from the index, so it works for users that were never
+     * instantiated (boot-time scans) and stays correct when a server default
+     * changes — nothing is cached.
+     * @param {string} userId
+     * @returns {{workspaces: string, roles: string, agents: string}}
+     */
+    getUserPaths(userId) {
+        const entry = this.#indexStore.get(userId);
+        if (!entry?.homePath) { throw new Error(`Cannot resolve paths: user not found: ${userId}`); }
+        return resolveUserPaths({
+            homePath: entry.homePath,
+            overrides: entry.paths,
+            defaults: this.#pathDefaults,
+        });
+    }
+
+    /**
+     * Point one or more of a user's modules at a different directory.
+     * `null` clears an override (back to the server default / <home>/<Module>).
+     *
+     * Relocating is non-destructive and NOT a move: existing workspaces and
+     * agents are indexed by absolute path and keep working where they are —
+     * only discovery and newly created entries follow the new root. The new
+     * directories are created if missing.
+     * @param {string} userId
+     * @param {{workspaces?: string|null, roles?: string|null, agents?: string|null}} patch
+     * @returns {Promise<{workspaces: string, roles: string, agents: string}>} resolved paths
+     */
+    async setUserPaths(userId, patch = {}) {
+        if (!this.#initialized) throw new Error('Users service not initialized');
+        const entry = this.#indexStore.get(userId);
+        if (!entry?.homePath) { throw new Error(`User not found: ${userId}`); }
+
+        const overrides = applyPathOverrides(entry.paths || {}, patch, entry.homePath);
+        if (JSON.stringify(overrides) === JSON.stringify(entry.paths || {})) { return this.getUserPaths(userId); }
+        // Write through update() so the in-memory instance is refreshed too.
+        await this.update(userId, { paths: overrides });
+        const resolved = this.getUserPaths(userId);
+        await this.ensureUserDirectories(userId);
+        this.emit('user.paths.updated', { id: userId, paths: resolved });
+        return resolved;
+    }
+
+    /** Create any missing module directories for a user. Idempotent. */
+    async ensureUserDirectories(userId) {
+        const paths = this.getUserPaths(userId);
+        for (const module of USER_MODULES) {
+            await fsPromises.mkdir(paths[module], { recursive: true });
+        }
+        return paths;
+    }
+
+    /**
      * Private methods
      */
 
@@ -446,10 +526,15 @@ class Users extends EventEmitter {
             throw new Error(`User home directory already exists: ${userHomePath}`);
         }
 
-        // Canonical location is <home>/Workspaces (the dir the discovery scan
-        // watches); the legacy lowercase workspaces/ dir is still scanned for
-        // existing users.
-        const universeWorkspacePath = path.join(userHomePath, 'Workspaces', 'universe');
+        // The three per-user modules get their directories up front, wherever
+        // they were configured to live (see lib/paths.js) — a user's home is
+        // not assumed to contain them.
+        const paths = await this.ensureUserDirectories(userId);
+
+        // Canonical location is <workspacesRoot>/universe (the dir the discovery
+        // scan watches); the legacy lowercase <home>/workspaces/ is still
+        // scanned for existing users.
+        const universeWorkspacePath = path.join(paths.workspaces, 'universe');
         await this.#workspaceManager.createUniverseWorkspace(userId, userEmail, universeWorkspacePath);
 
         return userHomePath;
@@ -463,6 +548,9 @@ class Users extends EventEmitter {
 
         const userOptions = {
             ...userData, // This has id, name, email, homePath, userType, status
+            // Module roots resolve per read: the record carries only overrides,
+            // these are the server-wide fallbacks behind them.
+            pathDefaults: this.#pathDefaults,
             eventEmitterOptions: this.eventEmitterOptions
         };
 
@@ -639,7 +727,11 @@ class Users extends EventEmitter {
 
     #saveEntry(id, data) {
         this.#users.set(id, data);
-        this.#indexStore.set(id, data);
+        // The index holds plain records, never live User instances: a User's
+        // `paths` getter exposes RESOLVED module roots, and persisting those
+        // would turn every default into an explicit override — the user would
+        // silently stop following the server default they never opted out of.
+        this.#indexStore.set(id, typeof data?.toJSON === 'function' ? data.toJSON() : data);
     }
 }
 

@@ -47,7 +47,7 @@ export async function insertHomeFile({ insert, workspace, logger }, filePath, { 
     const checksum = await sha256(resolved);
 
     const doc = await insert({
-        schema: 'data/abstraction/file',
+        schema: 'data/schema/file',
         checksumArray: [`sha256/${checksum}`],
         locations: [{ url: `file://{WORKSPACE_ROOT}/home/${relPath}` }],
         metadata: {

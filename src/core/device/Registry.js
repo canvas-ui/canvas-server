@@ -5,7 +5,7 @@ import fs from 'fs/promises';
 import { createLogger } from '../../utils/log.js';
 import { buildDeviceFeatureTags } from '../../utils/device-features.js';
 
-const DEVICE_SCHEMA = 'data/abstraction/device';
+const DEVICE_SCHEMA = 'data/schema/device';
 
 function pickDefined(data = {}) {
     return Object.fromEntries(

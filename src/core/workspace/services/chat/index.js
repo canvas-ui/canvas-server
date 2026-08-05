@@ -208,7 +208,7 @@ class ChatService extends EventEmitter {
                     if (message.type === 'message' && !message.subtype) {
                         // Use Message schema helper
                         const chatDoc = {
-                            schema: 'data/abstraction/message',
+                            schema: 'data/schema/message',
                             data: {
                                 text: message.text,
                                 sender: {
@@ -291,7 +291,7 @@ class ChatService extends EventEmitter {
 
                     for (const message of chatMessages.value || []) {
                         const chatDoc = {
-                            schema: 'data/abstraction/message',
+                            schema: 'data/schema/message',
                             data: {
                                 text: message.body?.content || '',
                                 html: message.body?.contentType === 'html' ? message.body.content : undefined,

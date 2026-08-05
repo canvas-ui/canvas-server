@@ -9,14 +9,17 @@
  * unconditionally and branch on the result.
  */
 
-const SCHEMA_PREFIX = 'data/abstraction/';
+const SCHEMA_PREFIX = 'data/schema/';
 
+// Short name -> full hierarchical id. Since Rev B (2026-08-05) two entries are
+// not a plain prefix concat — `email` lives under message and `todo` became
+// `task` — so this map is the ONLY way a short name reliably reaches its id.
 export const SCHEMAS = Object.freeze({
     application: `${SCHEMA_PREFIX}application`,
     device: `${SCHEMA_PREFIX}device`,
     document: `${SCHEMA_PREFIX}document`,
     dotfile: `${SCHEMA_PREFIX}dotfile`,
-    email: `${SCHEMA_PREFIX}email`,
+    email: `${SCHEMA_PREFIX}message/email`,
     event: `${SCHEMA_PREFIX}event`,
     file: `${SCHEMA_PREFIX}file`,
     identity: `${SCHEMA_PREFIX}identity`,
@@ -24,7 +27,10 @@ export const SCHEMAS = Object.freeze({
     message: `${SCHEMA_PREFIX}message`,
     note: `${SCHEMA_PREFIX}note`,
     tab: `${SCHEMA_PREFIX}tab`,
-    todo: `${SCHEMA_PREFIX}todo`,
+    // Both spellings resolve to the renamed id: `todo` is the legacy short name
+    // clients still send, `task` matches the id itself.
+    todo: `${SCHEMA_PREFIX}task`,
+    task: `${SCHEMA_PREFIX}task`,
 });
 
 const YOUTUBE_RE = /(?:youtube\.com\/watch\?|youtu\.be\/|youtube\.com\/shorts\/)/i;
@@ -64,7 +70,7 @@ export function mimeFromLocations(locations) {
 const ARXIV_RE = /arxiv\.org\/(?:abs|pdf)\//i;
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'avif', 'bmp', 'ico']);
 
-function normalizeSchemaId(name) {
+export function normalizeSchemaId(name) {
     if (!name) { return null; }
     const value = String(name).toLowerCase();
     return value.includes('/') ? value : (SCHEMAS[value] || `${SCHEMA_PREFIX}${value}`);

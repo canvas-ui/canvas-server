@@ -81,7 +81,7 @@ describe('HookService declarative rules', () => {
     function emitYoutubeTab(id = 7) {
         workspace.emit('document.inserted', {
             id,
-            document: { id, schema: 'data/abstraction/tab', data: { url: 'https://www.youtube.com/watch?v=abc' } },
+            document: { id, schema: 'data/schema/tab', data: { url: 'https://www.youtube.com/watch?v=abc' } },
             context: { paths: ['/inbox'] },
             source: 'db',
         });
@@ -121,7 +121,7 @@ describe('HookService declarative rules', () => {
         writeRules('rules.json', [youtubeRule]);
         workspace.emit('document.inserted', {
             id: 8,
-            document: { id: 8, schema: 'data/abstraction/note', data: { title: 'n' } },
+            document: { id: 8, schema: 'data/schema/note', data: { title: 'n' } },
             source: 'db',
         });
         await new Promise(resolve => setTimeout(resolve, 30));
@@ -132,7 +132,7 @@ describe('HookService declarative rules', () => {
         writeRules('rules.json', [youtubeRule]);
         workspace.emit('document.inserted', {
             id: 9,
-            document: { id: 9, schema: 'data/abstraction/tab', data: { url: 'https://youtube.com/watch?v=x' } },
+            document: { id: 9, schema: 'data/schema/tab', data: { url: 'https://youtube.com/watch?v=x' } },
             source: 'hook',
         });
         await new Promise(resolve => setTimeout(resolve, 30));
@@ -217,8 +217,8 @@ describe('HookService batch fan-out', () => {
     let hookRuns;
 
     const docs = {
-        1: { id: 1, schema: 'data/abstraction/email', data: { from: 'boss@corp.tld', subject: 'urgent' } },
-        2: { id: 2, schema: 'data/abstraction/email', data: { from: 'news@list.tld', subject: 'weekly' } },
+        1: { id: 1, schema: 'data/schema/message/email', data: { from: 'boss@corp.tld', subject: 'urgent' } },
+        2: { id: 2, schema: 'data/schema/message/email', data: { from: 'news@list.tld', subject: 'weekly' } },
     };
 
     beforeEach(() => {
@@ -308,7 +308,7 @@ describe('HookService provenance + cascade control', () => {
     let service;
     let linkCalls;
 
-    const tabDoc = (id) => ({ id, schema: 'data/abstraction/tab', data: { url: 'https://youtube.com/watch?v=x' } });
+    const tabDoc = (id) => ({ id, schema: 'data/schema/tab', data: { url: 'https://youtube.com/watch?v=x' } });
     const emitTab = (id, extra = {}) => workspace.emit('document.inserted', {
         id, document: tabDoc(id), context: { paths: ['/inbox'] }, source: 'db', ...extra,
     });
@@ -394,7 +394,7 @@ describe('HookService provenance + cascade control', () => {
         fs.mkdirSync(hookDir, { recursive: true });
         fs.writeFileSync(path.join(hookDir, 'inserter.js'), `
 export default async ({ insert }) => {
-    await insert({ schema: 'data/abstraction/note', data: { title: 't', content: 'c' } }, { context: '/notes' });
+    await insert({ schema: 'data/schema/note', data: { title: 't', content: 'c' } }, { context: '/notes' });
 };`);
 
         emitTab(6, { eventId: 'e6', origin: 'user' });
@@ -425,7 +425,7 @@ export default async ({ insert }) => {
         assert.equal(ruleOk[0].handler, 'yt');
         assert.equal(ruleOk[0].eventId, 'e20');
         assert.deepEqual(ruleOk[0].actions, [{ action: 'link', status: 'ok' }]);
-        assert.deepEqual(ruleOk[0].replayEnvelope.payload.document, { id: 20, schema: 'data/abstraction/tab' });
+        assert.deepEqual(ruleOk[0].replayEnvelope.payload.document, { id: 20, schema: 'data/schema/tab' });
 
         const hookErr = byKey('hook', 'error');
         assert.equal(hookErr.length, 1);

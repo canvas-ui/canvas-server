@@ -938,7 +938,7 @@ class Workspace extends EventEmitter {
      *   - { skip:true, schema, ... }    → exists but not embeddable (record as seen)
      *   - { modality, schema, ... }     → embeddable (text|image + text|bytes)
      *
-     * A `data/abstraction/file` is a byte blob: embed it from its *content*
+     * A `data/schema/file` is a byte blob: embed it from its *content*
      * (text/* → utf8, image/* → bytes), never from generateEmbeddingsData (which
      * for File yields the location URL string — garbage to embed). Only JSON
      * abstractions (note, …) use generateEmbeddingsData.

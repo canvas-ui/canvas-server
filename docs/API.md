@@ -170,7 +170,7 @@ The API should accept optional `paths[]` and `backends[]` parameters; when omitt
 | `filters` | string[] | `[]` | Additional filters (e.g. `datetime:updated:today`) |
 | `limit`, `offset`, `page` | integer | — | Pagination |
 
-Example: `GET /documents?allOf[]=data/abstraction/file&noneOf[]=tag/deleted&filters[]=datetime:updated:today`
+Example: `GET /documents?allOf[]=data/schema/file&noneOf[]=tag/deleted&filters[]=datetime:updated:today`
 
 **POST `/documents` body:**
 ```json
@@ -178,7 +178,7 @@ Example: `GET /documents?allOf[]=data/abstraction/file&noneOf[]=tag/deleted&filt
   "treeNameOrTreeId": "projects",
   "context": "/music/concerts/foo",
   "documents": [{}],
-  "features": ["data/abstraction/file"]
+  "features": ["data/schema/file"]
 }
 ```
 `treeNameOrTreeId` and `context` are optional. If omitted, the default context tree and `/` are used.
@@ -187,7 +187,7 @@ Example: `GET /documents?allOf[]=data/abstraction/file&noneOf[]=tag/deleted&filt
 ```json
 {
   "context": "/",
-  "features": ["data/abstraction/file"],
+  "features": ["data/schema/file"],
   "documents": [{ "id": "123", ... }]
 }
 ```
@@ -469,7 +469,7 @@ Mounted under **`/workspaces/:id/services/imap`** (same `authenticate` as other 
 
 ### Devices (workspace ↔ device binding)
 
-Indexed device documents (`data/abstraction/device`) for linking registered devices to a workspace.
+Indexed device documents (`data/schema/device`) for linking registered devices to a workspace.
 
 | Method | Path | Auth | ACL | Description |
 |--------|------|------|-----|-------------|
@@ -571,7 +571,7 @@ There is **no** context-scoped `/documents/evict`; use workspace **`/workspaces/
 **POST/PUT `/contexts/:id/documents` body:**
 ```json
 {
-  "features": ["data/abstraction/file"],
+  "features": ["data/schema/file"],
   "documents": [{}]
 }
 ```
@@ -695,7 +695,7 @@ Successful payload includes:
 **Read the public canvas:**
 
 ```bash
-curl 'http://127.0.0.1:8001/rest/v2/pub/c/aabbccdd?limit=100&allOf[]=data/abstraction/email&noneOf[]=tag/archived'
+curl 'http://127.0.0.1:8001/rest/v2/pub/c/aabbccdd?limit=100&allOf[]=data/schema/message/email&noneOf[]=tag/archived'
 ```
 
 Query parameters:
@@ -747,9 +747,9 @@ The public read combines the saved canvas `querySpec` with request filters. Resp
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| GET | `/schemas` | — | List all schemas |
-| GET | `/schemas/data/abstraction/:abstraction` | — | List schemas by abstraction |
-| GET | `/schemas/data/abstraction/:abstraction.json` | — | Get JSON schema definition |
+| GET | `/schemas` | — | List all schema ids |
+| GET | `/schemas/data/schema/<id>` | — | Registration descriptor (id, tier, subtypeField, indexOptions, jsonSchema); `<id>` may span segments (`message/email`), derived subtype keys resolve to their parent |
+| GET | `/schemas/data/schema/<id>.json` | — | JSON Schema (draft-07) for the id |
 
 ---
 

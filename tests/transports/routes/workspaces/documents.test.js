@@ -10,7 +10,7 @@ import workspaceDocumentRoutes from '../../../../src/transports/routes/workspace
 
 const EMAIL_DOC = {
     id: 42,
-    schema: 'data/abstraction/email',
+    schema: 'data/schema/message/email',
     metadata: { contentType: 'message/rfc822', size: 1000 },
     locations: [
         { url: 'stored://workspace:data/raw-eml-key' },

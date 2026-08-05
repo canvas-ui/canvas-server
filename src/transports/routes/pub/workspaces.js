@@ -348,7 +348,7 @@ export default async function pubWorkspaceRoutes(fastify, options) {
       const { documents, features = [], treeNameOrTreeId = null } = request.body;
 
       const documentArray = documents.map(doc => ({
-        schema: 'data/abstraction/note',
+        schema: 'data/schema/note',
         data: doc,
       }));
 

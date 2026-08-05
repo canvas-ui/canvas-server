@@ -4,9 +4,9 @@ import path from 'path';
 
 // ── Schema ↔ extension mapping (writable abstractions) ──────────────────────
 
-const NOTE_SCHEMA = 'data/abstraction/note';
-const TODO_SCHEMA = 'data/abstraction/todo';
-const TAB_SCHEMA  = 'data/abstraction/tab';
+const NOTE_SCHEMA = 'data/schema/note';
+const TODO_SCHEMA = 'data/schema/task';
+const TAB_SCHEMA  = 'data/schema/tab';
 
 /**
  * Infer schema + parsed data payload from a filename + body for PUT.

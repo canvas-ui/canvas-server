@@ -159,7 +159,7 @@ class GraphService extends EventEmitter {
             const emails = [];
             for (const message of messages.value) {
                 const emailDoc = {
-                    schema: 'data/abstraction/email',
+                    schema: 'data/schema/message/email',
                     data: {
                         subject: message.subject || '(no subject)',
                         from: message.from?.emailAddress?.address || '',

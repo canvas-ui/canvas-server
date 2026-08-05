@@ -114,7 +114,7 @@ event's document; `classify(p)` classifies one payload of a debounced burst;
 `classify(doc)` classifies a doc fetched via `get()`. It never throws — with no
 document every predicate is false.
 
-- Schema: `isSchema('tab'|'data/abstraction/tab')`, `isTab`, `isEmail`,
+- Schema: `isSchema('tab'|'data/schema/tab')`, `isTab`, `isEmail`,
   `isFile`, `isNote`, `isTodo`, `isMessage`
 - URL: `isLink` (valid http(s) `data.url`), `isYoutube`, `isArxiv`,
   `isImageUrl`, `hostMatches('youtube.com')` (suffix-aware),
@@ -160,7 +160,7 @@ entries).
 | Key | Semantics |
 |---|---|
 | `event` | required; exact event name |
-| `schema` | short (`tab`) or full (`data/abstraction/tab`) schema id |
+| `schema` | short (`tab`) or full (`data/schema/tab`) schema id |
 | `path` | prefix match against the paths the document landed in |
 | `url` | string = case-insensitive substring; object = `{ host, prefix, contains, regex }` |
 | `from`, `subject` | string = case-insensitive substring; object = `{ equals, contains, startsWith, regex }` |

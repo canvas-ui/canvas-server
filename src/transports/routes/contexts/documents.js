@@ -4,6 +4,7 @@ import ResponseObject from '../../ResponseObject.js';
 import { parseDocumentId } from '../../../utils/documentId.js';
 import { validateUser } from '../../auth/strategies.js';
 import { stripDeviceFeatureTags } from '../../../utils/device-features.js';
+import { normalizeSchemaId } from '../../../core/workspace/lib/classifier.js';
 
 export default async function documentRoutes(fastify, options) {
   function buildAttributes(query) {
@@ -352,7 +353,9 @@ export default async function documentRoutes(fastify, options) {
       }
 
       const attrs = buildAttributes(request.query) || {};
-      const allOf = [`data/abstraction/${request.params.abstraction}`, ...(attrs.allOf || [])];
+      // normalizeSchemaId maps short names onto the hierarchical ids (`email`
+      // -> data/schema/message/email), which plain prefix-concat cannot.
+      const allOf = [normalizeSchemaId(request.params.abstraction), ...(attrs.allOf || [])];
       const { filters = [], includeServerContext, includeClientContext, limit, offset, page } = request.query;
 
       const dbResult = await context.list(request.user.id, {

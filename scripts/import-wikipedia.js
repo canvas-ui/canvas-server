@@ -8,7 +8,7 @@
  * namespace-0 extractor:
  *   { id, url, title, abstract, date_created, text }
  *
- * Mapping to a Canvas Note (data/abstraction/note):
+ * Mapping to a Canvas Note (data/schema/note):
  *   data.title  <- title
  *   data.content <- text, with a "References: <url>" line appended at the end
  *   comment      <- abstract   (the note's user-facing abstract/comment field;
@@ -62,7 +62,7 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
 
-const NOTE_SCHEMA = 'data/abstraction/note';
+const NOTE_SCHEMA = 'data/schema/note';
 const NOTE_SCHEMA_VERSION = '2.0';
 const DEFAULT_API_BASE = '/rest/v2';
 

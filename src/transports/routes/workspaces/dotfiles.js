@@ -72,7 +72,7 @@ export default async function workspaceDotfilesRoutes(fastify, options) {
       const { workspace } = extractRequestInfo(request);
       const contextSelector = getContextTreeSelector(workspace, request.query, '/');
       const attrs = buildAttributes(request.query) || {};
-      const allOf = ['data/abstraction/dotfile', ...(attrs.allOf || [])];
+      const allOf = ['data/schema/dotfile', ...(attrs.allOf || [])];
 
       const documents = await workspace.list({
         context: contextSelector,
@@ -123,11 +123,11 @@ export default async function workspaceDotfilesRoutes(fastify, options) {
       const contextSelector = getContextTreeSelector(workspace, request.body, '/');
       const dotfilesInput = request.body.dotfiles;
       const dotfileArray = Array.isArray(dotfilesInput) ? dotfilesInput : [dotfilesInput];
-      const documentArray = dotfileArray.map(df => ({ schema: 'data/abstraction/dotfile', data: df }));
+      const documentArray = dotfileArray.map(df => ({ schema: 'data/schema/dotfile', data: df }));
 
       const inserted = await workspace.putMany(documentArray, {
         context: contextSelector,
-        features: ['data/abstraction/dotfile', ...stripDeviceFeatureTags(request.body.features || [])],
+        features: ['data/schema/dotfile', ...stripDeviceFeatureTags(request.body.features || [])],
       });
 
       const responseObject = new ResponseObject().created(inserted, 'Dotfiles created successfully');

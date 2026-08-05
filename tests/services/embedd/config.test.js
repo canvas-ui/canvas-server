@@ -10,7 +10,7 @@ import Embedd from '../../../src/services/embedd/src/index.js';
 // ── Matchers ─────────────────────────────────────────────────────────────────
 
 test('toMatcher: exact string stays a string', () => {
-    assert.equal(toMatcher('data/abstraction/note'), 'data/abstraction/note');
+    assert.equal(toMatcher('data/schema/note'), 'data/schema/note');
 });
 
 test('toMatcher: "image/*" compiles to a prefix regex', () => {
@@ -44,8 +44,8 @@ test('normalizeConfig: no config reproduces the built-in providers + DEFAULT_RUL
     // Routing is unchanged, which is the point: adding config must not move
     // a single existing document to a different space.
     const r = new Router({ rules });
-    assert.equal(r.route({ modality: 'text', schema: 'data/abstraction/note' }).space, 'text');
-    assert.equal(r.route({ modality: 'image', schema: 'data/abstraction/file', contentType: 'image/png' }).space, 'image');
+    assert.equal(r.route({ modality: 'text', schema: 'data/schema/note' }).space, 'text');
+    assert.equal(r.route({ modality: 'image', schema: 'data/schema/file', contentType: 'image/png' }).space, 'image');
 });
 
 test('builtinProviders: server settings feed the built-ins (clip falls back to the onnx cache)', () => {
@@ -107,7 +107,7 @@ test('normalizeConfig: JSON matchers are compiled on the way in', () => {
         rules: [{ space: 'image', match: { contentType: 'image/*' } }],
     });
     const r = new Router({ rules, spaces });
-    assert.equal(r.route({ modality: 'image', schema: 'data/abstraction/file', contentType: 'image/jpeg' }).provider, 'gpu');
+    assert.equal(r.route({ modality: 'image', schema: 'data/schema/file', contentType: 'image/jpeg' }).provider, 'gpu');
 });
 
 test('normalizeConfig: the pre-split shape (provider/model on the rule) still loads', () => {
@@ -121,7 +121,7 @@ test('normalizeConfig: the pre-split shape (provider/model on the rule) still lo
     assert.deepEqual(spaces.image, { provider: 'gpu', model: 'siglip', dim: 768, chunk: false });
     assert.deepEqual(rules, [{ space: 'image', match: { contentType: /^image\// } }]);
     const r = new Router({ rules, spaces });
-    assert.equal(r.route({ modality: 'image', schema: 'data/abstraction/file', contentType: 'image/png' }).provider, 'gpu');
+    assert.equal(r.route({ modality: 'image', schema: 'data/schema/file', contentType: 'image/png' }).provider, 'gpu');
 });
 
 test('normalizeConfig: a space override leaves the other spaces on their defaults', () => {
@@ -202,7 +202,7 @@ test('spaceConfigs: a non-baseline model gets its own table AND its own ledger',
         providers: { gpu: { type: 'openai', baseUrl: 'http://gpu.local:8000/v1' } },
         rules: [{
             space: 'text', provider: 'gpu', model: 'Qwen/Qwen3-Embedding-0.6B', dim: 1024,
-            chunk: true, match: { schema: 'data/abstraction/note' },
+            chunk: true, match: { schema: 'data/schema/note' },
         }],
     });
     const sc = await e.spaceConfigsFor(null);
@@ -221,7 +221,7 @@ test('spaceConfigs: same space, same model, different dim is still a new space',
     const e = new Embedd({
         rules: [{
             space: 'text', provider: 'onnx', model: 'bge-small-en-v1.5', dim: 256,
-            chunk: true, match: { schema: 'data/abstraction/note' },
+            chunk: true, match: { schema: 'data/schema/note' },
         }],
     });
     const sc = await e.spaceConfigsFor(null);
@@ -236,7 +236,7 @@ test('spaceConfigs: a new modality slots in with no code change', async () => {
     const e = new Embedd({
         providers: { gpu: { type: 'openai', baseUrl: 'http://gpu.local:8000/v1' } },
         rules: [
-            { space: 'text', provider: 'onnx', model: 'bge-small-en-v1.5', dim: 384, chunk: true, match: { schema: 'data/abstraction/note' } },
+            { space: 'text', provider: 'onnx', model: 'bge-small-en-v1.5', dim: 384, chunk: true, match: { schema: 'data/schema/note' } },
             { space: 'audio', provider: 'gpu', model: 'laion/clap-htsat-unfused', dim: 512, chunk: false, match: { contentType: 'audio/*' } },
         ],
     });

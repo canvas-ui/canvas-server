@@ -2,10 +2,10 @@ import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { classifyDocument, SCHEMAS } from '../../../../src/core/workspace/lib/classifier.js';
 
-const tab = (url) => ({ schema: 'data/abstraction/tab', data: { url, title: 't' } });
-const email = (from, subject) => ({ schema: 'data/abstraction/email', data: { from, subject } });
+const tab = (url) => ({ schema: 'data/schema/tab', data: { url, title: 't' } });
+const email = (from, subject) => ({ schema: 'data/schema/message/email', data: { from, subject } });
 const file = (contentType, locations = [{ url: 'stored://x' }]) => ({
-    schema: 'data/abstraction/file',
+    schema: 'data/schema/file',
     metadata: { contentType },
     locations,
 });
@@ -94,22 +94,22 @@ describe('classifier', () => {
     });
 
     test('note/todo/event count as text without a mime', () => {
-        assert.equal(classifyDocument({ schema: 'data/abstraction/note', data: {} }).isText(), true);
-        assert.equal(classifyDocument({ schema: 'data/abstraction/todo', data: {} }).isText(), true);
+        assert.equal(classifyDocument({ schema: 'data/schema/note', data: {} }).isText(), true);
+        assert.equal(classifyDocument({ schema: 'data/schema/task', data: {} }).isText(), true);
         // Events carry inline title/description and no contentType — without this
         // they would never reach the embedder.
-        assert.equal(classifyDocument({ schema: 'data/abstraction/event', data: {} }).isText(), true);
+        assert.equal(classifyDocument({ schema: 'data/schema/event', data: {} }).isText(), true);
     });
 
     test('event schema is classifiable', () => {
         const ev = classifyDocument({
-            schema: 'data/abstraction/event',
+            schema: 'data/schema/event',
             data: { title: 'Standup', type: 'calendar', start: '2026-08-03T09:00:00.000Z' },
         });
         assert.equal(ev.isEvent(), true);
         assert.equal(ev.isSchema(SCHEMAS.event), true);
         assert.equal(ev.isTodo(), false);
-        assert.equal(classifyDocument({ schema: 'data/abstraction/todo', data: {} }).isEvent(), false);
+        assert.equal(classifyDocument({ schema: 'data/schema/task', data: {} }).isEvent(), false);
         assert.equal(classifyDocument(null).isEvent(), false);
     });
 

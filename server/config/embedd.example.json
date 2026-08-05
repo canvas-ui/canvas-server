@@ -32,8 +32,8 @@
 
   "_rules_comment": "Optional. Omit entirely to keep the built-in routing (notes + emails + text/* -> text, image/* -> image). Shown here only so the shape is discoverable.",
   "rules": [
-    { "space": "text", "match": { "schema": "data/abstraction/note" } },
-    { "space": "text", "match": { "schema": "data/abstraction/email" } },
+    { "space": "text", "match": { "schema": "data/schema/note" } },
+    { "space": "text", "match": { "schema": "data/schema/message/email" } },
     { "space": "text", "match": { "contentType": "text/*" } },
     { "space": "image", "match": { "contentType": "image/*" } }
   ]

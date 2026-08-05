@@ -71,7 +71,7 @@ class LinkerService extends EventEmitter {
         if (!rule.type || !document.schema) return false;
 
         // Basic type check
-        // e.g. rule.type = 'email' matches schema 'data/abstraction/email'
+        // e.g. rule.type = 'email' matches schema 'data/schema/message/email'
         if (!document.schema.includes(rule.type)) return false;
 
         const criteria = rule.criteria || {};

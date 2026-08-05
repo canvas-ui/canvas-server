@@ -59,12 +59,12 @@ export function createCanvasTools(env) {
         description:
             'Search or list documents in your bound canvas workspace scope. '
             + 'Use "query" for full-text/semantic search (e.g. "invoices from acme"), '
-            + '"schema" to filter by document type (e.g. data/abstraction/email, data/abstraction/note, data/abstraction/tab), '
+            + '"schema" to filter by document type (e.g. data/schema/message/email, data/schema/note, data/schema/tab), '
             + 'and "path" (relative to your scope) to narrow to a subtree. '
-            + 'Returns newest-first compact documents. Example: latest emails -> { "schema": "data/abstraction/email", "limit": 10 }.',
+            + 'Returns newest-first compact documents. Example: latest emails -> { "schema": "data/schema/message/email", "limit": 10 }.',
         parameters: Type.Object({
             query: Type.Optional(Type.String({ description: 'Full-text / semantic search query' })),
-            schema: Type.Optional(Type.String({ description: 'Document schema filter, e.g. data/abstraction/email' })),
+            schema: Type.Optional(Type.String({ description: 'Document schema filter, e.g. data/schema/message/email' })),
             path: Type.Optional(Type.String({ description: 'Context path relative to your scope (default: whole scope)' })),
             limit: Type.Optional(Type.Number({ description: 'Max results (default 20)' })),
             offset: Type.Optional(Type.Number({ description: 'Pagination offset' })),
@@ -115,12 +115,12 @@ export function createCanvasTools(env) {
         label: 'Canvas Insert',
         description:
             'Insert a document into your bound canvas scope. Provide the document as '
-            + '{ schema, data } (e.g. schema "data/abstraction/note" with data.title/data.content) '
+            + '{ schema, data } (e.g. schema "data/schema/note" with data.title/data.content) '
             + 'and an optional path relative to your scope.',
         parameters: Type.Object({
             document: Type.Object(
                 {
-                    schema: Type.String({ description: 'Document schema, e.g. data/abstraction/note' }),
+                    schema: Type.String({ description: 'Document schema, e.g. data/schema/note' }),
                     data: Type.Any({ description: 'Schema-specific document payload' }),
                 },
                 { description: 'Document to insert' },

@@ -82,7 +82,7 @@ export const HOOK_ACTIONS = Object.freeze([
             '    // Insert a new document. NOTE: inserted docs emit a regular',
             '    // document.inserted — make sure it cannot re-match this hook.',
             '    const note = await insert({',
-            "        schema: 'data/abstraction/note',",
+            "        schema: 'data/schema/note',",
             "        data: { title: 'TODO title', content: 'TODO content' },",
             "    }, { context: payload?.context?.paths ?? payload?.context?.path ?? '/' });",
             '    logger.debug(`inserted note ${note?.id}`);',

@@ -8,7 +8,7 @@ import { requireWorkspaceRead, requireWorkspaceWrite } from '../../middleware/wo
 import { HOOK_EVENTS, HOOK_ACTIONS, CLASSIFIER_SURFACE, HOOK_CONTEXT_API, generateHookSkeleton } from '../../../core/workspace/services/hook/meta.js';
 import { resolveRuleFiles, loadRuleFile, explainRule } from '../../../core/workspace/services/hook/rules.js';
 import { resolveHookFiles } from '../../../core/workspace/services/hook/files.js';
-import { classifyDocument } from '../../../core/workspace/lib/classifier.js';
+import { classifyDocument, normalizeSchemaId } from '../../../core/workspace/lib/classifier.js';
 
 function normalizePathSegments(inputPath = '') {
   return String(inputPath || '')
@@ -449,10 +449,11 @@ export default async function workspaceHooksRoutes(fastify) {
       }
 
       // Discovery: schema filter from the request, else from the rule's own
-      // matcher (short names → data/abstraction/<name> feature bitmaps).
+      // matcher (short names → full ids via the classifier map — plain prefix
+      // concat cannot reach hierarchical ids like data/schema/message/email).
       const ruleSchemas = rule?.when?.schema ? (Array.isArray(rule.when.schema) ? rule.when.schema : [rule.when.schema]) : [];
       const schemas = (schema ? [schema] : ruleSchemas)
-        .map((s) => (s.includes('/') ? s : `data/abstraction/${s}`));
+        .map((s) => normalizeSchemaId(s));
 
       let documents;
       try {

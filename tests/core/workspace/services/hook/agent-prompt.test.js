@@ -10,7 +10,7 @@ describe('buildHookAgentPrompt', () => {
             payload: {
                 document: {
                     id: 42,
-                    schema: 'data/abstraction/email',
+                    schema: 'data/schema/message/email',
                     data: { subject: 'DC migration window', from: { address: 'boss@corp.tld', name: 'Boss' } },
                     metadata: { contentType: 'message/rfc822' },
                 },
@@ -22,7 +22,7 @@ describe('buildHookAgentPrompt', () => {
         assert.ok(prompt.startsWith('[Canvas workspace automation]'));
         assert.ok(prompt.includes('Event: "document.inserted" in workspace "universe"'));
         assert.ok(prompt.includes('- id: 42'));
-        assert.ok(prompt.includes('- type: data/abstraction/email'));
+        assert.ok(prompt.includes('- type: data/schema/message/email'));
         assert.ok(prompt.includes('- title: DC migration window'));
         assert.ok(prompt.includes('- from: boss@corp.tld'));
         assert.ok(prompt.includes('- filed under: /imap/a@b.c/inbox'));

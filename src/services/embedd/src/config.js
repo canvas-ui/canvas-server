@@ -53,7 +53,7 @@ export function builtinProviders({ onnxCacheDir = null, clipCacheDir = null, oll
 /**
  * Turn a JSON-expressible matcher into something `router.test()` accepts. JSON
  * has no RegExp literal, so three spellings are supported:
- *   "data/abstraction/note"  → exact string match
+ *   "data/schema/note"  → exact string match
  *   "image/*"                → prefix match  (compiles to /^image\//)
  *   "/^text\\/(plain|md)$/i" → explicit regex, optional trailing flags
  * A RegExp passed in from JS is returned untouched.

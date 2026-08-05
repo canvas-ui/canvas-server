@@ -8,22 +8,27 @@ import { docName, docEntries, docSize, norm, resolveDocContent } from './vfs-sha
  * Shows one folder per data abstraction containing documents of that type.
  * No tree traversal — flat folders only.
  *
- * /Notes/          → documents with feature 'data/abstraction/note'
- * /Tabs/           → documents with feature 'data/abstraction/tab'
- * /Files/          → documents with feature 'data/abstraction/file'
+ * /Notes/          → documents with feature 'data/schema/note'
+ * /Tabs/           → documents with feature 'data/schema/tab'
+ * /Emails/         → documents with feature 'data/schema/message/email'
  * ...etc (dynamically derived from SchemaRegistry)
  */
 
 // Build folder ↔ feature mapping from SchemaRegistry
-const DATA_PREFIX = 'data/abstraction/';
+const DATA_PREFIX = 'data/schema/';
 
 function buildAbstractionMap() {
     const schemas = schemaRegistry.listSchemas(DATA_PREFIX);
     const map = new Map();
     for (const schemaId of schemas) {
-        const slug = schemaId.slice(DATA_PREFIX.length);
+        // Folder name from the LAST id segment: ids are hierarchical since Rev B
+        // (data/schema/message/email), and a folder name cannot carry a '/'.
+        const slug = schemaId.slice(DATA_PREFIX.length).split('/').pop();
         const folder = slug.charAt(0).toUpperCase() + slug.slice(1) + 's';
-        map.set(folder, schemaId);
+        // First registration wins on a (currently nonexistent) last-segment
+        // collision — deterministic, and a collision would only hide the later
+        // schema's folder rather than corrupt an existing one.
+        if (!map.has(folder)) { map.set(folder, schemaId); }
     }
     return map;
 }

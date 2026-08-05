@@ -11,7 +11,7 @@
  * a device and indexes a local file writes `file://<deviceId>/<path>` (or
  * `file://<deviceAlias>/<path>`), and `device/id/*`, `device/os/*` and
  * `device/type/*` all fall out of that — the last two by resolving the device id
- * through its own `data/abstraction/device` document.
+ * through its own `data/schema/device` document.
  *
  * Consequences:
  *

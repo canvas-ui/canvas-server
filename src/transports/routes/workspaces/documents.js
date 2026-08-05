@@ -5,6 +5,7 @@ import { parseDocumentId, parseDocumentIdArray } from '../../../utils/documentId
 import { stripDeviceFeatureTags } from '../../../utils/device-features.js';
 import { parseByteRange } from '../../lib/http-range.js';
 import { resolveContentType } from '../../lib/mime.js';
+import { normalizeSchemaId } from '../../../core/workspace/lib/classifier.js';
 
 // Human filename for a location URL: basename of the key after scheme://backend/.
 function locationFilename(url) {
@@ -593,7 +594,9 @@ export default async function workspaceDocumentRoutes(fastify, options) {
       if (!workspace) return;
       const { context: ctxSel, directory: dirSel } = resolveScopeSelectors(workspace, request.query, '/');
       const attrs = buildAttributes(request.query) || {};
-      const allOf = [`data/abstraction/${request.params.abstraction}`, ...(attrs.allOf || [])];
+      // normalizeSchemaId maps short names onto the hierarchical ids (`email`
+      // -> data/schema/message/email), which plain prefix-concat cannot.
+      const allOf = [normalizeSchemaId(request.params.abstraction), ...(attrs.allOf || [])];
 
       const documents = await workspace.list({
         context: ctxSel,

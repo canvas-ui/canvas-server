@@ -6,7 +6,7 @@ import { stripDeviceFeatureTags } from '../../../utils/device-features.js';
 
 /**
  * Context Dotfile routes handler for the API
- * Provides CRUD operations for dotfile documents (schema: data/abstraction/dotfile)
+ * Provides CRUD operations for dotfile documents (schema: data/schema/dotfile)
  * at route prefix /contexts/:id/dotfiles
  * @param {FastifyInstance} fastify - Fastify instance
  * @param {Object} options - Plugin options
@@ -65,7 +65,7 @@ export default async function contextDotfileRoutes(fastify, options) {
       }
 
       const attrs = buildAttributes(request.query) || {};
-      const allOf = ['data/abstraction/dotfile', ...(attrs.allOf || [])];
+      const allOf = ['data/schema/dotfile', ...(attrs.allOf || [])];
 
       const dbResult = await context.list(request.user.id, {
         attributes: { ...attrs, allOf },
@@ -128,11 +128,11 @@ export default async function contextDotfileRoutes(fastify, options) {
       const dotfilesInput = request.body.dotfiles;
       const dotfileArray = Array.isArray(dotfilesInput) ? dotfilesInput : [dotfilesInput];
       const documentArray = dotfileArray.map(df => ({
-        schema: 'data/abstraction/dotfile',
+        schema: 'data/schema/dotfile',
         data: df
       }));
 
-      const result = await context.putMany(request.user.id, documentArray, ['data/abstraction/dotfile', ...stripDeviceFeatureTags(request.body.features || [])]);
+      const result = await context.putMany(request.user.id, documentArray, ['data/schema/dotfile', ...stripDeviceFeatureTags(request.body.features || [])]);
 
       const response = new ResponseObject().created(result, 'Dotfiles inserted successfully');
       return reply.code(response.statusCode).send(response.getResponse());
@@ -177,7 +177,7 @@ export default async function contextDotfileRoutes(fastify, options) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
-      const result = await context.putMany(request.user.id, request.body.documents, ['data/abstraction/dotfile', ...stripDeviceFeatureTags(request.body.features || [])]);
+      const result = await context.putMany(request.user.id, request.body.documents, ['data/schema/dotfile', ...stripDeviceFeatureTags(request.body.features || [])]);
       const response = new ResponseObject().updated(result, 'Dotfiles updated successfully');
       return reply.code(response.statusCode).send(response.getResponse());
     } catch (error) {

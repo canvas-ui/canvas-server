@@ -267,7 +267,7 @@ export default async function pubContextRoutes(fastify, options) {
 
       // Convert raw documents to proper format with schema
       const documentArray = documents.map(doc => ({
-        schema: 'data/abstraction/note',
+        schema: 'data/schema/note',
         data: doc
       }));
 

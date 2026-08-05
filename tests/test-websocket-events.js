@@ -85,7 +85,7 @@ async function testWebSocketEvents() {
 
         // Insert a test document to trigger events
         const testDocument = {
-            schema: 'data/abstraction/tab',
+            schema: 'data/schema/tab',
             schemaVersion: '2.0',
             data: {
                 url: 'https://test.example.com',

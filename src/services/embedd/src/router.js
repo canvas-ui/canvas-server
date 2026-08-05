@@ -31,11 +31,11 @@
 /** Routing: which content lands in which space. Structural, not a user choice. */
 export const DEFAULT_RULES = [
     // JSON note abstraction — the text the server can read straight from the doc.
-    { space: 'text', match: { schema: 'data/abstraction/note' } },
+    { space: 'text', match: { schema: 'data/schema/note' } },
     // Email abstraction — subject+body via Email.vectorEmbeddingFields
     // (generateEmbeddingsData). Without this rule emails were routed null and
     // permanently marked seen-with-zero-vectors.
-    { space: 'text', match: { schema: 'data/abstraction/email' } },
+    { space: 'text', match: { schema: 'data/schema/message/email' } },
     // Any server-resident plain-text blob.
     { space: 'text', match: { contentType: /^text\// } },
     // Images — CLIP/SigLIP joint space. The provider fills it from images
@@ -107,14 +107,14 @@ export default class Router {
      * Candidate schema keys for a space's unembedded-gap ledger. Since there is
      * no contentType index, gap discovery is schema-level; embedd then post-filters
      * by contentType in resolveInput. Collected from rules that name a schema, plus
-     * `data/abstraction/file` for any contentType-matched rule (files carry bytes).
+     * `data/schema/file` for any contentType-matched rule (files carry bytes).
      */
     candidateSchemas(space) {
         const set = new Set();
         for (const r of this.#rules) {
             if (r.space !== space) { continue; }
             if (typeof r.match?.schema === 'string') { set.add(r.match.schema); }
-            if (r.match?.contentType) { set.add('data/abstraction/file'); }
+            if (r.match?.contentType) { set.add('data/schema/file'); }
         }
         return [...set];
     }

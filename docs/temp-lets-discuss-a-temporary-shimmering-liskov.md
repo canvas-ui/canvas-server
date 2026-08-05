@@ -103,7 +103,7 @@ semantic trees" effort and ColBERT multi-vector are deferred (see Future Phase).
 - ColBERT / ColPaLi multivector via LanceDB native MaxSim; bge-m3 (1024d, multilingual,
   unified dense+sparse+ColBERT) as the model — needs fastembed `InitCustomOptions` + ONNX,
   or transformers.js. Aligns with the "semantic anchors / layered overlapping semantic trees".
-- Per-modality tables `vec_image` (CLIP), `vec_audio`, `vec_video`; `data/abstraction/file`
+- Per-modality tables `vec_image` (CLIP), `vec_audio`, `vec_video`; `data/schema/file`
   routed by mime to the right model/table in the worker.
 
 ## Verification

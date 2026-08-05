@@ -9,7 +9,7 @@ import Embedd from '../../../src/services/embedd/src/index.js';
 
 test('router: note schema -> text space, onnx', () => {
     const r = new Router();
-    const rule = r.route({ modality: 'text', schema: 'data/abstraction/note' });
+    const rule = r.route({ modality: 'text', schema: 'data/schema/note' });
     assert.equal(rule.space, 'text');
     assert.equal(rule.provider, 'onnx');
     assert.equal(rule.dim, 384);
@@ -18,7 +18,7 @@ test('router: note schema -> text space, onnx', () => {
 
 test('router: email schema -> text space, onnx (subject+body embedding)', () => {
     const r = new Router();
-    const rule = r.route({ modality: 'text', schema: 'data/abstraction/email' });
+    const rule = r.route({ modality: 'text', schema: 'data/schema/message/email' });
     assert.equal(rule.space, 'text');
     assert.equal(rule.provider, 'onnx');
     assert.equal(rule.chunk, true);
@@ -26,13 +26,13 @@ test('router: email schema -> text space, onnx (subject+body embedding)', () => 
 
 test('router: text/* contentType -> text space', () => {
     const r = new Router();
-    const rule = r.route({ modality: 'text', schema: 'data/abstraction/file', contentType: 'text/markdown' });
+    const rule = r.route({ modality: 'text', schema: 'data/schema/file', contentType: 'text/markdown' });
     assert.equal(rule.space, 'text');
 });
 
 test('router: image/* -> image space (CLIP joint space, 512-d default)', () => {
     const r = new Router();
-    const rule = r.route({ modality: 'image', schema: 'data/abstraction/file', contentType: 'image/png' });
+    const rule = r.route({ modality: 'image', schema: 'data/schema/file', contentType: 'image/png' });
     assert.equal(rule.space, 'image');
     assert.equal(rule.provider, 'clip');
     assert.equal(rule.model, 'Xenova/clip-vit-base-patch32');
@@ -42,7 +42,7 @@ test('router: image/* -> image space (CLIP joint space, 512-d default)', () => {
 
 test('router: unmatched -> null (skip)', () => {
     const r = new Router();
-    assert.equal(r.route({ modality: 'text', schema: 'data/abstraction/tab', contentType: 'application/json' }), null);
+    assert.equal(r.route({ modality: 'text', schema: 'data/schema/tab', contentType: 'application/json' }), null);
 });
 
 test('router: spaceRule returns canonical rule per space', () => {
@@ -55,10 +55,10 @@ test('router: spaceRule returns canonical rule per space', () => {
 test('router: candidateSchemas per space (schema + file for contentType rules)', () => {
     const r = new Router();
     const text = r.candidateSchemas('text');
-    assert.ok(text.includes('data/abstraction/note'));
-    assert.ok(text.includes('data/abstraction/email')); // email rule → gap ledger covers emails
-    assert.ok(text.includes('data/abstraction/file')); // text/* rule → file bytes
-    assert.deepEqual(r.candidateSchemas('image'), ['data/abstraction/file']);
+    assert.ok(text.includes('data/schema/note'));
+    assert.ok(text.includes('data/schema/message/email')); // email rule → gap ledger covers emails
+    assert.ok(text.includes('data/schema/file')); // text/* rule → file bytes
+    assert.deepEqual(r.candidateSchemas('image'), ['data/schema/file']);
 });
 
 test('embedd.reconcile: pulls ledger gap and enqueues (deduped), reindex clears first', async () => {
@@ -67,7 +67,7 @@ test('embedd.reconcile: pulls ledger gap and enqueues (deduped), reindex clears 
     const gap = { text: [1, 2, 3], image: [3, 4] }; // 3 overlaps → deduped to one enqueue
     e.registerWorkspace('ws1', {
         // tab schema is unrouted → queue skips embedding, but enqueue still counts.
-        resolveInput: async () => ({ modality: 'text', schema: 'data/abstraction/tab', updatedAt: 't', text: 'x' }),
+        resolveInput: async () => ({ modality: 'text', schema: 'data/schema/tab', updatedAt: 't', text: 'x' }),
         storeVectors: async () => {},
         getUnembedded: async (space) => gap[space] || [],
         clearSpace: async (space) => { cleared.push(space); },
@@ -84,9 +84,9 @@ test('embedd.reconcile: pulls ledger gap and enqueues (deduped), reindex clears 
 
 test('router: candidateSpaces(schema)', () => {
     const r = new Router();
-    assert.deepEqual(r.candidateSpaces('data/abstraction/note'), ['text']);
-    assert.deepEqual(r.candidateSpaces('data/abstraction/file').sort(), ['image', 'text']);
-    assert.deepEqual(r.candidateSpaces('data/abstraction/tab'), []);
+    assert.deepEqual(r.candidateSpaces('data/schema/note'), ['text']);
+    assert.deepEqual(r.candidateSpaces('data/schema/file').sort(), ['image', 'text']);
+    assert.deepEqual(r.candidateSpaces('data/schema/tab'), []);
 });
 
 test('embedd: skipped file is marked seen in ALL candidate spaces (converges)', async () => {
@@ -94,7 +94,7 @@ test('embedd: skipped file is marked seen in ALL candidate spaces (converges)', 
     const stored = [];
     e.registerWorkspace('ws1', {
         // A file with a non-embeddable contentType → skip marker.
-        resolveInput: async () => ({ skip: true, schema: 'data/abstraction/file', updatedAt: 't', contentType: 'application/pdf' }),
+        resolveInput: async () => ({ skip: true, schema: 'data/schema/file', updatedAt: 't', contentType: 'application/pdf' }),
         storeVectors: async (docId, schema, updatedAt, chunks, opts) => { stored.push({ space: opts.space, n: chunks.length }); },
     });
     e.enqueue('ws1', 7);
@@ -138,7 +138,7 @@ test('embedd: routes, chunks, embeds via fake provider, stores vectors', async (
     // that would call a real provider — instead assert skip path here.)
     let stored = null;
     e.registerWorkspace('ws1', {
-        resolveInput: async () => ({ modality: 'text', schema: 'data/abstraction/tab', updatedAt: 't', text: 'x', contentType: 'application/json' }),
+        resolveInput: async () => ({ modality: 'text', schema: 'data/schema/tab', updatedAt: 't', text: 'x', contentType: 'application/json' }),
         storeVectors: async (...args) => { stored = args; },
     });
     e.enqueue('ws1', 5);

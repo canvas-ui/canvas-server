@@ -237,7 +237,7 @@ async function handleActionOutput(text, output, { context, scope, workspace, log
         const target = parseLinkTarget(interpolate(String(output.note.path), scope));
         const title = interpolate(String(output.note.title || scope.rule?.description || `Automation output (${label})`), scope);
         const note = await context.insert(
-            { schema: 'data/abstraction/note', data: { title, content: String(text) } },
+            { schema: 'data/schema/note', data: { title, content: String(text) } },
             target.tree === 'directory' ? { context: null, directory: target.path } : { context: target.path },
         );
         logger.debug(`rule ${label}: output saved as note ${note?.id ?? note} at ${target.tree}:${target.path}`);
@@ -285,7 +285,7 @@ async function writeOutputFile(text, fileSpec, { context, scope, workspace, logg
     if (fileSpec.insert) {
         const target = parseLinkTarget(interpolate(String(fileSpec.insert), scope));
         const doc = {
-            schema: 'data/abstraction/file',
+            schema: 'data/schema/file',
             checksumArray: location.checksum ? [`sha256/${location.checksum}`] : [],
             locations: [{ url: location.url }],
             metadata: { contentType: 'text/plain', size: location.size, filename: path.posix.basename(relPath.split(path.sep).join('/')) },

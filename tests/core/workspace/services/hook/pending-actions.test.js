@@ -101,7 +101,7 @@ describe('HookService approval flow', () => {
     let workspace;
     let service;
     let linkCalls;
-    const doc = { id: 7, schema: 'data/abstraction/email', data: { subject: 'Invoice 42', from: 'foo@bar.baz' } };
+    const doc = { id: 7, schema: 'data/schema/message/email', data: { subject: 'Invoice 42', from: 'foo@bar.baz' } };
 
     function writeRules(rules) {
         fs.mkdirSync(workspace.hooksPath, { recursive: true });

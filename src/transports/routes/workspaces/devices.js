@@ -3,7 +3,7 @@
 import ResponseObject from '../../ResponseObject.js';
 import { requireWorkspaceRead, requireWorkspaceWrite } from '../../middleware/workspace-acl.js';
 
-const DEVICE_SCHEMA = 'data/abstraction/device';
+const DEVICE_SCHEMA = 'data/schema/device';
 
 function serializeDeviceDocument(document) {
   return {

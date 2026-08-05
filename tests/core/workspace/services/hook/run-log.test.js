@@ -65,11 +65,11 @@ describe('HookRunLog', () => {
         const envelope = buildReplayEnvelope('document.inserted', {
             id: 7,
             eventId: 'e7',
-            document: { id: 7, schema: 'data/abstraction/email', data: { body: 'x'.repeat(10000) } },
+            document: { id: 7, schema: 'data/schema/message/email', data: { body: 'x'.repeat(10000) } },
             context: { paths: ['/inbox'] },
         });
         assert.equal(envelope.event, 'document.inserted');
-        assert.deepEqual(envelope.payload.document, { id: 7, schema: 'data/abstraction/email' });
+        assert.deepEqual(envelope.payload.document, { id: 7, schema: 'data/schema/message/email' });
         assert.equal(envelope.payload.eventId, 'e7');
         assert.deepEqual(envelope.payload.context, { paths: ['/inbox'] });
     });

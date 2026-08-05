@@ -833,7 +833,7 @@ export class WorkspaceStoredIndex {
      */
     async #purgeDeadBackendLocations() {
         const db = this.#getDb();
-        const fileDocs = await db.list({ features: { allOf: ['data/abstraction/file'] } }).catch(() => []);
+        const fileDocs = await db.list({ features: { allOf: ['data/schema/file'] } }).catch(() => []);
         let swept = 0;
         for (const doc of fileDocs) {
             if (!Array.isArray(doc.locations) || doc.locations.length === 0) { continue; }
@@ -1419,7 +1419,7 @@ export class WorkspaceStoredIndex {
         if (geo) { metadata.geo = geo; } else { delete metadata.geo; }
 
         const doc = {
-            schema: 'data/abstraction/file',
+            schema: 'data/schema/file',
             checksumArray: checksumArray.length > 0 ? checksumArray : (existingDocument?.checksumArray || []),
             data: {},
             locations,

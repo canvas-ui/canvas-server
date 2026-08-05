@@ -23,54 +23,48 @@ export default async function schemaRoutes(fastify, options) {
     }
   });
 
-  // List schemas by abstraction type
-  fastify.get('/data/abstraction/:abstraction', {
+  // Schema descriptor / JSON Schema for one id. A splat, not a named param:
+  // schema ids are hierarchical (`data/schema/message/email` spans two
+  // segments, which `:param` cannot match). `<id>.json` serves the derived
+  // JSON Schema; the bare id serves the registration descriptor — the old
+  // handler returned the CLASS, which JSON-serializes to `{}`.
+  fastify.get('/data/schema/*', {
     schema: {
       params: {
         type: 'object',
-        required: ['abstraction'],
+        required: ['*'],
         properties: {
-          abstraction: { type: 'string' }
+          '*': { type: 'string' }
         }
       }
     }
   }, async (request, reply) => {
     try {
-      const schemas = schemaRegistry.getSchema(`data/abstraction/${request.params.abstraction}`);
-      const response = new ResponseObject().found(schemas, 'Schemas retrieved successfully', 200, schemas.length);
-      return reply.code(response.statusCode).send(response.getResponse());
-    } catch (error) {
-      fastify.log.error(error);
-      const response = new ResponseObject().serverError('Failed to list schemas');
-      return reply.code(response.statusCode).send(response.getResponse());
-    }
-  });
+      const splat = request.params['*'] || '';
+      const wantsJson = splat.endsWith('.json');
+      const tail = wantsJson ? splat.slice(0, -'.json'.length) : splat;
+      // A derived subtype bitmap key (data/schema/application/flatpak) is not a
+      // registered id — answer with its nearest registered ancestor rather than
+      // a 404, so bitmap-derived links stay resolvable.
+      const requestedId = `data/schema/${tail}`;
+      const schemaId = schemaRegistry.hasSchema(requestedId)
+        ? requestedId
+        : schemaRegistry.resolveSchemaId(requestedId);
 
-  // Get JSON schema for a specific abstraction
-  fastify.get('/data/abstraction/:abstraction.json', {
-    schema: {
-      params: {
-        type: 'object',
-        required: ['abstraction'],
-        properties: {
-          abstraction: { type: 'string' }
-        }
-      }
-    }
-  }, async (request, reply) => {
-    try {
-      const schemaId = `data/abstraction/${request.params.abstraction}`;
-      if (!schemaRegistry.hasSchema(schemaId)) {
-        const response = new ResponseObject().notFound(`Schema not found: ${schemaId}`);
+      if (!schemaId) {
+        const response = new ResponseObject().notFound(`Schema not found: ${requestedId}`);
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
-      const jsonSchema = schemaRegistry.getJsonSchema(schemaId);
-      const response = new ResponseObject().found(jsonSchema, 'JSON schema retrieved successfully');
+      const payload = wantsJson
+        ? schemaRegistry.getJsonSchema(schemaId)
+        : schemaRegistry.getSchemaDescriptor(schemaId);
+      const message = wantsJson ? 'JSON schema retrieved successfully' : 'Schema retrieved successfully';
+      const response = new ResponseObject().found(payload, message);
       return reply.code(response.statusCode).send(response.getResponse());
     } catch (error) {
       fastify.log.error(error);
-      const response = new ResponseObject().serverError('Failed to get JSON schema');
+      const response = new ResponseObject().serverError('Failed to get schema');
       return reply.code(response.statusCode).send(response.getResponse());
     }
   });

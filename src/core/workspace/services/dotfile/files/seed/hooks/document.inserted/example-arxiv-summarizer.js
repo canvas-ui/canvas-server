@@ -24,7 +24,7 @@ export default async function hook({ classify, payload, agent, insert, logger })
   // so it can never re-trigger this hook.
   const contextPaths = payload?.context?.paths ?? payload?.context?.path ?? '/';
   const note = await insert({
-    schema: 'data/abstraction/note',
+    schema: 'data/schema/note',
     data: {
       title: `Summary: ${title}`,
       content: `# Summary: ${title}\n\nSource: ${c.url}\n\n${summary}`,

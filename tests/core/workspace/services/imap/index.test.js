@@ -100,7 +100,7 @@ describe('WorkspaceMailIndex', () => {
         assert.equal(puts.length, 1);
         const { record, options } = puts[0];
         assert.equal(record.id, docId);
-        assert.equal(record.schema, 'data/abstraction/email');
+        assert.equal(record.schema, 'data/schema/message/email');
         const urls = record.locations.map((l) => l.url);
         assert.ok(urls.some((u) => u.startsWith('stored://workspace:data/')), `expected stored://workspace:data location, got ${urls}`);
         assert.ok(urls.some((u) => u.startsWith('imap://alice@example.com/INBOX;UID=5')), `expected imap:// location, got ${urls}`);

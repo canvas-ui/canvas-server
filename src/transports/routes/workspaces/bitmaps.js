@@ -80,7 +80,7 @@ export default async function workspaceBitmapRoutes(fastify, options) {
   // GET /workspaces/:id/bitmaps/*
   // Path traversal semantics:
   // - Prefix path (e.g. "data") => list metadata for matching bitmap keys
-  // - Exact key path (e.g. "data/abstraction/tab") => return that bitmap metadata
+  // - Exact key path (e.g. "data/schema/tab") => return that bitmap metadata
   // Use includeData=true to include full bitmap IDs.
   fastify.get('/*', {
     onRequest: [fastify.authenticate],

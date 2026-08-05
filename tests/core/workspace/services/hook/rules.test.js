@@ -10,14 +10,14 @@ const noopLogger = { debug: () => {}, warn: () => {} };
 
 function tabPayload(url, contextPaths = ['/inbox']) {
     return {
-        document: { id: 101, schema: 'data/abstraction/tab', data: { url, title: 't' } },
+        document: { id: 101, schema: 'data/schema/tab', data: { url, title: 't' } },
         context: { paths: contextPaths },
     };
 }
 
 function emailPayload(from, subject) {
     return {
-        document: { id: 102, schema: 'data/abstraction/email', data: { from, subject } },
+        document: { id: 102, schema: 'data/schema/message/email', data: { from, subject } },
         context: { path: '/inbox' },
     };
 }
@@ -59,7 +59,7 @@ describe('rule matching', () => {
 
     test('path and mime matchers', () => {
         const filePayload = {
-            document: { id: 103, schema: 'data/abstraction/file', metadata: { contentType: 'application/pdf' } },
+            document: { id: 103, schema: 'data/schema/file', metadata: { contentType: 'application/pdf' } },
             context: { paths: ['/to-sort/docs'] },
         };
         const c = classify(filePayload);
@@ -78,7 +78,7 @@ describe('rule matching', () => {
     test('to matcher: any To/Cc recipient, string/array/object semantics', () => {
         const payload = {
             document: {
-                id: 104, schema: 'data/abstraction/email',
+                id: 104, schema: 'data/schema/message/email',
                 data: {
                     from: 'supplier@vendor.tld',
                     to: [{ address: 'Invoice@My-Company.tld', name: 'Invoices' }],
@@ -100,7 +100,7 @@ describe('rule matching', () => {
     test('attachment matcher: true / mime pattern / { mime, filename }', () => {
         const withPdf = {
             document: {
-                id: 105, schema: 'data/abstraction/email',
+                id: 105, schema: 'data/schema/message/email',
                 data: {
                     from: 'supplier@vendor.tld',
                     to: ['invoice@my-company.tld'],
@@ -285,7 +285,7 @@ describe('rule actions', () => {
 
         assert.equal(calls.agent.length, 1);
         assert.equal(calls.insert.length, 1);
-        assert.equal(calls.insert[0].document.schema, 'data/abstraction/note');
+        assert.equal(calls.insert[0].document.schema, 'data/schema/note');
         assert.equal(calls.insert[0].document.data.title, 'Summary: DC migration');
         assert.equal(calls.insert[0].document.data.content, 'ok');
         assert.deepEqual(calls.insert[0].options, { context: '/work/summaries' });
@@ -357,7 +357,7 @@ describe('rule actions', () => {
         assert.equal(calls.persistBlob.length, 1);
         assert.equal(calls.insert.length, 1);
         const doc = calls.insert[0].document;
-        assert.equal(doc.schema, 'data/abstraction/file');
+        assert.equal(doc.schema, 'data/schema/file');
         assert.deepEqual(doc.checksumArray, ['sha256/deadbeef']);
         assert.deepEqual(doc.locations, [{ url: 'stored://workspace:data/abc' }]);
         assert.equal(doc.metadata.filename, 'summary.txt');
@@ -449,7 +449,7 @@ echo "{\\"cwd\\":\\"$PWD\\",\\"event\\":\\"$CANVAS_EVENT\\",\\"eventId\\":\\"$CA
             assert.equal(probe.stdin.event, 'document.inserted');
             assert.equal(probe.stdin.eventId, 'evt-script-1');
             assert.equal(probe.stdin.rule.id, 'probe-rule');
-            assert.equal(probe.stdin.payload.document.schema, 'data/abstraction/tab');
+            assert.equal(probe.stdin.payload.document.schema, 'data/schema/tab');
             // clean exit → workdir removed (async cleanup; poll briefly)
             for (let i = 0; i < 20 && fs.existsSync(expectedWorkDir); i++) {
                 await new Promise((r) => setTimeout(r, 25));

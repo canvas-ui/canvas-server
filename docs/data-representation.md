@@ -357,22 +357,102 @@ what a delete does:
   seam every tree consumer passes through. Pruned at the ROOT only — a user
   folder called `.trash` deeper in a tree is theirs to see.
 
-### Phase 3 — canvas-fuse
+### Phase 3 — canvas-fuse — **SEMANTICS LANDED 2026-08-05, layout still open**
 
-1. One layout (§1); `-c`/`-w` reduced to `--root`.
-2. Cross-directory `rename` implemented as a re-tag. Today context mode returns
-   `EXDEV`, which makes `mv` fall back to copy+unlink: correct thanks to content
-   addressing, but it streams every byte through the mount. Needed for
-   drag-to-trash to be one atomic operation.
-3. `unlink` keeps calling the same REST endpoints, inheriting `trashIfOrphaned`
-   from the server rather than reimplementing it.
-4. `Trash/` in the tree.
+Done — the parts that change what an operation MEANS:
 
-### Phase 4 — `Home/`
+- **`rm` carries the trash rule.** `remove_tree_document` takes
+  `trash_if_orphaned`; the user-initiated unlink passes `true`, so the server
+  applies the same rule as WebDAV — canvas-fuse reimplements nothing. The
+  overwrite-rename path (an editor's atomic save) passes `false` on purpose: the
+  source document was superseded by the copy, not removed by the user, and it
+  must not land in the trash as if it had been.
+  Context mode still only detaches, per the decision that a context is a view.
+- **Cross-directory moves are re-tags.** Both `mv` between folders and folder
+  moves used to return `EXDEV`, so the kernel fell back to copy+unlink and
+  streamed every byte through the mount. A file now links at the destination and
+  unlinks at the source (link first — a failure leaves it in both places, not
+  neither); a folder move is a tree `movePath`, carrying its documents with it.
+  Works across trees too, since both halves are path-scoped.
+- `Tree::move_tree_file` / `move_tree_path_node` reindex the affected trees, so
+  the local view's path index follows the document — a stale path there would
+  send the next edit to the folder the document just left.
 
-Straight-through FS ops, no document layer, no trash; verify the home
-scanner/watcher reconciles deletes and renames. Internals stay hidden via the
-existing `internalPathMatcher`.
+Layout consolidated (**v0.5.0**):
+
+- A workspace mount now has the WebDAV shape: trees moved under **`Trees/`**,
+  and **`Trash/`** is a root of its own (flat, refreshed each reconcile).
+- **`--root <selector>`** is the one way to say what a mount is rooted at:
+  `<workspace>`, `Contexts`, or `Contexts/<id>`. `-w`/`-c` still work as
+  deprecated aliases, so existing scripts keep running.
+- `rm` inside `Trash/` destroys, as in a file manager. It has to be special:
+  detaching there would be a silent no-op, because the document is already
+  orphaned and the server would file it straight back.
+
+**A mount is one workspace** — contexts are addressed inside it, never across
+workspaces (the contexts API is user-wide, so the worker filters by the mount's
+workspace id). The selector says which:
+
+```
+canvas-fuse mount universe ~/MyWorkspace                 # Trees/ + Trash/
+canvas-fuse mount universe/Contexts ~/ctx                # that workspace's contexts
+canvas-fuse mount universe/Contexts/foo ~/MyFooContext   # one context, rooted
+```
+
+`-w` / `-c` are the flag forms of the same thing and now combine (`-w universe
+-c foo`); a selector naming two different workspaces is an error rather than a
+silent pick.
+
+Still open: **`Home/` is not served by this mount** (WebDAV serves it). Range
+support now exists on both wires, which was the prerequisite; what remains is
+the FUSE read/write path against the home REST API — real files streamed, not
+documents rendered.
+
+### Byte ranges — **LANDED 2026-08-06**
+
+Neither wire honoured `Range`: WebDAV's `_get` and `GET /home/*?download` both
+streamed whole files. So seeking in a large file re-read it from the start, and
+changing one byte of a 1 GB file cost a full download and a full upload.
+
+`GET` now serves single byte ranges on **both** kinds of file — real files under
+`Home/` and blob-backed documents — with `Accept-Ranges`, 206 + `Content-Range`,
+416 for a window past the end, and 200 for a multi-range request (legal, and
+multipart/byteranges buys nothing for players and editors).
+
+The document half cost almost nothing: `stored` already had
+`getRangeStreamByUrl` and `WorkspaceStoredIndex.resolve()` already returned
+`{ data, ranged }` — nothing was calling it. 206 is answered only when `ranged`
+is true; a backend that cannot seek returns the whole body, and claiming 206
+there would be a lie the client cannot detect.
+
+### Phase 4 — `Home/` — **LANDED 2026-08-05**
+
+Straight-through FS ops, no document layer, no trash. The work was verifying
+that the index keeps up with a drive that changes behind its back — and it did
+not:
+
+- **A deleted home file in any SUBFOLDER never reconciled.** `#purgeOrphanedPaths`
+  listed the backend's mirror root with `db.list({ directory })`, which is not
+  recursive, so it only ever saw files sitting directly in the drive root.
+  Everything nested — i.e. almost every real file — kept a location pointing at
+  bytes that were gone: a ghost document that still lists, still matches
+  searches, and fails on read. Now lists the subtree via `listTreeDocuments`.
+  The live chokidar path was never affected (it reconciles by checksum), so this
+  hit exactly the 2-device case: files removed while the server was down, or a
+  mount with `watch:false`.
+- **The test double hid it.** `WorkspaceStoredIndex.test.js` stubbed `list()`
+  with a loose `startsWith` prefix match — MORE permissive than the real db, so
+  the production call looked correct under test. Both stubs now model the real
+  recursive semantics.
+
+Confirmed behaviour (`tests/core/workspace/home-reconcile.test.js`): a new file
+becomes a document mirrored in the backends tree; deleting it drops the location,
+sets `orphanedAt`, unticks the mirror path and **keeps curated placements**; the
+same bytes returning re-bind to the same document; a rename keeps one document;
+workspace internals and dotfiles are never indexed.
+
+Also added: `Workspace.syncBackend(driver, address, { background: false })` — a
+caller that needs to act on the reconcile can now await it.
 
 ### Phase 5 — CRUD on `Contexts/**`
 

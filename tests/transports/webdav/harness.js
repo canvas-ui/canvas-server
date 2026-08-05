@@ -45,7 +45,12 @@ class FakeResponse extends Writable {
     writeHead(code, headers) {
         this.statusCode = code;
         this.headersSent = true;
-        Object.assign(this.headers, headers || {});
+        // Lower-cased like a real ServerResponse's lookups, so a test reading
+        // `headers['content-range']` sees what the handler wrote as
+        // 'Content-Range'.
+        for (const [key, value] of Object.entries(headers || {})) {
+            this.headers[String(key).toLowerCase()] = value;
+        }
         return this;
     }
 

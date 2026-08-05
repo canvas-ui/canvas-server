@@ -2488,11 +2488,17 @@ class Workspace extends EventEmitter {
         return true;
     }
 
-    async syncBackend(driver, address) {
+    /**
+     * Resync a backend. Storage resyncs run in the background by default (a full
+     * scan of a large mount is slow, and progress is reported via the backend
+     * status); pass `{ background: false }` to await the reconcile — what a
+     * caller that needs to act on the result wants.
+     */
+    async syncBackend(driver, address, { background = true } = {}) {
         if (driver === 'imap') return (await this.#mail()).resyncAccount(address);
         // Storage: address is the backend name / config key verbatim
         // (workspace:home, or a user mount's case-preserving slug).
-        return this.#resyncDataBackend(address);
+        return this.#resyncDataBackend(address, { background });
     }
 
     // Cancel an in-flight storage resync. The walk stops at the next file;

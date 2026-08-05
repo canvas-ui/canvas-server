@@ -199,6 +199,8 @@ describe('home-layout indexing never sees the workspace internals', () => {
             getDb: () => ({
                 async getByChecksumString() { return null; },
                 async list() { return []; },
+                // Absence reconciliation walks the backend's mirror subtree.
+                async listTreeDocuments() { return { documents: [], count: 0, totalCount: 0 }; },
                 async listDocumentTreePaths(id) { return documentPaths.get(id) || []; },
                 async delete() {},
                 async migrateDocumentMemberships() { return []; },

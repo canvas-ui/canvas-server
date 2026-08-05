@@ -753,8 +753,13 @@ export class WorkspaceStoredIndex {
 
         const backendRoot = this.#getBackendRootPath(backendName);
         if (!backendRoot) return 0;
-        const treeSelector = this.#getBackendsTreeSelector(backendRoot);
-        const docsInTree = await db.list({ directory: treeSelector }).catch(() => []);
+        // RECURSIVE: the mirror nests one node per folder, so a plain list of the
+        // backend's root node only sees files sitting directly in it. Absences
+        // in every subfolder — i.e. almost every real file — would go
+        // unreconciled, leaving documents pointing at bytes that are gone.
+        const { documents: docsInTree = [] } = await db
+            .listTreeDocuments(BACKENDS_TREE_NAME, { path: backendRoot, limit: null })
+            .catch(() => ({ documents: [] }));
 
         let reconciled = 0;
         for (const doc of docsInTree) {

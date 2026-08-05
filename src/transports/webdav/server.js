@@ -35,6 +35,45 @@ const encSeg = (s) => { try { return encodeURIComponent(s); } catch { return enc
 const encSegments = (p) => p.split('/').map(s => s ? encSeg(s) : '').join('/');
 const etag = (s) => `"${s.ino}-${s.size}-${Math.floor(s.mtimeMs)}"`;
 
+/**
+ * Parse a `Range` header against a known size.
+ *
+ * Returns null when there is no range to honour (absent header, a form we do
+ * not serve), or `{ start, end }` inclusive, or `{ unsatisfiable: true }` for a
+ * range that lies outside the file — which is a 416, not a silent full body.
+ *
+ * Only single ranges are honoured: multipart/byteranges buys nothing for the
+ * clients that matter here (players seeking, editors reading a header), and
+ * answering 200 with the whole body is a legal response to a multi-range
+ * request.
+ */
+function parseRange(header, size) {
+  if (!header || size == null) return null;
+  const match = /^bytes=(\d*)-(\d*)$/.exec(String(header).trim());
+  if (!match) return null;
+
+  const [, rawStart, rawEnd] = match;
+  if (rawStart === '' && rawEnd === '') return null;
+
+  let start;
+  let end;
+  if (rawStart === '') {
+    // Suffix form: the LAST n bytes.
+    const suffix = Number(rawEnd);
+    if (!Number.isFinite(suffix) || suffix <= 0) return { unsatisfiable: true };
+    start = Math.max(0, size - suffix);
+    end = size - 1;
+  } else {
+    start = Number(rawStart);
+    end = rawEnd === '' ? size - 1 : Number(rawEnd);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+    end = Math.min(end, size - 1);
+  }
+
+  if (start > end || start >= size) return { unsatisfiable: true };
+  return { start, end };
+}
+
 // ── In-memory lock store (Class 2 WebDAV) ───────────────────────────────────
 
 const locks = new Map();
@@ -293,7 +332,7 @@ export class WebDAVHandler {
       `  </D:response>\n</D:multistatus>`);
   }
 
-  async _get({ res, abs, isHidden = () => false }) {
+  async _get({ res, abs, headers = {}, isHidden = () => false }) {
     let stat;
     try { stat = await fs.stat(abs); }
     catch { return send(res, 404, 'Not Found'); }
@@ -304,12 +343,32 @@ export class WebDAVHandler {
       return sendBody(res, 200, html, 'text/html; charset=utf-8');
     }
 
-    res.writeHead(200, {
+    const baseHeaders = {
       'Content-Type': mime(abs),
-      'Content-Length': stat.size,
       'ETag': etag(stat),
       'Last-Modified': httpDate(stat.mtime),
-    });
+      'Accept-Ranges': 'bytes',
+    };
+
+    // Without this a player seeking in a large file re-reads it from the start,
+    // and anything that reads a header before deciding what to do downloads the
+    // whole thing first.
+    const range = parseRange(headers['range'], stat.size);
+    if (range?.unsatisfiable) {
+      res.writeHead(416, { ...baseHeaders, 'Content-Range': `bytes */${stat.size}` });
+      return res.end();
+    }
+    if (range) {
+      const length = range.end - range.start + 1;
+      res.writeHead(206, {
+        ...baseHeaders,
+        'Content-Length': length,
+        'Content-Range': `bytes ${range.start}-${range.end}/${stat.size}`,
+      });
+      return await pipeline(createReadStream(abs, { start: range.start, end: range.end }), res);
+    }
+
+    res.writeHead(200, { ...baseHeaders, 'Content-Length': stat.size });
     await pipeline(createReadStream(abs), res);
   }
 
@@ -507,7 +566,7 @@ export class WebDAVHandler {
         case 'OPTIONS':  return this._options({ res });
         case 'PROPFIND': return await this._vPropfind(res, { prefix, rel, vRel, headers, body, vfs, treeType });
         case 'PROPPATCH': return await this._vProppatch(res, { prefix, rel, vRel, headers, body, vfs });
-        case 'GET':      return await this._vGet(res, { vRel, vfs, treeType });
+        case 'GET':      return await this._vGet(res, { vRel, vfs, treeType, headers });
         case 'HEAD':     return await this._vHead(res, { vRel, vfs });
         case 'PUT':      return await this._vPut(res, { vRel, body, vfs });
         case 'DELETE':   return await this._vDelete(res, { vRel, vfs, treeType });
@@ -549,7 +608,7 @@ export class WebDAVHandler {
     sendXml(res, 207, `<?xml version="1.0" encoding="utf-8"?>\n<D:multistatus xmlns:D="DAV:">\n${entries.join('\n')}\n</D:multistatus>`);
   }
 
-  async _vGet(res, { vRel, vfs, treeType }) {
+  async _vGet(res, { vRel, vfs, treeType, headers = {} }) {
     const info = await vfs.stat(vRel);
     if (!info) return send(res, 404, 'Not Found');
 
@@ -565,11 +624,29 @@ export class WebDAVHandler {
       return sendBody(res, 200, html, 'text/html; charset=utf-8');
     }
 
-    const content = await vfs.getContent(vRel);
+    // Blob-backed documents can be served by the byte window `stored` already
+    // supports, so seeking in a video filed in a canvas works like seeking in a
+    // file. `ranged` reports whether the backend really honoured it.
+    const wanted = parseRange(headers?.['range'], info.size);
+    if (wanted?.unsatisfiable) {
+      res.writeHead(416, { 'Accept-Ranges': 'bytes', 'Content-Range': `bytes */${info.size}` });
+      return res.end();
+    }
+
+    const content = await vfs.getContent(vRel, wanted ? { range: { start: wanted.start, end: wanted.end } } : {});
     if (!content) return send(res, 404, 'Not Found');
 
     if (content.stream) {
-      const headers = { 'Content-Type': content.contentType };
+      const headers = { 'Content-Type': content.contentType, 'Accept-Ranges': 'bytes' };
+      if (wanted && content.ranged) {
+        const length = wanted.end - wanted.start + 1;
+        res.writeHead(206, {
+          ...headers,
+          'Content-Length': length,
+          'Content-Range': `bytes ${wanted.start}-${wanted.end}/${info.size}`,
+        });
+        return await pipeline(content.stream, res);
+      }
       if (Number.isFinite(content.size)) headers['Content-Length'] = content.size;
       res.writeHead(200, headers);
       await pipeline(content.stream, res);

@@ -44,6 +44,36 @@ async function statEntry(abs, name) {
   };
 }
 
+/**
+ * Parse a `Range` header against a known size: null when there is nothing to
+ * honour, `{ start, end }` inclusive, or `{ unsatisfiable: true }` for a window
+ * outside the file (a 416, not a silent full body).
+ */
+function parseByteRange(header, size) {
+  if (!header || !Number.isFinite(size)) return null;
+  const match = /^bytes=(\d*)-(\d*)$/.exec(String(header).trim());
+  if (!match) return null;
+
+  const [, rawStart, rawEnd] = match;
+  if (rawStart === '' && rawEnd === '') return null;
+
+  let start;
+  let end;
+  if (rawStart === '') {
+    const suffix = Number(rawEnd);
+    if (!Number.isFinite(suffix) || suffix <= 0) return { unsatisfiable: true };
+    start = Math.max(0, size - suffix);
+    end = size - 1;
+  } else {
+    start = Number(rawStart);
+    end = rawEnd === '' ? size - 1 : Math.min(Number(rawEnd), size - 1);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  }
+
+  if (start > end || start >= size) return { unsatisfiable: true };
+  return { start, end };
+}
+
 export default async function homeRoutes(fastify) {
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -72,8 +102,25 @@ export default async function homeRoutes(fastify) {
 
     if (request.query.download !== undefined && !stat.isDirectory()) {
       reply.header('Content-Type', mime(abs));
-      reply.header('Content-Length', stat.size);
       reply.header('Content-Disposition', `attachment; filename="${path.basename(abs)}"`);
+      reply.header('Accept-Ranges', 'bytes');
+
+      // Byte windows, so a player seeking in a large file doesn't re-read it
+      // from the start and a reader after a header doesn't pull the whole
+      // thing. Single ranges only — answering 200 to a multi-range request is
+      // legal, and multipart/byteranges buys nothing for these clients.
+      const range = parseByteRange(request.headers.range, stat.size);
+      if (range?.unsatisfiable) {
+        reply.header('Content-Range', `bytes */${stat.size}`);
+        return reply.code(416).send();
+      }
+      if (range) {
+        reply.header('Content-Length', range.end - range.start + 1);
+        reply.header('Content-Range', `bytes ${range.start}-${range.end}/${stat.size}`);
+        return reply.code(206).send(createReadStream(abs, { start: range.start, end: range.end }));
+      }
+
+      reply.header('Content-Length', stat.size);
       return reply.send(createReadStream(abs));
     }
 

@@ -263,14 +263,20 @@ export function renderDoc(doc) {
 // Resolve a doc's downloadable content. File-backed docs stream their real
 // bytes through the workspace resolver (stored:// etc.); everything else
 // renders the abstraction (note/tab/todo → text body, else JSON).
-export async function resolveDocContent(workspace, doc, filename) {
+export async function resolveDocContent(workspace, doc, filename, { range = null } = {}) {
     if (doc?.locations?.length) {
-        const resolved = await workspace.resolveDocument(doc, { stream: true }).catch(() => null);
+        const resolved = await workspace
+            .resolveDocument(doc, { stream: true, ...(range ? { range } : {}) })
+            .catch(() => null);
         if (resolved?.stream) {
             return {
                 stream: resolved.stream,
                 size: Number.isFinite(doc.metadata?.size) ? doc.metadata.size : undefined,
                 contentType: doc.metadata?.contentType || mimeFor(filename),
+                // Only true when the backend actually served the window; a
+                // backend that cannot seek returns the whole body and the
+                // caller must answer 200, not a lying 206.
+                ranged: resolved.ranged === true,
             };
         }
     }

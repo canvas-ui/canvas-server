@@ -48,10 +48,10 @@ export default class TrashFS {
         return docEntries(await this.#docs());
     }
 
-    async getContent(vPath) {
+    async getContent(vPath, options = {}) {
         const info = await this.stat(vPath);
         if (!info || info.isDir) { return null; }
-        return resolveDocContent(this.#ws, info.doc, info.name);
+        return resolveDocContent(this.#ws, info.doc, info.name, options);
     }
 
     // ── Write ────────────────────────────────────────────────────────────────

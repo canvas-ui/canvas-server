@@ -58,6 +58,16 @@ describe('WorkspaceStoredIndex', () => {
                 }
                 return [...documents.values()].filter((doc) => (documentPaths.get(doc.id) || []).some((p) => p.startsWith(directory)));
             },
+            // Absence reconciliation lists the backend's mirror SUBTREE. The
+            // real implementation is recursive (findRecursive); the previous
+            // stub's loose prefix match was more permissive than the db, which
+            // is how a non-recursive production call went unnoticed.
+            async listTreeDocuments(treeNameOrId, { path: treePath = '/' } = {}) {
+                assert.equal(treeNameOrId, 'backends');
+                const matched = [...documents.values()].filter((doc) =>
+                    (documentPaths.get(doc.id) || []).some((p) => p === treePath || p.startsWith(`${treePath}/`)));
+                return { documents: matched, count: matched.length, totalCount: matched.length };
+            },
             async listDocumentTreePaths(id, treeNameOrId) {
                 // Regression: stale-path cleanup must query the dedicated
                 // backends tree, never a legacy/default tree name.

@@ -439,6 +439,10 @@ const ACTIONS = {
             rule: scope.rule ?? null,
         });
         const writeStdin = (child) => {
+            // The try/catch only covers a SYNC throw — a script that exits
+            // without reading stdin surfaces EPIPE asynchronously on the stream,
+            // which without a listener becomes an uncaughtException.
+            child.stdin.on('error', (err) => logger.debug(`rule script: stdin write failed: ${err.message}`));
             try { child.stdin.write(envelope); child.stdin.end(); }
             catch (err) { logger.debug(`rule script: stdin write failed: ${err.message}`); }
         };

@@ -147,6 +147,11 @@ export default async function workspaceRoutes(fastify, options) {
     prefix: '/:id/datasets',
     onRequest: [resolveWorkspaceAddress]
   });
+  // Where filesystem-style deletes park orphaned documents (WebDAV/canvas-fuse).
+  fastify.register(import('./trash.js'), {
+    prefix: '/:id/trash',
+    onRequest: [resolveWorkspaceAddress]
+  });
   // Unified backend/connector API (storage backends + message connectors),
   // mirroring the backends tree /<driver>/<address> nodes.
   fastify.register(import('./backends.js'), {

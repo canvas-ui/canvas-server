@@ -815,7 +815,18 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     onRequest: [fastify.authenticate],
     schema: {
       params: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } },
-      querystring: { type: 'object', properties: { ...contextQueryProps, ...attributesQueryProps } },
+      querystring: {
+        type: 'object',
+        properties: {
+          ...contextQueryProps,
+          ...attributesQueryProps,
+          // Filesystem-mount semantics: if this removes a document's LAST
+          // placement, file it into the trash rather than leaving it reachable
+          // only through the flat workspace-wide list. Used by WebDAV and
+          // canvas-fuse; off by default so the plain API keeps detaching.
+          trashIfOrphaned: { type: 'boolean' },
+        },
+      },
       body: {
         type: 'array',
         items: { anyOf: [{ type: 'string' }, { type: 'number' }] },
@@ -847,9 +858,11 @@ export default async function workspaceDocumentRoutes(fastify, options) {
         try { isDirectory = workspace.getTree(request.query.treeNameOrTreeId)?.type === 'directory'; }
         catch (_) { isDirectory = false; }
       }
-      const result = await workspace.unlinkMany(documentIds, isDirectory
-        ? { directory: contextSelector, attributes }
-        : { context: contextSelector, attributes });
+      const result = await workspace.unlinkMany(
+        documentIds,
+        isDirectory ? { directory: contextSelector, attributes } : { context: contextSelector, attributes },
+        { trashIfOrphaned: request.query.trashIfOrphaned === true },
+      );
 
       if (result?.failed?.length) {
         fastify.log.warn({

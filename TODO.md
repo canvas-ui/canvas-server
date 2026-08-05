@@ -529,6 +529,40 @@ when the messages service is extracted); `services.streams` shape defined with t
       - [] /dump
       - [] /restore
 
+### Storage policies (UNRESOLVED — blocks a real answer to "what does destroy mean")
+
+Surfaced by the data-representation work (`docs/data-representation.md`, decision 4).
+We have **no fine-grained storage policy layer** — not in `stored`, not in
+`Workspace`, not in the UI. Today a document's placement is whatever wrote it:
+`persistBlob()` always lands in `stored://workspace:data`, backends are
+enable/disable + watch flags, and there is nothing that expresses *where a
+document's bytes should live*, *how many copies*, or *which copies a delete may
+touch*.
+
+That gap is what forces the interim rule for emptying Trash: **purge the index +
+canvas-owned `stored://` locations, never foreign ones (IMAP, mounted NAS, S3
+someone else owns)**. It is defensible — content addressing makes `stored://`
+destroy mean "drop the last reference", and we cannot ask an OS file manager
+"which backend did you mean?" — but it is a default standing in for a policy.
+
+What a policy layer would have to answer:
+- **Placement on write** — which backend(s) a new document's bytes go to, by
+  schema / mime / size / tree path / context (a photo → `photos` S3 bucket, a
+  work note → the encrypted local blob store).
+- **Copies and tiers** — N copies across which backends; what
+  `stored.syncd` (`services.stored.sync.policies`, an empty slot today) pushes
+  where; pull-through vs pinned.
+- **Deletion authority per backend** — `owned` (we may destroy), `mirror` (we may
+  drop our copy, never the source), `foreign` (never touched). This is the field
+  that turns Empty-Trash from a hardcoded rule into a policy evaluation, and the
+  same field WebDAV/canvas-fuse need to answer "what did `rm` just do".
+- **Where it is declared** — per workspace in `workspace.json` under
+  `services.stored` (travels with a `tar+scp`'d workspace, consistent with the
+  layout schema work), overridable per backend.
+
+Until this exists, do not add per-call backend-selection flags to the delete
+paths — that is the policy leaking into every call site.
+
 ### Add support for additional data sources
 
 - `git`

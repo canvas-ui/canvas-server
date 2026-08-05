@@ -49,6 +49,12 @@ class Workspace extends EventEmitter {
     // Dedicated backend-mirror tree (type directory, linkContextRoot:false).
     // Paths inside it are /<driver>/<resource-address>/<resource-path>.
     static BACKENDS_TREE_NAME = BACKENDS_TREE_NAME;
+    // Where a document goes when a filesystem-style delete removes its LAST
+    // placement. A real path in the default directory tree — so listing,
+    // restoring and emptying are ordinary tree operations — but dot-prefixed so
+    // it stays out of `Trees/directory/` listings; WebDAV and canvas-fuse
+    // present it as `Trash/` at the workspace root.
+    static TRASH_PATH = '/.trash';
     // Tree types (used by the db layer)
     static CONTEXT_TYPE = 'context';
     static DIRECTORY_TYPE = 'directory';
@@ -814,31 +820,57 @@ class Workspace extends EventEmitter {
 
     async put(record, { context = '/', directory = null, features = [], attributes, emitEvent = true, allowBackendsWrite = false, provenance = null } = {}) {
         this.#assertBackendsWriteAllowed(directory, allowBackendsWrite);
-        return await this.#getActiveDb().put(record, {
+        const result = await this.#getActiveDb().put(record, {
             ...Workspace.#buildWriteSpec(context, directory),
             features: this.#normalizeFeatureInput(features, attributes),
             emitEvent,
             ...(provenance ? { provenance } : {}),
         });
+        // A re-put of identical content resolves to the SAME document by
+        // checksum, so this is also the path a copy-then-delete move takes.
+        await this.#untrashOnLink(result).catch(() => {});
+        return result;
     }
 
     async link(id, { context = '/', directory = null, features = [], attributes, emitEvent = true, allowBackendsWrite = false, provenance = null } = {}) {
         this.#assertBackendsWriteAllowed(directory, allowBackendsWrite);
-        return await this.#getActiveDb().link(id, {
+        const result = await this.#getActiveDb().link(id, {
             ...Workspace.#buildWriteSpec(context, directory),
             features: this.#normalizeFeatureInput(features, attributes),
             emitEvent,
             ...(provenance ? { provenance } : {}),
         });
+        await this.#untrashOnLink(id).catch(() => {});
+        return result;
     }
 
+    /**
+     * Remove a document from a path. Non-destructive: the document survives in
+     * the store and in every other path it is filed under.
+     *
+     * `options.trashIfOrphaned` adds the filesystem-mount rule — if this was the
+     * document's LAST placement it is filed into the trash path instead of
+     * becoming reachable only through the flat workspace-wide list. See
+     * `docs/data-representation.md`.
+     */
     async unlink(id, { context = null, directory = null, features = [], attributes } = {}, options = {}) {
         this.#assertBackendsWriteAllowed(directory, options.allowBackendsWrite === true);
-        return await this.#getActiveDb().unlink(id, {
+        const { trashIfOrphaned = false, ...dbOptions } = options;
+
+        // Snapshot placements BEFORE the unlink — afterwards the very paths a
+        // restore would have to put the document back into are gone.
+        const placementsBefore = trashIfOrphaned
+            ? await this.listDocumentPlacements(id).catch(() => [])
+            : null;
+
+        const result = await this.#getActiveDb().unlink(id, {
             ...Workspace.#buildWriteSpec(context, directory),
             features: this.#normalizeFeatureInput(features, attributes),
-            ...options,
+            ...dbOptions,
         });
+
+        if (trashIfOrphaned) { await this.#trashIfOrphaned(id, placementsBefore); }
+        return result;
     }
 
     async delete(id, options = {}) {
@@ -1150,13 +1182,32 @@ class Workspace extends EventEmitter {
         });
     }
 
+    /** Bulk `unlink`; `options.trashIfOrphaned` applies the same rule per document. */
     async unlinkMany(ids, { context = null, directory = null, features = [], attributes } = {}, options = {}) {
         this.#assertBackendsWriteAllowed(directory, options.allowBackendsWrite === true);
-        return await this.#getActiveDb().unlinkMany(parseDocumentIdArray(ids, 'Document ID array'), {
+        const docIds = parseDocumentIdArray(ids, 'Document ID array');
+        const { trashIfOrphaned = false, ...dbOptions } = options;
+
+        const placementsBefore = new Map();
+        if (trashIfOrphaned) {
+            for (const docId of docIds) {
+                placementsBefore.set(docId, await this.listDocumentPlacements(docId).catch(() => []));
+            }
+        }
+
+        const result = await this.#getActiveDb().unlinkMany(docIds, {
             ...Workspace.#buildWriteSpec(context, directory),
             features: this.#normalizeFeatureInput(features, attributes),
-            ...options,
+            ...dbOptions,
         });
+
+        if (trashIfOrphaned) {
+            for (const entry of (result?.successful ?? [])) {
+                const docId = entry?.id ?? entry;
+                await this.#trashIfOrphaned(docId, placementsBefore.get(docId) || []).catch(() => {});
+            }
+        }
+        return result;
     }
 
     async deleteMany(ids, options = {}) {
@@ -1284,6 +1335,195 @@ class Workspace extends EventEmitter {
 
     async listDocumentTreeMemberships(id, treeNameOrId) {
         return await this.#getActiveDb().listDocumentTreeMemberships(parseDocumentId(id, 'Document ID'), treeNameOrId);
+    }
+
+    /**
+     * Every place this document is filed: which paths of which trees hold it.
+     * The data behind the Synapses tab, and the basis of the orphan test and of
+     * trash restore provenance.
+     */
+    async listDocumentPlacements(id) {
+        const docId = parseDocumentId(id, 'Document ID');
+        const placements = [];
+        for (const tree of await this.listTrees()) {
+            if (!tree) { continue; }
+            const paths = await this.listDocumentTreeMemberships(docId, tree.id).catch(() => []);
+            placements.push({ tree: tree.name, treeId: tree.id, type: tree.type, paths });
+        }
+        return placements;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Trash — see docs/data-representation.md
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Is this document filed anywhere a user can navigate to?
+     *
+     * The root of a CONTEXT tree does not count. Every insert ticks it (tree
+     * setting `linkContextRoot`) and `unlink` refuses to remove it, so a `/`
+     * membership there means "exists in this workspace", not "filed somewhere" —
+     * counting it would make every document look filed forever and the orphan
+     * test a constant false. A directory tree's `/` DOES count: it is a real
+     * folder and nothing ticks it implicitly.
+     */
+    static #isFiled(placements) {
+        return placements.some(({ type, paths }) =>
+            paths.some((path) => !(type === Workspace.CONTEXT_TYPE && path === '/')));
+    }
+
+    getTrashSelector() {
+        return this.getDirectoryTreeSelector(Workspace.TRASH_PATH, Workspace.DIRECTORY_TREE_NAME);
+    }
+
+    #trashProvenanceKey(docId) { return `workspace/trash/${docId}`; }
+
+    // File an orphaned document into the trash path. `placementsBefore` is the
+    // snapshot taken before the unlink that orphaned it — restore puts it back
+    // exactly there.
+    async #trashIfOrphaned(id, placementsBefore = null) {
+        const docId = parseDocumentId(id, 'Document ID');
+
+        // Only an unlink that ORPHANS a document trashes it. A document that was
+        // already filed nowhere (never filed, or detached earlier by the plain
+        // API) is left alone: this unlink changed nothing, and sweeping such
+        // documents into the trash on an unrelated bulk remove would be a
+        // surprise — with no provenance to restore them by, at that.
+        if (placementsBefore && !Workspace.#isFiled(placementsBefore)) { return false; }
+
+        const placements = await this.listDocumentPlacements(docId);
+        if (Workspace.#isFiled(placements)) { return false; }
+
+        const db = this.#getActiveDb();
+        await db.link(docId, { context: null, directory: this.getTrashSelector() });
+        await db.internalStore.put(this.#trashProvenanceKey(docId), {
+            trashedAt: new Date().toISOString(),
+            placements: (placementsBefore || []).map(({ tree, treeId, type, paths }) => ({
+                tree, treeId, type,
+                // A context root is not a place to restore to (see #isFiled).
+                paths: paths.filter((path) => !(type === Workspace.CONTEXT_TYPE && path === '/')),
+            })).filter((placement) => placement.paths.length > 0),
+        });
+        this.#trashedIds?.add(docId);
+        return true;
+    }
+
+    // Ids currently in the trash, so the untrash-on-link check on the write path
+    // is a Set lookup rather than an index read. Seeded lazily; kept in sync by
+    // the trash operations themselves (all of which live in this class).
+    #trashedIds = null;
+
+    async #loadTrashedIds() {
+        if (this.#trashedIds) { return this.#trashedIds; }
+        const { ids } = await this.#getActiveDb()
+            .listTreeDocuments(Workspace.DIRECTORY_TREE_NAME, { path: Workspace.TRASH_PATH, idsOnly: true })
+            .catch(() => ({ ids: [] }));
+        this.#trashedIds = new Set(ids || []);
+        return this.#trashedIds;
+    }
+
+    /**
+     * Filing a document anywhere real takes it out of the trash. This is what
+     * makes a file manager's copy-then-delete move self-healing regardless of
+     * which half lands first — content addressing resolves the copy to the same
+     * document, and if the delete got there first, the copy un-trashes it.
+     */
+    async #untrashOnLink(idOrResult) {
+        // put() answers with an id (or a result carrying one); link() is called
+        // with the id directly.
+        const raw = (idOrResult && typeof idOrResult === 'object') ? idOrResult.id : idOrResult;
+        if (raw === undefined || raw === null) { return false; }
+        const docId = parseDocumentId(raw, 'Document ID');
+
+        const trashed = await this.#loadTrashedIds();
+        if (!trashed.has(docId)) { return false; }
+
+        const db = this.#getActiveDb();
+        await db.unlink(docId, { context: null, directory: this.getTrashSelector() });
+        await db.internalStore.remove(this.#trashProvenanceKey(docId));
+        trashed.delete(docId);
+        return true;
+    }
+
+    async listTrash({ limit = null, offset = 0, parse = true } = {}) {
+        const db = this.#getActiveDb();
+        const result = await db.listTreeDocuments(Workspace.DIRECTORY_TREE_NAME, {
+            path: Workspace.TRASH_PATH, limit, offset, parse,
+        });
+        const documents = (result.documents || []).map((document) => ({
+            ...document,
+            trashed: db.internalStore.get(this.#trashProvenanceKey(document.id)) || null,
+        }));
+        return { ...result, documents };
+    }
+
+    /**
+     * Put documents back where they were when they were trashed. Missing tree
+     * paths are recreated — a restore whose folder was deleted meanwhile should
+     * still land somewhere, not fail.
+     */
+    async restoreFromTrash(ids) {
+        const docIds = parseDocumentIdArray(ids, 'Document ID array');
+        const db = this.#getActiveDb();
+        const restored = [];
+        const failed = [];
+
+        for (const docId of docIds) {
+            try {
+                const provenance = db.internalStore.get(this.#trashProvenanceKey(docId));
+                let relinked = 0;
+                for (const placement of (provenance?.placements || [])) {
+                    for (const path of placement.paths) {
+                        const tree = this.getTree(placement.treeId) || this.getTree(placement.tree);
+                        if (!tree) { continue; }
+                        if (!tree.pathExists(path)) { await tree.insertPath(path); }
+                        const selector = placement.type === Workspace.DIRECTORY_TYPE
+                            ? { context: null, directory: this.getDirectoryTreeSelector(path, tree.name) }
+                            : { context: this.getContextTreeSelector(path, tree.name), directory: null };
+                        await db.link(docId, selector);
+                        relinked++;
+                    }
+                }
+
+                // Nothing was put back (no provenance recorded, or its trees are
+                // gone): leave the document IN the trash. Taking it out anyway
+                // would strand it — filed nowhere and no longer listed here.
+                if (relinked === 0) {
+                    failed.push({ id: docId, error: 'No restore target recorded' });
+                    continue;
+                }
+                await this.#untrashOnLink(docId);
+                restored.push(docId);
+            } catch (error) {
+                failed.push({ id: docId, error: error.message });
+            }
+        }
+        return { restored, failed, count: docIds.length };
+    }
+
+    /**
+     * Empty the trash: the ONE place a filesystem-side delete is allowed to
+     * destroy. Purges the index and cascades to canvas-owned (`stored://`)
+     * blobs; foreign locations (imap, a mounted NAS) are never touched — see
+     * "Storage policies" in TODO.md for the policy layer that will replace this
+     * blanket rule.
+     */
+    async emptyTrash({ documentIds = null } = {}) {
+        const db = this.#getActiveDb();
+        const ids = documentIds
+            ? parseDocumentIdArray(documentIds, 'Document ID array')
+            : (await db.listTreeDocuments(Workspace.DIRECTORY_TREE_NAME, {
+                path: Workspace.TRASH_PATH, idsOnly: true,
+            })).ids;
+        if (!ids.length) { return { destroyed: [], failed: [], count: 0 }; }
+
+        const result = await this.deleteMany(ids);
+        const destroyed = (result?.successful ?? []).map((entry) => entry?.id ?? entry);
+        for (const docId of destroyed) {
+            await db.internalStore.remove(this.#trashProvenanceKey(docId));
+            this.#trashedIds?.delete(docId);
+        }
+        return { destroyed, failed: result?.failed ?? [], count: ids.length };
     }
 
     // ─────────────────────────────────────────────────────────────────────────

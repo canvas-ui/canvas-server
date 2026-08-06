@@ -121,11 +121,22 @@ class AuthService {
   }
 
   /**
+   * Auth config lives in the server home — NOT in `./server/config` relative to
+   * the cwd, which resolves to a different (or no) file the moment the server
+   * runs with --user, from a systemd unit, or from anywhere but the checkout.
+   * Reading the wrong file silently swaps in a different password policy.
+   * @private
+   */
+  static #authConfigPath() {
+    return path.join(env.server.home, 'config', 'auth.json');
+  }
+
+  /**
    * Ensure auth configuration exists with default values
    * @private
    */
   #ensureAuthConfig() {
-    const configPath = path.join(process.cwd(), 'server/config/auth.json');
+    const configPath = AuthService.#authConfigPath();
 
     // Create default auth configuration if it doesn't exist
     if (!fs.existsSync(configPath)) {
@@ -223,7 +234,7 @@ class AuthService {
    * @private
    */
   #readAuthConfig() {
-    const configPath = path.join(process.cwd(), 'server/config/auth.json');
+    const configPath = AuthService.#authConfigPath();
     try {
       return JSON.parse(fs.readFileSync(configPath, 'utf8'));
     } catch {
@@ -236,7 +247,7 @@ class AuthService {
    * @private
    */
   #ensureSmtpConfig() {
-    const smtpPath = path.join(process.cwd(), 'server/config/smtp.json');
+    const smtpPath = path.join(env.server.home, 'config', 'smtp.json');
     if (!fs.existsSync(smtpPath)) {
       console.log('[AuthService] SMTP configuration file not found, creating default configuration...');
       const defaultSmtp = {
@@ -785,37 +796,7 @@ class AuthService {
     }
 
     // Enforce password policy (configurable later via server/config/auth.json)
-    const policy = this.getPasswordPolicy();
-    const hasUpper = /[A-Z]/.test(password);
-    const hasLower = /[a-z]/.test(password);
-    const hasDigit = /[0-9]/.test(password);
-    const hasSpecial = /[^A-Za-z0-9]/.test(password);
-    const tooLong = policy.maxLength ? password.length > policy.maxLength : false;
-    const unmet = {
-      minLength: policy.minLength ? password.length < policy.minLength : false,
-      maxLength: tooLong,
-      uppercase: policy.requireUppercase ? !hasUpper : false,
-      lowercase: policy.requireLowercase ? !hasLower : false,
-      number: policy.requireNumbers ? !hasDigit : false,
-      special: policy.requireSpecialChars ? !hasSpecial : false,
-    };
-    const failed = Object.values(unmet).some(Boolean);
-    if (failed) {
-      const parts = [];
-      if (unmet.minLength) parts.push(`at least ${policy.minLength} characters`);
-      if (unmet.maxLength) parts.push(`no more than ${policy.maxLength} characters`);
-      if (unmet.uppercase) parts.push('an uppercase letter');
-      if (unmet.lowercase) parts.push('a lowercase letter');
-      if (unmet.number) parts.push('a number');
-      if (unmet.special) parts.push('a special character');
-      const message = parts.length
-        ? `Password must contain ${parts.join(', ').replace(/, ([^,]*)$/, ' and $1')}.`
-        : 'Password does not meet complexity requirements';
-      const error = new Error(message);
-      error.code = 'ERR_PASSWORD_COMPLEXITY';
-      error.details = { policy, unmet };
-      throw error;
-    }
+    await this.validatePasswordComplexity(password);
 
     const passwordHash = await this.hashPassword(password);
 
@@ -872,6 +853,17 @@ class AuthService {
       throw error;
     }
     return true;
+  }
+
+  /**
+   * Whether a user can log in with a password at all. A user record without one
+   * is a half-finished bootstrap (creation succeeded, setPassword did not).
+   * @param {string} userId - User ID
+   * @returns {boolean}
+   */
+  hasPassword(userId) {
+    this.#ensureInitialized();
+    return Boolean(this.#passwordsStore.get(userId)?.hash);
   }
 
   /**

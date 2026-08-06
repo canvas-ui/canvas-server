@@ -56,7 +56,12 @@ export default async function pingRoute(fastify, options) {
       appName: process.env.npm_package_name,
       version: process.env.npm_package_version,
       uptime: process.uptime(),
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
+      defaults: {
+        // Preselected in the workspace-creation UI; the server applies the same
+        // value when a create call omits `layout`.
+        workspaceLayout: env.workspace.defaultLayout,
+      }
     }, 'Server status retrieved successfully');
     return reply.code(response.statusCode).send(response.getResponse());
   });

@@ -57,6 +57,14 @@ services:
       CANVAS_USER_ROLES: ${CANVAS_USER_ROLES:-}
       CANVAS_USER_AGENTS: ${CANVAS_USER_AGENTS:-}
 
+      # Folder structure for new workspaces. `home` — the workspace root IS the
+      # user's drive, its runtime dirs hide in .workspace/ — is the default here
+      # because the mounted folders above are ordinary directories: turning one
+      # into a workspace, or syncing one through Dropbox/OneDrive, should not
+      # scatter db/ and cache/ through the user's files. `full` for the classic
+      # layout. Either way the picker in the web UI can override per workspace.
+      CANVAS_WORKSPACE_LAYOUT: ${CANVAS_WORKSPACE_LAYOUT:-home}
+
       CANVAS_API_PORT: 8001
       CANVAS_WEB_PORT: 8001
       CANVAS_JWT_SECRET: ${CANVAS_JWT_SECRET:-}

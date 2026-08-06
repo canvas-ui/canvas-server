@@ -54,6 +54,18 @@ export const env = {
             agents: process.env.CANVAS_USER_AGENTS || null,
         },
     },
+    workspace: {
+        // Folder structure new workspaces are created with, unless the caller
+        // picks one (the picker in the web UI does).
+        //
+        //   full — runtime dirs are visible children of the root, the drive is home/
+        //   home — the root IS the drive, everything else hides in .workspace/
+        //
+        // `home` is what turns an existing folder — a Dropbox/OneDrive dir, a
+        // roaming profile — into a workspace without scattering db/ and cache/
+        // through it, so the container ships with it (see docker-compose.yml).
+        defaultLayout: process.env.CANVAS_WORKSPACE_LAYOUT === 'home' ? 'home' : 'full',
+    },
     embedd: {
         // Server-managed embedding service (shared model runtimes, one queue per
         // workspace). Disabled → workspaces run store-only: existing vectors stay

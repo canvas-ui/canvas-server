@@ -9,7 +9,7 @@ import WorkspaceManager from '../../../src/core/workspace/index.js';
 
 const quietLogger = { debug() {}, info() {}, warn() {}, error() {} };
 
-async function makeEnv() {
+async function makeEnv({ defaultLayout } = {}) {
   const tmp = mkdtempSync(path.join(os.tmpdir(), 'wsman-test-'));
   const usersRoot = path.join(tmp, 'users');
   const user = {
@@ -40,6 +40,7 @@ async function makeEnv() {
 
   const manager = new WorkspaceManager({
     defaultRootPath: usersRoot,
+    defaultLayout,
     indexFactory: jim,
     users,
     logger: quietLogger,
@@ -99,6 +100,23 @@ test('new workspaces land in the user\'s configured workspaces root', async (t) 
   assert.equal(report.missing.length, 0);
   const list = await manager.listWorkspaces(user.id);
   assert.deepEqual(list.map((w) => w.name), ['relocated']);
+});
+
+test('the server-wide default layout applies when the caller names none', async (t) => {
+  // CANVAS_WORKSPACE_LAYOUT=home (what the container ships): a workspace
+  // created through the API without a `layout` is a plain folder.
+  const { tmp, user, manager } = await makeEnv({ defaultLayout: 'home' });
+  t.after(() => rmSync(tmp, { recursive: true, force: true }));
+
+  const ws = await manager.createWorkspace('roaming', user.id, { userEmail: user.email });
+  assert.equal(ws.layout, 'home');
+  assert.equal(existsSync(path.join(ws.rootPath, '.workspace', 'workspace.json')), true);
+  assert.equal(existsSync(path.join(ws.rootPath, 'workspace.json')), false, 'nothing visible at the root');
+
+  // An explicit choice still wins over the default.
+  const full = await manager.createWorkspace('classic', user.id, { userEmail: user.email, layout: 'full' });
+  assert.equal(full.layout, 'full');
+  assert.equal(existsSync(path.join(full.rootPath, 'workspace.json')), true);
 });
 
 test('a workspace named universe is deletable like any other', async (t) => {

@@ -77,6 +77,10 @@ confirm() {
 
 # Password, read twice without echo. Empty is a valid answer: the server then
 # generates one and prints it to the log on first start.
+#
+# The policy checked here is the server's default (server/config/auth.json):
+# a password it would reject is not silently downgraded — the server falls back
+# to a generated one — but you would only find that out from the log.
 ask_password() {
     local first second
     if $ASSUME_YES; then ADMIN_PASSWORD=''; return; fi
@@ -84,6 +88,10 @@ ask_password() {
         read -r -s -p "  Admin password (empty = generate one for me): " first </dev/tty || first=''
         echo
         [ -z "$first" ] && { ADMIN_PASSWORD=''; return; }
+        if [ ${#first} -lt 8 ] || [[ ! "$first" =~ [0-9] ]] || [[ ! "$first" =~ [^A-Za-z0-9] ]]; then
+            warn "at least 8 characters, including a number and a special character"
+            continue
+        fi
         read -r -s -p "  Repeat password: " second </dev/tty || second=''
         echo
         [ "$first" = "$second" ] && { ADMIN_PASSWORD="$first"; return; }
@@ -149,6 +157,18 @@ if [ "${KEEP_ENV:-false}" != "true" ]; then
     fi
     echo
 
+    bold "Workspace layout"
+    info "home — a workspace IS a plain folder; everything it needs to run hides"
+    info "       in .workspace/. Existing folders can be turned into workspaces,"
+    info "       and a workspace can be synced (Dropbox/OneDrive) or roamed."
+    info "full — the classic layout: db/, cache/, home/ … as visible children."
+    if confirm "Use the 'home' layout for new workspaces?" y; then
+        WORKSPACE_LAYOUT=home
+    else
+        WORKSPACE_LAYOUT=full
+    fi
+    echo
+
     # ── Write .env ──────────────────────────────────────────────────────────
 
     # Replace a key in place (keeping .env.example's comments and ordering), or
@@ -182,6 +202,7 @@ if [ "${KEEP_ENV:-false}" != "true" ]; then
     write_env CANVAS_HOST_WORKSPACES "$HOST_WORKSPACES"
     write_env CANVAS_HOST_ROLES "$HOST_ROLES"
     write_env CANVAS_HOST_AGENTS "$HOST_AGENTS"
+    write_env CANVAS_WORKSPACE_LAYOUT "$WORKSPACE_LAYOUT"
 
     # Both ends of every bind mount, created as you rather than by docker as
     # root — including the mountpoints inside the admin's home, which live in
@@ -198,6 +219,7 @@ if [ "${KEEP_ENV:-false}" != "true" ]; then
     info "workspaces  $HOST_WORKSPACES  →  $ADMIN_HOME/Workspaces"
     info "roles       $HOST_ROLES  →  $ADMIN_HOME/Roles"
     info "agents      $HOST_AGENTS  →  $ADMIN_HOME/Agents"
+    info "layout      $WORKSPACE_LAYOUT"
     echo
 fi
 

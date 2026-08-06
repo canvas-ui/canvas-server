@@ -135,6 +135,7 @@ class WorkspaceManager extends EventEmitter {
     #workspaceListeners = new Map();
     #initialized = false;
     #defaultRootPath;
+    #defaultLayout;
 
     // Lookup Indexes (in-memory)
     #nameIndex = new Map();         // Key: userId@host:workspaceName -> workspaceId
@@ -161,6 +162,10 @@ class WorkspaceManager extends EventEmitter {
         if (!options.users) throw new Error('users service required');
 
         this.#defaultRootPath = path.resolve(options.defaultRootPath);
+        // Layout used when a caller does not name one. The container defaults it
+        // to `home` (a workspace that is just a folder), a bare-metal install to
+        // `full` — see CANVAS_WORKSPACE_LAYOUT.
+        this.#defaultLayout = normalizeWorkspaceLayout(options.defaultLayout);
         this.#indexFactory = options.indexFactory;
         this.#users = options.users;
         this.#roles = options.roles;
@@ -343,6 +348,7 @@ class WorkspaceManager extends EventEmitter {
 
     get users() { return this.#users; }
     get rootPath() { return this.#defaultRootPath; }
+    get defaultLayout() { return this.#defaultLayout; }
     get roles() { return this.#roles; }
     get embedd() { return this.#embedd; }
 
@@ -595,7 +601,7 @@ class WorkspaceManager extends EventEmitter {
         }
 
         const workspaceId = uuidv4(); // Or nanoid if preferred
-        const layout = normalizeWorkspaceLayout(options.layout);
+        const layout = normalizeWorkspaceLayout(options.layout || this.#defaultLayout);
 
         const workspaceDir = options.rootPath
             || path.join(await this.userWorkspacesPath(userId, options.userEmail), sanitizedName);

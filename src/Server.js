@@ -246,6 +246,7 @@ class Server extends EventEmitter {
 
         this.#workspaceManager = new WorkspaceManager({
             defaultRootPath: env.user.home,
+            defaultLayout: env.workspace.defaultLayout,
             indexFactory: jim, // per-user index files under db/users/<id>/
             users: this.#users,
             embedd: this.#embedd,
@@ -370,20 +371,36 @@ class Server extends EventEmitter {
             const adminExists = await this.#users.hasByEmail(adminEmail);
             logger.debug({ adminExists }, 'Admin user check');
 
-            // If admin exists and we're not forcing a reset, skip creation
-            if (adminExists && !forceReset) {
+            // An existing admin is left alone — unless it has no password, which
+            // means an earlier bootstrap died between creating the record and
+            // setting one. That admin can never log in, so finish the job.
+            let existing = adminExists ? await this.#users.getByEmail(adminEmail) : null;
+            if (existing && !forceReset && this.#authService.hasPassword(existing.id)) {
                 logger.debug({ adminEmail }, 'Admin user already exists, skipping creation');
                 return null;
             }
 
-            // Generate password or use configured one
-            const password = env.admin.password || this.#authService.generateSecurePassword(12);
+            // A configured password that the policy rejects must not take the
+            // whole bootstrap down with it (that is how you end up with an admin
+            // nobody can log in as): say exactly what is wrong, then fall back to
+            // a generated one so the instance is usable.
+            let password = env.admin.password;
+            if (password) {
+                try {
+                    await this.#authService.validatePasswordComplexity(password);
+                } catch (err) {
+                    console.error(`\nCANVAS_ADMIN_PASSWORD rejected: ${err.message}`);
+                    console.error('Using a generated password instead — see the credentials below.\n');
+                    logger.warn({ err }, 'Configured admin password rejected by the password policy');
+                    password = null;
+                }
+            }
+            password = password || this.#authService.generateSecurePassword(12);
             logger.debug('Using %s password for admin user', env.admin.password ? 'configured' : 'generated');
 
             let user;
-            if (adminExists) {
-                // Get existing user for update
-                user = await this.#users.getByEmail(adminEmail);
+            if (existing) {
+                user = existing;
                 logger.debug({ adminEmail, userId: user.id }, 'Resetting admin user');
             } else {
                 // Create new admin user
@@ -404,14 +421,14 @@ class Server extends EventEmitter {
 
             // Create API token (remove existing one if force reset)
             logger.debug({ userId: user.id }, 'Creating API token for admin user');
-            if (forceReset) {
-                // Find and remove existing Admin API Token
-                const existingTokens = await this.#authService.listTokens(user.id);
-                const existingAdminToken = existingTokens.find(token => token.name === 'Admin API Token');
-                if (existingAdminToken) {
-                    logger.debug({ tokenId: existingAdminToken.id }, 'Removing existing Admin API Token');
-                    await this.#authService.deleteToken(user.id, existingAdminToken.id);
-                }
+            // Reaching this point means we just (re)set the admin's password, so
+            // the old token is replaced rather than kept — its value cannot be
+            // read back to print, and a duplicate name is an error.
+            const existingTokens = await this.#authService.listTokens(user.id);
+            const existingAdminToken = existingTokens.find(token => token.name === 'Admin API Token');
+            if (existingAdminToken) {
+                logger.debug({ tokenId: existingAdminToken.id }, 'Removing existing Admin API Token');
+                await this.#authService.deleteToken(user.id, existingAdminToken.id);
             }
 
             const apiToken = await this.#authService.createToken(user.id, {
@@ -433,7 +450,10 @@ class Server extends EventEmitter {
                 apiToken: apiToken.value
             };
         } catch (error) {
+            // Silence here means a server nobody can log into, so this is loud.
             logger.error({ err: error }, 'Failed to create admin user');
+            console.error(`\nFailed to create the admin user (${env.admin.email}): ${error.message}`);
+            console.error('Fix the cause and restart with CANVAS_ADMIN_RESET=true.\n');
             return null;
         }
     }
@@ -540,6 +560,12 @@ class Server extends EventEmitter {
 
         // Remove leading and trailing hyphens
         username = username.replace(/^-+|-+$/g, '');
+
+        // Short local parts (jd@…, t@…) would produce a name the user manager
+        // rejects, which used to take the whole admin bootstrap down.
+        if (username.length < 3) {
+            username = `${username}-admin`.replace(/^-+/, '');
+        }
 
         // Ensure maximum length
         if (username.length > 32) {

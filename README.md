@@ -82,6 +82,19 @@ three (absolute, `~`-prefixed, or templated with `{USER_HOME}` / `{HOME}`). That
 makes **every** user share one directory, so it only makes sense on a single-user
 instance; leave them empty otherwise.
 
+### Workspace layout
+
+A workspace is created with one of two folder structures, chosen per workspace
+in the UI and fixed at creation:
+
+| | |
+|---|---|
+| `full` | The classic layout — `db/`, `cache/`, `git/`, `config/` … are visible children of the workspace root, and the user's drive is `$WS/home`. |
+| `home` | The workspace root **is** the drive; everything it needs to run hides in `$WS/.workspace/`. Any existing folder can be turned into a workspace, and a workspace stays a plain folder — safe to sync with Dropbox/OneDrive or carry around as a roaming profile. `.workspace/` is never indexed. |
+
+`CANVAS_WORKSPACE_LAYOUT` picks the default for new workspaces: `full` on a
+bare-metal install, `home` in the container.
+
 ### Running it as a service
 
 ```bash
@@ -142,6 +155,8 @@ CANVAS_HOST_WORKSPACES=$HOME/Workspaces        # ─┐ mounted into the admin u
 CANVAS_HOST_ROLES=$HOME/Roles                  #  │ home, i.e. onto
 CANVAS_HOST_AGENTS=$HOME/Agents                # ─┘ users/<email>/{Workspaces,…}
 
+CANVAS_WORKSPACE_LAYOUT=home          # new workspaces are plain folders (see below)
+
 CANVAS_UID=1000                       # container runs as you, so mounts stay yours
 CANVAS_GID=1000
 ```
@@ -179,6 +194,9 @@ CANVAS_USER_HOME=/opt/canvas-server/server/users   # default: <serverHome>/users
 CANVAS_USER_WORKSPACES=         # e.g. ~/Workspaces on a personal instance
 CANVAS_USER_ROLES=
 CANVAS_USER_AGENTS=
+
+# Folder structure for new workspaces: full | home (the UI picks per workspace)
+CANVAS_WORKSPACE_LAYOUT=full    # containers default to "home"
 
 CANVAS_ADMIN_EMAIL=admin@canvas.local
 CANVAS_ADMIN_NAME=              # empty → derived from the email local part

@@ -495,10 +495,23 @@ over `workspace.put/unlink`; what is under test is what the VFS asks it for) —
 including the browser case: editing a `.url` navigates the tab, removing it
 closes it.
 
-**Known divergence:** canvas-fuse's context mode still materializes the old
-schema folders (`render.rs`'s `SCHEMA_DIRS`, the NameStore keyed by
-`(context, dir, doc)`, `WRITABLE_DIRS`). Until it is moved over, the two wires
-disagree about the shape of `Contexts/` — the one place they currently do.
+**canvas-fuse followed — 2026-08-06.** Its context mode is flat too:
+documents materialize in the context folder, `.by-schema/` is rebuilt from the
+same render pass (derived, so it carries no sticky names and no document
+bindings), and the write path targets the context folder itself
+(`locate_context_dir`) rather than a schema dir.
+
+Two divergences surfaced while doing it, both now closed:
+
+- **fuse still created a note from `.md`.** The server had moved to
+  "a file is a file" and fuse had not, so the same `echo > x.md` produced a File
+  through WebDAV and a Note through the mount. fuse now uploads the bytes
+  (`POST /workspaces/:id/blobs`) and files a File document — which it could not
+  do at all before, having no blob-write path.
+- **fuse named blob-backed files by their location basename**, i.e. a content
+  hash for `stored://` — the same bug fixed server-side in §2b. `Document` now
+  carries a `display_name` resolved at parse time in the server's order, and a
+  `stored://` key is never a name.
 
 ### Phase 6 — the contract, as one table — **LANDED 2026-08-06**
 

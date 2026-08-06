@@ -1,55 +1,72 @@
 # Commercial licensing
 
-Canvas is dual-licensed.
+The Canvas server runtime is dual-licensed.
 
-**Option 1 — AGPL-3.0-or-later.** Free, no agreement needed, no one to ask. Use
+**Option 1, AGPL-3.0-or-later.** Free, no agreement needed, nobody to ask. Use
 it, modify it, deploy it, sell services around it. The condition is reciprocity:
 if you distribute a modified version, or let users interact with one over a
 network, those users get the corresponding source of your modifications. See
 [LICENSE](LICENSE) and [NOTICE](NOTICE).
 
-**Option 2 — a commercial licence.** The same code, without the AGPL's
-reciprocity obligations. Intended for cases where option 1 does not fit.
+**Option 2, a commercial licence.** The same code, without the AGPL's
+reciprocity obligations, for cases where option 1 does not fit.
 
-Both options cover the same software. There is no crippled community edition and
-no feature held back for paying customers — the AGPL version is the whole
-product.
+Both options cover the same software. There is no cut-down community edition and
+no feature held back for paying customers. The AGPL version is the whole product.
+
+## Scope, what a commercial licence covers
+
+A commercial licence covers the Canvas engine: **`canvas-server`** (including
+the embedding, messaging, voice and agent services), **`canvas-synapsd`**,
+**`canvas-stored`**, **`canvas-neurald`** and **`canvas-web`**. That is
+everything needed to run Canvas as a hosted product with its user interface.
+
+It does not cover the standalone clients: the CLI, the shell client, the FUSE
+client, the desktop app and the browser extensions. Those are
+**AGPL-3.0-or-later only, for everyone**, and no commercial licence is offered
+for them.
+
+This line is not open to negotiation. You can build a proprietary product on the
+Canvas engine; the clients that people install on their own machines stay free
+software. In practice it constrains few people. If you ship the clients
+unmodified, the AGPL asks nothing of you beyond passing the licence along. It
+only matters if you want to fork a client and keep the fork closed.
 
 ## When you need option 2
 
 You probably need a commercial licence if you are:
 
 - **Building a hosted or SaaS product on Canvas** and not publishing your
-  modifications. This is the common one. The AGPL's §13 applies as soon as users
-  reach your modified version over a network — internal-only deployments are
-  fine, customer-facing ones are not.
-- **Embedding Canvas in a proprietary product** you distribute.
+  modifications. This is the common case. Section 13 of the AGPL applies as soon
+  as users reach your modified version over a network. Internal-only deployments
+  are fine; customer-facing ones are not.
+- **Embedding Canvas in a proprietary product** that you distribute.
 - **Unable to accept copyleft** for policy, procurement or investor-diligence
-  reasons — a licence you can show your counsel, rather than an argument about
-  where the boundary of a derivative work falls.
+  reasons, and needing a licence you can show your counsel rather than an
+  argument about where the boundary of a derivative work falls.
 
-You do **not** need one to run Canvas internally, self-host it for your own
-team, evaluate it, contribute to it, or build on it while publishing your
-changes under the AGPL.
+You do not need one to run Canvas internally, self-host it for your own team,
+evaluate it, contribute to it, or build on it while publishing your changes
+under the AGPL.
 
 ## Not sure whether you comply?
 
-Ask. Genuinely — an email costs nothing and is far cheaper than discovering the
-answer later. If you are already running a modified Canvas in production and
-have not published the changes, say so; the normal outcome is a licence, not a
+Ask. An email costs nothing, and it is a much smaller problem to solve now than
+after the fact. If you are already running a modified Canvas in production and
+have not published the changes, say so. The usual outcome is a licence, not a
 dispute.
 
 ## Getting one
 
-Email **me@idnc.sk** with roughly:
+Email **lic@augmentd.eu** with roughly:
 
-- what you are building and how Canvas fits into it
+- what you are building, and how Canvas fits into it
 - whether you are distributing it, hosting it, or both
-- which components you use (server, SynapsD, StoreD, the clients)
-- rough scale — seats, instances, or end customers
+- which components you use (server, SynapsD, StoreD, NeuralD, the web UI)
+- rough scale, in seats, instances or end customers
 
-Terms are negotiated per case; there is no public price list yet. Licences are
-issued by:
+Terms are negotiated per case and there is no public price list yet. Licences
+are issued by:
 
     Augmentd s.r.o.
     DUETT Business Center
@@ -59,12 +76,14 @@ issued by:
     VAT ID: SK2022968717
     https://augmentd.eu
 
-Copyright is held by Jozef Melich; Augmentd s.r.o. holds full rights under
-licence from the copyright holder and issues commercial licences on that basis.
-Because copyright in the Canvas codebase is not fragmented across many
-contributors, this offer can actually be made — see [CONTRIBUTING.md](CONTRIBUTING.md)
-for how that is kept true.
+Copyright in the Canvas codebase is held by Jozef Melich. Augmentd s.r.o. holds
+an exclusive licence to it, including the right to grant sublicences, and is the
+entity authorised to issue commercial licences for Canvas.
 
-> This document describes the licensing options and is an invitation to discuss
-> terms. It is not itself a licence grant, an offer capable of acceptance, or
-> legal advice. Only a signed agreement grants commercial rights.
+Because copyright sits with a single author and is not spread across many
+contributors, this offer can be made at all. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for how that is kept true.
+
+> This document sets out the licensing options and invites you to discuss terms.
+> It is not itself a licence grant, an offer capable of acceptance, or legal
+> advice. Only a signed agreement grants commercial rights.

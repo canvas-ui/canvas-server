@@ -1,5 +1,5 @@
 Canvas
-Copyright (C) 2026 Jozef Melich
+Copyright (C) 2023-2026 Jozef Melich
 
 This program is free software: you can redistribute it and/or modify it under
 the terms of the GNU Affero General Public License as published by the Free
@@ -13,13 +13,16 @@ PARTICULAR PURPOSE.  See the GNU Affero General Public License for more details.
 You should have received a copy of the GNU Affero General Public License along
 with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-Contact: me@idnc.sk
+Contact:
+    lic@augmentd.eu       licensing
+    contrib@augmentd.eu   contributions
+    security@augmentd.eu  security
 
 
 NETWORK USE
 -----------
 
-Section 13 of the AGPL applies to this software: if you run a modified version
+Section 13 of the AGPL applies to this software. If you run a modified version
 and let users interact with it over a network, those users must be able to
 obtain the corresponding source of your modified version.
 
@@ -30,23 +33,31 @@ reports the running version, revision and source URL:
     curl -sI https://your-host/ | grep -i x-source-code
     curl -s  https://your-host/rest/v2/ping
 
-If you deploy a modified version, repoint these at the repository publishing
-your changes — set `CANVAS_SOURCE_URL`, and `CANVAS_SOURCE_COMMIT` where the
-build has no git metadata (the container image, for instance). Removing the
-notice instead of repointing it does not satisfy the licence.
+If you deploy a modified version, repoint these at the repository that publishes
+your changes. Set `CANVAS_SOURCE_URL`, and set `CANVAS_SOURCE_COMMIT` where the
+build has no git metadata, as in the container image. Removing the notice
+instead of repointing it does not satisfy the licence.
 
 
 COPYRIGHT AND COMMERCIAL LICENSING
 ----------------------------------
 
-Copyright in this codebase is held by Jozef Melich. Augmentd s.r.o. holds full
-rights to the codebase under licence from the copyright holder, and is the
-entity through which commercial licences are issued.
+Copyright in this codebase is held by Jozef Melich. Augmentd s.r.o. holds an
+exclusive licence to it, including the right to grant sublicences, and is the
+entity authorised to issue commercial licences for Canvas.
 
-The AGPL is not the only option. If its terms do not work for you — most often
-because you want to build a commercial or hosted product on Canvas without
-publishing your own changes — a separate commercial licence is available and no
-AGPL obligation applies to it. See COMMERCIAL.md.
+The AGPL is not the only option for the components marked [dual] below. If its
+terms do not work for you, most often because you want to build a commercial or
+hosted product on Canvas without publishing your own changes, a separate
+commercial licence is available for those components, and no AGPL obligation
+applies to it. See COMMERCIAL.md.
+
+The Canvas clients marked [AGPL] are available under the AGPL-3.0-or-later and
+under no other terms. No commercial licence is offered for them to anyone,
+including holders of a commercial licence to the server runtime. The clients
+stay free software in all cases.
+
+Licensing enquiries: lic@augmentd.eu
 
     Augmentd s.r.o.
     DUETT Business Center
@@ -60,25 +71,39 @@ AGPL obligation applies to it. See COMMERCIAL.md.
 COMPONENTS
 ----------
 
-Canvas is assembled from several repositories, all under the same licence and
-the same copyright holder. Components marked (submodule) are separate
-repositories referenced by this one:
+Canvas is assembled from several repositories. They are not all licensed the
+same way. Every component is available under the AGPL-3.0-or-later; only those
+marked [dual] are also available under a commercial licence. Components marked
+(submodule) are separate repositories referenced by this one, each carrying its
+own LICENSE and NOTICE.
 
-    canvas-server        this repository — server runtime, transports, core
-      src/services/embedd    embedding service
-      src/services/messaging notification/chat channels
-      src/services/voice     speech-to-text / text-to-speech
-      src/core/agent         agent runtime
+The server runtime and the services it embeds, together the engine:
 
-    canvas-synapsd       (submodule) indexing engine
-    canvas-stored        (submodule) blob storage
-    canvas-neurald       (submodule)
-    canvas-web           (submodule) web UI
-    canvas-cli           (submodule) command-line client
-    canvas-shell         (submodule) shell client
-    canvas-fuse          (submodule) FUSE client
-    canvas-desktop       (submodule) desktop app
-    canvas-browser-extensions (submodule)
+    [dual]  canvas-server   this repository, server runtime, transports, core
+              src/services/embedd     embedding service
+              src/services/messaging  notification and chat channels
+              src/services/voice      speech-to-text and text-to-speech
+              src/core/agent          agent runtime
+    [dual]  canvas-synapsd  (submodule) context indexing engine
+    [dual]  canvas-stored   (submodule) blob storage
+    [dual]  canvas-neurald  (submodule) LLM and inference service
+    [dual]  canvas-web      (submodule) web UI
 
-Third-party dependencies retain their own licences; see the dependency manifests
-and node_modules for their terms. This notice covers only the Canvas code.
+The standalone clients and integrations, AGPL-only for everyone:
+
+    [AGPL]  canvas-cli      (submodule) command-line client
+    [AGPL]  canvas-shell    (submodule) shell client and applets
+    [AGPL]  canvas-fuse     (submodule) FUSE filesystem client
+    [AGPL]  canvas-desktop  (submodule) desktop app
+    [AGPL]  canvas-browser-extensions (submodule) Chrome and Firefox extensions
+
+A commercial licence to a [dual] component grants no rights over an [AGPL] one.
+If you hold a commercial licence to the server runtime and you modify and convey
+the CLI, the AGPL applies to that CLI in full.
+
+
+THIRD-PARTY CODE
+----------------
+
+Third-party dependencies keep their own licences. See the dependency manifests
+and node_modules for their terms. This notice covers Canvas code only.

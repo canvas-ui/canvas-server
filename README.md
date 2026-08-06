@@ -481,34 +481,42 @@ module roots, never in `node_modules` or the image.
 
 ## Licence
 
-Copyright (C) 2026 Jozef Melich. Canvas is **dual-licensed**:
+Copyright (C) 2023-2026 Jozef Melich. The Canvas **engine**, meaning this server
+plus SynapsD, StoreD, NeuralD and the web UI, is **dual-licensed**:
 
-- **[AGPL-3.0-or-later](LICENSE)** — free for everyone. Run it, modify it, build
-  on it. If you distribute a modified version or expose one to users over a
-  network, they are entitled to your changes (AGPL §13).
-- **[Commercial licence](COMMERCIAL.md)** — the same code without the copyleft
+- **[AGPL-3.0-or-later](LICENSE)**, free for everyone. Run it, modify it, build
+  on it. If you distribute a modified version, or expose one to users over a
+  network, they are entitled to your changes (AGPL section 13).
+- **[Commercial licence](COMMERCIAL.md)**, the same code without the copyleft
   obligations, for hosted products and proprietary distribution. Issued by
-  Augmentd s.r.o.
+  Augmentd s.r.o., **lic@augmentd.eu**.
 
-Same software either way — there is no cut-down community edition.
+Same software either way. There is no cut-down community edition.
 
-Every response carries an `X-Source-Code` header and `GET /rest/v2/ping` reports
-the running version, revision and source URL, which is how this server satisfies
-§13. **If you deploy a modified version, repoint them at your own repository**
-(`CANVAS_SOURCE_URL`, and `CANVAS_SOURCE_COMMIT` for builds without git
-metadata) rather than removing them:
+The standalone **clients**, meaning the CLI, shell, FUSE, desktop and browser
+extensions, are **AGPL-3.0-or-later only**, for everyone, commercial licensees
+included. They stay free software in all cases. See [NOTICE](NOTICE) for the
+component-by-component breakdown.
+
+Every response carries an `X-Source-Code` header, and `GET /rest/v2/ping`
+reports the running version, revision and source URL. That is how this server
+satisfies section 13. **If you deploy a modified version, repoint them at your
+own repository** (`CANVAS_SOURCE_URL`, and `CANVAS_SOURCE_COMMIT` for builds
+without git metadata) rather than removing them:
 
 ```bash
 curl -sI http://localhost:8001/ | grep -i x-source-code
 curl -s  http://localhost:8001/rest/v2/ping
 ```
 
-Contributions are welcome and require a one-time [CLA](CLA.md) — see
-[CONTRIBUTING.md](CONTRIBUTING.md) for why, and what it does and does not ask of
-you (you keep your copyright).
+Contributions are welcome. The dual-licensed repositories ask for a one-time
+[CLA](CLA.md). See [CONTRIBUTING.md](CONTRIBUTING.md) for why, and for what it
+does and does not ask of you (you keep your copyright). The AGPL-only clients
+ask for no CLA at all, just a DCO sign-off (`git commit -s`).
 
-Not sure whether your use complies? Ask: **me@idnc.sk**. It is a cheaper
-conversation than the alternative, and the usual outcome is a licence.
+Not sure whether your use complies? Ask: **lic@augmentd.eu**. It is a much
+smaller problem to solve now than after the fact, and the usual outcome is a
+licence.
 
 ---
 This project is funded by [Augmentd Labs](https://augmentd.eu/en/labs)

@@ -2,47 +2,56 @@
 
 Version 1.0
 
-Thank you for contributing to Canvas. This agreement sets out the terms under
-which you contribute, so that the project can continue to be offered both under
-the GNU Affero General Public License and under commercial licences.
+Thank you for contributing to Canvas. This agreement sets out the terms you
+contribute under, so that the project can go on being offered both under the GNU
+Affero General Public License and under commercial licences.
 
 **You keep the copyright in your contribution.** This is a licence grant, not an
-assignment. You remain free to use, publish and relicense your own work however
+assignment. You stay free to use, publish and relicense your own work however
 you like, including in other projects.
 
 By signing, you accept the following terms for your past and future
-contributions to any repository in the Canvas project. "You" means the person or
-legal entity signing. "The Owner" means Jozef Melich, the copyright holder of
-the Canvas codebase, and Augmentd s.r.o. acting under licence from them.
+contributions to the dual-licensed Canvas repositories: `canvas-server`,
+`canvas-synapsd`, `canvas-stored`, `canvas-neurald` and `canvas-web`. "You"
+means the person or legal entity signing. "The Owner" means Jozef Melich, in
+whom copyright in the Canvas codebase is held, together with Augmentd s.r.o.,
+which holds an exclusive licence to that codebase including the right to grant
+sublicences.
+
+**This agreement does not reach the AGPL-only clients.** Contributions to
+`canvas-cli`, `canvas-shell`, `canvas-fuse`, `canvas-desktop` and
+`canvas-browser-extensions` are governed by the AGPL and a DCO sign-off alone.
+No CLA is asked for there, and signing this one does not imply any. Nothing here
+grants the Owner any right to relicense your work in those repositories.
 
 ## 1. Definitions
 
-"Contribution" means any original work of authorship — code, documentation,
-configuration, tests — that you intentionally submit to the Owner for inclusion
-in the Canvas project, in any form and through any channel (pull request, patch,
-issue attachment, email). "Submit" excludes anything you clearly mark, in
-writing, as "Not a Contribution".
+"Contribution" means any original work of authorship, whether code,
+documentation, configuration or tests, that you intentionally submit to the
+Owner for inclusion in the Canvas project, in any form and through any channel
+(pull request, patch, issue attachment, email). "Submit" excludes anything you
+clearly mark in writing as "Not a Contribution".
 
 ## 2. Copyright licence
 
 You grant the Owner a perpetual, worldwide, non-exclusive, royalty-free,
-irrevocable copyright licence to reproduce, prepare derivative works of, publicly
-display, publicly perform, sublicense and distribute your Contribution and such
-derivative works, **under any licence terms, including both the GNU Affero
-General Public License and proprietary commercial licence terms**, and to
+irrevocable copyright licence to reproduce, prepare derivative works of,
+publicly display, publicly perform, sublicense and distribute your Contribution
+and such derivative works, **under any licence terms, including both the GNU
+Affero General Public License and proprietary commercial licence terms**, and to
 authorise others to do the same.
 
 The right to sublicense under terms other than the AGPL is the operative part of
-this agreement. Without it the Owner could not offer the commercial licence
+this agreement. Without it, the Owner could not offer the commercial licence
 described in COMMERCIAL.md.
 
 ## 3. Patent licence
 
 You grant the Owner and every recipient of the software a perpetual, worldwide,
 non-exclusive, royalty-free, irrevocable patent licence to make, have made, use,
-offer to sell, sell, import and otherwise transfer your Contribution, covering
-only those patent claims you own or control that are necessarily infringed by
-your Contribution alone or by its combination with the project.
+offer to sell, sell, import and otherwise transfer your Contribution. This
+covers only those patent claims you own or control that are necessarily
+infringed by your Contribution alone, or by its combination with the project.
 
 If you institute patent litigation alleging that the project or a Contribution
 constitutes patent infringement, the patent licences granted to you under this
@@ -52,8 +61,8 @@ agreement terminate as of the date the litigation is filed.
 
 In return, the Owner commits that every Contribution accepted into the project
 will be made available under the GNU Affero General Public License, version 3 or
-later, or a later version of a similar copyleft licence approved by the Free
-Software Foundation.
+later, or under a later version of a similar copyleft licence approved by the
+Free Software Foundation.
 
 Commercial licensing operates alongside the AGPL release, never instead of it.
 The Owner may offer commercial licences on any terms, but may not use this
@@ -77,11 +86,11 @@ kind**, express or implied, except as stated above.
 
 ## 6. Contributing on behalf of an employer
 
-If your employer has rights in work you create — which is usual for employees
-and contractors — you may only sign if:
+If your employer has rights in work you create, which is usual for employees and
+contractors, you may only sign if:
 
-- your employer has waived those rights for your Contributions, **or**
-- your employer has authorised you to sign on its behalf, **or**
+- your employer has waived those rights for your Contributions, or
+- your employer has authorised you to sign on its behalf, or
 - you are signing as the employer, through someone empowered to bind it.
 
 If you are unsure, ask before signing. Where the signer is an entity, "You"
@@ -94,7 +103,7 @@ This agreement is governed by the laws of the Slovak Republic, without regard to
 its conflict-of-law provisions. If any provision is held unenforceable, the rest
 remains in force.
 
-This agreement does not obligate the Owner to use or include any Contribution.
+This agreement does not oblige the Owner to use or include any Contribution.
 
 ## How to sign
 
@@ -105,10 +114,10 @@ I have read the CLA document and I hereby sign the CLA.
 ```
 
 Your signature is recorded against your GitHub account and covers all your
-future Contributions to Canvas. If your circumstances change — new employer,
-say — tell the Owner.
+future Contributions to Canvas. If your circumstances change, a new employer for
+instance, tell the Owner.
 
-Questions: **me@idnc.sk**
+Questions: **contrib@augmentd.eu**
 
 ---
 

@@ -15,11 +15,35 @@ const SERVER_HOME = process.env.CANVAS_SERVER_HOME || getServerHome();
 const USER_HOME = process.env.CANVAS_USER_HOME || getUserHome();
 const EMBEDD_CONFIG_PATH = process.env.CANVAS_EMBEDD_CONFIG || path.join(SERVER_HOME, 'config', 'embedd.json');
 
+// Read once at import. `process.env.npm_package_*` is only populated when the
+// process is started through an npm script — the container entrypoint
+// (`node ./src/init.js`) and the systemd unit in the README are not, so the
+// routes that reported the version were serving `undefined` on exactly the
+// deployments that matter. Reading the manifest works however it was started.
+const PACKAGE = readPackageManifest();
+
 /**
  * Environment variables
  */
 
 export const env = {
+    // Build identity. Beyond the obvious "which version is this" use, the AGPL
+    // requires that users interacting with the server over a network can get at
+    // its source (§13) — so the identity has to include where the source lives
+    // and which revision is running, and has to be reachable without auth.
+    app: {
+        name: PACKAGE.name || 'canvas-server',
+        productName: PACKAGE.productName || 'Canvas Server',
+        version: PACKAGE.version || '0.0.0',
+        license: PACKAGE.license || 'AGPL-3.0-or-later',
+        // Where a recipient gets the corresponding source. Overridable because a
+        // fork MUST point at its own repository — publishing this server's URL
+        // while running modified code is not compliance.
+        sourceUrl: process.env.CANVAS_SOURCE_URL || 'https://github.com/canvas-ui/canvas-server',
+        // Revision actually running. `.git/` is excluded from the image
+        // (.dockerignore), so containers pass it in as a build arg instead.
+        commit: process.env.CANVAS_SOURCE_COMMIT || readGitCommit(),
+    },
     server: {
         mode: process.env.CANVAS_SERVER_MODE || SERVER_MODE,
         root: SERVER_ROOT,
@@ -151,6 +175,51 @@ export const env = {
  * mistake, so it is reported loudly rather than silently ignored — but it still
  * falls back to defaults instead of taking the whole server down at import time.
  */
+/**
+ * Read the server's own package.json. A failure here is not fatal — the server
+ * runs fine without knowing its version — but it does mean the source reference
+ * falls back to defaults, so it is worth a warning.
+ */
+function readPackageManifest() {
+    try {
+        return JSON.parse(fs.readFileSync(path.join(SERVER_ROOT, 'package.json'), 'utf8'));
+    } catch (error) {
+        console.warn(`env: could not read package.json: ${error.message}`);
+        return {};
+    }
+}
+
+/**
+ * Best-effort revision of the running tree, read straight from .git rather than
+ * by shelling out to git (which may not be installed on a deployment host).
+ * Returns null when the source was deployed without its git metadata — set
+ * CANVAS_SOURCE_COMMIT at build time for those.
+ */
+function readGitCommit() {
+    try {
+        const gitDir = path.join(SERVER_ROOT, '.git');
+        if (!fs.existsSync(gitDir)) { return null; }
+
+        // A submodule/worktree checkout has .git as a file pointing elsewhere.
+        const resolvedGitDir = fs.statSync(gitDir).isDirectory()
+            ? gitDir
+            : path.resolve(SERVER_ROOT, fs.readFileSync(gitDir, 'utf8').replace(/^gitdir:\s*/, '').trim());
+
+        const head = fs.readFileSync(path.join(resolvedGitDir, 'HEAD'), 'utf8').trim();
+        if (!head.startsWith('ref:')) { return head; } // detached HEAD
+
+        const ref = head.slice(4).trim();
+        const refPath = path.join(resolvedGitDir, ref);
+        if (fs.existsSync(refPath)) { return fs.readFileSync(refPath, 'utf8').trim(); }
+
+        // Ref was packed away by `git gc`.
+        const packed = fs.readFileSync(path.join(resolvedGitDir, 'packed-refs'), 'utf8');
+        return packed.split('\n').find((line) => line.endsWith(` ${ref}`))?.split(' ')[0] || null;
+    } catch {
+        return null;
+    }
+}
+
 function readJsonConfig(filePath, label) {
     try {
         if (!fs.existsSync(filePath)) { return {}; }

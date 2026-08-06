@@ -8,7 +8,7 @@
     "test": "node --test"
   },
   "author": "me@idnc.sk",
-  "license": "ISC",
+  "license": "AGPL-3.0-or-later",
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",
     "debug": "^4.4.3",

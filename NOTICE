@@ -1,0 +1,84 @@
+Canvas
+Copyright (C) 2026 Jozef Melich
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU Affero General Public License as published by the Free
+Software Foundation, either version 3 of the License, or (at your option) any
+later version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE.  See the GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License along
+with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+Contact: me@idnc.sk
+
+
+NETWORK USE
+-----------
+
+Section 13 of the AGPL applies to this software: if you run a modified version
+and let users interact with it over a network, those users must be able to
+obtain the corresponding source of your modified version.
+
+This server implements its side of that obligation. Every HTTP response carries
+an `X-Source-Code` header, and `GET /rest/v2/ping` (no authentication required)
+reports the running version, revision and source URL:
+
+    curl -sI https://your-host/ | grep -i x-source-code
+    curl -s  https://your-host/rest/v2/ping
+
+If you deploy a modified version, repoint these at the repository publishing
+your changes — set `CANVAS_SOURCE_URL`, and `CANVAS_SOURCE_COMMIT` where the
+build has no git metadata (the container image, for instance). Removing the
+notice instead of repointing it does not satisfy the licence.
+
+
+COPYRIGHT AND COMMERCIAL LICENSING
+----------------------------------
+
+Copyright in this codebase is held by Jozef Melich. Augmentd s.r.o. holds full
+rights to the codebase under licence from the copyright holder, and is the
+entity through which commercial licences are issued.
+
+The AGPL is not the only option. If its terms do not work for you — most often
+because you want to build a commercial or hosted product on Canvas without
+publishing your own changes — a separate commercial licence is available and no
+AGPL obligation applies to it. See COMMERCIAL.md.
+
+    Augmentd s.r.o.
+    DUETT Business Center
+    Námestie Osloboditeľov 3/A
+    040 01 Košice, Slovakia
+    Company ID: 45331936
+    VAT ID: SK2022968717
+    https://augmentd.eu
+
+
+COMPONENTS
+----------
+
+Canvas is assembled from several repositories, all under the same licence and
+the same copyright holder. Components marked (submodule) are separate
+repositories referenced by this one:
+
+    canvas-server        this repository — server runtime, transports, core
+      src/services/embedd    embedding service
+      src/services/messaging notification/chat channels
+      src/services/voice     speech-to-text / text-to-speech
+      src/core/agent         agent runtime
+
+    canvas-synapsd       (submodule) indexing engine
+    canvas-stored        (submodule) blob storage
+    canvas-neurald       (submodule)
+    canvas-web           (submodule) web UI
+    canvas-cli           (submodule) command-line client
+    canvas-shell         (submodule) shell client
+    canvas-fuse          (submodule) FUSE client
+    canvas-desktop       (submodule) desktop app
+    canvas-browser-extensions (submodule)
+
+Third-party dependencies retain their own licences; see the dependency manifests
+and node_modules for their terms. This notice covers only the Canvas code.

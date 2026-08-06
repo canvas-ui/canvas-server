@@ -45,6 +45,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /opt/canvas-server
 COPY --from=builder /opt/canvas-server ./
 
+# Source identity for the AGPL §13 offer. `.git/` is excluded from the build
+# context (.dockerignore), so the image cannot work the revision out for itself
+# and has to be told at build time — compose passes it from `git rev-parse HEAD`.
+# A fork MUST override CANVAS_SOURCE_URL to point at the repository publishing
+# its changes; leaving it pointed upstream while running modified code does not
+# satisfy the licence.
+ARG CANVAS_SOURCE_COMMIT=""
+ARG CANVAS_SOURCE_URL="https://github.com/canvas-ui/canvas-server"
+ENV CANVAS_SOURCE_COMMIT=${CANVAS_SOURCE_COMMIT} \
+    CANVAS_SOURCE_URL=${CANVAS_SOURCE_URL}
+
 # Container-internal layout. Both trees are meant to be bind-mounted from the
 # host (see docker-compose.yml) — nothing below them survives a rebuild.
 ENV NODE_ENV=production \

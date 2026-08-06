@@ -12,7 +12,7 @@ import ResponseObject from '../ResponseObject.js';
 export default async function pingRoute(fastify, options) {
   // Simple ping endpoint
   fastify.get('/ping', async (request, reply) => {
-    return { pong: 'Hello, world! (' + process.env.npm_package_name + ' v' + process.env.npm_package_version + ')' };
+    return { pong: `Hello, world! (${env.app.name} v${env.app.version})` };
   });
 
   // Debug endpoint to check auth and server decorators
@@ -53,8 +53,16 @@ export default async function pingRoute(fastify, options) {
   }, async (request, reply) => {
     // Basic system info
     const response = new ResponseObject().success({
-      appName: process.env.npm_package_name,
-      version: process.env.npm_package_version,
+      appName: env.app.name,
+      productName: env.app.productName,
+      version: env.app.version,
+      // AGPL §13: anyone interacting with this server over a network is entitled
+      // to its corresponding source. This is the unauthenticated, machine-readable
+      // half of that offer (the web UI carries the human-readable link); a fork
+      // must repoint sourceUrl at its own repository rather than strip it.
+      license: env.app.license,
+      sourceUrl: env.app.sourceUrl,
+      commit: env.app.commit,
       uptime: process.uptime(),
       timestamp: new Date().toISOString(),
       defaults: {

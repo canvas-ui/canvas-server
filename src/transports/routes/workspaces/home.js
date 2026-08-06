@@ -44,6 +44,9 @@ async function statEntry(abs, name) {
   };
 }
 
+// Upload ceiling for a single home file (2 GiB); the stream is not buffered.
+const HOME_UPLOAD_LIMIT = 2 * 1024 * 1024 * 1024;
+
 /**
  * Parse a `Range` header against a known size: null when there is nothing to
  * honour, `{ start, end }` inclusive, or `{ unsatisfiable: true }` for a window
@@ -75,6 +78,18 @@ function parseByteRange(header, size) {
 }
 
 export default async function homeRoutes(fastify) {
+  // Home is a file drive: uploads arrive as bytes, not JSON. Without a parser
+  // for them Fastify rejects every binary PUT with 415 before the handler runs
+  // — which is what a filesystem client (canvas-fuse, a WebDAV bridge, curl
+  // --data-binary) sends. Scoped to this plugin; JSON on sibling routes is
+  // unaffected. The raw stream is handed through unbuffered so a large file
+  // never materializes in memory.
+  fastify.addContentTypeParser(
+    ['application/octet-stream', 'application/x-www-form-urlencoded', 'text/plain'],
+    { bodyLimit: HOME_UPLOAD_LIMIT },
+    (_req, payload, done) => done(null, payload),
+  );
+
 
   // ─────────────────────────────────────────────────────────────────────────
   // Filesystem browsing

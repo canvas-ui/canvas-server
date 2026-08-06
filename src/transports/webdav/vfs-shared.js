@@ -42,6 +42,35 @@ export function inferDocFromFile(filename, body) {
 }
 
 /**
+ * Build a NEW document for a known schema.
+ *
+ * Used where the destination declares the schema rather than the filename —
+ * `Contexts/<id>/Notes/` holds notes because that is what the folder IS, so a
+ * write there is a note whatever it is called. (Under `Trees/**` nothing
+ * declares a schema, which is why a new file there is a file; see
+ * inferDocFromFile.)
+ *
+ * Returns null for a schema with no file representation, and throws when the
+ * body cannot be read as the schema the folder asked for.
+ */
+export function buildDocForSchema(schema, filename, body) {
+    const text = Buffer.isBuffer(body) ? body.toString('utf-8') : String(body ?? '');
+    const title = filename.replace(/\.[^.]+$/, '');
+
+    if (schema === NOTE_SCHEMA) { return { schema, data: { title, content: text, filename } }; }
+    if (schema === TODO_SCHEMA) {
+        const parsed = text.trim() ? JSON.parse(text) : {};
+        return { schema, data: { title, ...parsed, filename } };
+    }
+    if (schema === TAB_SCHEMA) {
+        const url = extractUrlFromShortcut(text);
+        if (!url) throw new Error('Empty or invalid .url shortcut body');
+        return { schema, data: { title, url, filename } };
+    }
+    return null;
+}
+
+/**
  * Apply a new body to an EXISTING document, in its own schema.
  *
  * Editing through a mount must never change what a document IS: a note that

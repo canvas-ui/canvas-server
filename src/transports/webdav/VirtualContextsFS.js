@@ -1,6 +1,7 @@
 'use strict';
 
 import VirtualNamedContextFS from './VirtualNamedContextFS.js';
+import { httpError } from './vfs-shared.js';
 
 /**
  * Virtual filesystem that exposes all contexts of a workspace as top-level folders.
@@ -53,12 +54,37 @@ export default class VirtualContextsFS {
         return vfs ? vfs.readdir('/' + parts.slice(1).join('/')) : null;
     }
 
-    async getContent(vPath) {
+    async getContent(vPath, options = {}) {
         const parts = split(vPath);
         if (parts.length < 2) return null;
 
         const vfs = await this.#contextVFS(parts[0]);
-        return vfs ? vfs.getContent('/' + parts.slice(1).join('/')) : null;
+        return vfs ? vfs.getContent('/' + parts.slice(1).join('/'), options) : null;
+    }
+
+    // ── Write + re-tag, delegated to the addressed context ───────────────────
+    // Every verb needs at least `<context>/<name>`; the level above is the
+    // context list itself, which is not a place anything is written.
+
+    async #delegate(vPath, method, ...args) {
+        const parts = split(vPath);
+        if (parts.length < 2) { throw httpError(403, 'Address something inside a context, e.g. <context>/note.md'); }
+        const vfs = await this.#contextVFS(parts[0]);
+        if (!vfs || typeof vfs[method] !== 'function') { throw httpError(404, 'Context not found'); }
+        return vfs[method]('/' + parts.slice(1).join('/'), ...args);
+    }
+
+    async put(vPath, body) { return this.#delegate(vPath, 'put', body); }
+    async del(vPath, options = {}) { return this.#delegate(vPath, 'del', options); }
+    async mkcol(vPath) { return this.#delegate(vPath, 'mkcol'); }
+    async linkDoc(vPath, doc) { return this.#delegate(vPath, 'linkDoc', doc); }
+    async unlinkDoc(vPath, doc, options = {}) { return this.#delegate(vPath, 'unlinkDoc', doc, options); }
+
+    async docAt(vPath) {
+        const parts = split(vPath);
+        if (parts.length < 2) return null;
+        const vfs = await this.#contextVFS(parts[0]);
+        return vfs?.docAt ? vfs.docAt('/' + parts.slice(1).join('/')) : null;
     }
 
     // ── Private ─────────────────────────────────────────────────────────────

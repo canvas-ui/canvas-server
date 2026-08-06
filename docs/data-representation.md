@@ -1,6 +1,6 @@
 # Data representation over WebDAV and canvas-fuse
 
-Status: plan, decisions settled 2026-08-05.
+Status: implemented. Decisions settled 2026-08-05; phases landed 2026-08-05/06.
 
 One layout, one set of verbs, served by two wires (`src/transports/webdav/`,
 `src/ui/fuse/`). The point is not to make a filesystem out of the index — it is
@@ -33,12 +33,11 @@ Hence the invariant the whole design hangs on:
 <workspace>/
 ├── Home/                        1:1 with the home drive, minus internals
 ├── Contexts/
-│   └── <contextId>/
-│       ├── Notes/    *.md
-│       ├── Tabs/     *.url
-│       ├── Todos/    *.todo.json
-│       ├── Files/    real bytes
-│       └── …               one folder per data/schema/*, from SchemaRegistry
+│   └── <contextId>/            FLAT: the context's documents, as themselves
+│       ├── note.md
+│       ├── reddit.url
+│       └── .by-schema/         derived, read-only grouping
+│           ├── Notes/ Tabs/ Files/ …   one folder per data/schema/*
 ├── Trees/
 │   └── <treeName>/
 │       └── <tree-path>/…       the tree's own hierarchy
@@ -48,11 +47,9 @@ Hence the invariant the whole design hangs on:
                                  in the default `directory` tree
 ```
 
-Already true today: WebDAV's root is exactly `Home`/`Contexts`/`Trees`
-(`server.js:44`), and `VirtualNamedContextFS` derives its per-schema folders
-from `SchemaRegistry` at runtime rather than a hardcoded list. canvas-fuse
-hardcodes the same folder set in context mode and omits it in workspace mode;
-consolidating means adopting the WebDAV shape, not inventing one.
+Both wires serve this today. The per-schema folders under `Contexts/` are
+derived from `SchemaRegistry` at runtime, not a hardcoded list — a new schema
+gets a folder with no code change.
 
 **Trash placement (decided).** A workspace is the "drive", so trash belongs at
 the workspace root as a visible `Trash/` — drag-to-trash needs a visible target.
@@ -61,35 +58,46 @@ stays hidden from ordinary tree listings and out of `cp -r` of `Trees/directory/
 while the root presents it under the name users expect. One physical home, one
 presented name, no collision with a user-created tree path called `Trash`.
 
-### Schema folders exist only under `Contexts/`
+### Synthetic groupings are dotted; real placements are plain
 
-A context view is a flat result set — schema is the only structure available, so
-the folders are load-bearing. A tree path *is* the user's hierarchy, so
-inserting `Notes/`/`Files/` there:
+One rule for the whole mount: **location never infers meaning.** A file is what
+its name and bytes say it is, wherever you drop it, and any view that is a
+*query* rather than a place is dotted and read-only.
 
-- collides with user-created tree paths of the same name (a tree path can hold
-  child paths **and** documents), requiring an escaping rule forever;
-- breaks `cp -r` round-tripping, which is the stated purpose of the workspace
-  mount (write `wiki/*.md`, read back `wiki/Notes/*.md`);
-- restates information already in the filename;
-- costs a `readdir`/`getattr` level on the protocol where that hurts most.
+`Contexts/<id>/` was originally one folder per schema (`Notes/`, `Tabs/`, …).
+That made those folders saved queries wearing a folder's clothes, and a
+filesystem notices:
 
-If grouping is wanted under a tree path, it goes in a dotted sibling
-(`.by-schema/Notes/…`): hidden by default, immune to collisions since tree paths
-cannot start with `.`.
+- `mkdir` had to be refused — you cannot make a folder inside a folder;
+- copying `Notes/x.md` into `Files/` **reported success and then listed
+  nothing** (measured, not theorised: the destination filters by schema, and the
+  document's schema had not changed);
+- the same `.md` bytes were a note under `Contexts/` but a file under
+  `Trees/**`, so the rule you had to hold in your head depended on which subtree
+  you were standing in.
 
-### `-c` / `-w` become views, not layouts
+Grouping now lives in `.by-schema/` — derived, read-only, dotted, and out of
+`cp -r`'s way. The same argument already applied under `Trees/**`, where a tree
+path IS the user's hierarchy and schema folders would collide with it, break
+round-tripping and restate what the filename already says.
 
-canvas-fuse's two mount modes collapse into one tree plus a `--root` selector
-(`--root Contexts/work` reproduces today's single-context rooting).
+What the flat shape buys beyond consistency: a context-bound browser becomes
+addressable from a file manager. `rm reddit.url` closes that tab, writing a
+`.url` opens one, editing one navigates it — the CLI could always do this, but
+now anything that can write a file can.
+
+### One mount is one workspace
+
+canvas-fuse mounts a single workspace; contexts are addressed inside it, never
+across workspaces. `canvas-fuse mount <workspace> <dir>` gives the layout above;
+`<workspace>/Contexts/<id>` roots at one context. `-w` / `-c` are the flag forms
+(see its README).
 
 ## 2. A file is a file
 
-**`.md` no longer creates a note.** `inferDocFromFile()` currently maps
-`*.md` → `data/schema/note`, `*.todo.json` → `data/schema/task`,
-`*.url` → `data/schema/tab`. The first of those is wrong: markdown is a general
-document format, not a canvas concept. Markdown-as-note is a *rendering*
-decision and belongs in the UI.
+**`.md` does not create a note.** Markdown is a general document format, not a
+canvas concept; markdown-as-note is a *rendering* decision and belongs in the
+UI. (Under `Contexts/**` the folder declares the schema instead — see Phase 5.)
 
 - **New** `*.md` (and everything else without a canvas-native meaning) →
   `data/schema/file`, bytes persisted as a blob.
@@ -97,12 +105,10 @@ decision and belongs in the UI.
   `.url` is what a browser produces when you drag a link out of the address bar,
   so dropping one into a canvas becoming a Tab is the *desired* behaviour, and
   `.todo.json` only ever comes from our own renderer.
-- **Editing an existing note over the wire still updates the note.** `TreeFS.put`
-  looks up the existing document by filename and spreads it
-  (`record = existing ? { ...existing, data } : …`), so schema is preserved on
-  update. Only *new* files take the file path. This asymmetry is correct and
-  must be covered by a test, because it is the kind of thing a later refactor
-  quietly breaks.
+- **Editing an existing note over the wire still updates the note.**
+  `applyBodyToDoc()` applies a body in the document's OWN schema, so only *new*
+  files take the file path. This asymmetry is deliberate and covered by a test,
+  because it is the kind of thing a later refactor quietly breaks.
 
 **Default blob location: the local blob store.** `Workspace.persistBlob()` →
 `stored://workspace:data/<key>` with checksum, size, mime and inline-extracted
@@ -114,12 +120,8 @@ The document shape is the one every upload surface already inserts
 `schema: data/schema/file`, `checksumArray: ['sha256/…']`,
 `locations: [{ url, metadata: { filename } }]`, `metadata: { contentType, size }`.
 
-**Bug this exposes:** `docName()` in `vfs-shared.js` derives a filename from
-`data.filename`, then falls back to `locationBasename(doc)` — the basename of the
-location *key*. For a blob that key is a content hash, so a File document
-uploaded through the UI currently surfaces over WebDAV as a hash. `docName()`
-must prefer `locations[0].metadata.filename`, which is where every upload
-surface already puts the real name.
+(This exposed a bug — uploaded files surfaced as content hashes — fixed by the
+resolver in §2b.)
 
 ## 2b. What a file is called — **DECIDED + LANDED 2026-08-05**
 
@@ -403,10 +405,29 @@ canvas-fuse mount universe/Contexts/foo ~/MyFooContext   # one context, rooted
 -c foo`); a selector naming two different workspaces is an error rather than a
 silent pick.
 
-Still open: **`Home/` is not served by this mount** (WebDAV serves it). Range
-support now exists on both wires, which was the prerequisite; what remains is
-the FUSE read/write path against the home REST API — real files streamed, not
-documents rendered.
+**`Home/` in canvas-fuse — LANDED 2026-08-06.** The drive is passed straight
+through: directories are listed the first time something looks into them (a home
+drive can be enormous, so it is never walked at mount), reads take a byte window
+through the Range support above, and writes replace the whole file on close.
+`rm`/`mkdir`/`rmdir` are the filesystem's own — no trash, no detach.
+
+Three bugs found by driving a real mount, none of which a unit test would have
+caught:
+
+- **`PUT /home/*` rejected every binary body with 415.** Fastify needs a
+  content-type parser for `application/octet-stream`, and the route had none —
+  so uploads from any filesystem client were impossible. Registered
+  plugin-scoped, streaming (a large file never buffers).
+- **A shell's flush-before-write finalized the create.** `echo > file` flushes
+  once before writing; that published the file and dropped the write state, so
+  the following `write(2)` had nowhere to land (EACCES, 0-byte file on the
+  server). Home creates now defer like document creates, and only the FINAL
+  flush retires the overlay.
+- **The published node must ADOPT the overlay's ino.** The kernel already handed
+  that ino to the process from `create()`; allocating a fresh one left the
+  cached dentry pointing at nothing, so a file read back as ENOENT until the
+  directory was listed again. `adopt_tree_file()` had solved this for documents;
+  home files now do the same.
 
 ### Byte ranges — **LANDED 2026-08-06**
 
@@ -454,25 +475,44 @@ workspace internals and dotfiles are never indexed.
 Also added: `Workspace.syncBackend(driver, address, { background: false })` — a
 caller that needs to act on the reconcile can now await it.
 
-### Phase 5 — CRUD on `Contexts/**`
+### Phase 5 — CRUD on `Contexts/**` — **LANDED 2026-08-06**
 
-`VirtualNamedContextFS` is read-only today, so `Contexts/**` has no write path at
-all. Make it writable:
+`VirtualNamedContextFS` was read-only; it now answers the same verbs as
+`TreeFS`, and `VirtualContextsFS` delegates them.
 
-- `put` into a schema folder → document of that folder's schema, linked into the
-  context. Unknown/`Files/` → `data/schema/file` + `persistBlob` (§2).
-- `del` → detach from the context (§3).
-- Per schema, the round-trip contract: render → parse → identical document. Each
-  schema is a small independent unit with an obvious test. `.md`/`.url`/
-  `.todo.json` are covered by §2; the rest render as JSON and stay read-only
-  until someone needs them writable.
+It also went **flat** (see §1). The first cut kept the schema folders and made
+the folder declare the schema — coherent, but it needed a second mental model
+for one subtree, and it produced a copy that succeeded into nothing. Now the
+naming rule is the mount's single rule: `.url` and `.todo.json` carry a canvas
+meaning, everything else is a file, everywhere.
 
-### Phase 6 — one conformance suite, both wires
+Deleting **detaches from the view only** — never trashes, never destroys.
+`mkcol` is refused (a context is flat), and `.by-schema/` refuses writes.
 
-A single table of cases (create, read, rename, cross-dir move, delete-with-refs,
-delete-last-ref, context-delete-does-not-trash, move-to-trash, restore, empty)
-run against WebDAV **and** a mounted canvas-fuse, asserting identical index state
-after each. Without it the two wires diverge quietly.
+Tests: `tests/transports/webdav/context-writes.test.js` (7), against a real
+workspace with a Context stand-in (the Context class is permissions + events
+over `workspace.put/unlink`; what is under test is what the VFS asks it for) —
+including the browser case: editing a `.url` navigates the tab, removing it
+closes it.
+
+**Known divergence:** canvas-fuse's context mode still materializes the old
+schema folders (`render.rs`'s `SCHEMA_DIRS`, the NameStore keyed by
+`(context, dir, doc)`, `WRITABLE_DIRS`). Until it is moved over, the two wires
+disagree about the shape of `Contexts/` — the one place they currently do.
+
+### Phase 6 — the contract, as one table — **LANDED 2026-08-06**
+
+`tests/transports/webdav/conformance.test.js` states the filesystem contract in
+terms of **index state after each gesture** — not HTTP, not FUSE — so it reads
+as the specification both wires are held to: create, edit, copy, move, rename,
+delete-with-another-placement, delete-of-last-placement, restore, drag-to-trash,
+empty, folder move, Home in/out, and a byte range. canvas-fuse exercises the
+same rules through its tree state (`src/ui/fuse/tests/wsview.rs`); the REST
+calls underneath are the ones asserted here.
+
+Writing it surfaced one semantic worth stating out loud, now asserted: a
+document has **one name**, so renaming it in one folder renames it in every
+folder it is filed into — hard-link semantics, the consequence accepted in §2b.
 
 ## 5. Decisions (2026-08-05)
 

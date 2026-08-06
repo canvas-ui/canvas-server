@@ -479,5 +479,36 @@ npm run docker:build && npm run docker:up
 Your data is untouched by an update: it lives in `$CANVAS_SERVER_HOME` and the
 module roots, never in `node_modules` or the image.
 
+## Licence
+
+Copyright (C) 2026 Jozef Melich. Canvas is **dual-licensed**:
+
+- **[AGPL-3.0-or-later](LICENSE)** — free for everyone. Run it, modify it, build
+  on it. If you distribute a modified version or expose one to users over a
+  network, they are entitled to your changes (AGPL §13).
+- **[Commercial licence](COMMERCIAL.md)** — the same code without the copyleft
+  obligations, for hosted products and proprietary distribution. Issued by
+  Augmentd s.r.o.
+
+Same software either way — there is no cut-down community edition.
+
+Every response carries an `X-Source-Code` header and `GET /rest/v2/ping` reports
+the running version, revision and source URL, which is how this server satisfies
+§13. **If you deploy a modified version, repoint them at your own repository**
+(`CANVAS_SOURCE_URL`, and `CANVAS_SOURCE_COMMIT` for builds without git
+metadata) rather than removing them:
+
+```bash
+curl -sI http://localhost:8001/ | grep -i x-source-code
+curl -s  http://localhost:8001/rest/v2/ping
+```
+
+Contributions are welcome and require a one-time [CLA](CLA.md) — see
+[CONTRIBUTING.md](CONTRIBUTING.md) for why, and what it does and does not ask of
+you (you keep your copyright).
+
+Not sure whether your use complies? Ask: **me@idnc.sk**. It is a cheaper
+conversation than the alternative, and the usual outcome is a licence.
+
 ---
 This project is funded by [Augmentd Labs](https://augmentd.eu/en/labs)

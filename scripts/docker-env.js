@@ -11,6 +11,7 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { execFileSync } from 'child_process';
 import { fileURLToPath } from 'url';
 
 const repoRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -33,7 +34,20 @@ const substitutions = {
     CANVAS_HOST_WORKSPACES: path.join(home, 'Workspaces'),
     CANVAS_HOST_ROLES: path.join(home, 'Roles'),
     CANVAS_HOST_AGENTS: path.join(home, 'Agents'),
+    // The image cannot read .git (excluded from the build context), so the
+    // revision behind the AGPL §13 source offer has to be captured here and
+    // passed in as a build arg. Empty when this is not a git checkout — the
+    // server just reports no commit then.
+    CANVAS_SOURCE_COMMIT: readGitHead(),
 };
+
+function readGitHead() {
+    try {
+        return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).trim();
+    } catch {
+        return '';
+    }
+}
 
 const contents = fs.readFileSync(examplePath, 'utf8')
     .split('\n')

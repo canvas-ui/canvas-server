@@ -244,7 +244,10 @@ export async function createServer(options = {}) {
     methods: ['GET', 'PUT', 'POST', 'DELETE', 'PATCH', 'OPTIONS', 'HEAD', 'PROPFIND', 'PROPPATCH', 'MKCOL', 'COPY', 'MOVE', 'LOCK', 'UNLOCK'],
     credentials: true,
     allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-App-Name', 'X-Selected-Session', 'Cache-Control', 'Depth', 'If', 'Overwrite', 'Destination'],
-    exposedHeaders: ['Authorization', 'Content-Type', 'DAV', 'ETag', 'Lock-Token'],
+    // X-Source-Code is exposed so a browser client can read the AGPL §13 source
+    // offer off any response and render it — without this it is invisible to the
+    // web UI, which is the one client every network user actually sees.
+    exposedHeaders: ['Authorization', 'Content-Type', 'DAV', 'ETag', 'Lock-Token', 'X-Source-Code'],
     maxAge: 86400 // 24 hours
   });
 
@@ -340,6 +343,24 @@ export async function createServer(options = {}) {
     instance.addHook('preHandler', rejectAgentTokens);
     await instance.register(routes);
   };
+
+  // AGPL §13 source offer, on every response including the public share pages
+  // and static web UI. Cheap (one static header), unauthenticated, and checkable
+  // with `curl -I` — which is the point: it is how an operator demonstrates
+  // compliance, and how its absence from a deployment is demonstrated.
+  //
+  // A fork is expected to repoint this at its own repository (CANVAS_SOURCE_URL),
+  // not to remove it: stripping it drops a required legal notice rather than
+  // merely omitting a nicety.
+  const sourceHeader = [
+    env.app.sourceUrl,
+    env.app.commit ? `commit=${env.app.commit}` : null,
+    `version=${env.app.version}`,
+    `license=${env.app.license}`,
+  ].filter(Boolean).join('; ');
+  server.addHook('onSend', async (request, reply) => {
+    reply.header('X-Source-Code', sourceHeader);
+  });
 
   // Register routes
   server.register(pingRoute);

@@ -15,6 +15,12 @@ services:
       dockerfile: Dockerfile
       args:
         NODE_VERSION: ${NODE_VERSION:-22}
+        # Baked into the image so /rest/v2/ping and the X-Source-Code header can
+        # name the revision they are running (AGPL §13) — .git/ is not in the
+        # build context. `npm run docker:env` fills these in; building without
+        # them just leaves the commit blank.
+        CANVAS_SOURCE_COMMIT: ${CANVAS_SOURCE_COMMIT:-}
+        CANVAS_SOURCE_URL: ${CANVAS_SOURCE_URL:-https://github.com/canvas-ui/canvas-server}
     image: canvas-server:latest
     container_name: ${CANVAS_CONTAINER_NAME:-canvas-server}
 

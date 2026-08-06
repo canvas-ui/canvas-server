@@ -5,6 +5,14 @@
   "description": "Context layer on top of your unstructured universe",
   "main": "./src/init.js",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/canvas-ui/canvas-server.git"
+  },
+  "homepage": "https://github.com/canvas-ui/canvas-server",
+  "bugs": {
+    "url": "https://github.com/canvas-ui/canvas-server/issues"
+  },
   "scripts": {
     "start": "node ./src/init.js",
     "dev": "cross-env NODE_ENV=development LOG_LEVEL=debug node ./src/init.js",

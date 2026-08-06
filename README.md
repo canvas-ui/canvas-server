@@ -514,9 +514,8 @@ Contributions are welcome. The dual-licensed repositories ask for a one-time
 does and does not ask of you (you keep your copyright). The AGPL-only clients
 ask for no CLA at all, just a DCO sign-off (`git commit -s`).
 
-Not sure whether your use complies? Ask: **lic@augmentd.eu**. It is a much
-smaller problem to solve now than after the fact, and the usual outcome is a
-licence.
+Not sure whether your use complies? Ask: **lic@augmentd.eu**. 
 
 ---
 This project is funded by [Augmentd Labs](https://augmentd.eu/en/labs)
+

@@ -25,50 +25,7 @@ Server
 
 ## Scheduled tasks
 
-
-
 ## Workspace hook TODO items in `TODO.hooks.md`
-
-Lets do a couple of cosmetics (because there is no time for the interesting stuff now) - but our old-school 
-react(yuck) UI is just temporary, a new AR-like canvas-centric UI is being shaped as you sleep ;) first, lets 
-update our Layers M2 view to first show canvases then normal layers - or even better, since we may introduce a
-layer of type dataset - lets divide the boring list of layers per layer type. Additionally, there is one more 
-feature related solely to the UI which may become prominent and should be available across integrations - 
-pinned layers(stored per-workspace but listable globally) - this is not a task, more a design question, 
-justification is simple - you logon to your computer(idealy nfc - phone nearby, ask and confirm on phone - 
-login shows you a simple, beatiful round control element on the bottom right that would default to voice input
-and a nice dynamic wallpaper, nithing else, simplicity at its purest form, you made a gesture tracked by your 
-camera with your left hand which opens a list of all your pinned tasks (nice semi-transparent AR-design 
-compatible tiles of layers or canvases displaying the most imporatnt stats of each - if its a pinned canvas, 
-you get whatever data is available for that canvas (number of new messages, todo tasks for today, missed 
-calls), for pinned tree paths(not sure we should implement this) - workspace where the pin came from, number of
-documents per type, last updated) - move left again and you get a list of workspaces > select > a flaoting 
-workspace tree, hand rotation(or kb shortcut) would switch between trees) - select what you want to work on and
-you are greeted by a beautiful empty canvas with your trusty toolbox button on the right - tick to voice input
-- Lucy, show me the latest comm for the AG merger -> a2ui/mcpui canvas shows the content, "whats on plan for 
-today" - adds a todo list "move it to a separate canvas" -> creates a separate canvas -> "move that canvas to 
-my tv" - opens the canvas in a connected device tagged "tv" (this can be a simple tv web browser) => toolbox 
-will have global part and a context part - want to edit an email, toolbox will have controls for emails, want 
-to edit text, toolbox will have controls for text - besides the global filter and agent views and controlls" =>
-this is where we are heading +/-, whats our opinion (all of this is relatively easy to implement - well, nfs 
-login not but I used to work on my own linux-based OS before and I can do all kinds of trickery to make that 
-experience very near)
-
-- Storage: per-workspace, as you said — a pin is { layerId, pinnedAt, order? } living in the workspace (it
-  references a layer that already belongs to that workspace, so it stays movable with tar + scp). Do not store pins
-  in a global file; that breaks the "workspace is self-contained and portable" principle we just spent a session
-  defending.
-- Global listing: derived, not stored. The server enumerates open/known workspaces and concatenates their pins →
-  one global list. This means a pin's identity is always (workspaceId, layerId); the global view is a projection.
-  Fits the AR "move-left → all my pinned tiles across everything" gesture exactly.
-- The tile is a view contract, not a layer field. A pinned canvas tile shows "3 new messages, 5 todos today, 2
-  missed calls"; a pinned context/tree tile shows "workspace, doc counts per type, last updated." That's a small
-  PinnedTileSummary the server computes per layer type — a discriminated union keyed on layer type. This is the
-  same taxonomy work as the schema reshape: the layer type drives the descriptor. Same pattern as
-  #storageBackendDescriptor.
-- Skip pinned tree-paths for now (you flagged the doubt yourself). A path isn't a stable identity — rename/move
-  and the pin dangles. Pin layers and canvases (both have IDs); revisit paths only if a real need shows up.
-
 
 ## Refactor `embedd` (coupled to the workspace runtime)
 
@@ -122,12 +79,6 @@ so pointing embedd at the GPU box meant editing source. All three are now data.
   source; a new modality (audio, spatial) slots in with no code change.
 - Tests: `tests/services/embedd/{config,openai-provider,queue-split}.test.js` (39 new).
 
-**On EmbedAnything: do NOT take it as an in-process dependency.** It's a Rust crate with Python
-bindings and no maintained Node/NAPI binding, so integrating it means either building and
-maintaining a NAPI shim or running it as a sidecar — and a sidecar is just another endpoint
-behind `OpenAIProvider`. embedd stays a thin router+queue; model lifecycle lives on the inference
-host. EA is now a deployment choice (one `baseUrl`), not a rewrite.
-
 Remaining on this thread:
 - [ ] Point the in-office GPU box at it for real and verify an image model end-to-end — the
       `imageInput` modes are written against the documented shapes but only tested against a
@@ -139,38 +90,6 @@ Remaining on this thread:
 - [ ] CLIP worker **pool** (~nCPUs-2, ORT intra-op threads capped so pool × threads ≈ nCPUs).
       Much lower priority now: with remote providers the local CLIP child is the fallback path,
       and the shared semaphore already bounds it.
-
-Original context below.
-
-**Remote/GPU-backed inference is the priority direction (2026-07-20).** Running CLIP/ONNX fp32
-on the server's CPU is what pins the whole box during a photo-mount ingest (Fotky incident:
-23.5k photos → serialized CLIP child saturates every core, server starves). A GPU workstation
-is available in-office for testing remote vllm/ollama-powered embedding models — target: the
-embedd provider layer points at that box (OllamaProvider exists; add/verify a vllm-compatible
-OpenAI-endpoint provider, incl. image models), CPU-local ONNX/CLIP becomes the fallback, not
-the default. This also derisks the EA question: if providers are remote, embedd stays a thin
-router/queue and EA (or nothing) handles model lifecycle on the inference host.
-
-**Stopgaps landed (2026-07-20)** so a bulk ingest can't take the server down meanwhile:
-- Queue **pause/resume** — `POST /rest/v2/admin/embedd/{pause,resume}` (+ `GET /admin/embedd/status`),
-  Pause/Resume button on the queue row in Settings → Database. Holds the backlog after the
-  in-flight batch; runtime-only (restart clears; reconcile re-drives).
-- **`CANVAS_EMBEDD_INGEST_DISABLED=true`** — soft gate: enqueue+reconcile no-op, existing vectors
-  still serve dense search. (`CANVAS_EMBEDD_ENABLED=false` stays the hard switch.)
-- Backend resyncs are now **cancellable** (`POST .../backends/:driver/:address/sync/cancel`,
-  Stop-sync button) — stops the scan feeding the queue.
-
-Origina TODO item:  
-
-Today `embedd` is a single **per-server singleton**: one shared model runtime + ONE serial queue + one server-wide router. Consequences to fix as part of the runtime split:
-- [x] **Queue is global + serial** — the "Embedding queue" count in workspace settings is server-wide (re-indexing a 3-doc workspace can show 800 pending from other workspaces). Each workspace runtime should own its own queue. **(done 2026-07-27: one Queue per workspace behind a shared concurrency semaphore.)**
-- **Embeddable schemas/mimes are router-driven and server-wide, NOT per-workspace-configurable.** Reconcile uses `router.candidateSchemas(sp)` and the live path routes by the shared `DEFAULT_RULES` — synapsd's per-workspace `embeddableSchemas` is only a gap-ledger fallback. So "text-embeddable schemas" and "image-embeddable schema+mime" can only become real workspace settings once the router is per-workspace (make the router rules the configurable surface). Until then the UI should stay read-only/informational (done: labelled "Text-embeddable schemas" + "Image-embeddable: data/abstraction/file · image/*"). **(2026-07-27: rules are now config — but SERVER-wide config. Per-workspace rules are still the unlock for a writable UI.)**
-- **Model cache**: per-workspace embedd with a cache **search path** (workspace-local dir → server-shared cache fallback) so containerized/standalone workspaces don't re-download models.
-- **Throughput**: image (CLIP) runs in a **single forked child, serialized** (`clip-worker.js` request chain) → photo embedding is strictly one-at-a-time and CPU-bound (fp32 default is slow; q8 ~2-4x faster). Real fix = a small **worker pool** (~nCPUs-2) with ORT intra-op threads **capped** per child so pool × threads ≈ nCPUs (naive nCPUs-2 pool would oversubscribe — ORT already grabs all cores per single inference).
-- [x] **Model dtype configurable**: `CANVAS_CLIP_DTYPE` (fp32/q8/…) is env-only today. Make it a proper config option — globally for now (server-wide embedd), per-workspace once the runtime is split. Low priority (boilerplate vs value). **(done 2026-07-27: `model`/`dtype` are ClipProvider options fed from the routing rule; env is the fallback.)**
-- **Text embedding is broader than the UI implies**: we embed notes + emails + **text-file blobs** (`data/abstraction/file` with `text/*` mime), driven by the router's `DEFAULT_RULES`, not just `data/abstraction/note` (which is only synapsd's gap fallback default). The settings UI should reflect the router's real routing (done: `getStats().embedder.routing` surfaces per-space schema+mime rules; read-only until the router is per-workspace).
-
-This relates to "### Vectors & modalities" in `src/services/synapsd/TODO.md`
 
 
 ### IMAP / email
@@ -565,6 +484,12 @@ paths — that is the policy leaking into every call site.
 
 ### Add support for additional data sources
 
+#### Messaging
+- `whatsapp`
+- `slack`
+- `teams/graph-api`
+
+#### Services/Connectors
 - `git`
   - Aim is to streamline our dotfiles management feature/extract git support into a separate module
   - Needs to support branches
@@ -572,3 +497,8 @@ paths — that is the policy leaking into every call site.
   - We'd cache the result internally; you may want to create a canvas aggregating data from various sql db sources along with your emails etc, working with them in any tool would be a curl https://your-canvas-instance/workspaces/:wid/canvases/:cid/documents | jq .. away
 - `generic REST endpoint`
   - Lets say a corporate backend with a specific REST API endpoint + query returning a list of non-compliant servers, again could be paired with a TTL for the localy cached result as metadata (this is a pure app concern,  not sure whether we should - at this point - add some form of data invalidation based on TTL to the DB)
+
+
+#### "Stored" data sources
+- `dropbox`
+

@@ -46,8 +46,24 @@ const contents = fs.readFileSync(examplePath, 'utf8')
 
 fs.writeFileSync(envPath, contents, { mode: 0o600 });
 
+// Both ends of every bind mount have to exist before the first `up`: docker
+// creates a missing one as root, and the container runs as this uid. The
+// mountpoints live inside the admin user's home — modules are per-user
+// (<serverHome>/users/<email>/{Workspaces,Roles,Agents}), the host folders are
+// only attached there.
+const adminEmail = contents.match(/^CANVAS_ADMIN_EMAIL=(.*)$/m)?.[1]?.trim() || 'admin@canvas.local';
+const adminHome = path.join(substitutions.CANVAS_HOST_SERVER_HOME, 'users', adminEmail);
+for (const dir of [
+    path.join(substitutions.CANVAS_HOST_SERVER_HOME, 'users'),
+    path.join(adminHome, 'Workspaces'), path.join(adminHome, 'Roles'), path.join(adminHome, 'Agents'),
+    substitutions.CANVAS_HOST_WORKSPACES, substitutions.CANVAS_HOST_ROLES, substitutions.CANVAS_HOST_AGENTS,
+]) {
+    fs.mkdirSync(dir, { recursive: true });
+}
+
 console.log(`Wrote ${envPath}`);
 for (const [key, value] of Object.entries(substitutions)) {
     console.log(`  ${key}=${value}`);
 }
+console.log(`  mounted into ${adminHome}/{Workspaces,Roles,Agents}`);
 console.log('\nEdit it (admin email/password, host paths), then: npm run docker:up');

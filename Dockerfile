@@ -58,7 +58,9 @@ ENV NODE_ENV=production \
 # (git tracked it as 0644, and Windows/zip checkouts drop the bit entirely).
 RUN chmod +x bin/*.sh
 
-RUN mkdir -p server/users modules && chmod -R 777 server modules
+# Everything below server/ is bind-mounted from the host at runtime; this only
+# makes the mountpoints exist and stay writable for whatever uid compose picks.
+RUN mkdir -p server/users && chmod -R 777 server
 
 # Never root by default. compose overrides this with the HOST user's uid:gid
 # (CANVAS_UID/CANVAS_GID), which is what makes a bind-mounted ~/Workspaces

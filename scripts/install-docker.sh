@@ -131,20 +131,21 @@ if [ "${KEEP_ENV:-false}" != "true" ]; then
     echo
 
     bold "Your folders"
-    info "Workspaces, roles and agents are per-user modules. Mount them from your"
-    info "home directory and they stay ordinary folders you can open in a file manager."
-    if confirm "Mount host folders for workspaces/roles/agents?" y; then
+    info "Workspaces, roles and agents are per-user modules and always live under"
+    info "their owner, at <server home>/users/<email>/{Workspaces,Roles,Agents}."
+    info "Host folders are mounted onto that subtree, so they stay ordinary folders"
+    info "you can open in a file manager and the layout stays per-user."
+    ADMIN_HOME="$HOST_SERVER_HOME/users/$ADMIN_EMAIL"
+    if confirm "Mount host folders for your workspaces/roles/agents?" y; then
         ask HOST_WORKSPACES "Workspaces" "$HOME/Workspaces"
         ask HOST_ROLES      "Roles"      "$HOME/Roles"
         ask HOST_AGENTS     "Agents"     "$HOME/Agents"
-        MOUNT_MODULES=true
     else
-        # No pinned roots: every user gets <userHome>/{Workspaces,Roles,Agents}
-        # inside the mounted users home — the multi-user shape.
-        HOST_WORKSPACES="$HOST_SERVER_HOME/modules/workspaces"
-        HOST_ROLES="$HOST_SERVER_HOME/modules/roles"
-        HOST_AGENTS="$HOST_SERVER_HOME/modules/agents"
-        MOUNT_MODULES=false
+        # Nothing to relocate: the mounts point at the canonical location, i.e.
+        # they bind those directories onto themselves.
+        HOST_WORKSPACES="$ADMIN_HOME/Workspaces"
+        HOST_ROLES="$ADMIN_HOME/Roles"
+        HOST_AGENTS="$ADMIN_HOME/Agents"
     fi
     echo
 
@@ -182,25 +183,21 @@ if [ "${KEEP_ENV:-false}" != "true" ]; then
     write_env CANVAS_HOST_ROLES "$HOST_ROLES"
     write_env CANVAS_HOST_AGENTS "$HOST_AGENTS"
 
-    if [ "$MOUNT_MODULES" = "false" ]; then
-        # Unset the in-container roots so each user falls back to their own
-        # <userHome>/{Workspaces,Roles,Agents}.
-        write_env CANVAS_USER_WORKSPACES ""
-        write_env CANVAS_USER_ROLES ""
-        write_env CANVAS_USER_AGENTS ""
-    fi
-
-    # The compose mounts are bind mounts: docker would create them as root.
-    mkdir -p "$HOST_SERVER_HOME/users" "$HOST_WORKSPACES" "$HOST_ROLES" "$HOST_AGENTS"
+    # Both ends of every bind mount, created as you rather than by docker as
+    # root — including the mountpoints inside the admin's home, which live in
+    # the server-home mount.
+    mkdir -p "$HOST_SERVER_HOME/users" \
+             "$ADMIN_HOME/Workspaces" "$ADMIN_HOME/Roles" "$ADMIN_HOME/Agents" \
+             "$HOST_WORKSPACES" "$HOST_ROLES" "$HOST_AGENTS"
 
     bold "Wrote $ENV_FILE"
     info "admin       $ADMIN_NAME <$ADMIN_EMAIL>"
     info "url         http://localhost:$HOST_PORT"
     info "server      $HOST_SERVER_HOME"
-    info "users       $HOST_SERVER_HOME/users"
-    info "workspaces  $HOST_WORKSPACES"
-    info "roles       $HOST_ROLES"
-    info "agents      $HOST_AGENTS"
+    info "user home   $ADMIN_HOME"
+    info "workspaces  $HOST_WORKSPACES  →  $ADMIN_HOME/Workspaces"
+    info "roles       $HOST_ROLES  →  $ADMIN_HOME/Roles"
+    info "agents      $HOST_AGENTS  →  $ADMIN_HOME/Agents"
     echo
 fi
 

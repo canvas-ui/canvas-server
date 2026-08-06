@@ -64,20 +64,23 @@ npm start -- --user            # → ~/.canvas/server (users in ~/.canvas/server
 Everything under `~/.canvas/` other than `server/` is reserved for the client
 apps and their caches; the server never writes there.
 
-Each user has three module roots — workspaces, roles and agents — which default
-to `<userHome>/{Workspaces,Roles,Agents}` and can be pointed anywhere:
+Each user has three module roots — workspaces, roles and agents — which live
+under that user and nowhere else:
 
-```bash
-CANVAS_USER_WORKSPACES=~/Workspaces \
-CANVAS_USER_ROLES=~/Roles \
-CANVAS_USER_AGENTS=~/Agents \
-npm start -- --user
+```
+$CANVAS_SERVER_HOME/users/you@example.com/{Workspaces,Roles,Agents}
 ```
 
-Those are server-wide defaults; a single user can override their own at any time
-with `PUT /rest/v2/users/me/paths`. Relocating is not a move — existing
-workspaces keep working where they are, and only discovery plus newly created
-workspaces follow the new root.
+One user is one subtree, which is what makes a per-user dataset, quota or uid
+possible. A single user can relocate their own roots with
+`PUT /rest/v2/users/me/paths`; relocating is not a move — existing workspaces
+keep working where they are, and only discovery plus newly created workspaces
+follow the new root.
+
+`CANVAS_USER_WORKSPACES` / `_ROLES` / `_AGENTS` set a server-wide default for all
+three (absolute, `~`-prefixed, or templated with `{USER_HOME}` / `{HOME}`). That
+makes **every** user share one directory, so it only makes sense on a single-user
+instance; leave them empty otherwise.
 
 ### Running it as a service
 
@@ -135,19 +138,24 @@ CANVAS_ADMIN_PASSWORD=                # empty → generated and printed once
 CANVAS_ADMIN_RESET=false              # true → re-apply the password on next start
 
 CANVAS_HOST_SERVER_HOME=$HOME/.canvas/server   # config/, db/, cache/, users/ — back this up
-CANVAS_HOST_WORKSPACES=$HOME/Workspaces        # ─┐ the three per-user modules,
-CANVAS_HOST_ROLES=$HOME/Roles                  #  │ each one host dir ⇄ one
-CANVAS_HOST_AGENTS=$HOME/Agents                # ─┘ container dir
+CANVAS_HOST_WORKSPACES=$HOME/Workspaces        # ─┐ mounted into the admin user's
+CANVAS_HOST_ROLES=$HOME/Roles                  #  │ home, i.e. onto
+CANVAS_HOST_AGENTS=$HOME/Agents                # ─┘ users/<email>/{Workspaces,…}
 
 CANVAS_UID=1000                       # container runs as you, so mounts stay yours
 CANVAS_GID=1000
 ```
 
 The container runs as your uid:gid, so workspaces created inside it are ordinary
-files you own. The module mounts back the server-wide roots
-(`CANVAS_USER_WORKSPACES` and friends) — the single-user setup. For a multi-user
-instance, unset those three and every user gets their own
-`<userHome>/{Workspaces,Roles,Agents}` instead of one shared directory.
+files you own. The module roots stay per-user
+(`<serverHome>/users/<email>/{Workspaces,Roles,Agents}`) — your host folders are
+mounted *onto* the admin user's, which is why a multi-user instance needs no
+change: everyone else's modules simply live inside the server-home mount.
+
+Both ends of every mount must exist before the first `up`, otherwise docker
+creates them as root and the container user cannot write into them.
+`docker:install` and `docker:env` take care of it; if you hand-edit the paths in
+`.env`, `mkdir -p` them yourself.
 
 Other one-liners: `docker:down`, `docker:restart`, `docker:shell`, `docker:config`.
 
@@ -164,9 +172,10 @@ LOG_LEVEL=info
 CANVAS_SERVER_HOME=/opt/canvas-server/server
 CANVAS_USER_HOME=/opt/canvas-server/server/users   # default: <serverHome>/users
 
-# Per-user module roots. Empty → <userHome>/{Workspaces,Roles,Agents}.
-# Absolute, ~-prefixed, or templated with {USER_HOME} / {HOME}. A user's own
-# override (PUT /rest/v2/users/me/paths) wins over these.
+# Per-user module roots. Empty → <userHome>/{Workspaces,Roles,Agents}, the
+# per-user layout. Setting them makes every user share one directory — single
+# user only. Absolute, ~-prefixed, or templated with {USER_HOME} / {HOME}.
+# A user's own override (PUT /rest/v2/users/me/paths) wins over these.
 CANVAS_USER_WORKSPACES=         # e.g. ~/Workspaces on a personal instance
 CANVAS_USER_ROLES=
 CANVAS_USER_AGENTS=

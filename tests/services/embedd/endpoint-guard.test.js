@@ -2,7 +2,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { checkEndpoint, checkConfigEndpoints } from '../../../src/services/embedd/src/endpoint-guard.js';
+import { checkEndpoint, checkConfigEndpoints, endpointFor } from '../../../src/services/embedd/src/endpoint-guard.js';
 import Embedd from '../../../src/services/embedd/src/index.js';
 
 // ── What must be refused ─────────────────────────────────────────────────────
@@ -100,6 +100,36 @@ test('guard: checkConfigEndpoints reports every offending provider by id', async
     assert.equal(problems.length, 2);
     assert.ok(problems.some((p) => p.startsWith("provider 'bad'")));
     assert.ok(problems.some((p) => p.startsWith("provider 'alsoBad'")));
+});
+
+test('guard: a URL the provider type never reads does not block the config', async () => {
+    // The ollama class reads `host` and never `baseUrl`. A leftover baseUrl —
+    // easy to acquire by switching a provider's type in the UI — is inert, so
+    // failing the save on it locks the user out of a perfectly good config.
+    const problems = await checkConfigEndpoints({
+        providers: {
+            ollama: { type: 'ollama', host: 'http://127.0.0.1:11434', baseUrl: '/v1' },
+        },
+    });
+    assert.deepEqual(problems, []);
+});
+
+test('guard: the field a provider DOES read is still checked after a type switch', async () => {
+    const problems = await checkConfigEndpoints({
+        providers: {
+            // Same spec, now openai — baseUrl is live and must be judged.
+            gpu: { type: 'openai', baseUrl: 'http://169.254.169.254/v1', host: 'http://127.0.0.1:11434' },
+        },
+    });
+    assert.equal(problems.length, 1);
+    assert.match(problems[0], /baseUrl/);
+});
+
+test('guard: endpointFor names the field each provider type fetches', () => {
+    assert.deepEqual(endpointFor({ type: 'openai', baseUrl: 'http://h/v1' }), { field: 'baseUrl', value: 'http://h/v1' });
+    assert.deepEqual(endpointFor({ type: 'ollama', host: 'http://h' }), { field: 'host', value: 'http://h' });
+    assert.equal(endpointFor({ type: 'onnx', cacheDir: '/srv' }), null);
+    assert.equal(endpointFor({ type: 'ollama' }), null);
 });
 
 test('guard: providers with no URL (onnx/clip) are not checked', async () => {

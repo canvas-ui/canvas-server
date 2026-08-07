@@ -13,6 +13,15 @@ const DEFAULT_HOST = 'http://127.0.0.1:11434';
  * nomic-embed-text, mxbai-embed-large); image embedding is left unimplemented
  * until a vision-embedding model/endpoint is settled on.
  *
+ * Ollama itself ships unauthenticated, but it is routinely put behind a reverse
+ * proxy that demands a bearer token or a custom header, so `apiKey`/`headers`
+ * are honoured on every request — without them such a host is simply
+ * unreachable, with no way to configure around it.
+ *
+ * Note this speaks Ollama's NATIVE API (`/api/embed`), not the OpenAI-compatible
+ * `/v1` surface Ollama also exposes. Point `host` at the daemon root; a `/v1`
+ * suffix belongs to the `openai` provider type instead.
+ *
  * Provider contract mirrors OnnxProvider: embedText / embedQuery return
  * `{ vectors|vector, dim }`.
  */
@@ -20,17 +29,27 @@ export default class OllamaProvider {
 
     id = 'ollama';
     #host;
+    #apiKey;
+    #headers;
 
-    constructor({ host, id } = {}) {
+    constructor({ host, apiKey = null, headers = null, id } = {}) {
         if (id) { this.id = id; }
         this.#host = trimTrailingSlashes(host || process.env.OLLAMA_HOST || DEFAULT_HOST);
+        this.#apiKey = apiKey;
+        this.#headers = headers || {};
+    }
+
+    #requestHeaders(extra = {}) {
+        const headers = { ...this.#headers, ...extra };
+        if (this.#apiKey) { headers.authorization = `Bearer ${this.#apiKey}`; }
+        return headers;
     }
 
     async #embed(model, input) {
         if (!model) { throw new Error('OllamaProvider: model required'); }
         const res = await fetch(`${this.#host}/api/embed`, {
             method: 'POST',
-            headers: { 'content-type': 'application/json' },
+            headers: this.#requestHeaders({ 'content-type': 'application/json' }),
             body: JSON.stringify({ model, input }),
         });
         if (!res.ok) {
@@ -64,7 +83,7 @@ export default class OllamaProvider {
 
     async #ping() {
         try {
-            const res = await fetch(`${this.#host}/api/tags`, { method: 'GET' });
+            const res = await fetch(`${this.#host}/api/tags`, { method: 'GET', headers: this.#requestHeaders() });
             return res.ok;
         } catch (e) {
             debug(`ping failed: ${e.message}`);
@@ -73,7 +92,7 @@ export default class OllamaProvider {
     }
 
     async status() {
-        return { id: this.id, type: 'ollama', host: this.#host, reachable: await this.#ping() };
+        return { id: this.id, type: 'ollama', host: this.#host, authenticated: Boolean(this.#apiKey), reachable: await this.#ping() };
     }
 
     async stop() { /* stateless HTTP client */ }

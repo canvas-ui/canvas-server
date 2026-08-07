@@ -113,19 +113,39 @@ export async function checkEndpoint(rawUrl, policy = {}) {
     return { ok: true, url };
 }
 
+/** Which option each provider type actually fetches. Local types fetch nothing. */
+const URL_FIELD = { openai: 'baseUrl', ollama: 'host' };
+
 /**
- * Check every openai-type provider in a config. Local provider types (onnx,
- * clip) have no URL; ollama's host is checked the same way.
+ * The URL a provider spec will actually be asked to fetch, or null for a local
+ * provider. Single source of truth so the config check and the single-provider
+ * test route can never disagree about which field matters.
+ */
+export function endpointFor(spec) {
+    const field = URL_FIELD[spec?.type];
+    if (!field) { return null; }
+    const value = spec?.[field];
+    return value ? { field, value } : null;
+}
+
+/**
+ * Check the endpoint every provider will actually request. Only the field the
+ * provider's type reads is checked: a `baseUrl` left behind on an `ollama`
+ * provider is inert (the class never reads it), and failing the save over it
+ * blocks a legitimate config for no security gain. Switching the type
+ * re-validates, so the now-live field is still checked before it is ever used.
+ *
+ * Local provider types (onnx, clip) have no URL at all.
  */
 export async function checkConfigEndpoints(config, policy = {}) {
     const problems = [];
     for (const [id, spec] of Object.entries(config?.providers || {})) {
-        const target = spec?.baseUrl || spec?.host;
+        const target = endpointFor(spec);
         if (!target) { continue; }
-        const verdict = await checkEndpoint(target, policy);
-        if (!verdict.ok) { problems.push(`provider '${id}': ${verdict.reason}`); }
+        const verdict = await checkEndpoint(target.value, policy);
+        if (!verdict.ok) { problems.push(`provider '${id}' ${target.field}: ${verdict.reason}`); }
     }
     return problems;
 }
 
-export default { checkEndpoint, checkConfigEndpoints };
+export default { checkEndpoint, checkConfigEndpoints, endpointFor };

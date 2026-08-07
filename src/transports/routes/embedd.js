@@ -4,7 +4,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import ResponseObject from '../ResponseObject.js';
 import { redactConfig } from '../../services/embedd/src/config.js';
-import { checkConfigEndpoints, checkEndpoint } from '../../services/embedd/src/endpoint-guard.js';
+import { checkConfigEndpoints, checkEndpoint, endpointFor } from '../../services/embedd/src/endpoint-guard.js';
 import { env } from '../../env.js';
 
 /**
@@ -203,9 +203,11 @@ export default async function embeddRoutes(fastify, options) {
                 const r = new ResponseObject().success({ cached, modality }, 'Cache probed');
                 return reply.code(r.statusCode).send(r.getResponse());
             }
-            const target = provider.baseUrl || provider.host;
+            // Same rule as a config save: guard the field this provider TYPE
+            // fetches, not whichever URL-ish key happens to be present.
+            const target = endpointFor(provider);
             if (target) {
-                const verdict = await checkEndpoint(target, policy());
+                const verdict = await checkEndpoint(target.value, policy());
                 if (!verdict.ok) {
                     const r = new ResponseObject().badRequest(`Rejected embedding endpoint — ${verdict.reason}`);
                     return reply.code(r.statusCode).send(r.getResponse());

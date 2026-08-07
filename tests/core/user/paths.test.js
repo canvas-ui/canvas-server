@@ -2,7 +2,7 @@ import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import os from 'node:os';
-import { mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, existsSync } from 'node:fs';
 
 import Users from '../../../src/core/user/index.js';
 import {
@@ -78,6 +78,55 @@ function indexStore(initial = {}) {
         delete: (id) => { delete store[id]; },
     };
 }
+
+describe('creating a user over an existing home directory', () => {
+    // The container pre-creates <userHome>/<email>/{Workspaces,Roles,Agents} on
+    // the host — docker would otherwise create those bind mountpoints as root —
+    // so on a fresh install the admin's home always exists before the account
+    // does. Treating that as a conflict leaves the server with no users at all.
+    function makeUsers(t, { universeThrows = false } = {}) {
+        const tmp = mkdtempSync(path.join(os.tmpdir(), 'user-create-'));
+        t.after(() => rmSync(tmp, { recursive: true, force: true }));
+        const calls = { universe: 0, scan: 0 };
+        const users = new Users({
+            rootPath: path.join(tmp, 'users'),
+            indexStore: indexStore(),
+            workspaceManager: {
+                async createUniverseWorkspace() {
+                    calls.universe++;
+                    if (universeThrows) { throw new Error('Directory is already a workspace: /x'); }
+                    return { id: 'ws1', name: 'universe' };
+                },
+                async scanUserWorkspaces() { calls.scan++; return { discovered: [], adopted: [] }; },
+            },
+            contextManager: { async createContext() { return { id: 'default' }; } },
+        });
+        return { users, tmp, calls };
+    }
+
+    test('an already-created home is used, not rejected', async (t) => {
+        const { users, tmp } = makeUsers(t);
+        await users.initialize();
+
+        const home = path.join(tmp, 'users', 'admin@canvas.local');
+        mkdirSync(path.join(home, 'Workspaces'), { recursive: true });
+
+        const user = await users.create({ name: 'admin', email: 'admin@canvas.local', userType: 'admin' });
+        assert.equal(user.homePath, home);
+        assert.equal(users.indexStore.get(user.id).email, 'admin@canvas.local');
+        assert.equal(existsSync(path.join(home, 'Roles')), true, 'the missing module dirs are filled in');
+    });
+
+    test('an existing universe workspace is adopted instead of failing the account', async (t) => {
+        const { users, calls } = makeUsers(t, { universeThrows: true });
+        await users.initialize();
+
+        const user = await users.create({ name: 'tester', email: 'tester@canvas.local' });
+        assert.equal(calls.universe, 1);
+        assert.equal(calls.scan >= 1, true, 'falls back to a discovery scan');
+        assert.equal(users.indexStore.get(user.id).status, 'active');
+    });
+});
 
 describe('Users service module roots', () => {
     async function makeUsers(t, { record = {}, pathDefaults = {} } = {}) {

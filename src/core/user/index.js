@@ -529,11 +529,14 @@ class Users extends EventEmitter {
             throw new Error('WorkspaceManager required');
         }
 
+        // An existing home directory is normal, not a conflict: the container
+        // pre-creates <userHome>/<email>/{Workspaces,Roles,Agents} on the host
+        // (docker would otherwise create those bind mountpoints as root), and a
+        // reinstall against a kept users tree lands here too. Nothing below
+        // overwrites anything — the module dirs are mkdir -p and the universe
+        // workspace refuses a directory that already is one.
         const userHomePath = path.resolve(homePath);
-
-        if (existsSync(userHomePath)) {
-            throw new Error(`User home directory already exists: ${userHomePath}`);
-        }
+        await fsPromises.mkdir(userHomePath, { recursive: true });
 
         // The three per-user modules get their directories up front, wherever
         // they were configured to live (see lib/paths.js) — a user's home is
@@ -544,7 +547,15 @@ class Users extends EventEmitter {
         // scan watches); the legacy lowercase <home>/workspaces/ is still
         // scanned for existing users.
         const universeWorkspacePath = path.join(paths.workspaces, 'universe');
-        await this.#workspaceManager.createUniverseWorkspace(userId, userEmail, universeWorkspacePath);
+        try {
+            await this.#workspaceManager.createUniverseWorkspace(userId, userEmail, universeWorkspacePath);
+        } catch (error) {
+            // Reinstalling over a kept users tree: universe is already a
+            // workspace on disk. Adopt what is there rather than failing the
+            // account creation over it.
+            logger.warn(`Universe workspace for ${userEmail} not created (${error.message}); scanning for existing workspaces`);
+            await this.#workspaceManager.scanUserWorkspaces(userId);
+        }
 
         return userHomePath;
     }

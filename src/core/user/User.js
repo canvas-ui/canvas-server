@@ -180,7 +180,9 @@ class User extends EventEmitter {
             userType: this.#userType,
             authMethod: this.#authMethod,
             authMetadata: this.#authMetadata,
-            homePath: this.#homePath,
+            // No homePath: it is <userHome>/<email>, derived by the users
+            // service on every read. Persisting it pins the record to whatever
+            // absolute path was current when it was written.
             // OVERRIDES only — toJSON is what gets persisted to the user index,
             // and writing the resolved paths back would freeze them as explicit
             // overrides, so a later change of the server default would no longer

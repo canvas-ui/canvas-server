@@ -124,17 +124,35 @@ describe('Users service module roots', () => {
         const tmp = mkdtempSync(path.join(os.tmpdir(), 'user-paths-'));
         t.after(() => rmSync(tmp, { recursive: true, force: true }));
         const homePath = path.join(tmp, 'users', 'u@test.local');
-        const store = indexStore({ u1: { id: 'u1', name: 'tester', email: 'u@test.local', homePath } });
+        const store = indexStore({ u1: { id: 'u1', name: 'tester', email: 'u@test.local' } });
+        const usersRoot = path.join(tmp, 'users');
 
-        const before = new Users({ rootPath: tmp, indexStore: store, pathDefaults: {} });
+        const before = new Users({ rootPath: usersRoot, indexStore: store, pathDefaults: {} });
         await before.initialize();
         assert.equal(before.getUserPaths('u1').agents, path.join(homePath, 'Agents'));
 
         // Same record, new server default — nothing stored had to change, which
         // is the point of resolving on read.
-        const after = new Users({ rootPath: tmp, indexStore: store, pathDefaults: { agents: '{USER_HOME}/../shared-agents' } });
+        const after = new Users({ rootPath: usersRoot, indexStore: store, pathDefaults: { agents: '{USER_HOME}/../shared-agents' } });
         await after.initialize();
         assert.equal(after.getUserPaths('u1').agents, path.resolve(homePath, '..', 'shared-agents'));
+    });
+
+    test('a record written under a different users root resolves under the current one', async (t) => {
+        // What a moved (or re-containerized) install looks like: the stored
+        // homePath points at a directory that no longer exists and cannot be
+        // created. The home is <usersRoot>/<email>, so it is derived, never read
+        // back from the record.
+        const { users, tmp } = await makeUsers(t, { record: { homePath: '/opt/canvas-server/users/u@test.local' } });
+
+        assert.deepEqual(users.getUserPaths('u1'), {
+            workspaces: path.join(tmp, 'users', 'u@test.local', 'Workspaces'),
+            roles: path.join(tmp, 'users', 'u@test.local', 'Roles'),
+            agents: path.join(tmp, 'users', 'u@test.local', 'Agents'),
+        });
+
+        const user = await users.get('u1');
+        assert.equal(user.homePath, path.join(tmp, 'users', 'u@test.local'));
     });
 
     test('every module is covered by the resolver', async (t) => {

@@ -183,7 +183,7 @@ class Users extends EventEmitter {
 
             const email = userData.email.toLowerCase();
             const name = userData.name;
-            const userHomePath = userData.homePath || path.join(this.#rootPath, email);
+            const userHomePath = this.#homePathFor(email);
 
             if (await this.has(id)) throw new Error(`User already exists with ID: ${id}`);
             if (await this.hasByEmail(email)) throw new Error(`User already exists with email: ${email} (ID: ${id})`);
@@ -193,7 +193,6 @@ class Users extends EventEmitter {
                 id,
                 name,
                 email,
-                homePath: userHomePath,
                 // Optional per-module root overrides ({workspaces, roles, agents});
                 // absent means "follow the server defaults".
                 paths: applyPathOverrides({}, userData.paths || {}, userHomePath),
@@ -210,7 +209,6 @@ class Users extends EventEmitter {
                 id,
                 name,
                 email,
-                homePath: userHomePath,
                 userType: userData.userType || 'user',
                 status: userData.status || 'active',
             });
@@ -374,7 +372,7 @@ class Users extends EventEmitter {
 
         const updateDataForValidation = {
             ...userData,
-            homePath: currentUserDataFromIndex.homePath,
+            homePath: this.#homePathFor(currentUserDataFromIndex.email),
             originalName: currentUserDataFromIndex.name,
         };
         try {
@@ -418,7 +416,7 @@ class Users extends EventEmitter {
             this.#users.delete(id);
         }
 
-        console.log(`User ${id} deleted. Home directory left in place: ${userToDeleteData.homePath}`);
+        console.log(`User ${id} deleted. Home directory left in place: ${this.#homePathFor(userToDeleteData.email)}`);
         this.emit('user.deleted', { id });
         return true;
     }
@@ -467,9 +465,9 @@ class Users extends EventEmitter {
      */
     getUserPaths(userId) {
         const entry = this.#indexStore.get(userId);
-        if (!entry?.homePath) { throw new Error(`Cannot resolve paths: user not found: ${userId}`); }
+        if (!entry?.email) { throw new Error(`Cannot resolve paths: user not found: ${userId}`); }
         return resolveUserPaths({
-            homePath: entry.homePath,
+            homePath: this.#homePathFor(entry.email),
             overrides: entry.paths,
             defaults: this.#pathDefaults,
         });
@@ -490,9 +488,9 @@ class Users extends EventEmitter {
     async setUserPaths(userId, patch = {}) {
         if (!this.#initialized) throw new Error('Users service not initialized');
         const entry = this.#indexStore.get(userId);
-        if (!entry?.homePath) { throw new Error(`User not found: ${userId}`); }
+        if (!entry?.email) { throw new Error(`User not found: ${userId}`); }
 
-        const overrides = applyPathOverrides(entry.paths || {}, patch, entry.homePath);
+        const overrides = applyPathOverrides(entry.paths || {}, patch, this.#homePathFor(entry.email));
         if (JSON.stringify(overrides) === JSON.stringify(entry.paths || {})) { return this.getUserPaths(userId); }
         // Write through update() so the in-memory instance is refreshed too.
         await this.update(userId, { paths: overrides });
@@ -514,6 +512,17 @@ class Users extends EventEmitter {
     /**
      * Private methods
      */
+
+    /**
+     * A user's home is always <userHome>/<email> — derived, never stored.
+     * Persisting it would pin every record to the absolute path that happened
+     * to be current at creation, so moving the users root (or changing the
+     * container's layout) would leave every user pointing at a directory that
+     * no longer exists and cannot be created.
+     */
+    #homePathFor(email) {
+        return path.join(this.#rootPath, String(email).toLowerCase());
+    }
 
     async #createHomeDirectory(homePath, userId, userEmail) {
         if (!this.#workspaceManager) {
@@ -544,10 +553,12 @@ class Users extends EventEmitter {
         if (!userData.id) throw new Error('User ID is required');
         if (!userData.name) throw new Error('Name is required');
         if (!userData.email) throw new Error('Email is required');
-        if (!userData.homePath) throw new Error('Home path is required');
 
         const userOptions = {
-            ...userData, // This has id, name, email, homePath, userType, status
+            ...userData, // This has id, name, email, userType, status
+            // Derived, so a record written under a different users root (an
+            // older container layout, a relocated home) still resolves here.
+            homePath: this.#homePathFor(userData.email),
             // Module roots resolve per read: the record carries only overrides,
             // these are the server-wide fallbacks behind them.
             pathDefaults: this.#pathDefaults,

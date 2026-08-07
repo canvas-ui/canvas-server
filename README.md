@@ -52,10 +52,16 @@ password on the next start. Credentials are also recoverable from the log
 
 ### Where your data lives
 
-All server state lives under one root, `$CANVAS_SERVER_HOME` — config, the index
-db, caches, and `users/<email>/` (the per-user homes). By default that is
-`./server` inside the checkout. For a personal install, run it in **user mode**
-to keep data out of the repo:
+Two roots, two kinds of state:
+
+| | |
+|---|---|
+| `CANVAS_SERVER_HOME` | Server runtime state — `config/` (incl. the generated `jwt.secret`), the index `db/`, `cache/`, `log/`. Nothing you edit by hand. |
+| `CANVAS_USER_HOME` | The users tree: `<email>/` per user, holding `Workspaces/`, `Roles/`, `Agents/` and a hidden `.canvas/` with that user's API tokens and client config. |
+
+By default the second sits inside the first (`<serverHome>/users`), which keeps a
+standalone or portable install to a single folder. They are independent roots
+though, and the container splits them — see [Docker](#docker).
 
 ```bash
 npm start -- --user            # → ~/.canvas/server (users in ~/.canvas/server/users)
@@ -64,18 +70,20 @@ npm start -- --user            # → ~/.canvas/server (users in ~/.canvas/server
 Everything under `~/.canvas/` other than `server/` is reserved for the client
 apps and their caches; the server never writes there.
 
-Each user has three module roots — workspaces, roles and agents — which live
-under that user and nowhere else:
+One user is one subtree:
 
 ```
-$CANVAS_SERVER_HOME/users/you@example.com/{Workspaces,Roles,Agents}
+$CANVAS_USER_HOME/you@example.com/
+├── .canvas/          tokens, devices, client config
+├── Workspaces/
+├── Roles/
+└── Agents/
 ```
 
-One user is one subtree, which is what makes a per-user dataset, quota or uid
-possible. A single user can relocate their own roots with
-`PUT /rest/v2/users/me/paths`; relocating is not a move — existing workspaces
-keep working where they are, and only discovery plus newly created workspaces
-follow the new root.
+That is what makes a per-user dataset, quota or uid possible. A single user can
+relocate their own module roots with `PUT /rest/v2/users/me/paths`; relocating is
+not a move — existing workspaces keep working where they are, and only discovery
+plus newly created workspaces follow the new root.
 
 `CANVAS_USER_WORKSPACES` / `_ROLES` / `_AGENTS` set a server-wide default for all
 three (absolute, `~`-prefixed, or templated with `{USER_HOME}` / `{HOME}`). That
@@ -150,10 +158,9 @@ CANVAS_ADMIN_NAME=                    # empty → derived from the email
 CANVAS_ADMIN_PASSWORD=                # empty → generated and printed once
 CANVAS_ADMIN_RESET=false              # true → re-apply the password on next start
 
-CANVAS_HOST_SERVER_HOME=$HOME/.canvas/server   # config/, db/, cache/, users/ — back this up
-CANVAS_HOST_WORKSPACES=$HOME/Workspaces        # ─┐ mounted into the admin user's
-CANVAS_HOST_ROLES=$HOME/Roles                  #  │ home, i.e. onto
-CANVAS_HOST_AGENTS=$HOME/Agents                # ─┘ users/<email>/{Workspaces,…}
+CANVAS_HOST_SERVER_HOME=$HOME/.canvas/server   # server state: config/, db/, cache/
+CANVAS_HOST_USER_HOME=$HOME/Canvas             # your data — see below
+CANVAS_USER_MOUNT=                             # empty → the folder above IS your home
 
 CANVAS_WORKSPACE_LAYOUT=home          # new workspaces are plain folders (see below)
 
@@ -161,16 +168,33 @@ CANVAS_UID=1000                       # container runs as you, so mounts stay yo
 CANVAS_GID=1000
 ```
 
-The container runs as your uid:gid, so workspaces created inside it are ordinary
-files you own. The module roots stay per-user
-(`<serverHome>/users/<email>/{Workspaces,Roles,Agents}`) — your host folders are
-mounted *onto* the admin user's, which is why a multi-user instance needs no
-change: everyone else's modules simply live inside the server-home mount.
+Two mounts, siblings inside the container, never nested — so each host path shows
+its real contents and either one is complete on its own for a backup:
 
-Both ends of every mount must exist before the first `up`, otherwise docker
-creates them as root and the container user cannot write into them.
-`docker:install` and `docker:env` take care of it; if you hand-edit the paths in
-`.env`, `mkdir -p` them yourself.
+```
+~/.canvas/server → /opt/canvas-server/data/server     config/, db/, cache/, log/
+~/Canvas         → /opt/canvas-server/data/users/you@example.com
+                   └── .canvas/  Workspaces/  Roles/  Agents/
+```
+
+`~/Canvas` **is** your home inside the container: the server creates the three
+module dirs in it on first start, and hides your tokens and client config in
+`.canvas/`. The container runs as your uid:gid, so everything it writes there is
+an ordinary file you own.
+
+For a shared instance, mount the whole users tree instead and let the server
+create one `<email>/` subtree per user — one dataset each, quotas follow the
+subtree:
+
+```bash
+CANVAS_HOST_USER_HOME=/srv/canvas/users
+CANVAS_USER_MOUNT=/opt/canvas-server/data/users
+```
+
+Both mount sources must exist before the first `up`, otherwise docker creates
+them as root and the container user cannot write into them. `docker:install` and
+`docker:env` take care of it; if you hand-edit the paths in `.env`, `mkdir -p`
+them yourself.
 
 Other one-liners: `docker:down`, `docker:restart`, `docker:shell`, `docker:config`.
 
@@ -178,14 +202,15 @@ Other one-liners: `docker:down`, `docker:restart`, `docker:shell`, `docker:confi
 
 Every setting has a default; nothing below is required. Paths shown are the
 container's — a bare-metal install defaults to `./server`, or `~/.canvas/server`
-when started with `--user`. `CANVAS_USER_HOME` follows the server home
-(`<serverHome>/users`) unless you set it explicitly.
+when started with `--user`, and `CANVAS_USER_HOME` follows the server home
+(`<serverHome>/users`) unless set. The container splits the two into
+`data/server` and `data/users` so each gets its own host mount.
 
 ```bash
 NODE_ENV=production
 LOG_LEVEL=info
-CANVAS_SERVER_HOME=/opt/canvas-server/server
-CANVAS_USER_HOME=/opt/canvas-server/server/users   # default: <serverHome>/users
+CANVAS_SERVER_HOME=/opt/canvas-server/data/server
+CANVAS_USER_HOME=/opt/canvas-server/data/users     # default: <serverHome>/users
 
 # Per-user module roots. Empty → <userHome>/{Workspaces,Roles,Agents}, the
 # per-user layout. Setting them makes every user share one directory — single

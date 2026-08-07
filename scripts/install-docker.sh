@@ -133,27 +133,24 @@ if [ "${KEEP_ENV:-false}" != "true" ]; then
     echo
 
     bold "Storage"
-    info "Server state (config, index db, caches) — the directory worth backing up."
-    info "Per-user homes live inside it, at <server home>/users."
+    info "Server state: config, index db, caches. Nothing you edit by hand, and"
+    info "the directory worth backing up."
     ask HOST_SERVER_HOME "Server home" "$HOME/.canvas/server"
     echo
 
-    bold "Your folders"
-    info "Workspaces, roles and agents are per-user modules and always live under"
-    info "their owner, at <server home>/users/<email>/{Workspaces,Roles,Agents}."
-    info "Host folders are mounted onto that subtree, so they stay ordinary folders"
-    info "you can open in a file manager and the layout stays per-user."
-    ADMIN_HOME="$HOST_SERVER_HOME/users/$ADMIN_EMAIL"
-    if confirm "Mount host folders for your workspaces/roles/agents?" y; then
-        ask HOST_WORKSPACES "Workspaces" "$HOME/Workspaces"
-        ask HOST_ROLES      "Roles"      "$HOME/Roles"
-        ask HOST_AGENTS     "Agents"     "$HOME/Agents"
+    bold "Your data"
+    info "Workspaces, roles and agents live under their owner — one user is one"
+    info "subtree, which is what a per-user dataset or quota needs. A personal"
+    info "instance mounts one folder as your home and that is the whole story;"
+    info "a shared one mounts the users tree and the server fills in <email>/."
+    if confirm "Personal instance (one folder for your data)?" y; then
+        # The mount TARGET is this user's home, so the folder holds
+        # Workspaces/Roles/Agents plus a hidden .canvas/ for tokens and config.
+        ask HOST_USER_HOME "Your folder" "$HOME/Canvas"
+        USER_MOUNT=""
     else
-        # Nothing to relocate: the mounts point at the canonical location, i.e.
-        # they bind those directories onto themselves.
-        HOST_WORKSPACES="$ADMIN_HOME/Workspaces"
-        HOST_ROLES="$ADMIN_HOME/Roles"
-        HOST_AGENTS="$ADMIN_HOME/Agents"
+        ask HOST_USER_HOME "Users root" "/srv/canvas/users"
+        USER_MOUNT="/opt/canvas-server/data/users"
     fi
     echo
 
@@ -199,26 +196,24 @@ if [ "${KEEP_ENV:-false}" != "true" ]; then
     write_env CANVAS_ADMIN_NAME "$ADMIN_NAME"
     write_env CANVAS_ADMIN_PASSWORD "$ADMIN_PASSWORD"
     write_env CANVAS_HOST_SERVER_HOME "$HOST_SERVER_HOME"
-    write_env CANVAS_HOST_WORKSPACES "$HOST_WORKSPACES"
-    write_env CANVAS_HOST_ROLES "$HOST_ROLES"
-    write_env CANVAS_HOST_AGENTS "$HOST_AGENTS"
+    write_env CANVAS_HOST_USER_HOME "$HOST_USER_HOME"
+    write_env CANVAS_USER_MOUNT "$USER_MOUNT"
     write_env CANVAS_WORKSPACE_LAYOUT "$WORKSPACE_LAYOUT"
 
-    # Both ends of every bind mount, created as you rather than by docker as
-    # root — including the mountpoints inside the admin's home, which live in
-    # the server-home mount.
-    mkdir -p "$HOST_SERVER_HOME/users" \
-             "$ADMIN_HOME/Workspaces" "$ADMIN_HOME/Roles" "$ADMIN_HOME/Agents" \
-             "$HOST_WORKSPACES" "$HOST_ROLES" "$HOST_AGENTS"
+    # The source of both mounts, created as you rather than by docker as root.
+    # What goes inside them is the server's job (module dirs on first start).
+    mkdir -p "$HOST_SERVER_HOME" "$HOST_USER_HOME"
 
     bold "Wrote $ENV_FILE"
     info "admin       $ADMIN_NAME <$ADMIN_EMAIL>"
     info "url         http://localhost:$HOST_PORT"
     info "server      $HOST_SERVER_HOME"
-    info "user home   $ADMIN_HOME"
-    info "workspaces  $HOST_WORKSPACES  →  $ADMIN_HOME/Workspaces"
-    info "roles       $HOST_ROLES  →  $ADMIN_HOME/Roles"
-    info "agents      $HOST_AGENTS  →  $ADMIN_HOME/Agents"
+    if [ -n "$USER_MOUNT" ]; then
+        info "users       $HOST_USER_HOME  (one <email>/ subtree per user)"
+    else
+        info "your data   $HOST_USER_HOME  →  ${ADMIN_EMAIL}'s home in the container"
+        info "            Workspaces/ Roles/ Agents/ + a hidden .canvas/"
+    fi
     info "layout      $WORKSPACE_LAYOUT"
     echo
 fi

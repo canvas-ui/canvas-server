@@ -37,6 +37,28 @@ export const USER_MODULE_DIRS = Object.freeze({
 
 export const USER_MODULES = Object.freeze(Object.keys(USER_MODULE_DIRS));
 
+/**
+ * Per-user server state (API tokens, devices, user config) lives in a hidden
+ * dir inside the user's home, so the home itself shows nothing but the three
+ * modules — it is a folder the user opens in a file manager, or syncs, or gets
+ * as their own dataset. Same move as the `home` workspace layout hiding its
+ * runtime dirs in `.workspace/`; keeping the state here (rather than under the
+ * server home) is what makes one user one self-contained subtree.
+ */
+export const USER_STATE_DIRNAME = '.canvas';
+
+/**
+ * Path to one of a user's state files: <userHome>/<email>/.canvas/<...parts>
+ * @param {string} userHomeRoot - the users root (env.user.home)
+ * @param {string} email
+ * @param {...string} parts
+ */
+export function userStatePath(userHomeRoot, email, ...parts) {
+    if (!userHomeRoot) { throw new Error('userHomeRoot is required to resolve user state paths'); }
+    if (!email) { throw new Error('email is required to resolve user state paths'); }
+    return path.join(userHomeRoot, String(email).toLowerCase(), USER_STATE_DIRNAME, ...parts);
+}
+
 /** Expand `~`, `{USER_HOME}` and `{HOME}`, then make the value absolute. */
 export function expandUserPath(value, homePath) {
     if (typeof value !== 'string' || !value.trim()) { return null; }

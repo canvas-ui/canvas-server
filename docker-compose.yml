@@ -24,7 +24,7 @@ services:
     image: canvas-server:latest
     container_name: ${CANVAS_CONTAINER_NAME:-canvas-server}
 
-    # Run as the host user so bind-mounted directories (~/Workspaces …) are
+    # Run as the host user so bind-mounted directories (~/Canvas …) are
     # writable and files land owned by you, not by root.
     user: "${CANVAS_UID:-1000}:${CANVAS_GID:-1000}"
 
@@ -42,15 +42,16 @@ services:
       CANVAS_ADMIN_PASSWORD: ${CANVAS_ADMIN_PASSWORD:-}
       CANVAS_ADMIN_RESET: ${CANVAS_ADMIN_RESET:-false}
 
-      # Container-internal roots (the mounts below put them on the host). User
-      # homes are server runtime state, hence under the server home.
-      CANVAS_SERVER_HOME: /opt/canvas-server/server
-      CANVAS_USER_HOME: /opt/canvas-server/server/users
+      # Container-internal roots — two siblings under data/, each backed by its
+      # own host mount below. server/ is runtime state (config, db, cache),
+      # users/ is what the users own.
+      CANVAS_SERVER_HOME: /opt/canvas-server/data/server
+      CANVAS_USER_HOME: /opt/canvas-server/data/users
 
       # Per-user module roots are deliberately NOT pinned here. Left empty, every
       # user keeps the canonical layout
       #
-      #     <serverHome>/users/<email>/{Workspaces,Roles,Agents}
+      #     <userHome>/<email>/{Workspaces,Roles,Agents}
       #
       # which is what makes a per-user ZFS dataset (or quota, or uid) possible:
       # one user's data is one subtree. Host folders are attached by mounting
@@ -82,24 +83,27 @@ services:
       OLLAMA_HOST: ${OLLAMA_HOST:-}
 
     volumes:
-      # Server state: config (incl. the generated jwt.secret), the index db,
-      # caches. This is the dir you back up.
-      - ${CANVAS_HOST_SERVER_HOME:-./data/server}:/opt/canvas-server/server
-      # Per-user homes need no mount of their own: they live at
-      # <serverHome>/users, inside the mount above.
+      # Server runtime state: config (incl. the generated jwt.secret), the index
+      # db, caches, logs. Back this up; it holds nothing the user edits by hand.
+      - ${CANVAS_HOST_SERVER_HOME:-./data/server}:/opt/canvas-server/data/server
+
+      # The users tree. One line covers both shapes, because the mount TARGET is
+      # what differs:
       #
-      # The three modules DO get their own mounts, attached inside the admin
-      # user's home so the per-user structure is preserved — your $HOME/Workspaces
-      # simply *is* users/<email>/Workspaces. Every other user's modules stay
-      # inside the server-home mount, one subtree each.
+      #   personal (default)  CANVAS_USER_MOUNT unset →
+      #       ~/Canvas  →  data/users/<admin email>
+      #       one host folder IS that user's home: Workspaces/, Roles/, Agents/
+      #       and a hidden .canvas/ for their tokens and config.
       #
-      # Create these host directories before the first `up`: docker creates a
-      # missing bind source (and a missing mountpoint under the server-home
-      # mount) as root, which the container user then cannot write into.
-      # `npm run docker:install` / `npm run docker:env` do it for you.
-      - ${CANVAS_HOST_WORKSPACES:-./data/server/users/admin@canvas.local/Workspaces}:/opt/canvas-server/server/users/${CANVAS_ADMIN_EMAIL:-admin@canvas.local}/Workspaces
-      - ${CANVAS_HOST_ROLES:-./data/server/users/admin@canvas.local/Roles}:/opt/canvas-server/server/users/${CANVAS_ADMIN_EMAIL:-admin@canvas.local}/Roles
-      - ${CANVAS_HOST_AGENTS:-./data/server/users/admin@canvas.local/Agents}:/opt/canvas-server/server/users/${CANVAS_ADMIN_EMAIL:-admin@canvas.local}/Agents
+      #   server              CANVAS_USER_MOUNT=/opt/canvas-server/data/users →
+      #       /srv/canvas/users  →  data/users
+      #       the whole tree; the server creates <email>/ per user. Give each
+      #       user their own dataset on the host and quotas follow the subtree.
+      #
+      # Either way this mount is a sibling of the one above, never nested in it,
+      # so every host path shows its real contents and docker never has to create
+      # a mountpoint inside someone else's bind (which it would do as root).
+      - ${CANVAS_HOST_USER_HOME:-./data/users/admin@canvas.local}:${CANVAS_USER_MOUNT:-/opt/canvas-server/data/users/${CANVAS_ADMIN_EMAIL:-admin@canvas.local}}
 
     restart: unless-stopped
 

@@ -3,10 +3,12 @@
 import path from 'path';
 import fs from 'fs/promises';
 import { createLogger } from '../../utils/log.js';
+import { userStatePath } from './lib/paths.js';
 
 /**
  * UserConfigStore - per-user client configuration as plain JSON under
- * <userHome>/<email>/config/<name>.json, alongside tokens.json and devices.json.
+ * <userHome>/<email>/.canvas/config/<name>.json, alongside tokens.json and
+ * devices.json (see userStatePath in lib/paths.js).
  *
  * The store is deliberately schema-less: it round-trips whatever object the
  * client owns (webui.json). The server never introspects it, the same way canvas
@@ -116,7 +118,7 @@ class UserConfigStore {
             throw new Error(`Cannot resolve config storage path for user ${userId}`);
         }
 
-        return path.join(this.#userHomePath, email, 'config', `${name}.json`);
+        return userStatePath(this.#userHomePath, email, 'config', `${name}.json`);
     }
 }
 

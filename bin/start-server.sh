@@ -7,8 +7,8 @@
 
 set -e
 
-SERVER_HOME=${CANVAS_SERVER_HOME:-/opt/canvas-server/server}
-USER_HOME=${CANVAS_USER_HOME:-$SERVER_HOME/users}
+SERVER_HOME=${CANVAS_SERVER_HOME:-/opt/canvas-server/data/server}
+USER_HOME=${CANVAS_USER_HOME:-/opt/canvas-server/data/users}
 
 # Bind mounts arrive empty on first run; the server expects these to exist.
 mkdir -p \
@@ -17,15 +17,6 @@ mkdir -p \
     "$SERVER_HOME/cache" \
     "$SERVER_HOME/var" \
     "$USER_HOME"
-
-# The three per-user module roots, when they point at fixed container paths
-# (the single-user case — one host dir bind-mounted per module).
-for module_root in "$CANVAS_USER_WORKSPACES" "$CANVAS_USER_ROLES" "$CANVAS_USER_AGENTS"; do
-    case "$module_root" in
-        ''|*'{'*) continue ;;   # unset, or a per-user {USER_HOME} template
-        *) mkdir -p "$module_root" ;;
-    esac
-done
 
 # A JWT secret that changes on every restart invalidates every session, and the
 # built-in default is a published constant. Generate once and keep it with the

@@ -56,11 +56,14 @@ ARG CANVAS_SOURCE_URL="https://github.com/canvas-ui/canvas-server"
 ENV CANVAS_SOURCE_COMMIT=${CANVAS_SOURCE_COMMIT} \
     CANVAS_SOURCE_URL=${CANVAS_SOURCE_URL}
 
-# Container-internal layout. Both trees are meant to be bind-mounted from the
-# host (see docker-compose.yml) — nothing below them survives a rebuild.
+# Container-internal layout: everything the instance owns lives under data/, as
+# two sibling roots that are bind-mounted from the host (see docker-compose.yml)
+# — server/ is runtime state, users/ is the users' own content, one subtree each.
+# Siblings on purpose: mounting one THROUGH the other hides host paths and makes
+# docker create the mountpoints as root.
 ENV NODE_ENV=production \
-    CANVAS_SERVER_HOME=/opt/canvas-server/server \
-    CANVAS_USER_HOME=/opt/canvas-server/server/users \
+    CANVAS_SERVER_HOME=/opt/canvas-server/data/server \
+    CANVAS_USER_HOME=/opt/canvas-server/data/users \
     CANVAS_API_HOST=0.0.0.0 \
     CANVAS_WEB_HOST=0.0.0.0 \
     HOME=/tmp
@@ -69,12 +72,13 @@ ENV NODE_ENV=production \
 # (git tracked it as 0644, and Windows/zip checkouts drop the bit entirely).
 RUN chmod +x bin/*.sh
 
-# Everything below server/ is bind-mounted from the host at runtime; this only
-# makes the mountpoints exist and stay writable for whatever uid compose picks.
-RUN mkdir -p server/users && chmod -R 777 server
+# Both roots are bind-mounted from the host at runtime; this only makes the
+# mountpoints exist and stay writable for whatever uid compose picks. A per-user
+# mount lands on data/users/<email>, i.e. inside the image, not inside another bind.
+RUN mkdir -p data/server data/users && chmod -R 777 data
 
 # Never root by default. compose overrides this with the HOST user's uid:gid
-# (CANVAS_UID/CANVAS_GID), which is what makes a bind-mounted ~/Workspaces
+# (CANVAS_UID/CANVAS_GID), which is what makes a bind-mounted ~/Canvas
 # writable without a chown dance — everything the app needs at runtime is
 # world-readable, so any uid works.
 USER node

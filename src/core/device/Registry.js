@@ -4,6 +4,7 @@ import path from 'path';
 import fs from 'fs/promises';
 import { createLogger } from '../../utils/log.js';
 import { buildDeviceFeatureTags } from '../../utils/device-features.js';
+import { userStatePath } from '../user/lib/paths.js';
 
 const DEVICE_SCHEMA = 'data/schema/device';
 
@@ -164,7 +165,7 @@ class DeviceRegistry {
             throw new Error(`Cannot resolve device storage path for user ${userId}`);
         }
 
-        return path.join(this.#userHomePath, email, 'config', 'devices.json');
+        return userStatePath(this.#userHomePath, email, 'config', 'devices.json');
     }
 
     /* --------------------

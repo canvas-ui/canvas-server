@@ -10,6 +10,7 @@ import {
     expandUserPath,
     normalizeUserPathOverrides,
     applyPathOverrides,
+    userStatePath,
     USER_MODULES,
 } from '../../../src/core/user/lib/paths.js';
 
@@ -63,6 +64,29 @@ describe('user module roots', () => {
         const existing = { workspaces: '/a', roles: '/b' };
         assert.deepEqual(applyPathOverrides(existing, { roles: null }, HOME), { workspaces: '/a' });
         assert.deepEqual(applyPathOverrides(existing, {}, HOME), existing);
+    });
+});
+
+describe('per-user server state', () => {
+    test('lives in a hidden .canvas/ inside the user home', () => {
+        // The user home is a folder people open in a file manager (and mount, and
+        // sync), so tokens/devices/config hide the same way a `home`-layout
+        // workspace hides its runtime dirs in .workspace/.
+        assert.equal(
+            userStatePath('/srv/canvas/users', 'u@test.local', 'config', 'tokens.json'),
+            '/srv/canvas/users/u@test.local/.canvas/config/tokens.json',
+        );
+        // Modules stay visible next to it — nothing else is added to the home.
+        assert.equal(resolveUserPaths({ homePath: HOME }).workspaces, path.join(HOME, 'Workspaces'));
+    });
+
+    test('the email is normalized, and both arguments are required', () => {
+        assert.equal(
+            userStatePath('/srv/users', 'U@Test.Local', 'config', 'devices.json'),
+            '/srv/users/u@test.local/.canvas/config/devices.json',
+        );
+        assert.throws(() => userStatePath('', 'u@test.local'), /userHomeRoot is required/);
+        assert.throws(() => userStatePath('/srv/users', ''), /email is required/);
     });
 });
 

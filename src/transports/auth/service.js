@@ -8,6 +8,7 @@ import fs from 'fs';
 import path from 'path';
 import nodemailer from 'nodemailer';
 import { env } from '../../env.js';
+import { userStatePath } from '../../core/user/lib/paths.js';
 
 // Import jim from Server.js
 import { jim } from '../../Server.js';
@@ -44,7 +45,7 @@ class TokenManager {
     if (!email) {
       throw new Error(`Cannot resolve token storage path: user ${userId} missing email in users index`);
     }
-    return path.join(this.#userHomePath, email, 'config', 'tokens.json');
+    return userStatePath(this.#userHomePath, email, 'config', 'tokens.json');
   }
 
   /**

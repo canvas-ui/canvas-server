@@ -1,5 +1,60 @@
 # TODO List
 
+## Toolbox Apps (applets/widgets)
+
+**Landed 2026-08-07 - Apps tab + applet framework + Notes applet (first pass):**
+- New top-level Apps tab in the Toolbox, FIRST in the icon row (`ToolboxPanel`,
+  `panels/AppsPanel.tsx`). Context/Global sub-tabs; each applet declares which modes it
+  supports (`components/toolbox/applets/registry.tsx` - `modes: ('context'|'global')[]`),
+  and the launcher lists it under the matching sub-tab(s). Applets are plain components
+  behind a descriptor, deliberately free of page-level assumptions so they can port to
+  the tauri desktop UI later.
+- Notes applet (`applets/NotesApplet.tsx`, modes: context): all notes in the focused
+  context (workspace path or context - context mode resolves its bound workspace for
+  writes) stacked in one editable document view. Per note: muted created-date + #id line,
+  editable title, editable auto-growing plain-text body; autosave debounced 1.2s +
+  flushed on blur, per-note save state (spinner/check/save failed). Top controls:
+  full-text search (client-side over the loaded set) with match counter, autoscroll to
+  the current match and Enter = advance + select the hit inside the body (notepad
+  find); created-date sort toggle; inline Add note (draft pinned above the list, saved
+  through the same submitDocuments path as the toolbox NoteForm). Listens to
+  workspace:documents:refresh so external creates land live.
+
+Remaining:
+- [ ] Configurable keyboard shortcut to open an applet (Notes) directly, and a floating
+      "Applets" button for ad-hoc opening (the toolbox FAB currently opens Filters).
+- [ ] Global applets: none exist yet - a clock and/or calendar is the natural first one
+      (the Global sub-tab shows an empty state until then).
+- [ ] Manual note ordering (needs order: in note metadata - deliberately skipped).
+- [ ] Notes applet niceties: tag editing (tags survive edits but aren't editable in the
+      applet), search-term highlighting inside the body, load-more beyond the first 500.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+-----------------
+
+
 Eval `/workspace/ingest/<driver>/<format>` ?stream?
 https://canvas.idnc.sk/home/pinned
 
@@ -193,6 +248,47 @@ Tasks:
       at the new endpoint (webui keeps working, overlay becomes just another caller).
 
 ## Remote workspaces
+
+- [x] **Add Remote UI landed 2026-08-07** - the webui was the only missing piece: "Add Remote..."
+  on the Workspaces page posts `{url, token}` to `POST /workspaces/import` (service fn
+  `importWorkspaceFromRemote` in `services/workspace.ts`). Verified end-to-end against a second
+  server instance. Known edge: importing from the SAME server as the SAME user fails, because the
+  remote archive and the local download resolve to the same Exports file and the best-effort
+  remote DELETE (portability.js) removes it before import; guard = skip the DELETE when the
+  resolved paths match, if self-import should ever work.
+
+### Remote workspaces as local entries + pull-through cache (design agreed 2026-08-07)
+
+Driver: run canvas-server locally (systemd --user daemon or docker) while also using workspaces
+hosted on another instance. A remote workspace is represented as a LOCAL index entry
+(`workspace@remote.domain.tld`), not a separate client-side concept.
+
+Load-bearing facts already in place:
+- `WORKSPACE_ORIGINS.REMOTE` exists; entries carry `host` (`isRemote` at index.js:110) and an
+  index-only `remote: null` slot; resolution currently throws NOT_IMPLEMENTED (index.js:553).
+  Implementing = registering `origin: remote` + `remote: {url, token}` and replacing that throw.
+- stored is content-addressed and blobs are immutable per checksum, so a pull-through BLOB cache
+  needs no invalidation story at all. Mutable metadata (documents/tree/bitmaps) is the part that
+  must NOT be cached naively.
+- Share tokens are single-workspace-clamped principals; the edge-proxy middleware exists.
+
+Agreed shape, in phases:
+1. **In-process `RemoteWorkspace`** (same public surface as `Workspace`, registered by the
+   manager - deliberately NOT gated on canvas-edge; building it forces the Workspace interface
+   to become the contract canvas-edge needs anyway):
+   - queries / tree / document metadata: live proxy to the remote REST API, uncached
+     (unreachable remote = workspace shows offline, same as a stopped local one)
+   - blob/content reads: pull-through cacache keyed by checksum, ONE shared cache across all
+     remote workspaces (content addressing dedupes across hosts for free)
+   - writes: read-only first (matches read-permission share tokens)
+   - index entry keeps the remote's ORIGINAL workspace id (enables a later
+     detach-into-local-copy and dedupe against a prior import)
+2. Write-through via the stored SyncQueue pattern + offline reads served from cache.
+3. canvas-edge process-per-workspace runtime for ALL workspaces; "remote" becomes a runtime
+   flag (the same workspace runtime in pull-through cache mode).
+
+Open questions: token storage form in the index entry (raw vs wrapped - entries surface through
+admin/debug); live updates from the remote (socket subscription vs poll - deferred).
 
 - [x] **FIXED 2026-08-02** — the share-token auth gap was the culprit: workspace share tokens
   (`canvas-workspace-*`) were rejected by both REST and websocket auth. They are now first-class,

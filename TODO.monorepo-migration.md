@@ -6,12 +6,21 @@ do not exist yet, and move the licence boundary from "everything AGPL" to
 
 Status: **in progress**. Slice 1 executed 2026-08-08 — Phase 1 (pnpm scaffold),
 Phase 2 (all three shared packages), and the cli folded in early as the Phase 3
-pilot (subtree, history intact, repointed onto `@canvas/api-client`, binary
+pilot (subtree, history intact, repointed onto `@canvas-os/api-client`, binary
 verified under Bun). Decisions locked: pnpm 10 for the monorepo (server stays
 npm), changesets, canvas-electron dropped, monorepo repo stays public,
-packages stay AGPL until Phase 6. `@canvas` npm scope appears unclaimed —
-claim attempt pending; recorded fallback is `@canvas-ui/*` before first
-publish.
+packages stay AGPL until Phase 6.
+
+**Naming (decided 2026-08-08): the product brands as Canvas OS; packages are
+`@canvas-os/*`** (renamed while nothing is published — one sweep). npm scopes
+are independent of GitHub org logins, so this holds even though the
+`canvas-os` GitHub org is taken (by the party that prompted the licence work —
+`canvasos` is taken too, since 2026-04). npm-side, `canvas-os` / `canvas` /
+`canvasos` all appear unclaimed: **claim the npm org(s) now, defensively** —
+user action, pending. GitHub org stays `canvas-ui` for now; if it is renamed
+later (os-canvas or similar), immediately re-register `canvas-ui` as a
+placeholder org — org redirects die the moment someone claims the old login,
+and every `.gitmodules`/remote/`repository` field still says canvas-ui.
 
 Noticed during Slice 1 (pre-existing, not fixed here):
 
@@ -33,7 +42,7 @@ Noticed during Slice 1 (pre-existing, not fixed here):
   handling is duplicated the same way (41 files in web, 17 in cli, 8 in the
   extension). A shared package cannot exist across ten repositories without
   publishing to npm first, which is why it never got built.
-  *(Slice 1: `@canvas/api-client` now exists in the monorepo; cli consumes it.)*
+  *(Slice 1: `@canvas-os/api-client` now exists in the monorepo; cli consumes it.)*
 - **Cross-package changes are not atomic.** A change to the API contract touches
   the server and four clients, in five repositories, with no single commit and
   no single CI run that proves the set is consistent.
@@ -49,7 +58,7 @@ already the intended shape; the submodules are the half fighting it.
 ## Target topology
 
 ```
-canvas                  Apache-2.0    monorepo (the private repo already prepared)
+canvas                  Apache-2.0    monorepo (public — decided Slice 1)
   apps/
     web                               ← canvas-web
     cli                               ← canvas-cli (bun for build/compile)
@@ -109,7 +118,7 @@ different sides of the line:
 
 They become dependencies rather than subdirectories, which leaves
 `canvas-server` with five cross-repository dependencies: `canvas-synapsd`,
-`canvas-stored`, `@canvas/embedd`, `@canvas/messaging` and `@canvas/voice`. See
+`canvas-stored`, `@canvas-os/embedd`, `@canvas-os/messaging` and `@canvas-os/voice`. See
 [Tooling and distribution](#tooling-and-distribution) — the two standalone repos
 can be git dependencies, the three monorepo packages cannot.
 
@@ -270,7 +279,7 @@ in one commit.
 **Correction (Slice 1):** `src/transports/api-contract.js` is *not* the wire
 contract — it is fastify decoration plumbing (`SERVICE_DECORATIONS`,
 `assertContract`, the mount helpers) and stays server-side. The real wire
-contract, and what `@canvas/protocol` was authored from, is the
+contract, and what `@canvas-os/protocol` was authored from, is the
 `ResponseObject.js` envelope + machine codes, the `/rest/v2` route surface
 (`docs/API.md`, `src/transports/routes/`), the auth header conventions and the
 socket.io event names. There is still no OpenAPI spec. Today server and clients
@@ -307,7 +316,7 @@ Once `canvas-web` lives in the open monorepo and the server is closed, the serve
 must consume the UI as a **published artifact** — an npm package shipping a
 prebuilt `dist/`, or a release tarball fetched at build time.
 
-- [ ] Publish `@canvas/web` with a prebuilt `dist/`
+- [ ] Publish `@canvas-os/web` with a prebuilt `dist/`
 - [ ] Replace the `postinstall` build with a dependency
 - [ ] Rework the Dockerfile: the builder stage no longer compiles the UI
 - [ ] Decide the version-pinning policy (exact pin, most likely)
@@ -380,7 +389,7 @@ stays standalone — it is Rust and does not belong in an npm workspace.
       full 236-commit history reachable via the subtree merge's second parent —
       note `git log --follow` does not cross a subtree graft, use
       `git log <merge>^2`). Builds in the monorepo, consumes
-      `@canvas/api-client`. Old canvas-cli repo untouched until Phase 3
+      `@canvas-os/api-client`. Old canvas-cli repo untouched until Phase 3
       completes; the monorepo copy is canonical from now on.
 - [ ] web, desktop, browser-extension, shell folded in, history intact
       (canvas-electron: **dropped**, see Open questions)
@@ -476,7 +485,7 @@ Instead:
 - **Whole packages move with `git subtree` / `git filter-repo`,** not by an agent
   copying files. One command, history preserved.
 - **During the transition,** `canvas-server` consumes moved packages via
-  `"@canvas/api-client": "file:../canvas/packages/api-client"`. npm links those
+  `"@canvas-os/api-client": "file:../canvas/packages/api-client"`. npm links those
   into `node_modules` itself, which is well-trodden.
 
 The agent's value is the rewiring after each move — imports, build config,
@@ -538,19 +547,30 @@ not add it. This is the constraint that decides everything below.
   `"canvas-stored": "github:canvas-ui/canvas-stored#v1.2.0"` is legitimately
   good enough. Same for `canvas-synapsd`.
 - **`canvas-server` → monorepo packages is the case that needs a decision**, and
-  it applies to `@canvas/embedd`, `@canvas/messaging`, `@canvas/voice` and
-  `@canvas/protocol`. `file:../canvas/packages/<name>` works locally with the
+  it applies to `@canvas-os/embedd`, `@canvas-os/messaging`, `@canvas-os/voice` and
+  `@canvas-os/protocol`. `file:../canvas/packages/<name>` works locally with the
   sibling checkouts and is fine during the migration, but breaks in CI and
-  Docker. **GitHub Packages** is the answer when it does: free for private
-  packages, the org already exists, costs an `.npmrc` and a token.
+  Docker. **Revised (Slice 1): GitHub Release tarballs, not GitHub Packages.**
+  CI runs `pnpm pack` per package on tag and attaches the tarball to a
+  release; canvas-server depends on the URL
+  (`"@canvas-os/protocol": "https://github.com/.../releases/download/..."`).
+  npm/pnpm install tarball URLs natively, the lockfile pins integrity, no
+  auth while the repos are public, and exact-pin matches the policy anyway.
+  GitHub Packages was dropped because it demands a token even for *public*
+  installs (adoption poison) and chains the scope to the GitHub org login —
+  a namespace now lost to a squatter. Public **npmjs** under `@canvas-os`
+  enters at Phase 6, when the packages go Apache and third parties should
+  `npm install` them.
 - **The web UI genuinely needs publishing.** Phase 5 exists so the server can
   consume a *prebuilt* `dist`. A git dependency would run the vite build via
   `prepare` on install, dragging the whole frontend toolchain into
   `canvas-server`'s `node_modules` and its image — which is the situation Phase
-  5 is escaping.
+  5 is escaping. A release tarball carrying `dist/` satisfies this the same
+  way.
 
-Staged: workspace links now, `file:` during the migration, GitHub Packages when
-CI needs it, and publish the web UI properly because prebuilt output is the
+Staged: workspace links now, `file:` during the migration, GitHub Release
+tarballs when CI/Docker needs fetchable artifacts, npmjs at adoption time —
+and the web UI ships as a prebuilt tarball because prebuilt output is the
 entire requirement.
 
 ---

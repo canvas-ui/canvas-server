@@ -4,7 +4,22 @@ Consolidate ten repositories into five, extract the shared client packages that
 do not exist yet, and move the licence boundary from "everything AGPL" to
 "permissive integrations, closed core".
 
-Status: **planning**. Nothing below has been executed.
+Status: **in progress**. Slice 1 executed 2026-08-08 — Phase 1 (pnpm scaffold),
+Phase 2 (all three shared packages), and the cli folded in early as the Phase 3
+pilot (subtree, history intact, repointed onto `@canvas/api-client`, binary
+verified under Bun). Decisions locked: pnpm 10 for the monorepo (server stays
+npm), changesets, canvas-electron dropped, monorepo repo stays public,
+packages stay AGPL until Phase 6. `@canvas` npm scope appears unclaimed —
+claim attempt pending; recorded fallback is `@canvas-ui/*` before first
+publish.
+
+Noticed during Slice 1 (pre-existing, not fixed here):
+
+- The cli resolves its home dir from `CANVAS_USER_HOME` (`src/core/paths.js:15`)
+  while `docs/client-spec.md` §1 specifies `$CANVAS_HOME`. One of them is wrong.
+- `embedd` imports `onnxruntime-node` (`src/providers/onnx.worker.js:27`)
+  without declaring it — it rides the server root's dependency. Must be added
+  to embedd's manifest at Phase 4 extraction or the package breaks standalone.
 
 ---
 
@@ -12,11 +27,13 @@ Status: **planning**. Nothing below has been executed.
 
 - **`api-client` does not exist.** It is declared as an npm workspace in the
   root manifest but there is no such directory. Meanwhile the REST surface is
-  reimplemented in every client: 3 files in `canvas-cli`, 4 in `canvas-web`, 6
-  in `canvas-browser-extensions`, 1 in `canvas-desktop`. Schema handling is
-  duplicated the same way (38 files in web, 17 in cli, 8 in the extension). A
-  shared package cannot exist across ten repositories without publishing to npm
-  first, which is why it never got built.
+  reimplemented in every client — measured in lines it is worse than the file
+  counts suggested: cli 289 (one file), extension 888, desktop 144, and web
+  ~5,200 across 16 files with ~164 scattered `.payload` unwrap sites. Schema
+  handling is duplicated the same way (41 files in web, 17 in cli, 8 in the
+  extension). A shared package cannot exist across ten repositories without
+  publishing to npm first, which is why it never got built.
+  *(Slice 1: `@canvas/api-client` now exists in the monorepo; cli consumes it.)*
 - **Cross-package changes are not atomic.** A change to the API contract touches
   the server and four clients, in five repositories, with no single commit and
   no single CI run that proves the set is consistent.
@@ -250,9 +267,15 @@ in one commit.
 
 ### `packages/protocol` — the API contract
 
-`src/transports/api-contract.js` is 99 lines and there is no OpenAPI spec. Today
-server and clients co-evolve in one tree, so drift is caught at build time. After
-the split, four clients depend on a contract that the closed server also needs.
+**Correction (Slice 1):** `src/transports/api-contract.js` is *not* the wire
+contract — it is fastify decoration plumbing (`SERVICE_DECORATIONS`,
+`assertContract`, the mount helpers) and stays server-side. The real wire
+contract, and what `@canvas/protocol` was authored from, is the
+`ResponseObject.js` envelope + machine codes, the `/rest/v2` route surface
+(`docs/API.md`, `src/transports/routes/`), the auth header conventions and the
+socket.io event names. There is still no OpenAPI spec. Today server and clients
+co-evolve in one tree, so drift is caught at build time. After the split, four
+clients depend on a contract that the closed server also needs.
 
 The contract therefore lives in the **open** package and the closed server
 imports it, never the reverse. The REST surface is already public in
@@ -306,25 +329,38 @@ Irreversible steps last. Each phase should leave the tree working.
 - [ ] Apache-2.0 vs MIT confirmed for the open layer
 - [ ] `canvas` monorepo repository created (done)
 
-### Phase 1 — scaffold
+### Phase 1 — scaffold ✅ (Slice 1, 2026-08-08)
 
-- [ ] pnpm workspace, `apps/*` + `packages/*` (see
+- [x] pnpm workspace, `apps/*` + `packages/*` (see
       [Tooling and distribution](#tooling-and-distribution))
-- [ ] `.npmrc` with `onlyBuiltDependencies` for sharp/esbuild, and any
-      `node-linker=hoisted` escape hatch Tauri turns out to need
-- [ ] Shared eslint / tsconfig / prettier
-- [ ] One CI pipeline with a per-package test matrix
-- [ ] Versioning strategy — changesets, or fixed lockstep
+- [x] `onlyBuiltDependencies` for bun/sharp/esbuild — note: in pnpm 10 this
+      lives in `pnpm-workspace.yaml`, not `.npmrc` (the original note here was
+      wrong). `.npmrc` exists as the future registry-config home. Tauri's
+      `node-linker=hoisted` escape hatch: not needed yet (bun-compile works
+      against the symlinked layout; revisit when desktop lands)
+- [x] Shared eslint / tsconfig / prettier (root flat config covers
+      `packages/**`; apps keep the configs they arrive with)
+- [x] One CI pipeline (lint + tests + cli build + binary smoke; matrix when
+      more apps land)
+- [x] Versioning strategy — **changesets** (decided)
 
 ### Phase 2 — extract the shared packages
 
 Highest value, lowest risk, no licensing exposure. Do it first: it delivers the
 thing that actually motivated the monorepo and validates the structure.
 
-- [ ] `packages/protocol` — lift from `src/transports/api-contract.js`
-- [ ] `packages/schemas` — deduplicate the schema handling across clients
-- [ ] `packages/api-client` — consolidate the 14 files of duplicated REST access
-- [ ] Repoint one client at it (cli is smallest) and prove it works
+- [x] `packages/protocol` — authored from `ResponseObject.js` semantics,
+      `docs/API.md` and `src/transports/routes/` (NOT from api-contract.js —
+      see the corrected [Boundary artifacts](#boundary-artifacts) section)
+- [x] `packages/schemas` — ids, versions, `tag/` features, note/tab/file
+      builders, wire-parity with the historical cli output pinned by tests
+- [x] `packages/api-client` — fetch-based, envelope unwrap centralized,
+      network-error mapping covers node *and* Bun fetch codes (the compiled
+      cli runs under Bun); cli's REST file shrank 290 → ~120 lines
+- [x] Repoint one client at it (cli is smallest) and prove it works —
+      proven: 56 package tests, fresh-clone frozen-lockfile install, bun
+      compile under pnpm, binary smoke incl. dead-remote negative test, CI
+      green
 
 ### Phase 3 — fold in the open clients, with history
 
@@ -340,9 +376,18 @@ git subtree add --prefix=apps/web web-src main
 Repeat for `cli`, `desktop`, `browser-extension` and `shell`. `canvas-fuse`
 stays standalone — it is Rust and does not belong in an npm workspace.
 
-- [ ] All six clients folded in, history intact
+- [x] **cli folded in** (Slice 1, subtree from canvas-ui/canvas-cli@109fbee;
+      full 236-commit history reachable via the subtree merge's second parent —
+      note `git log --follow` does not cross a subtree graft, use
+      `git log <merge>^2`). Builds in the monorepo, consumes
+      `@canvas/api-client`. Old canvas-cli repo untouched until Phase 3
+      completes; the monorepo copy is canonical from now on.
+- [ ] web, desktop, browser-extension, shell folded in, history intact
+      (canvas-electron: **dropped**, see Open questions)
 - [ ] Each builds inside the monorepo
 - [ ] Each consumes `packages/api-client` rather than its own REST code
+      (web is the big one: ~164 scattered `.payload` unwrap sites across 14
+      service files — stage it service-by-service, not in one pass)
 
 ### Phase 4 — extract the open services from `canvas-server`
 
@@ -468,8 +513,10 @@ not by a shared install, so they do not have to agree.
   neither offers anything pnpm does not.
 
 pnpm costs to budget for: `overrides` moves under `pnpm.overrides`; pnpm 10
-blocks postinstall scripts unless allowlisted via `onlyBuiltDependencies`; Tauri
-may want `node-linker=hoisted` or a `public-hoist-pattern`.
+blocks postinstall scripts unless allowlisted via `onlyBuiltDependencies`
+(which lives in `pnpm-workspace.yaml`, not `.npmrc` — measured in Slice 1);
+Tauri may want `node-linker=hoisted` or a `public-hoist-pattern` (not needed
+for bun-compile, which resolves the symlinked layout fine).
 
 **Do not switch `canvas-server` during the migration.** Moving packages and
 changing package manager at once makes native-module breakage expensive to
@@ -510,7 +557,9 @@ entire requirement.
 
 ## Open questions
 
-- **`canvas-electron`** — listed as probably not surviving. Fold in or drop?
+- **`canvas-electron`** — **decided (Slice 1): dropped.** Not folded into the
+  monorepo; the repo stays where it is (archive on GitHub at leisure). Desktop
+  is Tauri.
 - **`agentd`** — does the rename happen during the migration or after?
 - **SynapsD trademark** — worth registering while it is still the distinctive
   name, though less pressing once the code is closed.

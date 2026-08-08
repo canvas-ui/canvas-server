@@ -1,6 +1,6 @@
 # Monorepo migration
 
-Consolidate ten repositories into four, extract the shared client packages that
+Consolidate ten repositories into five, extract the shared client packages that
 do not exist yet, and move the licence boundary from "everything AGPL" to
 "permissive integrations, closed core".
 
@@ -35,32 +35,78 @@ already the intended shape; the submodules are the half fighting it.
 canvas                  Apache-2.0    monorepo (the private repo already prepared)
   apps/
     web                               ← canvas-web
-    cli                               ← canvas-cli
+    cli                               ← canvas-cli (bun for build/compile)
     desktop                           ← canvas-desktop (tauri)
     browser-extension                 ← canvas-browser-extensions
     shell                             ← canvas-shell
-    fuse                              ← canvas-fuse
   packages/
-    api-contract                      ← extracted, new
-    api-client                        ← extracted, new
-    types                             ← extracted, new
-    integrations                      ← adapter layer, new
+    protocol                          ← wire contracts + transport adapters, new
+    api-client                        ← ergonomic client over protocol, new
+    schemas                           ← extracted, new
+    plugin-api                        ← integration/adapter interfaces, new
     embedd                            ← src/services/embedd
     messaging                         ← src/services/messaging
     voice                             ← src/services/voice
 
 canvas-stored           Apache-2.0    standalone, ad-hoc reuse
+canvas-fuse             Apache-2.0    standalone (Rust — no npm workspace fit)
 canvas-synapsd          closed        standalone, ad-hoc reuse
-canvas-server           closed        server · agentd · runtimes · edge
+canvas-server           closed        src/{core,transports,utils} · agentd · edge
 ```
 
-Ten repositories become four. SynapsD and StoreD stay standalone deliberately:
+Ten repositories become five. SynapsD and StoreD stay standalone deliberately:
 a package you drop into a throwaway experiment should not drag a monorepo behind
 it.
 
 Keep `edge` structurally separable inside `canvas-server` — a slim open runtime
 may be spun out later, and that is far easier if it never grows tendrils into the
 rest of the server.
+
+### Why `protocol` and `api-client` are separate
+
+`protocol` is the wire: contracts plus the websocket/gRPC/ipc adapters.
+`api-client` is the ergonomic layer built on top of it. Splitting them matters
+because fuse, shell and the browser extension may want the wire without the full
+client, and because the **closed server needs the contract but not the client**.
+
+That last point is the one that makes the licence split work: the contract lives
+in an Apache-2.0 package, and `canvas-server` imports it. Permissive code flowing
+into closed code is exactly the arrangement Apache-2.0 permits, which is why the
+contract must not live in the closed repository.
+
+**Naming hazard.** `packages/protocol` and `canvas-server/src/transports` will
+both plausibly be called "transports". Keep the distinction deliberate:
+`packages/protocol` is the shared *contract* and its client-side adapters;
+`src/transports` is the server's fastify/socket.io *implementation* of that
+contract. Two things named transports meaning different things is a bill that
+comes due later.
+
+### `src/services` stops existing
+
+That folder currently holds neurald, stored and synapsd, and they land on three
+different sides of the line:
+
+    synapsd   → closed, standalone repository
+    stored    → Apache-2.0, standalone repository
+    neurald   → agentd, closed, stays inside canvas-server
+
+They become dependencies rather than subdirectories, which leaves
+`canvas-server` with five cross-repository dependencies: `canvas-synapsd`,
+`canvas-stored`, `@canvas/embedd`, `@canvas/messaging` and `@canvas/voice`. See
+[Tooling and distribution](#tooling-and-distribution) — the two standalone repos
+can be git dependencies, the three monorepo packages cannot.
+
+### Two things deliberately absent
+
+**No `packages/utils`.** Generic utility packages become dumping grounds, and
+there would be two of them: this one plus `canvas-server/src/utils` (log,
+documentId, id, jim, list-order, backend-documents, device-features). Helpers
+then drift between them with no canonical home. Create narrow, named packages if
+something genuinely needs sharing, and leave server-only helpers where they are.
+
+**No `mobile` or `electron` directories** until they contain code. Electron is
+already expected not to survive and mobile does not exist. Empty scaffolding
+rots and misleads about what the project actually is.
 
 ---
 
@@ -98,8 +144,8 @@ managing it in perpetuity.
 | `embedd` | AGPL [dual], in-tree | **Apache-2.0** | extract from `canvas-server` |
 | `messaging` | AGPL [dual], in-tree | **Apache-2.0** | extract from `canvas-server` |
 | `voice` | AGPL [dual], in-tree | **Apache-2.0** | extract from `canvas-server` |
-| `api-client` / `api-contract` / `types` | — | **Apache-2.0** | new |
-| `integrations` | — | **Apache-2.0** | new |
+| `protocol` / `api-client` / `schemas` | — | **Apache-2.0** | new |
+| `plugin-api` | — | **Apache-2.0** | new |
 | `canvas-server` | AGPL [dual] | **closed** | |
 | `canvas-synapsd` | AGPL [dual] | **closed** | |
 | `canvas-neurald` → `agentd` | AGPL [dual] | **closed** | |
@@ -202,18 +248,18 @@ Two interfaces stop being internal and become products in their own right. Both
 need to exist *before* the split, while server and clients can still be changed
 in one commit.
 
-### API contract
+### `packages/protocol` — the API contract
 
 `src/transports/api-contract.js` is 99 lines and there is no OpenAPI spec. Today
 server and clients co-evolve in one tree, so drift is caught at build time. After
-the split, four clients depend on a contract owned by a closed repository.
+the split, four clients depend on a contract that the closed server also needs.
 
-Publish the contract as an Apache-2.0 package. The REST surface is already
-public in `docs/API.md`, so publishing leaks nothing, and it gives `api-client`
-something to be generated or validated against. Without it the clients drift
-silently.
+The contract therefore lives in the **open** package and the closed server
+imports it, never the reverse. The REST surface is already public in
+`docs/API.md`, so nothing leaks, and it gives `api-client` something to be
+generated or validated against. Without it the clients drift silently.
 
-### Integration adapter interface
+### `packages/plugin-api` — the integration adapter interface
 
 The integration layer must be consumable by closed `agentd` and by any other
 module. That makes the **adapter interface** the boundary object: a published,
@@ -262,7 +308,10 @@ Irreversible steps last. Each phase should leave the tree working.
 
 ### Phase 1 — scaffold
 
-- [ ] npm workspaces, `apps/*` + `packages/*`
+- [ ] pnpm workspace, `apps/*` + `packages/*` (see
+      [Tooling and distribution](#tooling-and-distribution))
+- [ ] `.npmrc` with `onlyBuiltDependencies` for sharp/esbuild, and any
+      `node-linker=hoisted` escape hatch Tauri turns out to need
 - [ ] Shared eslint / tsconfig / prettier
 - [ ] One CI pipeline with a per-package test matrix
 - [ ] Versioning strategy — changesets, or fixed lockstep
@@ -272,8 +321,8 @@ Irreversible steps last. Each phase should leave the tree working.
 Highest value, lowest risk, no licensing exposure. Do it first: it delivers the
 thing that actually motivated the monorepo and validates the structure.
 
-- [ ] `packages/api-contract` — lift from `src/transports/api-contract.js`
-- [ ] `packages/types` — deduplicate the schema handling across clients
+- [ ] `packages/protocol` — lift from `src/transports/api-contract.js`
+- [ ] `packages/schemas` — deduplicate the schema handling across clients
 - [ ] `packages/api-client` — consolidate the 14 files of duplicated REST access
 - [ ] Repoint one client at it (cli is smallest) and prove it works
 
@@ -288,7 +337,8 @@ git fetch web-src main
 git subtree add --prefix=apps/web web-src main
 ```
 
-Repeat for `cli`, `desktop`, `browser-extension`, `shell`, `fuse`.
+Repeat for `cli`, `desktop`, `browser-extension` and `shell`. `canvas-fuse`
+stays standalone — it is Rust and does not belong in an npm workspace.
 
 - [ ] All six clients folded in, history intact
 - [ ] Each builds inside the monorepo
@@ -389,13 +439,78 @@ deduplicating the client REST code — not the relocation itself.
 
 ---
 
+## Tooling and distribution
+
+### Package manager
+
+Today: **npm only.** Lockfiles in the root, `canvas-desktop` and
+`canvas-browser-extensions`; no pnpm or yarn anywhere. The `bunfig.toml` in
+`canvas-cli` is `[build]` / `[compile]` config for producing the CLI binary, not
+dependency management — there is no bun lockfile, so bun is orthogonal to this
+decision and can keep compiling the CLI inside any workspace.
+
+What makes this easy is that **`canvas-server` is not going into the monorepo.**
+The native dependencies (lmdb, roaring, onnxruntime-node, sharp) and the tuned
+Dockerfile stay in their own repository. The two repos are linked by packages,
+not by a shared install, so they do not have to agree.
+
+- **`canvas` monorepo → pnpm.** Greenfield, so there is no migration to pay for.
+  The reason is not speed, it is **strict `node_modules`**: pnpm refuses to
+  resolve a dependency a package did not declare. That is exactly the failure
+  mode when extracting publishable packages — `api-client` works inside the
+  monorepo because something got hoisted into a shared tree, then breaks the
+  moment anyone installs it standalone. npm hides that until a user hits it.
+  Given the whole point here is independently reusable packages, that property
+  is worth more than anything else on offer.
+- **`canvas-server` → stay on npm.** It works, the Dockerfile is tuned, and
+  native prebuilds are where pnpm's strictness costs debugging time for no gain.
+- **Not yarn.** Berry's PnP fights native modules, classic is unmaintained, and
+  neither offers anything pnpm does not.
+
+pnpm costs to budget for: `overrides` moves under `pnpm.overrides`; pnpm 10
+blocks postinstall scripts unless allowlisted via `onlyBuiltDependencies`; Tauri
+may want `node-linker=hoisted` or a `public-hoist-pattern`.
+
+**Do not switch `canvas-server` during the migration.** Moving packages and
+changing package manager at once makes native-module breakage expensive to
+attribute.
+
+*Cleanup noticed on the way:* the `allowScripts` block in the root
+`package.json` is read by nothing — no code, workflow or script references it.
+Dead config, safe to delete.
+
+### Publishing
+
+**npm cannot install a package from a subdirectory of a git repository.** There
+is no `#path:packages/api-client`; it has never been supported, and pnpm does
+not add it. This is the constraint that decides everything below.
+
+- **Inside the monorepo — nothing to publish, ever.** Workspace linking handles
+  `apps/web` → `packages/api-client` natively. That is most of the value, free.
+- **Standalone repos — git dependencies work.** No subdirectory problem, so
+  `"canvas-stored": "github:canvas-ui/canvas-stored#v1.2.0"` is legitimately
+  good enough. Same for `canvas-synapsd`.
+- **`canvas-server` → monorepo packages is the case that needs a decision**, and
+  it applies to `@canvas/embedd`, `@canvas/messaging`, `@canvas/voice` and
+  `@canvas/protocol`. `file:../canvas/packages/<name>` works locally with the
+  sibling checkouts and is fine during the migration, but breaks in CI and
+  Docker. **GitHub Packages** is the answer when it does: free for private
+  packages, the org already exists, costs an `.npmrc` and a token.
+- **The web UI genuinely needs publishing.** Phase 5 exists so the server can
+  consume a *prebuilt* `dist`. A git dependency would run the vite build via
+  `prepare` on install, dragging the whole frontend toolchain into
+  `canvas-server`'s `node_modules` and its image — which is the situation Phase
+  5 is escaping.
+
+Staged: workspace links now, `file:` during the migration, GitHub Packages when
+CI needs it, and publish the web UI properly because prebuilt output is the
+entire requirement.
+
+---
+
 ## Open questions
 
 - **`canvas-electron`** — listed as probably not surviving. Fold in or drop?
-- **`canvas-fuse`** is Rust, so it sits outside npm workspaces. Keep it in the
-  monorepo with its own Cargo build, or leave it standalone?
-- **Publishing target** — public npm for the open packages, or a private
-  registry initially?
 - **`agentd`** — does the rename happen during the migration or after?
 - **SynapsD trademark** — worth registering while it is still the distinctive
   name, though less pressing once the code is closed.

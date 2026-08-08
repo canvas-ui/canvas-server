@@ -350,16 +350,34 @@ Last, because it cannot be undone, and only once Phase 0's MBAG gate is cleared.
 
 ## Working method
 
-**Do not symlink the monorepo into `canvas-server`.** Git commits the link rather
-than the contents; `rg` and `find` skip symlinks by default, so an agent silently
-misses the tree; Docker's `COPY` will not follow a link out of the build context;
-Node resolves to realpath, which breaks module resolution in ways that are hard
-to diagnose; and file watchers do not traverse them.
+**Do not reach the monorepo through a path inside `canvas-server`** — not as a
+symlink (`canvas-server/new-monorepo → canvas/`), and not as a gitignored nested
+clone either. Gitignoring the path solves the "git commits a dangling link"
+problem but not the one that matters.
+
+Measured, not assumed:
+
+| Setup | default `rg` | agent Grep tool | reachable with |
+|---|---|---|---|
+| symlink, not gitignored | no matches | `No files found` | `--follow` |
+| real directory, gitignored | no matches | — | `--no-ignore` |
+| symlink *and* gitignored | no matches | no matches | both flags |
+
+ripgrep does not traverse symlinks by default, and it honours `.gitignore`. Either
+cause alone hides the tree from every search-based tool; the obvious setup has
+both.
+
+The danger is that this fails **silently** — empty results, not an error. An agent
+asked "has `embedd` been moved yet?" searches, finds nothing, concludes no, and
+redoes the move. "What still imports the old path?" returns clean. Explicit
+Read/Write through the link works fine, so driving an agent with exact paths is
+survivable; anything involving discovery is not.
 
 Instead:
 
 - **Sibling checkouts.** `canvas/` and `canvas-server/` side by side, both
-  attached to the agent session. No filesystem indirection.
+  attached to the agent session. Each is its own repository root with its own
+  ignore rules, so search behaves normally in both with no flags to remember.
 - **Whole packages move with `git subtree` / `git filter-repo`,** not by an agent
   copying files. One command, history preserved.
 - **During the transition,** `canvas-server` consumes moved packages via

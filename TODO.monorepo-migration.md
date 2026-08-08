@@ -11,13 +11,21 @@ verified under Bun). Decisions locked: pnpm 10 for the monorepo (server stays
 npm), changesets, canvas-electron dropped, monorepo repo stays public,
 packages stay AGPL until Phase 6.
 
-**Naming (decided 2026-08-08): the product brands as Canvas OS; packages are
-`@canvas-os/*`** (renamed while nothing is published — one sweep). npm scopes
-are independent of GitHub org logins, so this holds even though the
-`canvas-os` GitHub org is taken (by the party that prompted the licence work —
-`canvasos` is taken too, since 2026-04). npm-side, `canvas-os` / `canvas` /
-`canvasos` all appear unclaimed: **claim the npm org(s) now, defensively** —
-user action, pending. GitHub org stays `canvas-ui` for now; if it is renamed
+**Naming (decided 2026-08-08): the product brands as Canvas OS; the npm scope
+is `@augmentd-labs`** — superseding the earlier `@canvas-os` npm plan from the
+same day. The `augmentd-labs` npm org + GitHub org exist (created 2026-08-08,
+Augmentd s.r.o.'s Labs umbrella for all experimental packages); everything
+publishes under that one scope, so the "claim `canvas-os` on npm" action is
+dropped. Since scope = package-name prefix, the Slice 1 packages named
+`@canvas-os/*` need a rename sweep to `@augmentd-labs/canvas-*` (still free — nothing
+is published; manifests + cli imports + the `file:`/tarball references in this
+doc). Product/branding remains Canvas OS; only the npm namespace is Labs.
+
+- [x] Rename sweep `@canvas-os/*` → `@augmentd-labs/canvas-*` across monorepo
+      manifests and imports (2026-08-08: 31 files + lockfile; tests green,
+      cli smoke OK; no `@canvas-os` npm org was ever created)
+
+GitHub org stays `canvas-ui` for now; if it is renamed
 later (os-canvas or similar), immediately re-register `canvas-ui` as a
 placeholder org — org redirects die the moment someone claims the old login,
 and every `.gitmodules`/remote/`repository` field still says canvas-ui.
@@ -118,7 +126,7 @@ different sides of the line:
 
 They become dependencies rather than subdirectories, which leaves
 `canvas-server` with five cross-repository dependencies: `canvas-synapsd`,
-`canvas-stored`, `@canvas-os/embedd`, `@canvas-os/messaging` and `@canvas-os/voice`. See
+`canvas-stored`, `@augmentd-labs/canvas-embedd`, `@augmentd-labs/canvas-messaging` and `@augmentd-labs/canvas-voice`. See
 [Tooling and distribution](#tooling-and-distribution) — the two standalone repos
 can be git dependencies, the three monorepo packages cannot.
 
@@ -316,7 +324,7 @@ Once `canvas-web` lives in the open monorepo and the server is closed, the serve
 must consume the UI as a **published artifact** — an npm package shipping a
 prebuilt `dist/`, or a release tarball fetched at build time.
 
-- [ ] Publish `@canvas-os/web` with a prebuilt `dist/`
+- [ ] Publish `@augmentd-labs/canvas-web` with a prebuilt `dist/`
 - [ ] Replace the `postinstall` build with a dependency
 - [ ] Rework the Dockerfile: the builder stage no longer compiles the UI
 - [ ] Decide the version-pinning policy (exact pin, most likely)
@@ -436,6 +444,10 @@ Per the section above. Still AGPL, still reversible.
 - [ ] Retire `CLA.md`, adopt DCO, rewrite `CONTRIBUTING.md`
 - [ ] Announce the relicensing — it is a loosening, so nobody can object, but it
       should not be discovered by accident
+- [ ] npmjs publishing under `@augmentd-labs` goes live **GitHub Actions-only**:
+      per-package trusted-publisher (OIDC) config, "disallow tokens" setting,
+      provenance on every release — see
+      [Release mechanics](#release-mechanics-decided-2026-08-08-github-actions-only)
 
 ### Phase 7 — close the core
 
@@ -485,7 +497,7 @@ Instead:
 - **Whole packages move with `git subtree` / `git filter-repo`,** not by an agent
   copying files. One command, history preserved.
 - **During the transition,** `canvas-server` consumes moved packages via
-  `"@canvas-os/api-client": "file:../canvas/packages/api-client"`. npm links those
+  `"@augmentd-labs/canvas-api-client": "file:../canvas/packages/api-client"`. npm links those
   into `node_modules` itself, which is well-trodden.
 
 The agent's value is the rewiring after each move — imports, build config,
@@ -547,18 +559,18 @@ not add it. This is the constraint that decides everything below.
   `"canvas-stored": "github:canvas-ui/canvas-stored#v1.2.0"` is legitimately
   good enough. Same for `canvas-synapsd`.
 - **`canvas-server` → monorepo packages is the case that needs a decision**, and
-  it applies to `@canvas-os/embedd`, `@canvas-os/messaging`, `@canvas-os/voice` and
-  `@canvas-os/protocol`. `file:../canvas/packages/<name>` works locally with the
+  it applies to `@augmentd-labs/canvas-embedd`, `@augmentd-labs/canvas-messaging`, `@augmentd-labs/canvas-voice` and
+  `@augmentd-labs/canvas-protocol`. `file:../canvas/packages/<name>` works locally with the
   sibling checkouts and is fine during the migration, but breaks in CI and
   Docker. **Revised (Slice 1): GitHub Release tarballs, not GitHub Packages.**
   CI runs `pnpm pack` per package on tag and attaches the tarball to a
   release; canvas-server depends on the URL
-  (`"@canvas-os/protocol": "https://github.com/.../releases/download/..."`).
+  (`"@augmentd-labs/canvas-protocol": "https://github.com/.../releases/download/..."`).
   npm/pnpm install tarball URLs natively, the lockfile pins integrity, no
   auth while the repos are public, and exact-pin matches the policy anyway.
   GitHub Packages was dropped because it demands a token even for *public*
   installs (adoption poison) and chains the scope to the GitHub org login —
-  a namespace now lost to a squatter. Public **npmjs** under `@canvas-os`
+  a namespace now lost to a squatter. Public **npmjs** under `@augmentd-labs`
   enters at Phase 6, when the packages go Apache and third parties should
   `npm install` them.
 - **The web UI genuinely needs publishing.** Phase 5 exists so the server can
@@ -572,6 +584,31 @@ Staged: workspace links now, `file:` during the migration, GitHub Release
 tarballs when CI/Docker needs fetchable artifacts, npmjs at adoption time —
 and the web UI ships as a prebuilt tarball because prebuilt output is the
 entire requirement.
+
+### Release mechanics (decided 2026-08-08): GitHub Actions only
+
+No manual `npm publish` anywhere, ever — enforced by npm, not by convention:
+
+- Every npmjs publish goes through **npm Trusted Publishing (OIDC)**: the
+  package's trusted-publisher config is pinned to the exact repo + workflow
+  file, so npm accepts publishes only from that workflow. No `NPM_TOKEN`
+  secrets exist anywhere.
+- Package publishing access set to "require 2FA and disallow tokens", which
+  hard-blocks laptop and token publishes while OIDC keeps working.
+- The workflow runs with `permissions: { id-token: write, contents: read }`
+  and publishes `--provenance --access public` (scoped packages default to
+  private; provenance links every release to its commit + run on the npm page).
+- Trigger on tag push / GitHub Release; a human gate, if wanted, is a GitHub
+  environment with required reviewers — "approve the run", never "run npm".
+- Bootstrap caveat: trusted-publisher config lives in package settings, which
+  exist only after first publish. If the UI refuses pre-registration, first
+  publish runs from CI with a short-lived granular token stored as a repo
+  secret, deleted immediately after switching to OIDC.
+
+The `@augmentd-labs` npm org + `augmentd-labs` GitHub org (created 2026-08-08)
+are the publishing home for ALL packages, this monorepo's included — see the
+naming section. Applies here from the first tarball-building release workflow
+onward, and to npmjs the moment Phase 6 publishes under `@augmentd-labs`.
 
 ---
 

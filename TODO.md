@@ -1,5 +1,15 @@
 # TODO List
 
+## Simplify the canvas-web UI!!
+
+- We need to add a "simple" or "compact" UI version and leave the current one as 
+  "advanced" 
+- Simple version
+  -  
+  - 
+
+-
+
 ## Toolbox Apps (applets/widgets)
 
 **Landed 2026-08-07 - Apps tab + applet framework + Notes applet (first pass):**
@@ -20,14 +30,39 @@
   through the same submitDocuments path as the toolbox NoteForm). Listens to
   workspace:documents:refresh so external creates land live.
 
+**Landed 2026-08-08 - Todos applet, standalone /apps routes, PWA shortcuts:**
+- Todos applet (`applets/TodosApplet.tsx`, registry id `todo`): same stacked notepad view
+  as Notes with a status checkbox (pending <-> completed), title + description editing,
+  due/status in the muted meta line; DONE ITEMS (completed/cancelled) HIDDEN BY DEFAULT
+  with an eye toggle + hidden count; draft due defaults to end of today.
+- Both applets: per-item Link To (opens the LinkToCard sidebar, any workspace/path,
+  multi-select) and Delete (removes from path, trash semantics) - quiet reveal-on-hover
+  controls in the meta row.
+- Standalone host `/apps/<id>` (`pages/apps/index.tsx`, chrome-free, outside AppShell):
+  binding lives in the URL - Bind to Path (`?workspace=&path=`, defaults universe + `/`,
+  first page only = APPLET_LIST_LIMIT 50) or Bind to Context (`?context=<id>`); `add=1`
+  opens the inline draft. Applets got an `AppletTargetProvider` (applet-target.tsx);
+  inside the toolbox the target still derives from focused navigation.
+- Quick-add landing `/apps/add/<kind>` (note|todo|link|file|photo) renders the B5
+  quick-add card (same hosting as share-target) - the add-then-Link-To workflow for
+  unbound capture.
+- PWA manifest `shortcuts` (vite.config.ts): Notes -> /apps/notes, Add Note ->
+  /apps/add/note, Add Todo -> /apps/add/todo, Add Photo -> /apps/add/photo.
+- Filter button on workspace/context pages turns info-blue ("Filter on") while any
+  toolbox filters are active, so a filtered-empty tree is explainable at a glance.
+
 Remaining:
 - [ ] Configurable keyboard shortcut to open an applet (Notes) directly, and a floating
       "Applets" button for ad-hoc opening (the toolbox FAB currently opens Filters).
 - [ ] Global applets: none exist yet - a clock and/or calendar is the natural first one
-      (the Global sub-tab shows an empty state until then).
-- [ ] Manual note ordering (needs order: in note metadata - deliberately skipped).
-- [ ] Notes applet niceties: tag editing (tags survive edits but aren't editable in the
-      applet), search-term highlighting inside the body, load-more beyond the first 500.
+      (the Global sub-tab shows an empty state until then). The camera-stream showcase
+      (live synapsd results for a camera feed) is a global applet + the planned
+      services.streams work.
+- [ ] Standalone host niceties: tree-picker for the path binding (text input today),
+      context labels in the picker (shows ids), remember last binding per applet.
+- [ ] Manual ordering (needs order: in metadata - deliberately skipped).
+- [ ] Applet niceties: tag editing, search-term highlighting inside the body, load-more
+      beyond the first page.
 
 
 

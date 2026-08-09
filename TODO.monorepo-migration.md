@@ -427,9 +427,25 @@ stays standalone — it is Rust and does not belong in an npm workspace.
       web-mirrored tree-path/layer functions were dead code and were deleted,
       not ported — their routes enter the shared packages with the web
       migration that exercises them; contexts gained the `/url` pair);
-      extension next (888-line api-client.js + featureArray divergence);
+      **extension done** (Slice 4, 2026-08-09: transport swapped onto the
+      shared client in envelope mode — unwrap:false keeps sync-engine/
+      service-worker reading .status/.payload themselves, wire byte-stable;
+      Firefox local-network modes, 10s budget, AuthExpiredError mapping and
+      the started-workspace preflight preserved; 18 dead public members
+      deleted; 7 wrapper tests added. **featureArray verdict, server-
+      verified:** the doc-level field is inert — synapsd Document reads only
+      `features` (v3) / legacy `metadata.features`; the extension works
+      because every call site mirrors the array into body `features`, which
+      is indexed but not stored on the row. Follow-up recorded below.);
       web is the big one: ~164 scattered `.payload` unwrap sites across 14
       service files — stage it service-by-service, not in one pass
+- [ ] Extension follow-up (deliberate, changes stored data shape): move tab
+      tags from the inert doc-level `featureArray` to doc-level `features`
+      so they are stored on the row *and* ticked — that is also what makes
+      tag-removal unticking work (staleFeatureKeys diffs against the stored
+      array, currently empty). Adopt @augmentd-labs/canvas-schemas
+      buildTabDoc in tab-manager at the same time (package root is
+      browser-bundleable now — buildFileDoc's node:path import removed).
 
 ### Phase 4 — extract the open services from `canvas-server`
 

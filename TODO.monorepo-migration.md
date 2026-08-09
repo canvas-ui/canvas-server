@@ -6,8 +6,10 @@ do not exist yet, and move the licence boundary from "everything AGPL" to
 
 Status: **in progress**. Slice 1 executed 2026-08-08 — Phase 1 (pnpm scaffold),
 Phase 2 (all three shared packages), and the cli folded in early as the Phase 3
-pilot (subtree, history intact, repointed onto `@canvas-os/api-client`, binary
-verified under Bun). Decisions locked: pnpm 10 for the monorepo (server stays
+pilot (subtree, history intact, repointed onto the shared api-client, binary
+verified under Bun). Slice 2 executed 2026-08-09 — shell, desktop and
+browser-extension folded in and building; Phase 3 now lacks only the web
+fold and the per-client repoints. Decisions locked: pnpm 10 for the monorepo (server stays
 npm), changesets, canvas-electron dropped, monorepo repo stays public,
 packages stay AGPL until Phase 6.
 
@@ -399,12 +401,22 @@ stays standalone — it is Rust and does not belong in an npm workspace.
       `git log <merge>^2`). Builds in the monorepo, consumes
       `@canvas-os/api-client`. Old canvas-cli repo untouched until Phase 3
       completes; the monorepo copy is canonical from now on.
-- [ ] web, desktop, browser-extension, shell folded in, history intact
+- [x] **shell, desktop, browser-extension folded in** (Slice 2, 2026-08-09;
+      subtrees from shell@8a1daf8, desktop@0d1051c, extension@e412171).
+      Nested npm lockfiles dropped; `@tauri-apps/cli` allowlisted. shell is a
+      bash project with no package.json — pnpm skips it, nothing to build.
+      The extension's `packages/` dir is build *output* (zips), not source.
       (canvas-electron: **dropped**, see Open questions)
-- [ ] Each builds inside the monorepo
-- [ ] Each consumes `packages/api-client` rather than its own REST code
-      (web is the big one: ~164 scattered `.payload` unwrap sites across 14
-      service files — stage it service-by-service, not in one pass)
+- [ ] web folded in, history intact — lands with the web repoint slice
+- [x] Each present app builds inside the monorepo (cli binary, desktop
+      tsc+vite frontend, extension chromium+firefox packages; extension's 13
+      tests + lint joined the recursive sweep). Tauri's Rust bundle is not in
+      CI yet.
+- [ ] Each consumes `packages/api-client` rather than its own REST code —
+      cli done; desktop next (144-line api.ts, small); extension after
+      (888-line api-client.js + featureArray divergence); web is the big one:
+      ~164 scattered `.payload` unwrap sites across 14 service files — stage
+      it service-by-service, not in one pass
 
 ### Phase 4 — extract the open services from `canvas-server`
 

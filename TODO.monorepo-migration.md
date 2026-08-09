@@ -326,11 +326,19 @@ Once `canvas-web` lives in the open monorepo and the server is closed, the serve
 must consume the UI as a **published artifact** — an npm package shipping a
 prebuilt `dist/`, or a release tarball fetched at build time.
 
-- [ ] Publish `@augmentd-labs/canvas-web` with a prebuilt `dist/`
-- [ ] Replace the `postinstall` build with a dependency
-- [ ] Rework the Dockerfile: the builder stage no longer compiles the UI
-- [ ] Decide the version-pinning policy (exact pin, most likely)
-- [ ] Keep a dev path that still builds the UI from source in the monorepo
+- [x] Publish the prebuilt web artifact (Slice 6, 2026-08-09): `canvas-web`
+      tarball on the monorepo's `web-v2.2.0` release, packed dependency-free
+      by `canvas/scripts/pack-web-artifact.mjs` (vite bundles the runtime;
+      shipping the unpublished workspace deps in the manifest 404s npm —
+      learned the hard way). Lesson recorded: never clobber a release asset
+      URL npm may have cached; bump the version instead.
+- [x] Replace the `postinstall` build with a dependency (exact tarball-URL
+      pin; installs no longer compile anything)
+- [x] Rework the Docker path: nothing UI-related remains in the build
+      context; `COPY . .` + `npm ci` fetches the artifact like any dep
+- [x] Version-pinning policy: exact pin via the versioned release URL
+- [x] Dev path: `CANVAS_WEB_ROOT=../canvas/apps/web/dist` overrides the
+      static root (see `src/transports/index.js`)
 
 Do this **while everything is still AGPL and in one tree**, so it can be reverted
 cheaply if the shape is wrong.
@@ -488,6 +496,22 @@ mechanical.
 - [ ] `embedd`, `messaging`, `voice` extracted with history
 - [ ] `canvas-server` consumes them as dependencies
 - [ ] Transitional wiring via `file:../canvas/packages/<name>` until published
+
+### Interlude (Slice 6, 2026-08-09) — canvas-server de-submoduled
+
+All nine submodules removed; the server is a plain repo again. synapsd and
+stored are pinned `github:canvas-ui/...#sha` deps (13 deep-relative imports
+became package imports — both packages have no `exports` fences, so the
+consumed subpaths are stable). neurald had zero consumers and is gone
+(`src/utils/log.js` debug-namespace string is the only trace). Live local
+dev against the sibling checkouts: `npm install --no-save
+file:../canvas-synapsd` or `npm link`. Retired: `update-submodules`,
+`scripts/update-submodule.sh`, the update-submodules workflow, submodule
+steps in `update-git.sh`/`install-*.sh`, `.dockerignore` UI carve-outs,
+three orphaned cli test scripts. Follow-ups: synapsd's
+`tests/workspace-translation.test.js` still imports the server's
+`Workspace.js` (only ever worked nested — move it into the server suite or
+drop it), and `.git/modules/*` leftovers can be pruned whenever.
 
 ### Phase 5 — web artifact pipeline
 

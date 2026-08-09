@@ -500,7 +500,9 @@ mechanical.
 ### Interlude (Slice 6, 2026-08-09) — canvas-server de-submoduled
 
 All nine submodules removed; the server is a plain repo again. synapsd and
-stored are pinned `github:canvas-ui/...#sha` deps (13 deep-relative imports
+stored are `github:canvas-ui/...#main` deps — package.json tracks the
+branch, package-lock.json pins the exact commit (`npm run deps:bump` +
+commit the lockfile to advance; `npm ci` stays reproducible) (13 deep-relative imports
 became package imports — both packages have no `exports` fences, so the
 consumed subpaths are stable). neurald had zero consumers and is gone
 (`src/utils/log.js` debug-namespace string is the only trace). Live local

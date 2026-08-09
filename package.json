@@ -30,7 +30,8 @@
     "test": "node --test \"tests/**/*.test.js\"",
     "dev:synapsd": "npm install --no-save file:../canvas-synapsd",
     "dev:stored": "npm install --no-save file:../canvas-stored",
-    "dev:reset": "npm install"
+    "dev:reset": "npm install",
+    "deps:bump": "npm update canvas-synapsd canvas-stored"
   },
   "workspaces": [
     ".",
@@ -69,8 +70,8 @@
     "@slack/web-api": "^7.15.0",
     "adm-zip": "^0.5.16",
     "bcryptjs": "^3.0.3",
-    "canvas-stored": "github:canvas-ui/canvas-stored#b88418a90cb109adf24a804da273750f9b3007d8",
-    "canvas-synapsd": "github:canvas-ui/canvas-synapsd#40eef903891f80e72dd9a57b8eb3e65d17aba5a9",
+    "canvas-stored": "github:canvas-ui/canvas-stored#main",
+    "canvas-synapsd": "github:canvas-ui/canvas-synapsd#main",
     "canvas-web": "https://github.com/canvas-ui/canvas/releases/download/web-v2.2.0/canvas-web-2.2.0.tgz",
     "conf": "^14.0.0",
     "cross-env": "^10.1.0",

@@ -1,7 +1,7 @@
 'use strict';
 
 import debugInstance from 'debug';
-const debug = debugInstance('canvas:embedd:openai');
+const debug = debugInstance('canvas:inferd:openai');
 import { trimTrailingSlashes } from '../constants.js';
 
 /**
@@ -15,7 +15,7 @@ import { trimTrailingSlashes } from '../constants.js';
  *   - LM Studio / llama.cpp server
  *   - OpenAI itself
  *   - an EmbedAnything sidecar exposing the same route
- * Weights and model lifecycle live on the inference host; embedd stays a thin
+ * Weights and model lifecycle live on the inference host; inferd stays a thin
  * router + queue, which is the whole point of pointing it at the GPU box.
  *
  * ── Image embedding ──────────────────────────────────────────────────────────

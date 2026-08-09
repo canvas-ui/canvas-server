@@ -2,9 +2,9 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import Embedd from '../../../src/services/embedd/src/index.js';
-import ProviderPool from '../../../src/services/embedd/src/providers/pool.js';
-import { mergeConfigLayers, redactConfig } from '../../../src/services/embedd/src/config.js';
+import Inferd from '../../../src/services/inferd/src/index.js';
+import ProviderPool from '../../../src/services/inferd/src/providers/pool.js';
+import { mergeConfigLayers, redactConfig } from '../../../src/services/inferd/src/config.js';
 
 const GPU = { gpu: { type: 'openai', baseUrl: 'http://gpu.local:8000/v1' } };
 
@@ -54,8 +54,8 @@ test('redactConfig: API keys never leave the server', () => {
 
 // ── Per-user resolution ──────────────────────────────────────────────────────
 
-test('embedd: a user with no config gets the server defaults', async () => {
-    const e = new Embedd({
+test('inferd: a user with no config gets the server defaults', async () => {
+    const e = new Inferd({
         providers: GPU,
         spaces: { text: { provider: 'gpu', model: 'server-model', dim: 512, chunk: true } },
         resolveUserConfig: async () => null,
@@ -65,8 +65,8 @@ test('embedd: a user with no config gets the server defaults', async () => {
     await e.stop();
 });
 
-test('embedd: a user override wins over the server default, per space', async () => {
-    const e = new Embedd({
+test('inferd: a user override wins over the server default, per space', async () => {
+    const e = new Inferd({
         providers: GPU,
         spaces: { text: { provider: 'gpu', model: 'server-model', dim: 512, chunk: true } },
         resolveUserConfig: async (u) => (u === 'alice'
@@ -84,8 +84,8 @@ test('embedd: a user override wins over the server default, per space', async ()
     await e.stop();
 });
 
-test('embedd: a user can declare their own provider', async () => {
-    const e = new Embedd({
+test('inferd: a user can declare their own provider', async () => {
+    const e = new Inferd({
         resolveUserConfig: async () => ({
             providers: { mine: { type: 'openai', baseUrl: 'http://my-box:8000/v1' } },
             spaces: { text: { provider: 'mine', model: 'bge-m3', dim: 1024, chunk: true } },
@@ -96,10 +96,10 @@ test('embedd: a user can declare their own provider', async () => {
     await e.stop();
 });
 
-test('embedd: a broken user config falls back to server defaults instead of throwing', async () => {
+test('inferd: a broken user config falls back to server defaults instead of throwing', async () => {
     // This is data a user typed into a form. It must never take the server down
     // or leave their workspace unable to embed at all.
-    const e = new Embedd({
+    const e = new Inferd({
         resolveUserConfig: async () => ({ spaces: { text: { provider: 'does-not-exist', model: 'm', dim: 1 } } }),
     });
     const router = await e.routerFor('alice');
@@ -109,24 +109,24 @@ test('embedd: a broken user config falls back to server defaults instead of thro
     await e.stop();
 });
 
-test('embedd: a broken SERVER config throws at construction', async () => {
+test('inferd: a broken SERVER config throws at construction', async () => {
     // The operator layer is the opposite case — fail loudly at boot.
     assert.throws(
-        () => new Embedd({ spaces: { text: { provider: 'nope', model: 'm', dim: 1 } } }),
+        () => new Inferd({ spaces: { text: { provider: 'nope', model: 'm', dim: 1 } } }),
         /undeclared provider 'nope'/,
     );
 });
 
-test('embedd: a config resolver that throws degrades to defaults', async () => {
-    const e = new Embedd({ resolveUserConfig: async () => { throw new Error('disk on fire'); } });
+test('inferd: a config resolver that throws degrades to defaults', async () => {
+    const e = new Inferd({ resolveUserConfig: async () => { throw new Error('disk on fire'); } });
     const router = await e.routerFor('alice');
     assert.equal(router.spaceRule('text').model, 'bge-small-en-v1.5');
     await e.stop();
 });
 
-test('embedd: invalidateUser re-reads config on the next use', async () => {
+test('inferd: invalidateUser re-reads config on the next use', async () => {
     let model = 'first';
-    const e = new Embedd({ resolveUserConfig: async () => ({ spaces: { text: { model, dim: 384 } } }) });
+    const e = new Inferd({ resolveUserConfig: async () => ({ spaces: { text: { model, dim: 384 } } }) });
 
     assert.equal((await e.routerFor('alice')).spaceRule('text').model, 'first');
     model = 'second';
@@ -136,8 +136,8 @@ test('embedd: invalidateUser re-reads config on the next use', async () => {
     await e.stop();
 });
 
-test('embedd: spaceConfigsFor is per user, so two users get different Lance tables', async () => {
-    const e = new Embedd({
+test('inferd: spaceConfigsFor is per user, so two users get different Lance tables', async () => {
+    const e = new Inferd({
         providers: GPU,
         resolveUserConfig: async (u) => (u === 'alice'
             ? { spaces: { text: { provider: 'gpu', model: 'Qwen/Qwen3-Embedding-0.6B', dim: 1024 } } }
@@ -152,9 +152,9 @@ test('embedd: spaceConfigsFor is per user, so two users get different Lance tabl
     await e.stop();
 });
 
-test('embedd: a workspace embeds with its OWNER config', async () => {
+test('inferd: a workspace embeds with its OWNER config', async () => {
     const routed = [];
-    const e = new Embedd({
+    const e = new Inferd({
         providers: GPU,
         resolveUserConfig: async (u) => (u === 'alice'
             ? { spaces: { text: { provider: 'gpu', model: 'alice-model', dim: 1024 } } }
@@ -197,9 +197,9 @@ test('pool: differing options get separate instances', () => {
     assert.equal(pool.size, 2);
 });
 
-test('embedd: users on the same backend share the model runtime', async () => {
+test('inferd: users on the same backend share the model runtime', async () => {
     // Per-user config must not become per-user model processes.
-    const e = new Embedd({
+    const e = new Inferd({
         providers: GPU,
         resolveUserConfig: async () => ({ spaces: { text: { provider: 'gpu', model: 'shared', dim: 8 } } }),
     });

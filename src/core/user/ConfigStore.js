@@ -14,11 +14,11 @@ import { userStatePath } from './lib/paths.js';
  * client owns (webui.json). The server never introspects it, the same way canvas
  * layer metadata is opaque to the backend.
  *
- * `embedd` is the exception and it matters: the server DOES read and act on it
+ * `inferd` is the exception and it matters: the server DOES read and act on it
  * (it selects the embedding backends a user's workspaces run), so it must be
  * validated before it lands here. Validation lives in the route rather than the
  * store, keeping the store schema-less while ensuring nothing invalid is ever
- * persisted — embedd itself also refuses to trust it, falling back to server
+ * persisted — inferd itself also refuses to trust it, falling back to server
  * defaults if a stored config no longer resolves.
  */
 

@@ -105,7 +105,7 @@ export default class Router {
 
     /**
      * Candidate schema keys for a space's unembedded-gap ledger. Since there is
-     * no contentType index, gap discovery is schema-level; embedd then post-filters
+     * no contentType index, gap discovery is schema-level; inferd then post-filters
      * by contentType in resolveInput. Collected from rules that name a schema, plus
      * `data/schema/file` for any contentType-matched rule (files carry bytes).
      */

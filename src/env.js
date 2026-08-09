@@ -13,7 +13,7 @@ const SERVER_MODE = argv.argv.slice(2).includes('--user') ? 'user' : 'standalone
 const SERVER_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const SERVER_HOME = process.env.CANVAS_SERVER_HOME || getServerHome();
 const USER_HOME = process.env.CANVAS_USER_HOME || getUserHome();
-const EMBEDD_CONFIG_PATH = process.env.CANVAS_EMBEDD_CONFIG || path.join(SERVER_HOME, 'config', 'embedd.json');
+const INFERD_CONFIG_PATH = process.env.CANVAS_EMBEDD_CONFIG || path.join(SERVER_HOME, 'config', 'embedd.json');
 
 // Read once at import. `process.env.npm_package_*` is only populated when the
 // process is started through an npm script — the container entrypoint
@@ -90,7 +90,7 @@ export const env = {
         // through it, so the container ships with it (see docker-compose.yml).
         defaultLayout: process.env.CANVAS_WORKSPACE_LAYOUT === 'home' ? 'home' : 'full',
     },
-    embedd: {
+    inferd: {
         // Server-managed embedding service (shared model runtimes, one queue per
         // workspace). Disabled → workspaces run store-only: existing vectors stay
         // searchable, no new embeddings, dense search degrades to FTS.
@@ -104,16 +104,16 @@ export const env = {
         concurrency: Math.max(1, Number(process.env.CANVAS_EMBEDD_CONCURRENCY) || 1),
         // Optional providers + routing rules file. Absent → built-in providers and
         // DEFAULT_RULES, i.e. CPU-local ONNX + CLIP. This is the file that points
-        // embedd at a remote/GPU inference host without a code change; see
-        // src/services/embedd/src/config.js for the shape.
-        configPath: EMBEDD_CONFIG_PATH,
+        // inferd at a remote/GPU inference host without a code change; see
+        // src/services/inferd/src/config.js for the shape.
+        configPath: INFERD_CONFIG_PATH,
         // Optional host allowlist for user-supplied provider URLs. Empty = only
         // the always-blocked ranges (link-local / cloud metadata) apply, which
         // is the right default: loopback and private ranges are where local
         // Ollama and in-office GPU boxes live. Set it to lock users down to
         // named hosts. Entries may be exact (`gpu.local`) or `*.suffix`.
         allowHosts: (process.env.CANVAS_EMBEDD_ALLOW_HOSTS || '').split(',').map((h) => h.trim()).filter(Boolean),
-        ...readJsonConfig(EMBEDD_CONFIG_PATH, 'embedd'),
+        ...readJsonConfig(INFERD_CONFIG_PATH, 'embedd'),
     },
     messaging: {
         // User notification/chat channels (Slack, WhatsApp Cloud API). The

@@ -1,7 +1,7 @@
 'use strict';
 
 import debugInstance from 'debug';
-const debug = debugInstance('canvas:embedd:ollama');
+const debug = debugInstance('canvas:inferd:ollama');
 import { trimTrailingSlashes } from '../constants.js';
 
 const DEFAULT_HOST = 'http://127.0.0.1:11434';

@@ -9,7 +9,7 @@
  * carry a stable `chunkId` (their ordinal) so re-embedding a document produces
  * the same ids and upserts cleanly.
  *
- * Moved out of synapsd (which no longer owns embedding) into the embedd service.
+ * Moved out of synapsd (which no longer owns embedding) into the inferd service.
  */
 
 const DEFAULT_CHUNK_SIZE = 1000;

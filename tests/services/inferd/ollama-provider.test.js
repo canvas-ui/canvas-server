@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import OllamaProvider from '../../../src/services/embedd/src/providers/ollama.js';
+import OllamaProvider from '../../../src/services/inferd/src/providers/ollama.js';
 
 /**
  * Throwaway Ollama daemon. `handler(body, req)` returns the JSON to reply with

@@ -1,5 +1,5 @@
 {
-  "name": "canvas-embedd",
+  "name": "canvas-inferd",
   "version": "1.0.0",
   "description": "Unified embedding service: pluggable ONNX + Ollama providers, content-routed, pushes vectors into synapsd",
   "main": "./src/index.js",

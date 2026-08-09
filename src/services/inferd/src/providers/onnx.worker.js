@@ -4,7 +4,7 @@
  * ONNX embedding worker — hosts a fastembed model off the main thread so
  * neither bulk ingestion nor query-time embedding blocks the event loop.
  *
- * One worker hosts exactly one model (chosen at init). The embedd ONNX provider
+ * One worker hosts exactly one model (chosen at init). The inferd ONNX provider
  * spawns one worker per distinct model it needs. DB handles never cross the
  * thread boundary — this worker is pure compute.
  *
@@ -34,8 +34,8 @@ import { FlagEmbedding, EmbeddingModel } from 'fastembed';
 // affinity pinning (per ORT's own advice in that message). fastembed hardcodes
 // its session options, so inject ours through the shared module instance.
 // Modest default: embedding batches don't need every core, and the cap keeps
-// bulk ingest from starving small instances. Override: EMBEDD_ONNX_THREADS.
-const ONNX_THREADS = Math.max(1, Number(process.env.EMBEDD_ONNX_THREADS)
+// bulk ingest from starving small instances. Override: INFERD_ONNX_THREADS.
+const ONNX_THREADS = Math.max(1, Number(process.env.INFERD_ONNX_THREADS)
     || Math.min(4, os.availableParallelism?.() ?? os.cpus().length));
 const originalCreate = ort.InferenceSession.create.bind(ort.InferenceSession);
 ort.InferenceSession.create = (pathOrBuffer, options = {}, ...rest) => originalCreate(pathOrBuffer, {
@@ -46,7 +46,7 @@ ort.InferenceSession.create = (pathOrBuffer, options = {}, ...rest) => originalC
 
 // Lifecycle (init/download/ready) is logged unconditionally — a one-time model
 // download is operationally important and must be visible without DEBUG=*.
-const log = (msg) => console.log(`[embedd:onnx-worker] ${msg}`);
+const log = (msg) => console.log(`[inferd:onnx-worker] ${msg}`);
 
 let embedder = null;
 

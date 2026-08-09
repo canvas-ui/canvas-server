@@ -2,7 +2,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import Embedd from '../../../src/services/embedd/src/index.js';
+import Inferd from '../../../src/services/inferd/src/index.js';
 
 const GPU = { gpu: { type: 'openai', baseUrl: 'http://gpu.local:8000/v1' } };
 
@@ -11,7 +11,7 @@ const noop = { resolveInput: async () => null, storeVectors: async () => {} };
 // ── Layer precedence ─────────────────────────────────────────────────────────
 
 test('workspace config wins over the user and server layers', async () => {
-    const e = new Embedd({
+    const e = new Inferd({
         providers: GPU,
         spaces: { text: { provider: 'gpu', model: 'server-model', dim: 512 } },
         resolveUserConfig: async () => ({ spaces: { text: { model: 'user-model', dim: 640 } } }),
@@ -29,7 +29,7 @@ test('workspace config wins over the user and server layers', async () => {
 });
 
 test('a workspace with no config of its own inherits the user layer', async () => {
-    const e = new Embedd({
+    const e = new Inferd({
         resolveUserConfig: async () => ({ spaces: { text: { model: 'user-model', dim: 640 } } }),
     });
     const ctx = await e.resolve({ userId: 'alice', workspaceConfig: {}, cacheKey: 'w:ws1' });
@@ -38,7 +38,7 @@ test('a workspace with no config of its own inherits the user layer', async () =
 });
 
 test('a workspace can override one modality and inherit the other', async () => {
-    const e = new Embedd({ providers: GPU });
+    const e = new Inferd({ providers: GPU });
     const ctx = await e.resolve({
         workspaceConfig: { spaces: { image: { provider: 'gpu', model: 'siglip-remote', dim: 768 } } },
         cacheKey: 'w:ws1',
@@ -51,7 +51,7 @@ test('a workspace can override one modality and inherit the other', async () => 
 test('two workspaces of the same user can run different models', async () => {
     // This is the portability point: config belongs to the workspace, not the
     // account, so one can be migrated to a new model while the other is not.
-    const e = new Embedd({ providers: GPU });
+    const e = new Inferd({ providers: GPU });
     e.registerWorkspace('ws-a', noop, { userId: 'alice', config: { spaces: { text: { provider: 'gpu', model: 'new', dim: 1024 } } } });
     e.registerWorkspace('ws-b', noop, { userId: 'alice' });
 
@@ -63,7 +63,7 @@ test('two workspaces of the same user can run different models', async () => {
 });
 
 test('a workspace on a new model gets its own tables and ledgers', async () => {
-    const e = new Embedd({ providers: GPU });
+    const e = new Inferd({ providers: GPU });
     const migrated = await e.spaceConfigsForWorkspace('ws-a', {
         config: { spaces: { text: { provider: 'gpu', model: 'Qwen/Qwen3-Embedding-0.6B', dim: 1024 } } },
     });
@@ -79,7 +79,7 @@ test('a workspace on a new model gets its own tables and ledgers', async () => {
 });
 
 test('a broken workspace config falls back instead of breaking the workspace', async () => {
-    const e = new Embedd();
+    const e = new Inferd();
     const ctx = await e.resolve({
         workspaceConfig: { spaces: { text: { provider: 'ghost', model: 'm', dim: 1 } } },
         cacheKey: 'w:ws1',
@@ -90,7 +90,7 @@ test('a broken workspace config falls back instead of breaking the workspace', a
 });
 
 test('invalidateWorkspace adopts a new config without touching other workspaces', async () => {
-    const e = new Embedd({ providers: GPU });
+    const e = new Inferd({ providers: GPU });
     e.registerWorkspace('ws-a', noop, { userId: 'alice' });
     e.registerWorkspace('ws-b', noop, { userId: 'alice' });
     assert.equal((await e.contextForWorkspace('ws-a')).router.spaceRule('text').model, 'bge-small-en-v1.5');
@@ -103,7 +103,7 @@ test('invalidateWorkspace adopts a new config without touching other workspaces'
 
 test('invalidateUser also drops the resolved configs of that user workspaces', async () => {
     let model = 'first';
-    const e = new Embedd({ resolveUserConfig: async () => ({ spaces: { text: { model, dim: 384 } } }) });
+    const e = new Inferd({ resolveUserConfig: async () => ({ spaces: { text: { model, dim: 384 } } }) });
     e.registerWorkspace('ws-a', noop, { userId: 'alice' });
     assert.equal((await e.contextForWorkspace('ws-a')).router.spaceRule('text').model, 'first');
 
@@ -126,7 +126,7 @@ function scopedWorkspace(gap, scoped) {
 }
 
 test('reconcile: a scope restricts the drain to documents under that path', async () => {
-    const e = new Embedd();
+    const e = new Inferd();
     e.registerWorkspace('ws1', scopedWorkspace([1, 2, 3, 4, 5], { 'ctx://work': [2, 4] }));
     const res = await e.reconcile('ws1', { space: 'text', scope: 'ctx://work' });
     assert.equal(res.enqueued, 2, 'only the in-scope half of the gap');
@@ -137,7 +137,7 @@ test('reconcile: a scope restricts the drain to documents under that path', asyn
 });
 
 test('reconcile: no scope drains the whole gap, as before', async () => {
-    const e = new Embedd();
+    const e = new Inferd();
     e.registerWorkspace('ws1', scopedWorkspace([1, 2, 3, 4, 5], {}));
     const res = await e.reconcile('ws1', { space: 'text' });
     assert.equal(res.enqueued, 5);
@@ -147,7 +147,7 @@ test('reconcile: no scope drains the whole gap, as before', async () => {
 });
 
 test('reconcile: an unknown scope is an error, not a silent no-op', async () => {
-    const e = new Embedd();
+    const e = new Inferd();
     e.registerWorkspace('ws1', scopedWorkspace([1, 2], { 'ctx://work': [1] }));
     const res = await e.reconcile('ws1', { scope: 'ctx://nope' });
     assert.match(res.error, /unknown scope 'ctx:\/\/nope'/);
@@ -155,7 +155,7 @@ test('reconcile: an unknown scope is an error, not a silent no-op', async () => 
 });
 
 test('reconcile: an empty scope enqueues nothing and says so', async () => {
-    const e = new Embedd();
+    const e = new Inferd();
     e.registerWorkspace('ws1', scopedWorkspace([1, 2, 3], { 'dir://empty': [] }));
     const res = await e.reconcile('ws1', { scope: 'dir://empty' });
     assert.equal(res.enqueued, 0);
@@ -164,7 +164,7 @@ test('reconcile: an empty scope enqueues nothing and says so', async () => {
 });
 
 test('reconcile: a workspace that cannot resolve scopes reports that', async () => {
-    const e = new Embedd();
+    const e = new Inferd();
     e.registerWorkspace('ws1', { resolveInput: async () => null, storeVectors: async () => {}, getUnembedded: async () => [1] });
     const res = await e.reconcile('ws1', { scope: 'ctx://work' });
     assert.match(res.error, /cannot resolve a scope path/);

@@ -2,10 +2,10 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeConfig, toMatcher, builtinProviders } from '../../../src/services/embedd/src/config.js';
-import { createProviders } from '../../../src/services/embedd/src/providers/index.js';
-import Router, { DEFAULT_RULES } from '../../../src/services/embedd/src/router.js';
-import Embedd from '../../../src/services/embedd/src/index.js';
+import { normalizeConfig, toMatcher, builtinProviders } from '../../../src/services/inferd/src/config.js';
+import { createProviders } from '../../../src/services/inferd/src/providers/index.js';
+import Router, { DEFAULT_RULES } from '../../../src/services/inferd/src/router.js';
+import Inferd from '../../../src/services/inferd/src/index.js';
 
 // ── Matchers ─────────────────────────────────────────────────────────────────
 
@@ -160,7 +160,7 @@ test('createProviders: an openai provider without a baseUrl fails at build time,
 // ── Space configs (model lifecycle) ──────────────────────────────────────────
 
 test('spaceConfigs: baseline models keep the original Lance tables', async () => {
-    const e = new Embedd();
+    const e = new Inferd();
     const sc = await e.spaceConfigsFor(null);
     // An explicit `table` pins the space to its pre-config table, so existing
     // vectors stay attached. This is the guarantee that making the model
@@ -176,7 +176,7 @@ test('spaceConfigs: baseline models keep the original Lance tables', async () =>
 });
 
 test('spaceConfigs: ledger keys are always (space, model) with the model as the leaf', async () => {
-    const e = new Embedd();
+    const e = new Inferd();
     const sc = await e.spaceConfigsFor(null);
     // Uniform even for baseline spaces. A namespace must never also be a key:
     // listBitmaps() range-scans strictly below `prefix + '/'`, so a bare
@@ -198,7 +198,7 @@ test('spaceConfigs: ledger keys are always (space, model) with the model as the 
 });
 
 test('spaceConfigs: a non-baseline model gets its own table AND its own ledger', async () => {
-    const e = new Embedd({
+    const e = new Inferd({
         providers: { gpu: { type: 'openai', baseUrl: 'http://gpu.local:8000/v1' } },
         rules: [{
             space: 'text', provider: 'gpu', model: 'Qwen/Qwen3-Embedding-0.6B', dim: 1024,
@@ -218,7 +218,7 @@ test('spaceConfigs: a non-baseline model gets its own table AND its own ledger',
 
 test('spaceConfigs: same space, same model, different dim is still a new space', async () => {
     // Matryoshka truncation changes the vectors, so it must not reuse the table.
-    const e = new Embedd({
+    const e = new Inferd({
         rules: [{
             space: 'text', provider: 'onnx', model: 'bge-small-en-v1.5', dim: 256,
             chunk: true, match: { schema: 'data/schema/note' },
@@ -233,7 +233,7 @@ test('spaceConfigs: same space, same model, different dim is still a new space',
 test('spaceConfigs: a new modality slots in with no code change', async () => {
     // The naming convention has to hold for spaces that do not exist yet —
     // audio, spatial, whatever comes next.
-    const e = new Embedd({
+    const e = new Inferd({
         providers: { gpu: { type: 'openai', baseUrl: 'http://gpu.local:8000/v1' } },
         rules: [
             { space: 'text', provider: 'onnx', model: 'bge-small-en-v1.5', dim: 384, chunk: true, match: { schema: 'data/schema/note' } },

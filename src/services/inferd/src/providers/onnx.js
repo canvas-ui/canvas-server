@@ -4,7 +4,7 @@ import { Worker } from 'worker_threads';
 import fs from 'fs';
 import path from 'path';
 import debugInstance from 'debug';
-const debug = debugInstance('canvas:embedd:onnx');
+const debug = debugInstance('canvas:inferd:onnx');
 
 // Friendly model name -> fastembed model id (its on-disk cache dir name).
 const MODEL_IDS = {
@@ -18,7 +18,7 @@ const MODEL_IDS = {
  * request/reply, correlated by jobId. Spawned lazily on first use.
  *
  * Lifted from synapsd/src/semantic/Embedder.js — this is the ONNX runtime the
- * embedd service reuses, one instance per distinct model.
+ * inferd service reuses, one instance per distinct model.
  */
 class ModelWorker {
 

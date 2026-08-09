@@ -2,10 +2,10 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import Router from '../../../src/services/embedd/src/router.js';
-import { chunkText } from '../../../src/services/embedd/src/chunking.js';
-import Queue from '../../../src/services/embedd/src/queue.js';
-import Embedd from '../../../src/services/embedd/src/index.js';
+import Router from '../../../src/services/inferd/src/router.js';
+import { chunkText } from '../../../src/services/inferd/src/chunking.js';
+import Queue from '../../../src/services/inferd/src/queue.js';
+import Inferd from '../../../src/services/inferd/src/index.js';
 
 test('router: note schema -> text space, onnx', () => {
     const r = new Router();
@@ -61,8 +61,8 @@ test('router: candidateSchemas per space (schema + file for contentType rules)',
     assert.deepEqual(r.candidateSchemas('image'), ['data/schema/file']);
 });
 
-test('embedd.reconcile: pulls ledger gap and enqueues (deduped), reindex clears first', async () => {
-    const e = new Embedd();
+test('inferd.reconcile: pulls ledger gap and enqueues (deduped), reindex clears first', async () => {
+    const e = new Inferd();
     let cleared = [];
     const gap = { text: [1, 2, 3], image: [3, 4] }; // 3 overlaps → deduped to one enqueue
     e.registerWorkspace('ws1', {
@@ -89,11 +89,11 @@ test('router: candidateSpaces(schema)', () => {
     assert.deepEqual(r.candidateSpaces('data/schema/tab'), []);
 });
 
-test('embedd: skipped file is marked seen in ALL candidate spaces (converges)', async () => {
-    const e = new Embedd();
+test('inferd: skipped file is marked seen in ALL candidate spaces (converges)', async () => {
+    const e = new Inferd();
     const stored = [];
     e.registerWorkspace('ws1', {
-        // A file with a non-embeddable contentType → skip marker.
+        // A file with a non-inferdable contentType → skip marker.
         resolveInput: async () => ({ skip: true, schema: 'data/schema/file', updatedAt: 't', contentType: 'application/pdf' }),
         storeVectors: async (docId, schema, updatedAt, chunks, opts) => { stored.push({ space: opts.space, n: chunks.length }); },
     });
@@ -105,8 +105,8 @@ test('embedd: skipped file is marked seen in ALL candidate spaces (converges)', 
     await e.stop();
 });
 
-test('embedd.reconcile: unknown workspace → error', async () => {
-    const e = new Embedd();
+test('inferd.reconcile: unknown workspace → error', async () => {
+    const e = new Inferd();
     const res = await e.reconcile('nope', {});
     assert.equal(res.error, 'workspace not registered');
     await e.stop();
@@ -130,8 +130,8 @@ test('queue: dedupes by key and drains', async () => {
 });
 
 // End-to-end orchestration with fake provider (no ONNX/Ollama needed).
-test('embedd: routes, chunks, embeds via fake provider, stores vectors', async () => {
-    const e = new Embedd();
+test('inferd: routes, chunks, embeds via fake provider, stores vectors', async () => {
+    const e = new Inferd();
     // Inject a fake onnx provider by monkey-patching the registered one.
     // (providers are private; exercise through the public path with a fake model
     // is not possible, so we validate router+queue wiring via a fake workspace

@@ -5,7 +5,7 @@ import { fileURLToPath } from 'url';
 import fs from 'fs';
 import path from 'path';
 import debugInstance from 'debug';
-const debug = debugInstance('canvas:embedd:clip');
+const debug = debugInstance('canvas:inferd:clip');
 
 /**
  * CLIP/SigLIP provider — joint image+text embedding space (search "red car",

@@ -128,7 +128,7 @@ class WorkspaceManager extends EventEmitter {
     #users;             // Users service
     #roles;             // Roles service
     #contextManager;    // Context Manager
-    #embedd;            // shared embedding service (optional; passed to each Workspace)
+    #inferd;            // shared embedding service (optional; passed to each Workspace)
     #logger;
 
     #workspaces = new Map(); // Runtime cache
@@ -169,7 +169,7 @@ class WorkspaceManager extends EventEmitter {
         this.#indexFactory = options.indexFactory;
         this.#users = options.users;
         this.#roles = options.roles;
-        this.#embedd = options.embedd || null;
+        this.#inferd = options.inferd || null;
         this.#logger = options.logger || createLogger('workspace-manager');
     }
 
@@ -350,7 +350,7 @@ class WorkspaceManager extends EventEmitter {
     get rootPath() { return this.#defaultRootPath; }
     get defaultLayout() { return this.#defaultLayout; }
     get roles() { return this.#roles; }
-    get embedd() { return this.#embedd; }
+    get inferd() { return this.#inferd; }
 
     setRoles(roles) {
         this.#roles = roles;
@@ -574,7 +574,7 @@ class WorkspaceManager extends EventEmitter {
                 configStore: conf,
                 storageManager: this.storageManager,
                 roleManager: this.#roles,
-                embedd: this.#embedd
+                inferd: this.#inferd
             });
 
             this.#workspaces.set(workspaceId, workspace);

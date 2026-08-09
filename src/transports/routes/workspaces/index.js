@@ -162,7 +162,7 @@ export default async function workspaceRoutes(fastify, options) {
     prefix: '/:id/services',
     onRequest: [resolveWorkspaceAddress]
   });
-  fastify.register(import('./embedd.js'), {
+  fastify.register(import('./inferd.js'), {
     prefix: '/:id/embedd',
     onRequest: [resolveWorkspaceAddress]
   });

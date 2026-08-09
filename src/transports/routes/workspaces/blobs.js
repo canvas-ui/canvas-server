@@ -5,7 +5,7 @@ import ResponseObject from '../../ResponseObject.js';
 // Raw-bytes upload into the workspace blob store (workspace:data). Two-step
 // ingest: client POSTs bytes here → gets a stored://workspace:data/<key> URL,
 // then POSTs a normal File document referencing that URL via /documents. The
-// bytes become server-resident and therefore embeddable (unlike `ws add`, which
+// bytes become server-resident and therefore inferdable (unlike `ws add`, which
 // only records a device file:// pointer).
 
 const BLOB_BODY_LIMIT = 21474836480; // 20 GiB — streamed to disk, never buffered in RAM

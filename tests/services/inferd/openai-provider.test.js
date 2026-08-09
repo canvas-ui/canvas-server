@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import OpenAIProvider from '../../../src/services/embedd/src/providers/openai.js';
+import OpenAIProvider from '../../../src/services/inferd/src/providers/openai.js';
 
 /**
  * Spin a throwaway OpenAI-compatible endpoint. `handler(body, req)` returns the
@@ -169,7 +169,7 @@ test('openai: status on an unreachable host reports false instead of throwing', 
 
 test('openai: pathological slash runs normalize in linear time', async () => {
     // `/\/+$/` is O(n^2) on a string of n slashes, and baseUrl is user-supplied
-    // config since embedd became configurable. Guard the fix with a budget a
+    // config since inferd became configurable. Guard the fix with a budget a
     // backtracking implementation could not meet.
     const evil = `http://gpu.local:8000${'/'.repeat(60000)}`;
     const started = process.hrtime.bigint();

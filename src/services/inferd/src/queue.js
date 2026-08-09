@@ -2,7 +2,7 @@
 
 import { EventEmitter } from 'events';
 import debugInstance from 'debug';
-const debug = debugInstance('canvas:embedd:queue');
+const debug = debugInstance('canvas:inferd:queue');
 
 /**
  * Sequential, deduped, resumable job queue.

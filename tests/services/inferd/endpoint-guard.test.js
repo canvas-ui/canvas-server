@@ -2,8 +2,8 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { checkEndpoint, checkConfigEndpoints, endpointFor } from '../../../src/services/embedd/src/endpoint-guard.js';
-import Embedd from '../../../src/services/embedd/src/index.js';
+import { checkEndpoint, checkConfigEndpoints, endpointFor } from '../../../src/services/inferd/src/endpoint-guard.js';
+import Inferd from '../../../src/services/inferd/src/index.js';
 
 // ── What must be refused ─────────────────────────────────────────────────────
 
@@ -141,8 +141,8 @@ test('guard: providers with no URL (onnx/clip) are not checked', async () => {
 
 // ── Runtime config hooks the API depends on ──────────────────────────────────
 
-test('embedd.validate: checks a candidate without adopting it', async () => {
-    const e = new Embedd();
+test('inferd.validate: checks a candidate without adopting it', async () => {
+    const e = new Inferd();
     const before = (await e.routerFor(null)).spaceRule('text').model;
     e.validate({ spaces: { text: { model: 'candidate', dim: 999 } } });
     assert.equal((await e.routerFor(null)).spaceRule('text').model, before, 'validation must not mutate');
@@ -150,16 +150,16 @@ test('embedd.validate: checks a candidate without adopting it', async () => {
     await e.stop();
 });
 
-test('embedd.setServerConfig: adopts a good config and invalidates every user', async () => {
-    const e = new Embedd({ resolveUserConfig: async () => null });
+test('inferd.setServerConfig: adopts a good config and invalidates every user', async () => {
+    const e = new Inferd({ resolveUserConfig: async () => null });
     assert.equal((await e.routerFor('alice')).spaceRule('text').model, 'bge-small-en-v1.5');
     e.setServerConfig({ spaces: { text: { model: 'new-default', dim: 384 } } });
     assert.equal((await e.routerFor('alice')).spaceRule('text').model, 'new-default', 'users sit on top of the defaults');
     await e.stop();
 });
 
-test('embedd.setServerConfig: a bad config is rejected and leaves the old one running', async () => {
-    const e = new Embedd();
+test('inferd.setServerConfig: a bad config is rejected and leaves the old one running', async () => {
+    const e = new Inferd();
     assert.throws(() => e.setServerConfig({ spaces: { text: { provider: 'ghost', model: 'm', dim: 1 } } }), /undeclared provider/);
     assert.equal((await e.routerFor(null)).spaceRule('text').model, 'bge-small-en-v1.5', 'still serving the previous config');
     await e.stop();

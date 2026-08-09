@@ -3,7 +3,7 @@
 import { DEFAULT_RULES, DEFAULT_SPACES } from './router.js';
 
 /**
- * embedd configuration — providers, per-space backends and routing as DATA.
+ * inferd configuration — providers, per-space backends and routing as DATA.
  *
  * Three parts, deliberately separated by who owns them:
  *
@@ -77,19 +77,19 @@ function normalizeProviders(declared, defaults) {
     const out = { ...defaults };
     if (declared == null) { return out; }
     if (typeof declared !== 'object' || Array.isArray(declared)) {
-        throw new Error('embedd config: `providers` must be an object keyed by provider id');
+        throw new Error('inferd config: `providers` must be an object keyed by provider id');
     }
     for (const [id, raw] of Object.entries(declared)) {
         if (!raw || typeof raw !== 'object') {
-            throw new Error(`embedd config: provider '${id}' must be an object`);
+            throw new Error(`inferd config: provider '${id}' must be an object`);
         }
         // Re-declaring a built-in id merges over its defaults, so overriding just
         // `host` on `ollama` doesn't drop the rest.
         const base = out[id] || {};
         const type = raw.type || base.type;
-        if (!type) { throw new Error(`embedd config: provider '${id}' has no \`type\``); }
+        if (!type) { throw new Error(`inferd config: provider '${id}' has no \`type\``); }
         if (!PROVIDER_TYPES.has(type)) {
-            throw new Error(`embedd config: provider '${id}' has unknown type '${type}' (known: ${[...PROVIDER_TYPES].join(', ')})`);
+            throw new Error(`inferd config: provider '${id}' has unknown type '${type}' (known: ${[...PROVIDER_TYPES].join(', ')})`);
         }
         out[id] = { ...base, ...raw, type };
     }
@@ -98,16 +98,16 @@ function normalizeProviders(declared, defaults) {
 
 function normalizeSpace(space, raw, providerIds) {
     if (!raw || typeof raw !== 'object') {
-        throw new Error(`embedd config: space '${space}' must be an object`);
+        throw new Error(`inferd config: space '${space}' must be an object`);
     }
     const { provider, model, dim } = raw;
-    if (!provider) { throw new Error(`embedd config: space '${space}' has no \`provider\``); }
+    if (!provider) { throw new Error(`inferd config: space '${space}' has no \`provider\``); }
     if (!providerIds.has(provider)) {
-        throw new Error(`embedd config: space '${space}' references undeclared provider '${provider}' (declared: ${[...providerIds].join(', ')})`);
+        throw new Error(`inferd config: space '${space}' references undeclared provider '${provider}' (declared: ${[...providerIds].join(', ')})`);
     }
-    if (!model) { throw new Error(`embedd config: space '${space}' has no \`model\``); }
+    if (!model) { throw new Error(`inferd config: space '${space}' has no \`model\``); }
     if (!Number.isInteger(dim) || dim <= 0) {
-        throw new Error(`embedd config: space '${space}' needs a positive integer \`dim\` (it sizes the Lance table and cannot be guessed)`);
+        throw new Error(`inferd config: space '${space}' needs a positive integer \`dim\` (it sizes the Lance table and cannot be guessed)`);
     }
     const out = {};
     for (const key of SPACE_KEYS) {
@@ -118,9 +118,9 @@ function normalizeSpace(space, raw, providerIds) {
 
 function normalizeRule(raw, i) {
     if (!raw || typeof raw !== 'object') {
-        throw new Error(`embedd config: rules[${i}] must be an object`);
+        throw new Error(`inferd config: rules[${i}] must be an object`);
     }
-    if (!raw.space) { throw new Error(`embedd config: rules[${i}] has no \`space\``); }
+    if (!raw.space) { throw new Error(`inferd config: rules[${i}] has no \`space\``); }
     const match = {};
     for (const [key, value] of Object.entries(raw.match || {})) {
         match[key] = key === 'modality' ? value : toMatcher(value);
@@ -178,10 +178,10 @@ export function normalizeConfig(options = {}) {
     }
 
     const rules = rawRules.map(normalizeRule);
-    if (rules.length === 0) { throw new Error('embedd config: `rules` is empty — nothing would ever embed'); }
+    if (rules.length === 0) { throw new Error('inferd config: `rules` is empty — nothing would ever embed'); }
     for (const rule of rules) {
         if (!spaces[rule.space]) {
-            throw new Error(`embedd config: rule routes to space '${rule.space}', which has no configured backend (declared spaces: ${Object.keys(spaces).join(', ') || 'none'})`);
+            throw new Error(`inferd config: rule routes to space '${rule.space}', which has no configured backend (declared spaces: ${Object.keys(spaces).join(', ') || 'none'})`);
         }
     }
 

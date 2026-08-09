@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Messaging — user notification/chat channel service (embedd pattern: nested
+ * Messaging — user notification/chat channel service (inferd pattern: nested
  * package, pure-DI constructor, adapter seam, zero env reads — the host owns
  * env→config translation).
  *

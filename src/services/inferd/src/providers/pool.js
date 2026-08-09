@@ -1,7 +1,7 @@
 'use strict';
 
 import debugInstance from 'debug';
-const debug = debugInstance('canvas:embedd:pool');
+const debug = debugInstance('canvas:inferd:pool');
 import { createProvider } from './index.js';
 
 /**
@@ -11,7 +11,7 @@ import { createProvider } from './index.js';
  * Per-user configuration must NOT become per-user model processes. Two users
  * pointing at the same Ollama host share one client; everyone still shares the
  * single ONNX worker-thread pool and the single forked CLIP child, which is the
- * property embedd was built on ("one model runtime for all workspaces"). The
+ * property inferd was built on ("one model runtime for all workspaces"). The
  * pool key is the resolved options, not the id the user happened to give it, so
  * sharing survives people naming the same endpoint differently.
  *

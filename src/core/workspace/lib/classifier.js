@@ -231,7 +231,7 @@ class Classification {
     }
 
     // ── Embedding ───────────────────────────────────────────────────────────
-    /** Modality a file blob is embeddable as; mirrors resolveEmbeddingInput. */
+    /** Modality a file blob is inferdable as; mirrors resolveEmbeddingInput. */
     embeddingModality() {
         if (this.isImage()) { return 'image'; }
         if (typeof this.mime === 'string' && this.mime.startsWith('text/')) { return 'text'; }

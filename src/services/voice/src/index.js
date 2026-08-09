@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Voice — speech-to-text + text-to-speech service (embedd pattern: nested
+ * Voice — speech-to-text + text-to-speech service (inferd pattern: nested
  * package, pure-DI constructor, zero env reads).
  *
  * Both sides speak the OpenAI audio API dialect, which every practical local

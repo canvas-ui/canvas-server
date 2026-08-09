@@ -453,7 +453,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
 
   // ── Search by image ──────────────────────────────────────────────────────
   // kNN over the joint image space. Two query sources: `image` (base64 or data
-  // URI — an EPHEMERAL query image: camera frame, upload; embedded via embedd,
+  // URI — an EPHEMERAL query image: camera frame, upload; embedded via inferd,
   // never stored or indexed) or `similarTo` (an indexed document id — its
   // stored vector is reused, no bytes on the wire). Composes with the usual
   // structured scope, so a 2 FPS camera loop arrives pre-filtered by the

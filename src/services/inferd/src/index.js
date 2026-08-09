@@ -1,7 +1,7 @@
 'use strict';
 
 import debugInstance from 'debug';
-const debug = debugInstance('canvas:embedd');
+const debug = debugInstance('canvas:inferd');
 
 import Router, { DEFAULT_SPACES } from './router.js';
 import Queue from './queue.js';
@@ -9,10 +9,10 @@ import Semaphore from './semaphore.js';
 import { normalizeConfig, mergeConfigLayers } from './config.js';
 import ProviderPool from './providers/pool.js';
 import { chunkText } from './chunking.js';
-import { COMMENT_CHUNK_ID, TEXT_SPACE, BASELINE_SPACES, presenceKey, seenKey } from './constants.js';
+import { COMMENT_CHUNK_ID, SUMMARY_CHUNK_ID, TEXT_SPACE, BASELINE_SPACES, presenceKey, seenKey } from './constants.js';
 
 /**
- * Embedd — the canvas embedding service.
+ * Inferd — the canvas embedding service.
  *
  * Three things are scoped differently, on purpose:
  *
@@ -43,12 +43,14 @@ import { COMMENT_CHUNK_ID, TEXT_SPACE, BASELINE_SPACES, presenceKey, seenKey } f
  *     bytes?: Buffer,           // modality 'image'
  *     contentType?: string,
  *     chunkOpts?: object,       // embeddingOptions.chunking
- *   } | null                    // null => skip (doc gone / not embeddable)
+ *     comment?: string,         // user-authored → COMMENT_CHUNK_ID text chunk
+ *     summary?: string,         // generated (metadata.summary) → SUMMARY_CHUNK_ID
+ *   } | null                    // null => skip (doc gone / not inferdable)
  *   storeVectors(docId, schema, updatedAt, chunks, { space }) -> Promise<void>
  *     chunks: { chunkId, text?, vector }[]
  *   onQueueDrained?() -> Promise<void>   // optional: THIS workspace's queue drained
  */
-export default class Embedd {
+export default class Inferd {
 
     #baseOptions;              // cache dirs / hosts for the built-in providers
     #serverConfig;             // admin-set defaults (the embedd.json layer)
@@ -68,7 +70,7 @@ export default class Embedd {
     // vectors. Escape hatch for CPU-bound bulk ingests (the serialized CLIP
     // child pins the whole box); the gap ledger re-drives skipped docs via
     // reconcile once the gate is lifted. CANVAS_EMBEDD_ENABLED=false remains
-    // the hard switch (no embedd instance at all, dense search degrades).
+    // the hard switch (no inferd instance at all, dense search degrades).
     #ingestDisabled = process.env.CANVAS_EMBEDD_INGEST_DISABLED === 'true';
 
     /**
@@ -123,7 +125,7 @@ export default class Embedd {
             // is data someone typed into a form: fall back to the layer below
             // and surface the reason instead of refusing to embed at all.
             if (strict) { throw e; }
-            debug(`invalid embedd config for '${cacheKey}', falling back to server defaults: ${e.message}`);
+            debug(`invalid inferd config for '${cacheKey}', falling back to server defaults: ${e.message}`);
             const ctx = { ...this.#context(null, [this.#serverConfig], { strict: true }), invalid: e.message };
             this.#contexts.set(cacheKey, ctx);
             return ctx;
@@ -335,7 +337,7 @@ export default class Embedd {
         // queues give isolation and visibility without multiplying the load the
         // inference runtime actually sees.
         q = new Queue((jobs) => this.#gate.run(() => this.#handleBatch(wsId, jobs)), { batchSize: this.#batchSize });
-        q.on('error', (e) => console.warn(`embedd: job ${e.key} failed (doc keeps no vectors until reconcile): ${e.error}`));
+        q.on('error', (e) => console.warn(`inferd: job ${e.key} failed (doc keeps no vectors until reconcile): ${e.error}`));
         // Bulk ingests leave the Lance tables shredded (one delete+add commit per
         // doc) with no ANN index; notify the workspace on drain so it can compact
         // + index without waiting for a manual admin optimize. Best-effort, and
@@ -389,7 +391,7 @@ export default class Embedd {
                 const rule = input.skip ? null : ctx.router.route(input);
                 items.push({ job, input, rule });
             } catch (e) {
-                console.warn(`embedd: resolveInput failed for ${wsId}:${job.docId} (doc keeps no vectors until reconcile): ${e.message}`);
+                console.warn(`inferd: resolveInput failed for ${wsId}:${job.docId} (doc keeps no vectors until reconcile): ${e.message}`);
             }
         }
 
@@ -429,7 +431,7 @@ export default class Embedd {
             try {
                 await this.#finish(wsId, ws, ctx, it, rowsByItem.get(it));
             } catch (e) {
-                console.warn(`embedd: job ${wsId}:${it.job.docId} failed (doc keeps no vectors until reconcile): ${e.message}`);
+                console.warn(`inferd: job ${wsId}:${it.job.docId} failed (doc keeps no vectors until reconcile): ${e.message}`);
             }
         }
     }
@@ -443,6 +445,10 @@ export default class Embedd {
         // most one; the rest must still be marked seen so reconcile converges.
         const candidateSpaces = ctx.router.candidateSpaces(schema);
         const comment = typeof input.comment === 'string' ? input.comment.trim() : '';
+        // Generated summary (metadata.summary — captioner/deriver output). Rides
+        // the same rails as the comment: its own reserved text-space chunk, so a
+        // captioned photo is dense-searchable by its description.
+        const summary = typeof input.summary === 'string' ? input.summary.trim() : '';
 
         // Spaces we've written real vectors to (so the seen-[] pass below skips them
         // and never wipes a row we just wrote — e.g. a photo's comment in the text
@@ -462,12 +468,12 @@ export default class Embedd {
                 debug(`primary embed failed ${wsId}:${job.docId} in '${rule.space}': ${err.message}`);
                 rows = [];
             }
-            // If content routes to the text space, bundle the comment chunk into the
-            // same upsert (one storeVectors per space — a second text upsert would
-            // delete+replace and wipe the content chunks).
-            if (rule.space === TEXT_SPACE && comment) {
-                const cRow = await this.#embedComment(comment, ctx);
-                if (cRow) { rows = [...rows, cRow]; }
+            // If content routes to the text space, bundle the comment/summary
+            // chunks into the same upsert (one storeVectors per space — a second
+            // text upsert would delete+replace and wipe the content chunks).
+            if (rule.space === TEXT_SPACE) {
+                const aux = await this.#embedAuxChunks(comment, summary, ctx);
+                if (aux.length) { rows = [...rows, ...aux]; }
             }
             await ws.storeVectors(job.docId, schema, updatedAt, rows, { space: rule.space, model: rule.model });
             written.add(rule.space);
@@ -476,13 +482,13 @@ export default class Embedd {
             debug(`skip ${wsId}:${job.docId} (schema=${schema}, ct=${input.contentType})`);
         }
 
-        // Comment → text space when content didn't already route there (photos,
-        // non-text files, or non-embeddable JSON like tabs). Own upsert with just
-        // the comment chunk; marks the doc seen in text so it leaves the gap.
-        if (comment && !written.has(TEXT_SPACE)) {
-            const cRow = await this.#embedComment(comment, ctx);
+        // Comment/summary → text space when content didn't already route there
+        // (photos, non-text files, or non-inferdable JSON like tabs). Own upsert
+        // with just the aux chunks; marks the doc seen in text so it leaves the gap.
+        if ((comment || summary) && !written.has(TEXT_SPACE)) {
+            const aux = await this.#embedAuxChunks(comment, summary, ctx);
             const textModel = ctx.router.spaceRule(TEXT_SPACE)?.model;
-            await ws.storeVectors(job.docId, schema, updatedAt, cRow ? [cRow] : [], { space: TEXT_SPACE, model: textModel });
+            await ws.storeVectors(job.docId, schema, updatedAt, aux, { space: TEXT_SPACE, model: textModel });
             written.add(TEXT_SPACE);
         }
 
@@ -494,17 +500,23 @@ export default class Embedd {
         }
     }
 
-    // Embed a document's user-authored comment as a single dedicated chunk row
-    // (reserved chunkId) using the text space's provider/model. Returns null if the
-    // text space has no provider or the vector couldn't be produced.
-    async #embedComment(comment, ctx) {
+    // Embed a document's auxiliary text — user-authored comment and/or generated
+    // summary — as dedicated chunk rows (reserved negative chunkIds) using the
+    // text space's provider/model. One batched embedText call for both. Returns
+    // [] if the text space has no provider or no vector could be produced.
+    async #embedAuxChunks(comment, summary, ctx) {
+        const wanted = [];
+        if (comment) { wanted.push({ chunkId: COMMENT_CHUNK_ID, text: comment }); }
+        if (summary) { wanted.push({ chunkId: SUMMARY_CHUNK_ID, text: summary }); }
+        if (wanted.length === 0) { return []; }
         const rule = ctx.router.spaceRule(TEXT_SPACE);
-        if (!rule) { return null; }
+        if (!rule) { return []; }
         const provider = ctx.providers.get(rule.provider);
-        if (!provider) { return null; }
-        const { vectors } = await provider.embedText([comment], rule);
-        const vec = vectors?.[0];
-        return Array.isArray(vec) ? { chunkId: COMMENT_CHUNK_ID, text: comment, vector: vec } : null;
+        if (!provider) { return []; }
+        const { vectors } = await provider.embedText(wanted.map((w) => w.text), rule);
+        return wanted
+            .map((w, i) => ({ ...w, vector: vectors?.[i] }))
+            .filter((r) => Array.isArray(r.vector));
     }
 
     // Turn a resolved input into chunk rows { chunkId, text?, vector }.

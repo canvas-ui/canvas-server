@@ -27,7 +27,7 @@ import DeviceRegistry from './core/device/Registry.js';
 import UserConfigStore from './core/user/ConfigStore.js';
 import Roles from './core/role/index.js';
 import Agents from './core/agent/index.js';
-import Embedd from './services/embedd/src/index.js';
+import Inferd from './services/inferd/src/index.js';
 import Voice from './services/voice/src/index.js';
 import Messaging from './services/messaging/src/index.js';
 import ChatRouter from './services/messaging/src/router.js';
@@ -57,7 +57,7 @@ class Server extends EventEmitter {
     #contextManager;
     #roles;
     #agents;
-    #embedd;    // shared embedding service (server-managed singleton; optional)
+    #inferd;    // shared embedding service (server-managed singleton; optional)
     #messaging; // user notification/chat channels (server-managed singleton; optional)
     #chatRouter; // inbound chat → agent routing (requires #messaging)
     #voice;     // STT/TTS service (server-managed singleton; optional)
@@ -225,21 +225,21 @@ class Server extends EventEmitter {
         // own queue. Optional: when disabled, workspaces run store-only and dense
         // search degrades to FTS.
         //
-        // The embedd config file is the SERVER DEFAULT layer — how an operator
+        // The inferd config file is the SERVER DEFAULT layer — how an operator
         // points the whole box at a GPU host. Users override it per modality from
         // their settings (`resolveUserConfig` below); a workspace embeds with its
         // owner's models. A malformed server file throws here on purpose: a
         // typo'd provider id would otherwise degrade dense search silently, which
         // is far worse than a loud boot failure. A malformed USER config does not
         // throw — it falls back to these defaults and reports why.
-        if (env.embedd.enabled) {
-            this.#embedd = new Embedd({
-                onnxCacheDir: env.embedd.cacheDir,
-                ollamaHost: env.embedd.ollamaHost,
-                concurrency: env.embedd.concurrency,
-                providers: env.embedd.providers,
-                spaces: env.embedd.spaces,
-                rules: env.embedd.rules,
+        if (env.inferd.enabled) {
+            this.#inferd = new Inferd({
+                onnxCacheDir: env.inferd.cacheDir,
+                ollamaHost: env.inferd.ollamaHost,
+                concurrency: env.inferd.concurrency,
+                providers: env.inferd.providers,
+                spaces: env.inferd.spaces,
+                rules: env.inferd.rules,
                 resolveUserConfig: (userId) => this.#userConfig.read(userId, 'embedd'),
             });
         }
@@ -249,7 +249,7 @@ class Server extends EventEmitter {
             defaultLayout: env.workspace.defaultLayout,
             indexFactory: jim, // per-user index files under db/users/<id>/
             users: this.#users,
-            embedd: this.#embedd,
+            inferd: this.#inferd,
             logger: createLogger('workspace-manager'),
         });
 
@@ -313,7 +313,7 @@ class Server extends EventEmitter {
         }
 
         // Messaging (Slack/WhatsApp/console) — env→config translation happens
-        // here; the service itself is pure DI (embedd pattern). Real adapters
+        // here; the service itself is pure DI (inferd pattern). Real adapters
         // activate only when their tokens are configured.
         if (env.messaging.enabled) {
             const messagingLogger = createLogger('messaging');
@@ -492,8 +492,8 @@ class Server extends EventEmitter {
             await this.#apiServer.close();
             this.#apiServer = null;
         }
-        if (this.#embedd) {
-            try { await this.#embedd.stop(); } catch (err) { logger.warn({ err }, 'embedd stop failed'); }
+        if (this.#inferd) {
+            try { await this.#inferd.stop(); } catch (err) { logger.warn({ err }, 'inferd stop failed'); }
         }
         if (this.#messaging) {
             try { await this.#messaging.stop(); } catch (err) { logger.warn({ err }, 'messaging stop failed'); }
@@ -501,7 +501,7 @@ class Server extends EventEmitter {
         return this;
     }
 
-    get embedd() { return this.#embedd; }
+    get inferd() { return this.#inferd; }
     get messaging() { return this.#messaging; }
     get voice() { return this.#voice; }
 

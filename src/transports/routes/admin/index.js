@@ -366,7 +366,7 @@ export default async function adminRoutes(fastify, options) {
   // Per-workspace DB maintenance (reindex/optimize) is NOT admin-gated: access
   // is scoped to workspaces the caller owns via getWorkspace(id, user.id), so a
   // non-admin can only ever run these on their own workspaces. (Server-wide
-  // controls below — embedd pause/resume, logs, users — stay requireAdmin.)
+  // controls below — inferd pause/resume, logs, users — stay requireAdmin.)
   fastify.post('/workspaces/:workspaceId/reindex-timelines', {
     onRequest: [fastify.authenticate],
     schema: { params: { type: 'object', required: ['workspaceId'], properties: { workspaceId: { type: 'string' } } } }
@@ -460,11 +460,11 @@ export default async function adminRoutes(fastify, options) {
     }
   });
 
-  // Embedding reconcile/reindex: ask the embedd service to drain this workspace's
+  // Embedding reconcile/reindex: ask the inferd service to drain this workspace's
   // unembedded gap (docs matching a space's candidate schemas but with no vectors
   // yet — a durable synapsd bitmap ledger). ASYNC + idempotent. `reindex:true`
   // wipes each space first for a full re-embed. Embedding runs off-thread in the
-  // embedd service; this only enqueues.
+  // inferd service; this only enqueues.
   fastify.post('/workspaces/:workspaceId/reindex-embeddings', {
     onRequest: [fastify.authenticate],
     schema: {
@@ -489,13 +489,13 @@ export default async function adminRoutes(fastify, options) {
         const response = new ResponseObject().workspaceNotActive();
         return reply.code(response.statusCode).send(response.getResponse());
       }
-      const embedd = fastify.workspaceManager.embedd;
-      if (!embedd) {
+      const inferd = fastify.workspaceManager.inferd;
+      if (!inferd) {
         const response = new ResponseObject().badRequest('Embedding service is disabled (CANVAS_EMBEDD_ENABLED=false)');
         return reply.code(response.statusCode).send(response.getResponse());
       }
       const { space = null, reindex = false } = request.body || {};
-      const result = await embedd.reconcile(workspaceId, { space, reindex });
+      const result = await inferd.reconcile(workspaceId, { space, reindex });
       if (result?.error) {
         const response = new ResponseObject().badRequest(result.error);
         return reply.code(response.statusCode).send(response.getResponse());
@@ -506,7 +506,7 @@ export default async function adminRoutes(fastify, options) {
       if (reindex) {
         // Scoped to this workspace's queue — waiting on every workspace would
         // delay the compaction behind unrelated backlogs.
-        embedd.drained(workspaceId)
+        inferd.drained(workspaceId)
           .then(() => ws.db.optimizeVectors(space || null))
           .then(() => fastify.log.info(`reindex-embeddings: vector index compacted for ${identifier}${space ? ` (${space})` : ''}`))
           .catch((e) => fastify.log.warn(`reindex-embeddings: post-drain optimize failed for ${identifier}: ${e.message}`));
@@ -570,15 +570,15 @@ export default async function adminRoutes(fastify, options) {
     }
   });
 
-  // Embedd queue control. Queues are per-workspace; these endpoints act on all
+  // Inferd queue control. Queues are per-workspace; these endpoints act on all
   // of them (`?workspaceId=` narrows to one). Pause holds the backlog after the
   // in-flight batch (enqueues keep accumulating, nothing is lost); resume drains
   // it. Runtime state only — a restart clears the pause and reconcile re-drives
   // anything missed. The escape hatch for CPU-bound bulk ingests.
-  const embeddControl = (action) => async (request, reply) => {
+  const inferdControl = (action) => async (request, reply) => {
     try {
-      const embedd = fastify.workspaceManager.embedd;
-      if (!embedd) {
+      const inferd = fastify.workspaceManager.inferd;
+      if (!inferd) {
         const response = new ResponseObject().badRequest('Embedding service is disabled (CANVAS_EMBEDD_ENABLED=false)');
         return reply.code(response.statusCode).send(response.getResponse());
       }
@@ -586,21 +586,21 @@ export default async function adminRoutes(fastify, options) {
       const wsId = identifier
         ? (isUUID(identifier) ? identifier : fastify.workspaceManager.resolveWorkspaceId(request.user.id, identifier))
         : null;
-      const payload = action === 'status' ? await embedd.status() : embedd[action](wsId);
+      const payload = action === 'status' ? await inferd.status() : inferd[action](wsId);
       const response = new ResponseObject().success(payload);
       return reply.code(response.statusCode).send(response.getResponse());
     } catch (error) {
       fastify.log.error(error);
-      const response = new ResponseObject().serverError(error.message || `Failed to ${action} embedd`);
+      const response = new ResponseObject().serverError(error.message || `Failed to ${action} inferd`);
       return reply.code(response.statusCode).send(response.getResponse());
     }
   };
-  const embeddControlSchema = {
+  const inferdControlSchema = {
     querystring: { type: 'object', properties: { workspaceId: { type: 'string' } } },
   };
-  fastify.get('/embedd/status', { onRequest: [fastify.authenticate, requireAdmin] }, embeddControl('status'));
-  fastify.post('/embedd/pause', { onRequest: [fastify.authenticate, requireAdmin], schema: embeddControlSchema }, embeddControl('pause'));
-  fastify.post('/embedd/resume', { onRequest: [fastify.authenticate, requireAdmin], schema: embeddControlSchema }, embeddControl('resume'));
+  fastify.get('/inferd/status', { onRequest: [fastify.authenticate, requireAdmin] }, inferdControl('status'));
+  fastify.post('/inferd/pause', { onRequest: [fastify.authenticate, requireAdmin], schema: inferdControlSchema }, inferdControl('pause'));
+  fastify.post('/inferd/resume', { onRequest: [fastify.authenticate, requireAdmin], schema: inferdControlSchema }, inferdControl('resume'));
 
   // Compact + prune Lance tables and (re)build ANN indexes. `space`:
   //   'fts'          → the full-text (BM25) table

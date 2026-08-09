@@ -88,8 +88,8 @@ class Workspace extends EventEmitter {
     // Managers (injected)
     #storageManager = null;
     #roleManager = null;
-    #embedd = null;            // shared embedding service (optional; server-managed)
-    #embeddRegistered = false;
+    #inferd = null;            // shared embedding service (optional; server-managed)
+    #inferdRegistered = false;
     #embedStoreCount = 0;      // storeVectors calls since the last mid-ingest compaction
 
     constructor(options) {
@@ -110,7 +110,7 @@ class Workspace extends EventEmitter {
         this.#logger = options.logger || createLogger('workspace');
         this.#storageManager = options.storageManager;
         this.#roleManager = options.roleManager;
-        this.#embedd = options.embedd || null;
+        this.#inferd = options.inferd || null;
 
         this.#tokens = new WorkspaceTokens({ configStore: this.#configStore, workspaceId: this.id });
 
@@ -202,7 +202,7 @@ class Workspace extends EventEmitter {
     }
 
     /**
-     * embedd's config (`services.embedd`): `{ providers?, spaces?, rules? }`.
+     * inferd's config (`services.embedd`): `{ providers?, spaces?, rules? }`.
      *
      * This lives IN workspace.json on purpose. A workspace is meant to be
      * self-contained and movable — stop it, tar it, scp it, run it under
@@ -213,21 +213,21 @@ class Workspace extends EventEmitter {
      *
      * Empty ({}) means "inherit everything", which is the normal case.
      */
-    get embeddConfig() {
-        const configured = (this.#configStore.get('services') || {}).embedd;
+    get inferdConfig() {
+        const configured = (this.#configStore.get('services') || {}).inferd;
         return configured && typeof configured === 'object' ? configured : {};
     }
 
     /**
      * Single write authority for `services.embedd`. Validation happens above
-     * this (the route asks embedd to resolve the candidate first) — a workspace
+     * this (the route asks inferd to resolve the candidate first) — a workspace
      * must never persist a config its own runtime would refuse.
      */
-    setEmbeddConfig(config = {}) {
+    setInferdConfig(config = {}) {
         const services = this.#configStore.get('services') || {};
-        this.#configStore.set('services', { ...services, embedd: config });
+        this.#configStore.set('services', { ...services, inferd: config });
         this.emit('services.changed', { service: 'embedd', config });
-        return this.embeddConfig;
+        return this.inferdConfig;
     }
 
     get db() {
@@ -253,14 +253,14 @@ class Workspace extends EventEmitter {
         // longer reports the server's other 800 pending jobs. Combined with the
         // per-space embeddedDocs (semantic.vectorSpaces) the UI can show a
         // re-embed in flight and how far it's got.
-        if (this.#embedd?.workspaceStatus) {
+        if (this.#inferd?.workspaceStatus) {
             try {
-                // Actual routing (what really embeds where) from the embedd router
+                // Actual routing (what really embeds where) from the inferd router
                 // rules — notes/emails + text-file blobs → text, image/* → image.
                 // Surfaced so the UI shows reality, not synapsd's note-only gap default.
                 // This workspace's own router — what it actually embeds with,
                 // after workspace.json overrides the user/server defaults.
-                const router = (await this.#embedd.contextForWorkspace(this.id)).router;
+                const router = (await this.#inferd.contextForWorkspace(this.id)).router;
                 const routing = {};
                 for (const r of (router?.rules || [])) {
                     const m = r.match || {};
@@ -276,7 +276,7 @@ class Workspace extends EventEmitter {
                     const rule = router.spaceRule(sp);
                     if (rule) { spaces[sp] = { provider: rule.provider, model: rule.model, dim: rule.dim }; }
                 }
-                stats.embedder = { queue: this.#embedd.workspaceStatus(this.id), routing, spaces };
+                stats.embedder = { queue: this.#inferd.workspaceStatus(this.id), routing, spaces };
             } catch (_) { /* best effort */ }
         }
         return stats;
@@ -627,28 +627,28 @@ class Workspace extends EventEmitter {
             // the vector spaces (tables + ledger keys) are latched at Db
             // construction. workspace.json wins over the owner's defaults, so a
             // moved/standalone workspace keeps embedding as its vectors were built.
-            const embeddSpaces = this.#embedd?.spaceConfigsForWorkspace
-                ? await this.#embedd.spaceConfigsForWorkspace(this.id, { userId: this.owner, config: this.embeddConfig }).catch((err) => {
-                    this.#logger.warn({ workspaceId: this.id, error: err.message }, 'embedd space config resolve failed; using defaults');
+            const inferdSpaces = this.#inferd?.spaceConfigsForWorkspace
+                ? await this.#inferd.spaceConfigsForWorkspace(this.id, { userId: this.owner, config: this.inferdConfig }).catch((err) => {
+                    this.#logger.warn({ workspaceId: this.id, error: err.message }, 'inferd space config resolve failed; using defaults');
                     return undefined;
                 })
                 : undefined;
             this.#db = new Db({
                 path: dbPath,
-                // synapsd owns no model; if the embedd service is present, hand it
+                // synapsd owns no model; if the inferd service is present, hand it
                 // the query embedder so dense/hybrid search works. Absent → FTS.
-                semantic: this.#embedd
+                semantic: this.#inferd
                     ? {
                         // Bound to the OWNER: a query must be embedded by the same
                         // model that filled the space, or the kNN is noise.
-                        embedQuery: (text, space) => this.#embedd.embedQueryForWorkspace(this.id, text, space),
-                        // The embedd router owns each space's model + dim, so it also
+                        embedQuery: (text, space) => this.#inferd.embedQueryForWorkspace(this.id, text, space),
+                        // The inferd router owns each space's model + dim, so it also
                         // owns where those vectors live: a space on its baseline model
                         // keeps the original table, any other model gets its own table
                         // AND its own presence/seen ledger. That is what makes a model
                         // swap reversible — switch back and the previous vectors are
                         // still there, still marked embedded, nothing to redo.
-                        spaces: embeddSpaces,
+                        spaces: inferdSpaces,
                         // Workspace-level search tuning (persisted in workspace.json
                         // under `semantic`). Undefined → synapsd defaults.
                         imageMaxDistance: (this.#configStore.get('semantic', {}) || {}).imageMaxDistance,
@@ -661,13 +661,13 @@ class Workspace extends EventEmitter {
             await this.#ensureDirectoryTree();
             await this.#ensureBackendsTree();
             this.#bindRuntimeEvents();
-            this.#registerEmbedd();
-            // Resume interrupted embedding: the embedd queue is in-memory, so a
+            this.#registerInferd();
+            // Resume interrupted embedding: the inferd queue is in-memory, so a
             // restart mid-ingest strands docs in the durable bitmap ledger until
             // something re-drives them. Reconcile is a cheap idempotent bitmap
             // read when there is no gap — safe to fire on every start.
-            if (this.#embedd?.reconcile) {
-                this.#embedd.reconcile(this.id).then((r) => {
+            if (this.#inferd?.reconcile) {
+                this.#inferd.reconcile(this.id).then((r) => {
                     if (r?.enqueued > 0) {
                         this.#logger.info({ workspaceId: this.id, enqueued: r.enqueued }, 'Embedding reconcile resumed pending docs');
                     }
@@ -709,7 +709,7 @@ class Workspace extends EventEmitter {
 
         this.#logger.debug({ workspaceId: this.id }, 'Stopping workspace');
         try {
-            this.#unregisterEmbedd();
+            this.#unregisterInferd();
             await this.#stopStoredIndex();
             if (this.#db) {
                 this.#unbindRuntimeEvents();
@@ -903,20 +903,20 @@ class Workspace extends EventEmitter {
         });
     }
 
-    // ── Embedding (embedd service seam) ───────────────────────────────────────
-    // synapsd owns no embedding model; the embedd service computes vectors and
+    // ── Embedding (inferd service seam) ───────────────────────────────────────
+    // synapsd owns no embedding model; the inferd service computes vectors and
     // pushes them back here. These two methods are the workspace-level adapter
-    // the embedd service registers with (storeVectors + resolveInput).
+    // the inferd service registers with (storeVectors + resolveInput).
 
     // Mid-ingest maintenance cadence: every N vector upserts, compact the Lance
     // tables + refresh the ANN index. Each upsert is its own delete+add commit,
     // so a bulk import otherwise accumulates thousands of tiny fragments that
     // every query must brute-force scan — search latency grows with ingest
-    // progress until it times out. Runs inside the (sequential) embedd queue
+    // progress until it times out. Runs inside the (sequential) inferd queue
     // handler, so it never races other vector writes.
     static #EMBED_OPTIMIZE_EVERY = Math.max(50, Number(process.env.CANVAS_EMBED_OPTIMIZE_EVERY) || 500);
 
-    /** Vector sink: persist embedd-computed chunk vectors into a synapsd space. */
+    /** Vector sink: persist inferd-computed chunk vectors into a synapsd space. */
     async storeDocumentEmbeddings(docId, schema, updatedAt, chunks, opts = {}) {
         const res = await this.#getActiveDb().storeDocumentEmbeddings(
             parseDocumentId(docId, 'Document ID'), schema, updatedAt, chunks, opts,
@@ -953,19 +953,19 @@ class Workspace extends EventEmitter {
      * its in-flight batch allowed to finish, otherwise a batch straddling the
      * swap would scatter half its chunks into the outgoing table.
      */
-    async applyEmbeddSpaces() {
-        if (!this.#embedd || !this.isActive) { return { applied: false, reason: 'workspace not active' }; }
-        const spaces = await this.#embedd.spaceConfigsForWorkspace(this.id, {
-            userId: this.owner, config: this.embeddConfig,
+    async applyInferdSpaces() {
+        if (!this.#inferd || !this.isActive) { return { applied: false, reason: 'workspace not active' }; }
+        const spaces = await this.#inferd.spaceConfigsForWorkspace(this.id, {
+            userId: this.owner, config: this.inferdConfig,
         });
-        this.#embedd.pause(this.id);
+        this.#inferd.pause(this.id);
         try {
-            await this.#embedd.drained(this.id);
+            await this.#inferd.drained(this.id);
             const result = await this.#getActiveDb().setVectorSpaces(spaces);
             this.#logger.info({ workspaceId: this.id, tables: result.tables }, 'Embedding vector spaces swapped');
             return result;
         } finally {
-            this.#embedd.resume(this.id);
+            this.#inferd.resume(this.id);
         }
     }
 
@@ -999,12 +999,12 @@ class Workspace extends EventEmitter {
         return await this.#getActiveDb().dropVectorTable(name);
     }
 
-    // ── embedd registration + live enqueue ────────────────────────────────────
+    // ── inferd registration + live enqueue ────────────────────────────────────
 
-    /** Register this workspace with the shared embedd service + subscribe events. */
-    #registerEmbedd() {
-        if (!this.#embedd || this.#embeddRegistered) { return; }
-        this.#embedd.registerWorkspace(this.id, {
+    /** Register this workspace with the shared inferd service + subscribe events. */
+    #registerInferd() {
+        if (!this.#inferd || this.#inferdRegistered) { return; }
+        this.#inferd.registerWorkspace(this.id, {
             resolveInput: (docId) => this.resolveEmbeddingInput(docId),
             storeVectors: (docId, schema, updatedAt, chunks, opts) =>
                 this.storeDocumentEmbeddings(docId, schema, updatedAt, chunks, opts),
@@ -1020,7 +1020,7 @@ class Workspace extends EventEmitter {
                 this.#embedStoreCount = 0;
                 return this.#optimizeSearchIndexes('queue-drained');
             },
-        }, { userId: this.owner, config: this.embeddConfig });
+        }, { userId: this.owner, config: this.inferdConfig });
         // Live enqueue: new + content-updated docs. Blob ingestion also lands as
         // document.inserted (WorkspaceStoredIndex creates docs), so this covers
         // stored files too — no separate object:add subscription needed.
@@ -1037,35 +1037,35 @@ class Workspace extends EventEmitter {
         this.on('document.updated', this.#onDocEventForEmbed);
         this.on('document.inserted.batch', this.#onDocEventForEmbed);
         this.on('document.updated.batch', this.#onDocEventForEmbed);
-        this.#embeddRegistered = true;
+        this.#inferdRegistered = true;
     }
 
-    #unregisterEmbedd() {
-        if (!this.#embedd || !this.#embeddRegistered) { return; }
+    #unregisterInferd() {
+        if (!this.#inferd || !this.#inferdRegistered) { return; }
         this.off('document.inserted', this.#onDocEventForEmbed);
         this.off('document.updated', this.#onDocEventForEmbed);
         this.off('document.inserted.batch', this.#onDocEventForEmbed);
         this.off('document.updated.batch', this.#onDocEventForEmbed);
-        this.#embedd.unregisterWorkspace(this.id);
-        this.#embeddRegistered = false;
+        this.#inferd.unregisterWorkspace(this.id);
+        this.#inferdRegistered = false;
     }
 
     // Handles both single (`{ id }`) and batch (`{ ids: [...] }`) payloads;
     // enqueueMany routes through the same deduped queue as enqueue.
     #onDocEventForEmbed = (payload) => {
-        if (!this.#embedd) { return; }
+        if (!this.#inferd) { return; }
         const ids = Array.isArray(payload?.ids)
             ? payload.ids
             : (payload?.id != null ? [payload.id] : []);
         if (ids.length === 0) { return; }
-        this.#embedd.enqueueMany(this.id, ids);
+        this.#inferd.enqueueMany(this.id, ids);
     };
 
     /**
      * Input source for embedding one document. Return shapes:
      *   - null                          → doc gone (do NOT record as seen)
-     *   - { skip:true, schema, ... }    → exists but not embeddable (record as seen)
-     *   - { modality, schema, ... }     → embeddable (text|image + text|bytes)
+     *   - { skip:true, schema, ... }    → exists but not inferdable (record as seen)
+     *   - { modality, schema, ... }     → inferdable (text|image + text|bytes)
      *
      * A `data/schema/file` is a byte blob: embed it from its *content*
      * (text/* → utf8, image/* → bytes), never from generateEmbeddingsData (which
@@ -1086,22 +1086,25 @@ class Workspace extends EventEmitter {
         // (routes on image/*) would reject.
         const contentType = classification.mime || doc.metadata?.contentType || null;
         // User-authored comment rides along on every return shape (even skip/image),
-        // so the embedd worker can give any commented doc a dedicated text vector.
+        // so the inferd worker can give any commented doc a dedicated text vector.
         const comment = doc.hasComment ? doc.comment.trim() : '';
+        // Generated summary (metadata.summary, captioner output) rides the same
+        // rails into its own reserved text-space chunk.
+        const summary = doc.hasSummary ? doc.metadata.summary.trim() : '';
 
         if (classification.isFile()) {
-            // Byte blob: only text/image content is embeddable; everything else
+            // Byte blob: only text/image content is inferdable; everything else
             // (pdf, octet-stream, …) is a deliberate skip until a decoder/CLIP
             // model exists. Bytes must be reachable from this instance: stored://,
             // workspace files, or file://<deviceId> when the id is THIS device
             // (foreign-device locations throw and fall through to skip).
-            if (!classification.isBlob() || !contentType) { return { skip: true, schema, updatedAt, contentType, comment }; }
+            if (!classification.isBlob() || !contentType) { return { skip: true, schema, updatedAt, contentType, comment, summary }; }
             const modality = classification.embeddingModality();
-            if (!modality) { return { skip: true, schema, updatedAt, contentType, comment }; }
+            if (!modality) { return { skip: true, schema, updatedAt, contentType, comment, summary }; }
             let resolveError = null;
             const resolved = await this.resolveDocument(doc).catch((e) => { resolveError = e; return null; });
             if (!resolved?.buffer) {
-                // We classified this as an embeddable blob but its bytes are
+                // We classified this as an inferdable blob but its bytes are
                 // unreachable — usually stale/dead locations (e.g. a removed backend
                 // like the legacy fs:home). Surface it instead of silently skipping,
                 // so resync location cleanup can be triggered.
@@ -1113,21 +1116,21 @@ class Workspace extends EventEmitter {
                     locations: (doc.locations || []).map((l) => l.url),
                     error: resolveError?.message,
                 }, 'embed: could not resolve blob bytes (stale/unreachable locations)');
-                return { skip: true, schema, updatedAt, contentType, comment };
+                return { skip: true, schema, updatedAt, contentType, comment, summary };
             }
             if (modality === 'image') {
                 const enrichedAt = await this.#enrichImageDocMetadata(doc, resolved.buffer, contentType)
                     .catch((e) => { this.#logger.warn({ workspaceId: this.id, docId: doc.id, error: e.message }, 'embed: image metadata enrichment failed'); return null; });
-                return { modality, schema, updatedAt: enrichedAt || updatedAt, bytes: resolved.buffer, contentType, comment };
+                return { modality, schema, updatedAt: enrichedAt || updatedAt, bytes: resolved.buffer, contentType, comment, summary };
             }
-            return { modality, schema, updatedAt, text: resolved.buffer.toString('utf8'), contentType, chunkOpts, comment };
+            return { modality, schema, updatedAt, text: resolved.buffer.toString('utf8'), contentType, chunkOpts, comment, summary };
         }
 
         // JSON abstraction (note, etc.) → the text the doc exposes for embedding.
         const data = typeof doc.generateEmbeddingsData === 'function' ? doc.generateEmbeddingsData() : null;
         const text = Array.isArray(data) ? data.join('\n').trim() : (typeof data === 'string' ? data.trim() : '');
-        if (!text) { return { skip: true, schema, updatedAt, contentType, comment }; }
-        return { modality: 'text', schema, updatedAt, text, contentType, chunkOpts, comment };
+        if (!text) { return { skip: true, schema, updatedAt, contentType, comment, summary }; }
+        return { modality: 'text', schema, updatedAt, text, contentType, chunkOpts, comment, summary };
     }
 
     /**
@@ -1319,7 +1322,7 @@ class Workspace extends EventEmitter {
      * Upload raw bytes into the workspace blob store (workspace:data). Returns a
      * `stored://workspace:data/<key>` location (content-addressed, deduped) that a
      * File document can then reference — making the bytes server-resident and
-     * embeddable. This is the byte half of `canvas ws insert`.
+     * inferdable. This is the byte half of `canvas ws insert`.
      * @param {Buffer|import('stream').Readable} blob buffered or streamed (stored
      *   hashes a stream on the fly to a temp file — large blobs never buffer in RAM)
      * @returns {Promise<{url:string, key:string, checksum:string|null, size:number}>}
@@ -1624,7 +1627,7 @@ class Workspace extends EventEmitter {
     /**
      * Search by image over the joint image space. Two query sources:
      *  - imageBytes: an EPHEMERAL query image (camera frame, upload) — embedded
-     *    via the embedd service, never stored or indexed;
+     *    via the inferd service, never stored or indexed;
      *  - similarTo: an already-indexed document id ("more like this") — its
      *    stored vector is reused, no bytes cross any boundary.
      * `spec` is the usual structured scope; results come back best-first in
@@ -1643,11 +1646,11 @@ class Workspace extends EventEmitter {
         let vector;
         let excludeIds = [];
         if (imageBytes) {
-            if (!this.#embedd) { throw new Error('embedd service not available for image query embedding'); }
+            if (!this.#inferd) { throw new Error('inferd service not available for image query embedding'); }
             // A text-only backend (e.g. ollama) throws from embedImage — fold it
             // into the error envelope instead of 500ing the route.
             try {
-                vector = await this.#embedd.embedImageQuery(this.id, imageBytes, contentType);
+                vector = await this.#inferd.embedImageQuery(this.id, imageBytes, contentType);
             } catch (error) {
                 const empty = []; empty.count = 0; empty.totalCount = 0;
                 empty.error = `image query embedding failed: ${error.message}`;

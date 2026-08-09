@@ -1,14 +1,19 @@
 'use strict';
 
 /**
- * Shared embedd constants.
+ * Shared inferd constants.
  */
 
 // Reserved chunkId for a document's user-authored comment chunk. chunkText only
 // ever emits ordinals >= 0 for content, so -1 never collides — it keeps the
 // comment's provenance at the vector layer (weightable in fusion, always present
-// for any commented doc regardless of its schema's embeddability).
+// for any commented doc regardless of its schema's inferdability).
 export const COMMENT_CHUNK_ID = -1;
+
+// Reserved chunkId for a document's GENERATED summary (metadata.summary —
+// captioner/deriver output, machine-authored where the comment is human-only).
+// Same rails as the comment chunk: negative id, text space, weightable in fusion.
+export const SUMMARY_CHUNK_ID = -2;
 
 // The vector space the comment always embeds into (short free-text → text model).
 export const TEXT_SPACE = 'text';
@@ -71,4 +76,4 @@ export function modelSlug(model) {
 export function presenceKey(space, model) { return `internal/embed/vectors/${space}/${modelSlug(model)}`; }
 export function seenKey(space, model) { return `internal/embed/seen/${space}/${modelSlug(model)}`; }
 
-export default { COMMENT_CHUNK_ID, TEXT_SPACE, BASELINE_SPACES, modelSlug, presenceKey, seenKey };
+export default { COMMENT_CHUNK_ID, SUMMARY_CHUNK_ID, TEXT_SPACE, BASELINE_SPACES, modelSlug, presenceKey, seenKey };

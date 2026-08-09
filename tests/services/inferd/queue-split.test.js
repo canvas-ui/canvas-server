@@ -2,8 +2,8 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import Embedd from '../../../src/services/embedd/src/index.js';
-import Semaphore from '../../../src/services/embedd/src/semaphore.js';
+import Inferd from '../../../src/services/inferd/src/index.js';
+import Semaphore from '../../../src/services/inferd/src/semaphore.js';
 
 // A workspace adapter whose docs are all "gone" (resolveInput → null): the queue
 // runs the full drain path without ever reaching a provider, so these tests
@@ -15,8 +15,8 @@ function tracker(id, seen) {
     };
 }
 
-test('embedd: each workspace owns its queue — backlogs never mix', async () => {
-    const e = new Embedd();
+test('inferd: each workspace owns its queue — backlogs never mix', async () => {
+    const e = new Inferd();
     const seen = [];
     e.registerWorkspace('a', tracker('a', seen));
     e.registerWorkspace('b', tracker('b', seen));
@@ -42,8 +42,8 @@ test('embedd: each workspace owns its queue — backlogs never mix', async () =>
     await e.stop();
 });
 
-test('embedd: pausing one workspace leaves the others draining', async () => {
-    const e = new Embedd();
+test('inferd: pausing one workspace leaves the others draining', async () => {
+    const e = new Inferd();
     const seen = [];
     e.registerWorkspace('a', tracker('a', seen));
     e.registerWorkspace('b', tracker('b', seen));
@@ -64,10 +64,10 @@ test('embedd: pausing one workspace leaves the others draining', async () => {
     await e.stop();
 });
 
-test('embedd: onQueueDrained fires only for the workspace that drained', async () => {
+test('inferd: onQueueDrained fires only for the workspace that drained', async () => {
     // The shared queue used to wake EVERY registered workspace on any drain, so
     // one note saved in workspace A triggered a compact/ANN-rebuild pass in B.
-    const e = new Embedd();
+    const e = new Inferd();
     const drained = [];
     const adapter = (id) => ({
         resolveInput: async () => null,
@@ -83,8 +83,8 @@ test('embedd: onQueueDrained fires only for the workspace that drained', async (
     await e.stop();
 });
 
-test('embedd: a workspace registered while globally paused does not start draining', async () => {
-    const e = new Embedd();
+test('inferd: a workspace registered while globally paused does not start draining', async () => {
+    const e = new Inferd();
     const seen = [];
     e.pause();
     e.registerWorkspace('late', tracker('late', seen));
@@ -98,8 +98,8 @@ test('embedd: a workspace registered while globally paused does not start draini
     await e.stop();
 });
 
-test('embedd: unregistering a workspace drops its queue and releases waiters', async () => {
-    const e = new Embedd();
+test('inferd: unregistering a workspace drops its queue and releases waiters', async () => {
+    const e = new Inferd();
     const seen = [];
     e.registerWorkspace('a', tracker('a', seen));
     e.pause('a');
@@ -115,8 +115,8 @@ test('embedd: unregistering a workspace drops its queue and releases waiters', a
     await e.stop();
 });
 
-test('embedd: status reports the shared inference gate', async () => {
-    const e = new Embedd({ concurrency: 3 });
+test('inferd: status reports the shared inference gate', async () => {
+    const e = new Inferd({ concurrency: 3 });
     const status = await e.status();
     assert.equal(status.concurrency.limit, 3);
     assert.equal(status.concurrency.active, 0);

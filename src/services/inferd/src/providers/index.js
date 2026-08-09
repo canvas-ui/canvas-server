@@ -25,7 +25,7 @@ const FACTORIES = {
 
 export function createProvider(id, spec = {}) {
     const factory = FACTORIES[spec.type];
-    if (!factory) { throw new Error(`embedd: unknown provider type '${spec.type}' for provider '${id}'`); }
+    if (!factory) { throw new Error(`inferd: unknown provider type '${spec.type}' for provider '${id}'`); }
     return factory(id, spec);
 }
 

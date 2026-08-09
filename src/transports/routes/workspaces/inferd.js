@@ -2,8 +2,8 @@
 
 import ResponseObject from '../../ResponseObject.js';
 import { requireWorkspaceRead, requireWorkspaceWrite } from '../../middleware/workspace-acl.js';
-import { redactConfig } from '../../../services/embedd/src/config.js';
-import { checkConfigEndpoints } from '../../../services/embedd/src/endpoint-guard.js';
+import { redactConfig } from '../../../services/inferd/src/config.js';
+import { checkConfigEndpoints } from '../../../services/inferd/src/endpoint-guard.js';
 
 /**
  * Workspace embedding configuration — `/workspaces/:id/embedd`.
@@ -25,7 +25,7 @@ import { checkConfigEndpoints } from '../../../services/embedd/src/endpoint-guar
  *                       instant and costs no re-embedding at all
  *   4. DELETE …/vector-tables/:table  reclaim the superseded model when done
  */
-export default async function workspaceEmbeddRoutes(fastify, options) {
+export default async function workspaceInferdRoutes(fastify, options) {
 
     // Opt-in rate limits. The plugin itself is registered once at the server
     // root with `global: false` (see transports/index.js); routes opt in by
@@ -45,7 +45,7 @@ export default async function workspaceEmbeddRoutes(fastify, options) {
         },
     };
 
-    const embedd = () => fastify.workspaceManager?.embedd || null;
+    const inferd = () => fastify.workspaceManager?.inferd || null;
 
     const guard = (request, reply) => {
         const workspace = request.workspace;
@@ -54,7 +54,7 @@ export default async function workspaceEmbeddRoutes(fastify, options) {
             reply.code(r.statusCode).send(r.getResponse());
             return null;
         }
-        if (!embedd()) {
+        if (!inferd()) {
             const r = new ResponseObject().badRequest('Embedding service is disabled (CANVAS_EMBEDD_ENABLED=false)');
             reply.code(r.statusCode).send(r.getResponse());
             return null;
@@ -83,17 +83,17 @@ export default async function workspaceEmbeddRoutes(fastify, options) {
         const workspace = guard(request, reply);
         if (!workspace) { return; }
         try {
-            const ctx = await embedd().contextForWorkspace(workspace.id);
+            const ctx = await inferd().contextForWorkspace(workspace.id);
             const r = new ResponseObject().found({
                 // This workspace's own overrides (what is written to workspace.json).
-                workspace: redactConfig(workspace.embeddConfig),
+                workspace: redactConfig(workspace.inferdConfig),
                 // What it actually embeds with once the layers resolve.
                 effective: redactConfig(ctx.config),
                 // What it would fall back to, so the UI can mark fields "inherited".
-                inherited: redactConfig(embedd().serverConfig || {}),
+                inherited: redactConfig(inferd().serverConfig || {}),
                 // Where the vectors live now — the table names a revert switches between.
-                spaces: await embedd().spaceConfigsForWorkspace(workspace.id, {
-                    userId: workspace.owner, config: workspace.embeddConfig,
+                spaces: await inferd().spaceConfigsForWorkspace(workspace.id, {
+                    userId: workspace.owner, config: workspace.inferdConfig,
                 }),
                 ...(ctx.invalid ? { invalid: ctx.invalid } : {}),
             });
@@ -114,7 +114,7 @@ export default async function workspaceEmbeddRoutes(fastify, options) {
         const workspace = guard(request, reply);
         if (!workspace) { return; }
         const r = new ResponseObject().found({
-            queue: embedd().workspaceStatus(workspace.id),
+            queue: inferd().workspaceStatus(workspace.id),
         });
         return reply.code(r.statusCode).send(r.getResponse());
     });
@@ -131,28 +131,28 @@ export default async function workspaceEmbeddRoutes(fastify, options) {
             return reply.code(r.statusCode).send(r.getResponse());
         }
         try {
-            const next = preserveSecrets(body, workspace.embeddConfig);
+            const next = preserveSecrets(body, workspace.inferdConfig);
 
             // Validate as it will actually be used — layered over the workspace's
             // inherited defaults — before anything is written.
             let resolved;
-            try { resolved = embedd().validate(next); }
+            try { resolved = inferd().validate(next); }
             catch (e) {
                 const r = new ResponseObject().badRequest(e.message);
                 return reply.code(r.statusCode).send(r.getResponse());
             }
-            const problems = await checkConfigEndpoints(resolved, { allowHosts: embedd().serverConfig?.allowHosts || [] });
+            const problems = await checkConfigEndpoints(resolved, { allowHosts: inferd().serverConfig?.allowHosts || [] });
             if (problems.length > 0) {
                 const r = new ResponseObject().badRequest(`Rejected embedding endpoint — ${problems.join('; ')}`);
                 return reply.code(r.statusCode).send(r.getResponse());
             }
 
-            const before = await embedd().spaceConfigsForWorkspace(workspace.id, {
-                userId: workspace.owner, config: workspace.embeddConfig,
+            const before = await inferd().spaceConfigsForWorkspace(workspace.id, {
+                userId: workspace.owner, config: workspace.inferdConfig,
             });
-            workspace.setEmbeddConfig(next);
-            embedd().invalidateWorkspace(workspace.id, next);
-            const after = await embedd().spaceConfigsForWorkspace(workspace.id, {
+            workspace.setInferdConfig(next);
+            inferd().invalidateWorkspace(workspace.id, next);
+            const after = await inferd().spaceConfigsForWorkspace(workspace.id, {
                 userId: workspace.owner, config: next,
             });
 
@@ -163,10 +163,10 @@ export default async function workspaceEmbeddRoutes(fastify, options) {
 
             // Apply live. Vector spaces are lazily-built handles, not something
             // pinned at startup, so a model switch does not need a restart —
-            // just quiesced writes, which applyEmbeddSpaces takes care of.
+            // just quiesced writes, which applyInferdSpaces takes care of.
             let swap = null;
             if (moved.length > 0 && workspace.isActive) {
-                swap = await workspace.applyEmbeddSpaces();
+                swap = await workspace.applyInferdSpaces();
             }
 
             const r = new ResponseObject().updated({
@@ -213,7 +213,7 @@ export default async function workspaceEmbeddRoutes(fastify, options) {
         }
         try {
             const { space = null, reindex = false, scope = null } = request.body || {};
-            const result = await embedd().reconcile(workspace.id, { space, reindex, scope });
+            const result = await inferd().reconcile(workspace.id, { space, reindex, scope });
             if (result?.error) {
                 const r = new ResponseObject().badRequest(result.error);
                 return reply.code(r.statusCode).send(r.getResponse());

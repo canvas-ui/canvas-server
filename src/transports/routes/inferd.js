@@ -3,8 +3,8 @@
 import fs from 'fs/promises';
 import path from 'path';
 import ResponseObject from '../ResponseObject.js';
-import { redactConfig } from '../../services/embedd/src/config.js';
-import { checkConfigEndpoints, checkEndpoint, endpointFor } from '../../services/embedd/src/endpoint-guard.js';
+import { redactConfig } from '../../services/inferd/src/config.js';
+import { checkConfigEndpoints, checkEndpoint, endpointFor } from '../../services/inferd/src/endpoint-guard.js';
 import { env } from '../../env.js';
 
 /**
@@ -42,7 +42,7 @@ const TEST_PNG = Buffer.from(
     'base64',
 );
 
-export default async function embeddRoutes(fastify, options) {
+export default async function inferdRoutes(fastify, options) {
 
     // Rate limits. The plugin is registered once at the server root
     // (transports/index.js) with `global: false`, which is what keeps it off
@@ -66,10 +66,10 @@ export default async function embeddRoutes(fastify, options) {
         },
     };
 
-    const embedd = () => fastify.workspaceManager?.embedd || null;
+    const inferd = () => fastify.workspaceManager?.inferd || null;
 
-    const requireEmbedd = (reply) => {
-        if (embedd()) { return true; }
+    const requireInferd = (reply) => {
+        if (inferd()) { return true; }
         const r = new ResponseObject().badRequest('Embedding service is disabled (CANVAS_EMBEDD_ENABLED=false)');
         reply.code(r.statusCode).send(r.getResponse());
         return false;
@@ -81,7 +81,7 @@ export default async function embeddRoutes(fastify, options) {
     };
 
     /** Admin-set host allowlist (empty = only the always-blocked ranges apply). */
-    const policy = () => ({ allowHosts: embedd()?.serverConfig?.allowHosts || env.embedd.allowHosts || [] });
+    const policy = () => ({ allowHosts: inferd()?.serverConfig?.allowHosts || env.inferd.allowHosts || [] });
 
     /**
      * A provider error may quote the remote's response body. That is exactly
@@ -89,7 +89,7 @@ export default async function embeddRoutes(fastify, options) {
      * message with any body stripped.
      */
     const safeError = async (request, error) => {
-        request.log.warn({ err: error }, 'embedd endpoint test failed');
+        request.log.warn({ err: error }, 'inferd endpoint test failed');
         if (await isAdmin(request)) { return error.message; }
         const status = error.message.match(/\b([45]\d{2})\b/);
         return status ? `backend returned HTTP ${status[1]}` : 'backend unreachable or rejected the request';
@@ -115,17 +115,17 @@ export default async function embeddRoutes(fastify, options) {
     // ── Per-user config ───────────────────────────────────────────────────────
 
     fastify.get('/config', { onRequest: [fastify.authenticate] }, async (request, reply) => {
-        if (!requireEmbedd(reply)) { return; }
+        if (!requireInferd(reply)) { return; }
         try {
             const stored = await fastify.userConfig.read(request.user.id, CONFIG_NAME);
-            const ctx = await embedd().contextFor(request.user.id);
+            const ctx = await inferd().contextFor(request.user.id);
             const r = new ResponseObject().found({
                 // What this user's workspaces actually embed with, after layering.
                 effective: redactConfig(ctx.config),
                 // Just their overrides, for round-tripping edits.
                 user: redactConfig(stored),
                 // What they'd fall back to, so the UI can show "inherited".
-                serverDefaults: redactConfig(embedd().serverConfig || {}),
+                serverDefaults: redactConfig(inferd().serverConfig || {}),
                 // Set when their stored config no longer resolves and the server
                 // defaults are standing in.
                 ...(ctx.invalid ? { invalid: ctx.invalid } : {}),
@@ -139,7 +139,7 @@ export default async function embeddRoutes(fastify, options) {
     });
 
     fastify.put('/config', { onRequest: [fastify.authenticate], config: writeLimit }, async (request, reply) => {
-        if (!requireEmbedd(reply)) { return; }
+        if (!requireInferd(reply)) { return; }
         const body = request.body;
         if (!body || typeof body !== 'object' || Array.isArray(body)) {
             const r = new ResponseObject().badRequest('Embedding config must be a JSON object');
@@ -151,7 +151,7 @@ export default async function embeddRoutes(fastify, options) {
 
             // 1) Shape — must resolve when layered over the server defaults.
             let resolved;
-            try { resolved = embedd().validate(next); }
+            try { resolved = inferd().validate(next); }
             catch (e) {
                 const r = new ResponseObject().badRequest(e.message);
                 return reply.code(r.statusCode).send(r.getResponse());
@@ -166,12 +166,12 @@ export default async function embeddRoutes(fastify, options) {
             }
 
             await fastify.userConfig.write(request.user.id, CONFIG_NAME, next);
-            embedd().invalidateUser(request.user.id);
+            inferd().invalidateUser(request.user.id);
 
             // Changing a model means the new one embeds into its OWN table, so
             // existing docs are absent from it until re-embedded. Say so rather
             // than letting search quietly go thin.
-            const affected = embedd().workspacesOf(request.user.id);
+            const affected = inferd().workspacesOf(request.user.id);
             const r = new ResponseObject().updated({
                 user: redactConfig(next),
                 effective: redactConfig(resolved),
@@ -193,7 +193,7 @@ export default async function embeddRoutes(fastify, options) {
     // Round-trips one real embedding call so "Test connection" means the model
     // answers, not merely that the host is up.
     fastify.post('/test', { onRequest: [fastify.authenticate], config: testLimit }, async (request, reply) => {
-        if (!requireEmbedd(reply)) { return; }
+        if (!requireInferd(reply)) { return; }
         const { provider, model, modality = 'text', probe = false } = request.body || {};
         if (!provider || typeof provider !== 'object') {
             const r = new ResponseObject().badRequest('`provider` object required');
@@ -206,7 +206,7 @@ export default async function embeddRoutes(fastify, options) {
             // outbound request, no model load. `cached: null` = not knowable
             // (remote providers download nothing; local ones without a cacheDir).
             if (probe) {
-                const instance = embedd().providerFor(provider);
+                const instance = inferd().providerFor(provider);
                 const cached = typeof instance.modelCached === 'function' ? instance.modelCached(model) : null;
                 const r = new ResponseObject().success({ cached, modality }, 'Cache probed');
                 return reply.code(r.statusCode).send(r.getResponse());
@@ -221,7 +221,7 @@ export default async function embeddRoutes(fastify, options) {
                     return reply.code(r.statusCode).send(r.getResponse());
                 }
             }
-            const instance = embedd().providerFor(provider);
+            const instance = inferd().providerFor(provider);
             const started = Date.now();
             // Exercise the modality actually being configured: an image space
             // tested with embedQuery would pass on a text-only backend and then
@@ -260,18 +260,18 @@ export default async function embeddRoutes(fastify, options) {
     };
 
     fastify.get('/defaults', { onRequest: [fastify.authenticate] }, async (request, reply) => {
-        if (!requireEmbedd(reply)) { return; }
+        if (!requireInferd(reply)) { return; }
         // Readable by any authenticated user: the UI shows what you inherit.
         const r = new ResponseObject().found({
-            serverDefaults: redactConfig(embedd().serverConfig || {}),
-            configPath: env.embedd.configPath,
+            serverDefaults: redactConfig(inferd().serverConfig || {}),
+            configPath: env.inferd.configPath,
             allowHosts: policy().allowHosts,
         });
         return reply.code(r.statusCode).send(r.getResponse());
     });
 
     fastify.put('/defaults', { onRequest: [fastify.authenticate], config: writeLimit }, async (request, reply) => {
-        if (!requireEmbedd(reply)) { return; }
+        if (!requireInferd(reply)) { return; }
         if (!(await requireAdmin(request, reply))) { return; }
         const body = request.body;
         if (!body || typeof body !== 'object' || Array.isArray(body)) {
@@ -279,11 +279,11 @@ export default async function embeddRoutes(fastify, options) {
             return reply.code(r.statusCode).send(r.getResponse());
         }
         try {
-            const current = embedd().serverConfig || {};
+            const current = inferd().serverConfig || {};
             const next = preserveSecrets(body, current);
 
             let resolved;
-            try { resolved = embedd().validate(next, { asServerDefault: true }); }
+            try { resolved = inferd().validate(next, { asServerDefault: true }); }
             catch (e) {
                 const r = new ResponseObject().badRequest(e.message);
                 return reply.code(r.statusCode).send(r.getResponse());
@@ -296,9 +296,9 @@ export default async function embeddRoutes(fastify, options) {
 
             // Adopt in-process first: if it fails validation there, nothing has
             // been written and the running config is untouched.
-            embedd().setServerConfig(next);
+            inferd().setServerConfig(next);
 
-            const filePath = env.embedd.configPath;
+            const filePath = env.inferd.configPath;
             await fs.mkdir(path.dirname(filePath), { recursive: true });
             const tmp = `${filePath}.tmp`;
             await fs.writeFile(tmp, JSON.stringify(next, null, 2), 'utf8');

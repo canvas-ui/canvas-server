@@ -305,7 +305,10 @@ export async function createServer(options = {}) {
     reply.header('X-Content-Type-Options', 'nosniff');
     reply.header('X-XSS-Protection', '1; mode=block');
     reply.header('Referrer-Policy', 'strict-origin-when-cross-origin');
-    reply.header('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
+    // Same-origin only. The served SPA itself uses all three: geolocation
+    // (useGeotag), microphone (voice recorder), camera (lens page) — a bare ()
+    // would disable them for our own app; (self) still denies embedded frames.
+    reply.header('Permissions-Policy', 'geolocation=(self), microphone=(self), camera=(self)');
 
     return payload;
   });
@@ -386,6 +389,9 @@ export async function createServer(options = {}) {
   server.register(messagingRoutes, { prefix: '/rest/v2/messaging' });
   server.register(messagingWebhookRoutes, { prefix: '/rest/v2/messaging/webhooks' });
   server.register(voiceRoutes, { prefix: '/rest/v2/voice' });
+  // Inference service (canvas-inferd). '/inferd' is the canonical prefix;
+  // '/embedd' is the legacy alias kept until every client has migrated.
+  server.register(withoutAgentTokens(inferdRoutes), { prefix: '/rest/v2/inferd' });
   server.register(withoutAgentTokens(inferdRoutes), { prefix: '/rest/v2/embedd' });
   server.register(withoutAgentTokens(adminRoutes), { prefix: '/rest/v2/admin' });
   server.register(withoutAgentTokens(roleRoutes), { prefix: '/rest/v2/roles' });

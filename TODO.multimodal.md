@@ -167,15 +167,30 @@ Rationale (kept for the record):
   Then an image query's kNN in image space hits notes directly. No captioning, no new
   runtime; costs one extra short-text vector per doc. Worth benchmarking FIRST.
 
-## Slice B — search-by-video (client) — ON HOLD until monorepo migration lands
+## Slice B — search-by-video "Lens" (SHIPPED 2026-08-09, webui unblocked)
 
-Parked 2026-08-09: the webui is mid-migration (TODO.monorepo-migration.md, Slice 5 done,
-service extraction pending) — don't touch webui code until it settles. Server side is
-ready and waiting: `POST /workspaces/:id/search/image` + QuerySession `ids`/`set()`.
+The webui landed in the monorepo (`~/Code/canvas/canvas/apps/web`); the camera app is in.
 
-- [ ] Small camera app in the (post-migration) webui: getUserMedia → canvas frame grab at
-      1–2 FPS → Slice A endpoint → related documents rendered underneath the feed.
-- [ ] Sliding-window smoothing (see decision 6). Debounce UI on result-set delta, not per frame.
+- [x] **Lens applet** (`src/components/toolbox/applets/LensApplet.tsx`, registered in the
+      applet registry beside Notes/Todos → toolbox Apps tab + standalone `/apps/lens`,
+      bindable to a workspace path via the host's binding bar — a bound path pre-scopes
+      the search, `scope:'path'`): getUserMedia (`hooks/useWebcam`) → JPEG frame grab
+      (≤640px, q0.72) at 0.5/1/2 FPS → `POST /documents/search/image` via `services/lens.ts`
+      (ephemeral frames) → thumbnail/icon grid underneath. Optional text input = fused mode
+      (notes surface next to photos); `maxDistance` input + per-hit `d=…` chips (debug
+      distances) for live floor calibration.
+- [x] Majority-vote smoothing over the last 3 responses (incl. sticky-out re-adoption) —
+      no flicker on motion blur. Chained timeouts (frames never pile up), AbortController.
+- [x] Server unblock: `Permissions-Policy` was `camera=()` — now `(self)` for
+      camera/mic/geo (the SPA uses all three).
+- [x] Webui naming change: embedd → inferd sweep (files git mv'd, identifiers, API paths
+      now on the new canonical `/rest/v2/inferd` + `/:id/inferd`; server keeps `/embedd`
+      aliases at both levels + admin `/embedd/{status,pause,resume}` aliases).
+      `CANVAS_EMBEDD_*` env names preserved in user-facing strings.
+- [x] Summary-generation controls: workspace settings → Embeddings → "Summaries" fold —
+      per-modality (image live, audio/text declared but marked planned) enable +
+      provider + model, persisted via the validated `summarize` config block
+      (server: normalizeSummarize + key-wise layer merge; UI types updated).
 - [ ] Optional server nicety: accept a small batch of frames in one search call (amortize
       HTTP + let the server average vectors).
 

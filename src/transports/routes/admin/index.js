@@ -601,6 +601,10 @@ export default async function adminRoutes(fastify, options) {
   fastify.get('/inferd/status', { onRequest: [fastify.authenticate, requireAdmin] }, inferdControl('status'));
   fastify.post('/inferd/pause', { onRequest: [fastify.authenticate, requireAdmin], schema: inferdControlSchema }, inferdControl('pause'));
   fastify.post('/inferd/resume', { onRequest: [fastify.authenticate, requireAdmin], schema: inferdControlSchema }, inferdControl('resume'));
+  // Legacy aliases (pre-rename clients, incl. the prebuilt web artifact).
+  fastify.get('/embedd/status', { onRequest: [fastify.authenticate, requireAdmin] }, inferdControl('status'));
+  fastify.post('/embedd/pause', { onRequest: [fastify.authenticate, requireAdmin], schema: inferdControlSchema }, inferdControl('pause'));
+  fastify.post('/embedd/resume', { onRequest: [fastify.authenticate, requireAdmin], schema: inferdControlSchema }, inferdControl('resume'));
 
   // Compact + prune Lance tables and (re)build ANN indexes. `space`:
   //   'fts'          → the full-text (BM25) table

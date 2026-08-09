@@ -161,6 +161,45 @@ function splitLegacyRules(rules) {
  * @param {string} [options.clipCacheDir]
  * @param {string} [options.ollamaHost]
  */
+// Per-modality summary generation ("describe" capability — captions for images
+// first, audio/text later). Config-only for now: the block is validated and
+// persisted through every layer so the UI can already expose the controls; the
+// captioner loop that CONSUMES it ships with the qwen-vl provider work.
+// Shape: { summarize: { image: { enabled, provider?, model? }, audio: {...} } }
+const SUMMARIZE_MODALITIES = new Set(['image', 'audio', 'text']);
+
+function normalizeSummarize(raw, providerIds) {
+    if (raw === undefined || raw === null) { return {}; }
+    if (typeof raw !== 'object' || Array.isArray(raw)) {
+        throw new Error('inferd config: `summarize` must be an object keyed by modality');
+    }
+    const out = {};
+    for (const [modality, spec] of Object.entries(raw)) {
+        if (!SUMMARIZE_MODALITIES.has(modality)) {
+            throw new Error(`inferd config: summarize has unknown modality '${modality}' (known: ${[...SUMMARIZE_MODALITIES].join(', ')})`);
+        }
+        if (!spec || typeof spec !== 'object') { continue; }
+        const entry = { enabled: spec.enabled === true };
+        if (spec.provider !== undefined) {
+            if (typeof spec.provider !== 'string' || !providerIds.has(spec.provider)) {
+                throw new Error(`inferd config: summarize.${modality} references unknown provider '${spec.provider}'`);
+            }
+            entry.provider = spec.provider;
+        }
+        if (spec.model !== undefined) {
+            if (typeof spec.model !== 'string' || !spec.model) {
+                throw new Error(`inferd config: summarize.${modality}.model must be a non-empty string`);
+            }
+            entry.model = spec.model;
+        }
+        if (entry.enabled && (!entry.provider || !entry.model)) {
+            throw new Error(`inferd config: summarize.${modality} is enabled but missing provider/model`);
+        }
+        out[modality] = entry;
+    }
+    return out;
+}
+
 export function normalizeConfig(options = {}) {
     const providers = normalizeProviders(options.providers, builtinProviders(options));
     const providerIds = new Set(Object.keys(providers));
@@ -185,7 +224,7 @@ export function normalizeConfig(options = {}) {
         }
     }
 
-    return { providers, spaces, rules };
+    return { providers, spaces, rules, summarize: normalizeSummarize(options.summarize, providerIds) };
 }
 
 /**
@@ -211,6 +250,13 @@ export function mergeConfigLayers(...layers) {
         for (const [id, spec] of Object.entries(layer.providers || {})) {
             if (!spec || typeof spec !== 'object') { continue; }
             out.providers[id] = { ...(out.providers[id] || {}), ...spec };
+        }
+        // Summarize merges key-wise per modality, like spaces: a workspace that
+        // only flips `image.enabled` inherits the provider/model underneath.
+        for (const [modality, spec] of Object.entries(layer.summarize || {})) {
+            if (!spec || typeof spec !== 'object') { continue; }
+            out.summarize = out.summarize || {};
+            out.summarize[modality] = { ...(out.summarize[modality] || {}), ...spec };
         }
         // Within a layer, an explicit `spaces` entry beats a backend described
         // inline on a legacy rule; across layers, later still wins.

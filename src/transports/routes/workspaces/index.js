@@ -162,6 +162,11 @@ export default async function workspaceRoutes(fastify, options) {
     prefix: '/:id/services',
     onRequest: [resolveWorkspaceAddress]
   });
+  // '/inferd' is canonical; '/embedd' is the legacy alias (pre-rename clients).
+  fastify.register(import('./inferd.js'), {
+    prefix: '/:id/inferd',
+    onRequest: [resolveWorkspaceAddress]
+  });
   fastify.register(import('./inferd.js'), {
     prefix: '/:id/embedd',
     onRequest: [resolveWorkspaceAddress]

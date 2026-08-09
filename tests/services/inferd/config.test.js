@@ -2,7 +2,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeConfig, toMatcher, builtinProviders } from '../../../src/services/inferd/src/config.js';
+import { normalizeConfig, mergeConfigLayers, toMatcher, builtinProviders } from '../../../src/services/inferd/src/config.js';
 import { createProviders } from '../../../src/services/inferd/src/providers/index.js';
 import Router, { DEFAULT_RULES } from '../../../src/services/inferd/src/router.js';
 import Inferd from '../../../src/services/inferd/src/index.js';
@@ -245,4 +245,29 @@ test('spaceConfigs: a new modality slots in with no code change', async () => {
     assert.equal(sc.audio.seenKey, 'internal/embed/seen/audio/laion-clap-htsat-unfused');
     assert.equal(sc.audio.table, undefined, 'no baseline → model-keyed table');
     await e.stop();
+});
+
+// ── Summarize (describe-capability config) ───────────────────────────────────
+
+test('summarize: normalizes, validates provider refs, merges key-wise per modality', () => {
+    const { summarize } = normalizeConfig({
+        providers: { vlm: { type: 'ollama', host: 'http://gpu:11434' } },
+        summarize: { image: { enabled: true, provider: 'vlm', model: 'qwen2.5vl' } },
+    });
+    assert.deepEqual(summarize.image, { enabled: true, provider: 'vlm', model: 'qwen2.5vl' });
+
+    // Unknown modality / unknown provider / enabled-without-model all throw.
+    assert.throws(() => normalizeConfig({ summarize: { video: {} } }), /unknown modality/);
+    assert.throws(() => normalizeConfig({ summarize: { image: { enabled: true, provider: 'nope', model: 'x' } } }), /unknown provider/);
+    assert.throws(() => normalizeConfig({ summarize: { image: { enabled: true } } }), /missing provider\/model/);
+
+    // Layer merge: workspace flips only `enabled`, inherits provider/model.
+    const merged = mergeConfigLayers(
+        { summarize: { image: { provider: 'vlm', model: 'qwen2.5vl' } } },
+        { summarize: { image: { enabled: true } } },
+    );
+    assert.deepEqual(merged.summarize.image, { provider: 'vlm', model: 'qwen2.5vl', enabled: true });
+
+    // Absent block normalizes to {} and older configs stay valid.
+    assert.deepEqual(normalizeConfig({}).summarize, {});
 });

@@ -616,6 +616,24 @@ export default class Embedd {
         return vector || null;
     }
 
+    /**
+     * Query-side IMAGE embedding for a workspace: raw image bytes → a vector in
+     * the workspace's image space. The query twin of the ingest path's
+     * embedImage batch — used for search-by-image, where the query image is
+     * ephemeral (never stored, never indexed). Returns number[] or null when
+     * the space/provider can't produce image vectors.
+     */
+    async embedImageQuery(wsId, bytes, contentType = null, space = 'image') {
+        if (!Buffer.isBuffer(bytes) || bytes.length === 0) { return null; }
+        const ctx = await this.contextForWorkspace(wsId);
+        const rule = ctx.router.spaceRule(space);
+        if (!rule) { return null; }
+        const provider = ctx.providers.get(rule.provider);
+        if (!provider || typeof provider.embedImage !== 'function') { return null; }
+        const { vectors } = await provider.embedImage([bytes], rule, { contentTypes: [contentType] });
+        return vectors?.[0] || null;
+    }
+
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
     /**

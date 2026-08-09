@@ -1622,6 +1622,55 @@ class Workspace extends EventEmitter {
     }
 
     /**
+     * Search by image over the joint image space. Two query sources:
+     *  - imageBytes: an EPHEMERAL query image (camera frame, upload) — embedded
+     *    via the embedd service, never stored or indexed;
+     *  - similarTo: an already-indexed document id ("more like this") — its
+     *    stored vector is reused, no bytes cross any boundary.
+     * `spec` is the usual structured scope; results come back best-first in
+     * kNN order. No implicit distance floor: a frame query wants its top-K,
+     * pass maxDistance to cut noise (same semantics as the text path).
+     */
+    async searchByImage({ imageBytes = null, contentType = null, similarTo = null, spec = {}, limit, offset, minDistance, maxDistance, debug = false, idsOnly = false } = {}) {
+        const db = this.#getActiveDb();
+        let vector;
+        let excludeIds = [];
+        if (imageBytes) {
+            if (!this.#embedd) { throw new Error('embedd service not available for image query embedding'); }
+            // A text-only backend (e.g. ollama) throws from embedImage — fold it
+            // into the error envelope instead of 500ing the route.
+            try {
+                vector = await this.#embedd.embedImageQuery(this.id, imageBytes, contentType);
+            } catch (error) {
+                const empty = []; empty.count = 0; empty.totalCount = 0;
+                empty.error = `image query embedding failed: ${error.message}`;
+                return empty;
+            }
+            if (!vector) {
+                const empty = []; empty.count = 0; empty.totalCount = 0;
+                empty.error = 'image query embedding failed (no image-capable provider for this workspace?)';
+                return empty;
+            }
+        } else if (similarTo != null) {
+            const docId = parseDocumentId(similarTo, 'Document ID');
+            vector = await db.getDocumentVector(docId, 'image');
+            if (!vector) {
+                const empty = []; empty.count = 0; empty.totalCount = 0;
+                empty.error = `document ${docId} has no image-space vector`;
+                return empty;
+            }
+            excludeIds = [docId]; // a doc's nearest neighbour is always itself
+        } else {
+            throw new Error('searchByImage requires imageBytes or similarTo');
+        }
+        const querySpec = this.#normalizeQuerySpec(this.#composeCanvasQuerySpec(spec));
+        return await db.searchByVector(vector, querySpec, {
+            space: 'image', limit, offset, minDistance, maxDistance,
+            withDistances: !!debug, idsOnly, excludeIds,
+        });
+    }
+
+    /**
      * If the read targets a path whose leaf is a canvas layer, AND-compose the
      * canvas's stored querySpec (features + filters) into the spec before
      * delegating to the DB. Lets `GET /workspaces/:id/documents?context=/foo/bar/baz`

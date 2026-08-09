@@ -34,6 +34,14 @@ import { env } from '../../env.js';
 
 const CONFIG_NAME = 'embedd';
 
+// 1×1 PNG — the smallest real image every provider path can decode. Used by
+// POST /test with modality:'image' so "Test connection" exercises the image
+// pipeline instead of only round-tripping a text embed.
+const TEST_PNG = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+    'base64',
+);
+
 export default async function embeddRoutes(fastify, options) {
 
     // Rate limits. The plugin is registered once at the server root
@@ -215,7 +223,20 @@ export default async function embeddRoutes(fastify, options) {
             }
             const instance = embedd().providerFor(provider);
             const started = Date.now();
-            const { vector, dim } = await instance.embedQuery('canvas embedding connectivity check', { model });
+            // Exercise the modality actually being configured: an image space
+            // tested with embedQuery would pass on a text-only backend and then
+            // fail on first real ingest.
+            let vector; let dim;
+            if (modality === 'image') {
+                if (typeof instance.embedImage !== 'function') {
+                    throw new Error('provider type does not support image embedding');
+                }
+                const res = await instance.embedImage([TEST_PNG], { model }, { contentTypes: ['image/png'] });
+                vector = res.vectors?.[0];
+                dim = res.dim;
+            } else {
+                ({ vector, dim } = await instance.embedQuery('canvas embedding connectivity check', { model }));
+            }
             const r = new ResponseObject().success({
                 ok: Array.isArray(vector),
                 dim: dim || vector?.length || 0,

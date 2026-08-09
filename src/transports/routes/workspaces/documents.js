@@ -451,6 +451,109 @@ export default async function workspaceDocumentRoutes(fastify, options) {
     }
   });
 
+  // ── Search by image ──────────────────────────────────────────────────────
+  // kNN over the joint image space. Two query sources: `image` (base64 or data
+  // URI — an EPHEMERAL query image: camera frame, upload; embedded via embedd,
+  // never stored or indexed) or `similarTo` (an indexed document id — its
+  // stored vector is reused, no bytes on the wire). Composes with the usual
+  // structured scope, so a 2 FPS camera loop arrives pre-filtered by the
+  // active context path. Results are best-first in kNN order; `debug` attaches
+  // per-hit cosine distances for floor calibration.
+
+  const IMAGE_QUERY_MAX_BYTES = 32 * 1024 * 1024; // decoded; matches bodyLimit ballpark
+
+  fastify.post('/search/image', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      params: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } },
+      body: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          image: { type: 'string' },        // base64 or data:image/...;base64,
+          contentType: { type: 'string' },
+          similarTo: { type: 'integer', minimum: 1 },
+          ...contextQueryProps,
+          ...attributesQueryProps,
+          ...filtersQueryProps,
+          limit: { type: 'integer', default: 25 },
+          offset: { type: 'integer' },
+          minDistance: { type: 'number' },
+          maxDistance: { type: 'number' },
+          debug: { type: 'boolean', default: false },
+          idsOnly: { type: 'boolean', default: false },
+          scope: { type: 'string', enum: ['path', 'workspace'], default: 'workspace' },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    try {
+      const workspace = await getWorkspaceInstance(request, reply);
+      if (!workspace) return;
+
+      const body = request.body;
+      if (!body.image && !body.similarTo) {
+        const responseObject = new ResponseObject().badRequest('Image search requires `image` (base64) or `similarTo` (document id)');
+        return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+      }
+
+      let imageBytes = null;
+      let contentType = body.contentType || null;
+      if (body.image) {
+        let b64 = body.image;
+        const dataUri = b64.match(/^data:([^;,]+);base64,(.*)$/s);
+        if (dataUri) { contentType = contentType || dataUri[1]; b64 = dataUri[2]; }
+        try { imageBytes = Buffer.from(b64, 'base64'); } catch { imageBytes = null; }
+        if (!imageBytes || imageBytes.length === 0) {
+          const responseObject = new ResponseObject().badRequest('`image` is not valid base64');
+          return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+        }
+        if (imageBytes.length > IMAGE_QUERY_MAX_BYTES) {
+          const responseObject = new ResponseObject().badRequest(`query image exceeds ${IMAGE_QUERY_MAX_BYTES} bytes`);
+          return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+        }
+      }
+
+      // Default scope is the whole workspace: photos usually live in backend
+      // mirrors, not under the current context path. 'path' opts back in.
+      const { context: ctxSelector, directory: dirSelector } = body.scope === 'workspace'
+        ? { context: null, directory: null }
+        : resolveScopeSelectors(workspace, body, '/');
+
+      const documents = await workspace.searchByImage({
+        imageBytes,
+        contentType,
+        similarTo: body.similarTo ?? null,
+        spec: {
+          context: ctxSelector,
+          directory: dirSelector ? { ...dirSelector, recursive: true } : dirSelector,
+          attributes: buildAttributes(body),
+          filters: body.filters,
+        },
+        limit: body.limit,
+        offset: body.offset,
+        minDistance: body.minDistance,
+        maxDistance: body.maxDistance,
+        debug: body.debug,
+        idsOnly: body.idsOnly,
+      });
+
+      if (documents.error) {
+        fastify.log.error(`SynapsD error: ${documents.error}`);
+        const responseObject = new ResponseObject().error('Failed to search by image.', documents.error);
+        return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+      }
+
+      const responseObject = new ResponseObject().found(documents, 'Image search results retrieved successfully', 200, documents.count, documents.totalCount);
+      if (documents.debug) { responseObject.debug = documents.debug; }
+      return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+    } catch (error) {
+      fastify.log.error(error);
+      const responseObject = new ResponseObject().serverError('Failed to search by image');
+      return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+    }
+  });
+
   // ── Insert documents ────────────────────────────────────────────────────
 
   fastify.post('/', {

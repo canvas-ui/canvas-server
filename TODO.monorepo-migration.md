@@ -416,7 +416,13 @@ stays standalone — it is Rust and does not belong in an npm workspace.
       bash project with no package.json — pnpm skips it, nothing to build.
       The extension's `packages/` dir is build *output* (zips), not source.
       (canvas-electron: **dropped**, see Open questions)
-- [ ] web folded in, history intact — lands with the web repoint slice
+- [x] **web folded in** (Slice 5, 2026-08-09; subtree from web@77369ea,
+      history intact). Two strictness catches on arrival: code-editor.tsx
+      imported @codemirror/{language,state} undeclared (hoisting artifact,
+      now declared), and web's own lint carries **294 pre-existing errors**
+      from upstream main — web is excluded from the monorepo's recursive
+      lint sweep until that debt is paid (its own `pnpm --filter canvas-web
+      lint` still runs it).
 - [x] Each present app builds inside the monorepo (cli binary, desktop
       tsc+vite frontend, extension chromium+firefox packages; extension's 13
       tests + lint joined the recursive sweep). Tauri's Rust bundle is not in
@@ -437,8 +443,18 @@ stays standalone — it is Rust and does not belong in an npm workspace.
       `features` (v3) / legacy `metadata.features`; the extension works
       because every call site mirrors the array into body `features`, which
       is indexed but not stored on the row. Follow-up recorded below.);
-      web is the big one: ~164 scattered `.payload` unwrap sites across 14
-      service files — stage it service-by-service, not in one pass
+      **web transport done** (Slice 5: lib/api.ts rides the shared client in
+      envelope mode — unwrap:false keeps api.get/post returning whole
+      envelopes, all ~164 `.payload` service sites untouched; web policy
+      — redirect guard, token gate, 401→/login, workspace
+      autostart-and-replay via protocol's isWorkspaceNotActive — stays
+      local; stream() keeps a raw-Response path with the same policy).
+      Remaining: migrate the 14 service files onto unwrapped semantics
+      service-by-service (flip each call from envelope-typed to payload-
+      typed), then drop unwrap:false. Also fold in: web's duplicated
+      envelope types (types/api.d.ts ApiResponse vs services/context.ts
+      ApiPayload) collapse onto @augmentd-labs/canvas-protocol's
+      ResponseEnvelope as services migrate
 - [ ] Extension follow-up (deliberate, changes stored data shape): move tab
       tags from the inert doc-level `featureArray` to doc-level `features`
       so they are stored on the row *and* ticked — that is also what makes

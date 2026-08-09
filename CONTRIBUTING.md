@@ -56,9 +56,9 @@ parts users touch first, and they are where help is most useful right now.
 - **Match the surrounding code.** Comment density and naming vary by module, so
   follow the file you are in.
 - **Run the checks:** `npm run lint` and `npm test`.
-- **Submodules are separate repositories.** SynapsD, StoreD, the web UI, the CLI
-  and the other clients each live in their own repo under
-  [github.com/canvas-ui](https://github.com/canvas-ui). Open the pull request
+- **Dependencies are separate repositories.** SynapsD and StoreD live in their
+  own repos; the web UI and the other clients live in the
+  [canvas monorepo](https://github.com/canvas-ui/canvas). Open the pull request
   against the repository the code lives in, not against `canvas-server`.
 - **Leave the source notices alone.** The `X-Source-Code` header and the licence
   fields in `/rest/v2/ping` implement section 13 of the AGPL and need to stay.

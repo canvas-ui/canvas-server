@@ -27,7 +27,10 @@
     "docker:config": "docker compose config",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
-    "test": "node --test \"tests/**/*.test.js\""
+    "test": "node --test \"tests/**/*.test.js\"",
+    "dev:synapsd": "npm install --no-save file:../canvas-synapsd",
+    "dev:stored": "npm install --no-save file:../canvas-stored",
+    "dev:reset": "npm install"
   },
   "workspaces": [
     ".",

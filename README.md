@@ -18,7 +18,7 @@ Data from all sources is indexed and abstracted away from its physical location.
 ## Requirements
 
 - Node.js **20.18+** (22 LTS is what the container image runs) and npm
-- git — the repo uses submodules, and each workspace keeps its hooks in a git repo
+- git — each workspace keeps its hooks in a git repo
 - Docker (optional) — only for the containerized install and for [roles](#roles)
 
 ## Install & Run
@@ -26,8 +26,7 @@ Data from all sources is indexed and abstracted away from its physical location.
 ```bash
 git clone https://github.com/canvas-ui/canvas-server /path/to/canvas-server
 cd /path/to/canvas-server
-npm run update-submodules      # pulls synapsd, stored, embedd, the web UI, …
-npm install                    # also builds the web UI (postinstall)
+npm install                    # synapsd/stored arrive as pinned git deps, the web UI prebuilt
 npm start                      # or: npm run dev  (debug logging, NODE_ENV=development)
 ```
 
@@ -487,8 +486,7 @@ Configure in `./server/config/roles.json` or via REST API / Web UI.
 cd /path/to/canvas-server
 # stop the running instance first (Ctrl-C, or: systemctl --user stop canvas-server)
 git pull origin main
-npm run update-submodules
-npm install                    # rebuilds the web UI
+npm install
 npm start
 ```
 
@@ -497,7 +495,6 @@ Containerized instances update the same way, minus the npm steps:
 ```bash
 cd /path/to/canvas-server
 git pull origin main
-npm run update-submodules
 npm run docker:build && npm run docker:up
 ```
 

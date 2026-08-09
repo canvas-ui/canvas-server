@@ -473,6 +473,9 @@ export default async function workspaceDocumentRoutes(fastify, options) {
           image: { type: 'string' },        // base64 or data:image/...;base64,
           contentType: { type: 'string' },
           similarTo: { type: 'integer', minimum: 1 },
+          // Optional text: switches to fused mode — the image becomes a vector
+          // leg RRF-merged with the full text pipeline, so notes surface too.
+          q: { type: 'string' },
           ...contextQueryProps,
           ...attributesQueryProps,
           ...filtersQueryProps,
@@ -524,6 +527,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
         imageBytes,
         contentType,
         similarTo: body.similarTo ?? null,
+        text: body.q ?? null,
         spec: {
           context: ctxSelector,
           directory: dirSelector ? { ...dirSelector, recursive: true } : dirSelector,

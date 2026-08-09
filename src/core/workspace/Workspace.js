@@ -1630,8 +1630,15 @@ class Workspace extends EventEmitter {
      * `spec` is the usual structured scope; results come back best-first in
      * kNN order. No implicit distance floor: a frame query wants its top-K,
      * pass maxDistance to cut noise (same semantics as the text path).
+     *
+     * Optional `text` switches to FUSED mode: the image becomes a vector leg in
+     * synapsd's typed match descriptor and RRF-fuses with the full text
+     * pipeline (FTS + dense + text→image kNN) — so the image query resurfaces
+     * NOTES ranked by the text, not just photos. Note: fused mode cannot
+     * exclude the similarTo self-match (RRF has no excludeIds); callers pair
+     * similarTo with text knowing the reference doc may rank first.
      */
-    async searchByImage({ imageBytes = null, contentType = null, similarTo = null, spec = {}, limit, offset, minDistance, maxDistance, debug = false, idsOnly = false } = {}) {
+    async searchByImage({ imageBytes = null, contentType = null, similarTo = null, text = null, spec = {}, limit, offset, minDistance, maxDistance, debug = false, idsOnly = false } = {}) {
         const db = this.#getActiveDb();
         let vector;
         let excludeIds = [];
@@ -1664,6 +1671,22 @@ class Workspace extends EventEmitter {
             throw new Error('searchByImage requires imageBytes or similarTo');
         }
         const querySpec = this.#normalizeQuerySpec(this.#composeCanvasQuerySpec(spec));
+
+        // Fused mode: image rides as a vector leg on the typed match descriptor,
+        // RRF-merged with the text legs by synapsd — notes and photos in one page.
+        if (typeof text === 'string' && text.trim().length > 0) {
+            delete querySpec.query; delete querySpec.search; delete querySpec.q;
+            return await db.search({
+                ...querySpec,
+                query: {
+                    text,
+                    vectors: [{ space: 'image', vector, minDistance, maxDistance }],
+                },
+                limit, offset, idsOnly, debug,
+                maxDistance: Workspace.DEFAULT_MAX_COSINE_DISTANCE, // text dense leg floor
+            });
+        }
+
         return await db.searchByVector(vector, querySpec, {
             space: 'image', limit, offset, minDistance, maxDistance,
             withDistances: !!debug, idsOnly, excludeIds,

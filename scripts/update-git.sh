@@ -230,28 +230,15 @@ log_message "Pulling origin/$TARGET_BRANCH..."
 run_as_canvas_user "/usr/bin/git fetch origin $TARGET_BRANCH"
 run_as_canvas_user "/usr/bin/git reset --hard origin/$TARGET_BRANCH"
 
-log_message "Updating submodules..."
-# Pinned checkout (NOT --remote): use the submodule commits the parent repo
-# recorded, which is exactly what package-lock.json was generated against.
-# Bumping submodules to newer tips happens locally via `npm run update-submodules`
-# (which also regenerates + commits the lockfile), so parent pointers and the
-# lockfile always move together. --remote here would pull newer tips than the
-# lockfile knows and break `npm ci`.
-run_as_canvas_user "/usr/bin/git submodule update --init"
-
-WEB_DIST="$CANVAS_ROOT/src/ui/web/dist"
-log_message "Removing stale web dist..."
-rm -rf "$WEB_DIST"
-
 log_message "Installing dependencies..."
 # npm ci = strict, reproducible install from the committed package-lock.json
 # (fails on lockfile/package.json drift instead of silently re-resolving a
 # different, possibly-broken tree). Requires package-lock.json to be tracked.
+# synapsd/stored arrive as pinned git deps and the web UI as the prebuilt
+# canvas-web tarball — no submodules, no UI build step.
 run_as_canvas_user "/usr/bin/npm ci" || { log_message "npm ci failed"; exit 1; }
 
-log_message "Rebuilding web UI..."
-run_as_canvas_user "/usr/bin/npm run build" || { log_message "web build failed"; exit 1; }
-
+WEB_DIST="$CANVAS_ROOT/node_modules/canvas-web/dist"
 [[ -f "$WEB_DIST/index.html" ]] || { log_message "Missing $WEB_DIST/index.html"; exit 1; }
 
 # Must happen before the real server starts, both want the same port.

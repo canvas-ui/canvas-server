@@ -54,7 +54,7 @@ export const env = {
             // "disable" flags exist so Electron can run an embedded instance in minimal mode
             enabled: process.env.CANVAS_DISABLE_API !== 'true',
             protocol: process.env.CANVAS_API_PROTOCOL || 'http',
-            port: process.env.CANVAS_API_PORT || 8001, // Needs to be changed in ./src/ui/web/.env ..for now
+            port: process.env.CANVAS_API_PORT || 8001,
             host: process.env.CANVAS_API_HOST || '0.0.0.0'
         },
         web: {

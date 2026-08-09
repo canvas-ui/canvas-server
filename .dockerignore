@@ -13,13 +13,9 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# Client UIs that are not part of the server image. `src/ui/web` is (it is the
-# web client the server serves); the CLI's package.json stays so `npm ci` can
-# resolve the workspace, but its build output does not.
-src/ui/fuse/
-src/ui/desktop/
-src/ui/cli/dist/
-extensions/browser-extensions/dist/
+# Clients live in the canvas monorepo now; the web UI arrives as the prebuilt
+# canvas-web package at install time. Nothing UI-related remains in this
+# build context.
 
 # Build outputs
 build/

@@ -159,20 +159,12 @@ update_canvas() {
         handle_error "$?" "Failed to set permissions before npm operations"
     fi
 
-    echo "Updating git submodules as $CANVAS_USER..."
-    if ! su -s /bin/bash "$CANVAS_USER" -c "cd $CANVAS_ROOT && npm run update-submodules"; then
-        handle_error "$?" "Failed to update git submodules via npm"
-    fi
 
     echo "Installing dependencies as $CANVAS_USER..."
     if ! su -s /bin/bash "$CANVAS_USER" -c "cd $CANVAS_ROOT && npm install"; then
         handle_error "$?" "Failed to install dependencies via npm as $CANVAS_USER"
     fi
 
-    echo "Building UI components as $CANVAS_USER..."
-    if ! su -s /bin/bash "$CANVAS_USER" -c "cd $CANVAS_ROOT && npm run build"; then
-        handle_error "$?" "Failed to build UI components"
-    fi
 
     echo "Starting Canvas Server..."
     if ! systemctl start canvas-server; then
@@ -200,20 +192,12 @@ install_canvas() {
         handle_error "$?" "Failed to set permissions before npm operations"
     fi
 
-    echo "Updating git submodules as $CANVAS_USER..."
-    if ! su -s /bin/bash "$CANVAS_USER" -c "cd $CANVAS_ROOT && npm run update-submodules"; then
-        handle_error "$?" "Failed to update git submodules via npm"
-    fi
 
     echo "Installing dependencies as $CANVAS_USER..."
     if ! su -s /bin/bash "$CANVAS_USER" -c "cd $CANVAS_ROOT && npm install"; then
         handle_error "$?" "Failed to install dependencies via npm as $CANVAS_USER"
     fi
 
-    echo "Building UI components as $CANVAS_USER..."
-    if ! su -s /bin/bash "$CANVAS_USER" -c "cd $CANVAS_ROOT && npm run build"; then
-        handle_error "$?" "Failed to build UI components"
-    fi
 
     install_canvas_service
 

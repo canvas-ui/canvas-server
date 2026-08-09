@@ -122,9 +122,7 @@ update_canvas() {
 
     chown -R "$CANVAS_USER:$CANVAS_GROUP" "$CANVAS_ROOT" || handle_error "$?" "chown failed"
 
-    run_as_canvas "npm run update-submodules" "submodule update failed"
     run_as_canvas "npm install" "npm install failed"
-    run_as_canvas "npm run build" "npm run build failed"
 
     start_canvas
     echo "Canvas Server updated."
@@ -138,9 +136,7 @@ install_canvas() {
     cd "$CANVAS_ROOT" || handle_error "$?" "Failed to cd to $CANVAS_ROOT"
     chown -R "$CANVAS_USER:$CANVAS_GROUP" "$CANVAS_ROOT" || handle_error "$?" "chown failed"
 
-    run_as_canvas "npm run update-submodules" "submodule update failed"
     run_as_canvas "npm install" "npm install failed"
-    run_as_canvas "npm run build" "npm run build failed"
 
     install_canvas_service
     start_canvas

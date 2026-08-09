@@ -422,10 +422,14 @@ stays standalone — it is Rust and does not belong in an npm workspace.
       tests + lint joined the recursive sweep). Tauri's Rust bundle is not in
       CI yet.
 - [ ] Each consumes `packages/api-client` rather than its own REST code —
-      cli done; desktop next (144-line api.ts, small); extension after
-      (888-line api-client.js + featureArray divergence); web is the big one:
-      ~164 scattered `.payload` unwrap sites across 14 service files — stage
-      it service-by-service, not in one pass
+      cli done; **desktop done** (Slice 3, 2026-08-09: apiFetch replaced by
+      cached shared-client instances, same stateless signatures; the six
+      web-mirrored tree-path/layer functions were dead code and were deleted,
+      not ported — their routes enter the shared packages with the web
+      migration that exercises them; contexts gained the `/url` pair);
+      extension next (888-line api-client.js + featureArray divergence);
+      web is the big one: ~164 scattered `.payload` unwrap sites across 14
+      service files — stage it service-by-service, not in one pass
 
 ### Phase 4 — extract the open services from `canvas-server`
 

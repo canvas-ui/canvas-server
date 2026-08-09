@@ -1,7 +1,7 @@
 'use strict';
 
 import ResponseObject from '../ResponseObject.js';
-import schemaRegistry from '../../services/synapsd/src/schemas/SchemaRegistry.js';
+import schemaRegistry from 'canvas-synapsd/src/schemas/SchemaRegistry.js';
 
 /**
  * Schema routes handler for the API

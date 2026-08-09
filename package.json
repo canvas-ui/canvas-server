@@ -16,8 +16,6 @@
   "scripts": {
     "start": "node ./src/init.js",
     "dev": "cross-env NODE_ENV=development LOG_LEVEL=debug node ./src/init.js",
-    "update-submodules": "git submodule update --init --remote && git submodule foreach \"git add .\" && npm install --ignore-scripts && git add package-lock.json",
-    "build": "npm run build -w src/ui/web",
     "docker:install": "bash ./scripts/install-docker.sh",
     "docker:env": "node ./scripts/docker-env.js",
     "docker:build": "docker compose build",
@@ -27,7 +25,6 @@
     "docker:logs": "docker compose logs -f",
     "docker:shell": "docker compose exec canvas-server bash",
     "docker:config": "docker compose config",
-    "postinstall": "npm run build -w src/ui/web",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "test": "node --test \"tests/**/*.test.js\""
@@ -35,14 +32,7 @@
   "workspaces": [
     ".",
     "src/core/agent",
-    "src/ui/cli",
-    "src/ui/web",
-    "src/ui/shell",
-    "src/services/synapsd",
-    "src/services/neurald",
-    "src/services/stored",
-    "src/services/embedd",
-    "extensions/browser-extensions"
+    "src/services/embedd"
   ],
   "overrides": {
     "@types/react": "19.2.14",
@@ -76,6 +66,9 @@
     "@slack/web-api": "^7.15.0",
     "adm-zip": "^0.5.16",
     "bcryptjs": "^3.0.3",
+    "canvas-stored": "github:canvas-ui/canvas-stored#b88418a90cb109adf24a804da273750f9b3007d8",
+    "canvas-synapsd": "github:canvas-ui/canvas-synapsd#40eef903891f80e72dd9a57b8eb3e65d17aba5a9",
+    "canvas-web": "https://github.com/canvas-ui/canvas/releases/download/web-v2.2.0/canvas-web-2.2.0.tgz",
     "conf": "^14.0.0",
     "cross-env": "^10.1.0",
     "debug": "^4.4.3",

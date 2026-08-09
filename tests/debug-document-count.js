@@ -6,7 +6,7 @@
  */
 
 import path from 'path';
-import SynapsD from '../src/services/synapsd/src/index.js';
+import SynapsD from 'canvas-synapsd';
 
 async function debugDocumentCount(dbPath) {
     console.log(`🔍 Debugging document count for database: ${dbPath}`);

@@ -10,6 +10,7 @@ import fastifyCors from '@fastify/cors';
 import fastifyRateLimit from '@fastify/rate-limit';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { createRequire } from 'module';
 import { env } from '../env.js';
 import ResponseObject from './ResponseObject.js';
 
@@ -52,6 +53,15 @@ import { createLogger, logger as rootLogger } from '../utils/log.js';
 const logger = createLogger('transports');
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const require = createRequire(import.meta.url);
+
+// The web UI ships as the prebuilt `canvas-web` package (dist/ only, exact
+// tarball pin — see package.json). CANVAS_WEB_ROOT overrides for development
+// against a monorepo checkout, e.g. ../canvas/apps/web/dist.
+function resolveWebRoot() {
+    if (process.env.CANVAS_WEB_ROOT) return process.env.CANVAS_WEB_ROOT;
+    return path.join(path.dirname(require.resolve('canvas-web/package.json')), 'dist');
+}
 
 /**
  * Create and configure the Fastify server
@@ -328,9 +338,9 @@ export async function createServer(options = {}) {
   // Context events are forwarded via the wildcard listener in websocket/channels/context.js
   // No additional listeners needed here (would cause duplicate delivery)
 
-  // Static file server for the UI
+  // Static file server for the UI (prebuilt canvas-web package)
   await server.register(fastifyStatic, {
-    root: path.join(__dirname, '..', 'ui', 'web', 'dist'),
+    root: resolveWebRoot(),
     prefix: '/',
   });
 

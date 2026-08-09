@@ -1,6 +1,6 @@
 import Debug from 'debug';
 import Imap from 'imap';
-import StorageBackend from '../../../../services/stored/src/backends/StorageBackend.js';
+import StorageBackend from 'canvas-stored/src/backends/StorageBackend.js';
 
 const debug = Debug('stored:backend:imap');
 

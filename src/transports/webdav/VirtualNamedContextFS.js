@@ -1,6 +1,6 @@
 'use strict';
 
-import schemaRegistry from '../../services/synapsd/src/schemas/SchemaRegistry.js';
+import schemaRegistry from 'canvas-synapsd/src/schemas/SchemaRegistry.js';
 import {
     applyBodyToDoc, docEntries, docName, docSize, fileDocumentFromBlob, httpError,
     inferDocFromFile, norm, renamedRecord, resolveDocContent,

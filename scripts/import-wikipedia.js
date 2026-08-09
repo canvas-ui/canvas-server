@@ -168,7 +168,7 @@ function makeLocalWriter(opts) {
                 throw new Error(`Workspace db not found: ${dbPath}\n` +
                     `Pass --workspace pointing at a workspace root (or its db/ dir).`);
             }
-            const { default: Db } = await import('../src/services/synapsd/src/index.js');
+            const { default: Db } = await import('canvas-synapsd');
             console.log(`Opening SynapsD at ${dbPath} ...`);
             console.log('(Make sure canvas-server is STOPPED — LMDB is single-writer.)\n');
             db = new Db({ path: dbPath, backupOnOpen: false, backupOnClose: false });

@@ -11,15 +11,15 @@ import { v4 as uuidv4 } from 'uuid';
 import { createLogger } from '../../utils/log.js';
 
 // Includes
-import Db from '../../services/synapsd/src/index.js';
+import Db from 'canvas-synapsd';
 import { parseDocumentId, parseDocumentIdArray } from '../../utils/documentId.js';
 import { BACKENDS_TREE_NAME, normalizeBackendsTreePath, normalizeSegment } from '../../utils/backend-documents.js';
-import { parseLocationUrl } from '../../services/synapsd/src/utils/path-helpers.js';
+import { parseLocationUrl } from 'canvas-synapsd/src/utils/path-helpers.js';
 
 // Sub-modules
 import { WorkspaceTokens } from './lib/WorkspaceTokens.js';
 import { classifyDocument } from './lib/classifier.js';
-import { extract as extractBlobMetadata } from '../../services/stored/src/extractors/index.js';
+import { extract as extractBlobMetadata } from 'canvas-stored/src/extractors/index.js';
 import { pickGeo } from './lib/geo.js';
 import { WorkspaceStoredIndex } from './lib/WorkspaceStoredIndex.js';
 import { WorkspaceMailIndex } from './services/imap/index.js';

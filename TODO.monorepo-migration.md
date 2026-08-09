@@ -399,8 +399,17 @@ stays standalone — it is Rust and does not belong in an npm workspace.
       full 236-commit history reachable via the subtree merge's second parent —
       note `git log --follow` does not cross a subtree graft, use
       `git log <merge>^2`). Builds in the monorepo, consumes
-      `@canvas-os/api-client`. Old canvas-cli repo untouched until Phase 3
-      completes; the monorepo copy is canonical from now on.
+      the shared api-client. The monorepo copy is canonical from now on.
+      **Old-repo cutover (decided 2026-08-09):** the four folded repos
+      (cli, shell, desktop, browser-extensions) carry a final README banner
+      pointing at `canvas-ui/canvas` → `apps/<name>` (pushed 2026-08-09);
+      archiving deferred to whenever it feels right — archived repos stay
+      fetchable, so the server's submodules would be unaffected either way.
+      The repos are kept permanently: they are the AGPL fork point and the
+      MBAG provenance record. Releases move to the monorepo (tag per app);
+      sweep install-script/store links to new release URLs when the release
+      pipeline lands. canvas-web stays live until the web fold + Phase 5;
+      fuse/stored stay standalone by design.
 - [x] **shell, desktop, browser-extension folded in** (Slice 2, 2026-08-09;
       subtrees from shell@8a1daf8, desktop@0d1051c, extension@e412171).
       Nested npm lockfiles dropped; `@tauri-apps/cli` allowlisted. shell is a

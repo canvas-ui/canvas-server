@@ -6,9 +6,9 @@
  * but is not found in the database (causing the redirect loop)
  */
 
-import { spawn } from 'child_process';
-import { readFileSync } from 'fs';
-import path from 'path';
+import { spawn as _spawn } from 'child_process';
+import { readFileSync as _readFileSync } from 'fs';
+import _path from 'path';
 
 const API_BASE_URL = 'http://127.0.0.1:8001';
 
@@ -45,7 +45,7 @@ async function makeRequest(url, options = {}) {
   let data;
   try {
     data = await response.json();
-  } catch (error) {
+  } catch  {
     data = { error: 'Could not parse response as JSON' };
   }
 
@@ -263,6 +263,7 @@ async function runTests() {
     passed++;
   } else {
     failed++;
+            void failed;
     console.log('\n❌ Cannot continue without valid token');
     return;
   }

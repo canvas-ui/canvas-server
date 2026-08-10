@@ -2,7 +2,7 @@
 
 import ResponseObject from '../../ResponseObject.js';
 
-export default async function workspaceBitmapRoutes(fastify, options) {
+export default async function workspaceBitmapRoutes(fastify, _options) {
   const parseBool = (value) => value === true || value === 'true' || value === 1 || value === '1';
 
   async function getWorkspaceInstance(request, reply) {

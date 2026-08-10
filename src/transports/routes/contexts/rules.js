@@ -3,7 +3,7 @@
 import ResponseObject from '../../ResponseObject.js';
 import { validateUser } from '../../auth/strategies.js';
 
-export default async function contextRulesRoutes(fastify, options) {
+export default async function contextRulesRoutes(fastify, _options) {
     fastify.addHook('preHandler', async (request, reply) => {
         try {
             validateUser(request.user, ['id']);

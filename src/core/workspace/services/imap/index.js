@@ -49,7 +49,6 @@ export class WorkspaceMailIndex extends EventEmitter {
     #put;
     #putMany;
     #getBackendsTreeSelector;
-    #getDb;
     #persistBlob;
     // Optional backend-node enable-lock hooks (lock /imap/<account> in the
     // backends tree while a mailbox on that account is enabled).
@@ -72,7 +71,6 @@ export class WorkspaceMailIndex extends EventEmitter {
         this.#put = put;
         this.#putMany = putMany;
         this.#getBackendsTreeSelector = getBackendsTreeSelector;
-        this.#getDb = getDb;
         this.#persistBlob = persistBlob;
         this.#lockBackendNode = lockBackendNode;
         this.#unlockBackendNode = unlockBackendNode;

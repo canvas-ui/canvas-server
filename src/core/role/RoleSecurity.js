@@ -154,7 +154,7 @@ class RoleSecurity {
         const policies = [];
 
         switch (context.type) {
-            case 'global':
+            case 'global': {
                 policies.push({
                     type: 'allow',
                     direction: 'egress',
@@ -162,6 +162,7 @@ class RoleSecurity {
                     protocols: ['tcp']
                 });
                 break;
+            }
 
             case 'user':
                 policies.push({
@@ -210,7 +211,7 @@ class RoleSecurity {
      */
     async #validateRoleTypePermissions(roleTemplate, context, requestingUserId, errors) {
         switch (context.type) {
-            case 'global':
+            case 'global': {
                 // Only admins can create global roles
                 const isAdmin = await this.#checkAdminPermissions(requestingUserId);
                 if (!isAdmin) {
@@ -220,6 +221,7 @@ class RoleSecurity {
                     });
                 }
                 break;
+            }
 
             case 'user':
                 // Can only create user roles for self

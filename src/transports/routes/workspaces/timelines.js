@@ -2,7 +2,7 @@
 
 import ResponseObject from '../../ResponseObject.js';
 
-export default async function workspaceTimelineRoutes(fastify, options) {
+export default async function workspaceTimelineRoutes(fastify, _options) {
   async function getWorkspaceInstance(request, reply) {
     const identifier = request.params.id;
     const userId = request.user.id;

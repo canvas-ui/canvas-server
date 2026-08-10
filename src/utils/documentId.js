@@ -63,7 +63,7 @@ export function parseDocumentIdArray(idArray, context = 'Document ID array') {
             return parseDocumentId(id, `${context} element at index ${index}`);
         } catch (error) {
             // Re-throw with more context
-            throw new Error(`${error.message}`);
+            throw new Error(`${error.message}`, { cause: error });
         }
     });
 }

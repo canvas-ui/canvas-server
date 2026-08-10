@@ -10,7 +10,7 @@ import UserConfigStore from '../../core/user/ConfigStore.js';
  * (`/me`) - there is no cross-user read or write here; user administration
  * lives under /rest/v2/admin/users.
  */
-export default async function userRoutes(fastify, options) {
+export default async function userRoutes(fastify, _options) {
 
     // ── Module roots ────────────────────────────────────────────────────────
     // Where this user's workspaces, roles and agents live on disk. The three

@@ -4,7 +4,7 @@
  * Test script for dotfile manager functionality
  */
 
-import { env } from '../src/env.js';
+import { env as _env } from '../src/env.js';
 import UserManager from '../src/core/user/index.js';
 import WorkspaceManager from '../src/core/workspace/index.js';
 import ContextManager from '../src/core/context/index.js';

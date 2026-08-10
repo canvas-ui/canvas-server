@@ -14,7 +14,7 @@ import { createLogger } from '../../utils/log.js';
 const logger = createLogger('role-manager');
 
 // Includes
-import Role from './Role.js';
+import _Role from './Role.js';
 import GlobalRole from './GlobalRole.js';
 import WorkspaceRole from './WorkspaceRole.js';
 import VolumeMapper from './VolumeMapper.js';
@@ -39,7 +39,7 @@ const ROLE_TYPES = {
     WORKSPACE: 'workspace'  // Workspace-tied roles
 };
 
-const ROLE_CONFIG_FILENAME = 'role.json';
+const _ROLE_CONFIG_FILENAME = 'role.json';
 
 /**
  * Roles Service
@@ -441,7 +441,7 @@ class Roles extends EventEmitter {
             const templateData = await fsPromises.readFile(templatePath, 'utf8');
             return JSON.parse(templateData);
         } catch (error) {
-            throw new Error(`Failed to load role template ${templateName}: ${error.message}`);
+            throw new Error(`Failed to load role template ${templateName}: ${error.message}`, { cause: error });
         }
     }
 
@@ -566,7 +566,7 @@ class Roles extends EventEmitter {
                 this.#updateRoleStatus(roleId, isRunning ? ROLE_STATUS.RUNNING : ROLE_STATUS.STOPPED);
 
                 logger.debug(`Role ${roleId} status: ${isRunning ? 'running' : 'stopped'}`);
-            } catch (error) {
+            } catch  {
                 // Container doesn't exist
                 this.#updateRoleStatus(roleId, ROLE_STATUS.STOPPED);
                 logger.debug(`Role ${roleId} container not found, marked as stopped`);

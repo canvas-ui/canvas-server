@@ -12,7 +12,7 @@ import {
  * @param {FastifyInstance} fastify - Fastify instance
  * @param {Object} options - Plugin options
  */
-export default async function pubContextRoutes(fastify, options) {
+export default async function pubContextRoutes(fastify, _options) {
   function buildAttributes(query) {
     const { allOf, noneOf, anyOf } = query;
     if (!allOf?.length && !noneOf?.length && !anyOf?.length) return undefined;
@@ -68,7 +68,7 @@ export default async function pubContextRoutes(fastify, options) {
                 };
               }
             }
-          } catch (error) {
+          } catch  {
             // Continue to next approach if context loading fails
           }
         }
@@ -86,7 +86,7 @@ export default async function pubContextRoutes(fastify, options) {
               userId
             };
           }
-        } catch (error) {
+        } catch  {
           // Context not accessible to this user, continue
         }
       }

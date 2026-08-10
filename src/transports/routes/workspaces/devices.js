@@ -23,7 +23,7 @@ async function findWorkspaceDeviceDoc(workspace, deviceId) {
     : null;
 }
 
-export default async function workspaceDeviceRoutes(fastify, options) {
+export default async function workspaceDeviceRoutes(fastify, _options) {
   fastify.get('/', {
     onRequest: [fastify.authenticate, requireWorkspaceRead()],
     schema: {

@@ -13,10 +13,10 @@ const log = console.log;
 // Constants
 const SOCKET_PATH = os.tmpdir() + '/ws-ipcd.sock';
 const DEFAULT_SOCKET_PATH = SOCKET_PATH;
-const CLIENT_SOCKET_TIMEOUT_MS = 1000;
+const _CLIENT_SOCKET_TIMEOUT_MS = 1000;
 const CLIENT_RECONNECT_TIMEOUT_MS = 2000;
 const CLIENT_RECONNECT_ERROR_COUNT = 3; // Number of connection errors till we attempt a reconnect
-const CLIENT_IGNORE_EVENTS = [
+const _CLIENT_IGNORE_EVENTS = [
     'ECONNREFUSED',
     'ECONNRESET',
     'ETIMEDOUT',
@@ -27,7 +27,7 @@ const CLIENT_IGNORE_EVENTS = [
     'ENOENT',
 ];
 
-const SCHEMA_V0 = {};
+const _SCHEMA_V0 = {};
 
 class Server extends EE {
     constructor(socketPath) {
@@ -65,7 +65,7 @@ class Server extends EE {
             return this.broadcast(data);
         }
 
-        const message = {
+        const _message = {
             id: genUUID(),
             type: '',
             payload: '',
@@ -270,7 +270,7 @@ class Client extends EE {
         this.connect();
     }
 
-    send(data, type = 'message') {
+    send(data, _type = 'message') {
         if (!data) {
             log('IPC Client: No data to be send');
             return false;

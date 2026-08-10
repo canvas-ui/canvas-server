@@ -5,8 +5,8 @@ import EventEmitter from 'eventemitter2';
 import * as fsPromises from 'fs/promises';
 import path from 'path';
 import getFolderSize from 'get-folder-size';
-import Conf from 'conf';
-import { v4 as uuidv4 } from 'uuid';
+import _Conf from 'conf';
+import { v4 as _uuidv4 } from 'uuid';
 // Logging
 import { createLogger } from '../../utils/log.js';
 
@@ -36,6 +36,7 @@ import {
     workspaceInternals,
     workspaceStoredDefault,
     workspaceServices,
+    WORKSPACE_STORAGE_BACKENDS,
 } from './lib/constants.js';
 
 /*
@@ -87,8 +88,6 @@ class Workspace extends EventEmitter {
     #sessions = new Set();     // live QuerySessions opened over this workspace's db
 
     // Managers (injected)
-    #storageManager = null;
-    #roleManager = null;
     #inferd = null;            // shared embedding service (optional; server-managed)
     #inferdRegistered = false;
     #embedStoreCount = 0;      // storeVectors calls since the last mid-ingest compaction
@@ -109,8 +108,6 @@ class Workspace extends EventEmitter {
         this.#rootPath = options.rootPath;
         this.#configStore = options.configStore;
         this.#logger = options.logger || createLogger('workspace');
-        this.#storageManager = options.storageManager;
-        this.#roleManager = options.roleManager;
         this.#inferd = options.inferd || null;
 
         this.#tokens = new WorkspaceTokens({ configStore: this.#configStore, workspaceId: this.id });

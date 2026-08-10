@@ -1,7 +1,7 @@
 'use strict';
 
 import ResponseObject from '../../ResponseObject.js';
-import { requireWorkspaceRead, requireWorkspaceWrite, requireWorkspaceAdmin } from '../../middleware/workspace-acl.js';
+import { requireWorkspaceRead, requireWorkspaceWrite as _requireWorkspaceWrite, requireWorkspaceAdmin } from '../../middleware/workspace-acl.js';
 import { enforceAgentBinding } from '../../middleware/agent-acl.js';
 import { validateUser } from '../../auth/strategies.js';
 import { resolveWorkspaceAddress } from '../../middleware/address-resolver.js';
@@ -11,7 +11,7 @@ import { resolveWorkspaceAddress } from '../../middleware/address-resolver.js';
  * @param {FastifyInstance} fastify - Fastify instance
  * @param {Object} options - Plugin options
  */
-export default async function workspaceRoutes(fastify, options) {
+export default async function workspaceRoutes(fastify, _options) {
   const isUuid = (value) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value || '');
 
   /**
@@ -351,7 +351,7 @@ export default async function workspaceRoutes(fastify, options) {
           response.resourceAddress = fastify.workspaceManager.constructWorkspaceReference(
             workspace.owner, workspace.name
           );
-        } catch (_) {}
+        } catch (_) { /* intentionally ignored */ }
       }
 
       const responseObject = new ResponseObject().found(response, 'Workspace retrieved successfully');

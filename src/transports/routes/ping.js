@@ -1,7 +1,7 @@
 'use strict';
 
 import { env } from '../../env.js';
-import os from 'os';
+import _os from 'os';
 import ResponseObject from '../ResponseObject.js';
 
 /**
@@ -9,16 +9,16 @@ import ResponseObject from '../ResponseObject.js';
  * @param {FastifyInstance} fastify - Fastify instance
  * @param {Object} options - Plugin options
  */
-export default async function pingRoute(fastify, options) {
+export default async function pingRoute(fastify, _options) {
   // Simple ping endpoint
-  fastify.get('/ping', async (request, reply) => {
+  fastify.get('/ping', async (_request, _reply) => {
     return { pong: `Hello, world! (${env.app.name} v${env.app.version})` };
   });
 
   // Debug endpoint to check auth and server decorators
   fastify.get('/debug', {
     onRequest: [fastify.authenticate]
-  }, async (request, reply) => {
+  }, async (request, _reply) => {
     // List all decorators on the server
     const decorators = Object.keys(fastify).filter(key =>
       typeof fastify[key] !== 'function' ||

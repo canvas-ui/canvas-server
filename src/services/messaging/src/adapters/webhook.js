@@ -56,7 +56,7 @@ export class WebhookAdapter {
         } catch (error) {
             const message = error.name === 'AbortError' ? `webhook: timed out after ${this.#timeoutMs}ms` : error.message;
             this.#logger.debug?.(`webhook delivery failed: ${message}`);
-            throw new Error(message);
+            throw new Error(message, { cause: error });
         } finally {
             clearTimeout(timer);
         }

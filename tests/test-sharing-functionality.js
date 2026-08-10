@@ -17,7 +17,7 @@ let testWorkspaceId = null;
 let testContextId = null;
 let workspaceToken = null;
 let contextToken = null;
-let testUserEmail = 'test-user@canvas.local';
+let _testUserEmail = 'test-user@canvas.local';
 
 // Helper function to make API requests
 async function apiRequest(method, endpoint, body = null, useToken = true) {

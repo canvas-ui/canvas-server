@@ -13,7 +13,7 @@ import { requireWorkspaceRead, requireWorkspaceWrite } from '../../middleware/wo
 // Storage/connector backend routes live in ./backends.js (/:id/backends —
 // the unified facade); the legacy /data-backends trio was retired in the
 // services.stored reshape (2026-07).
-export default async function workspaceServicesRoutes(fastify, options) {
+export default async function workspaceServicesRoutes(fastify, _options) {
     /**
      * List all services and their status
      */

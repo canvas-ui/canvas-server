@@ -122,7 +122,7 @@ async function authenticate() {
 
     try {
         // Try to get admin credentials from environment
-        const adminEmail = process.env.CANVAS_ADMIN_EMAIL || 'admin@canvas.local';
+        const _adminEmail = process.env.CANVAS_ADMIN_EMAIL || 'admin@canvas.local';
         const adminToken = process.env.CANVAS_ADMIN_TOKEN;
 
         if (adminToken) {
@@ -165,7 +165,7 @@ async function createTestUser() {
                 testUser = existing;
                 return;
             }
-        } catch (error) {
+        } catch  {
             // User doesn't exist, continue
         }
 
@@ -449,6 +449,7 @@ async function runTests() {
     log('═══════════════════════════════════════════════════════', 'cyan');
 
     let keyPath = null;
+            void keyPath;
 
     try {
         await authenticate();

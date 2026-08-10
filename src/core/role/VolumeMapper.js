@@ -273,12 +273,13 @@ class VolumeMapper {
             case 'global':
                 return path.join(this.#serverConfig.dataPath || process.cwd(), 'roles', context.roleId);
 
-            case 'workspace':
+            case 'workspace': {
                 const workspace = await this.#workspaceManager.getWorkspace(context.workspaceId);
                 if (!workspace) {
                     throw new Error(`Workspace not found: ${context.workspaceId}`);
                 }
                 return path.join(workspace.rootPath, 'roles', context.roleId);
+            }
 
             default:
                 throw new Error(`Unsupported role type for role data path: ${context.type}`);
@@ -296,12 +297,13 @@ class VolumeMapper {
             case 'global':
                 return path.join(this.#serverConfig.dataPath, 'sockets');
 
-            case 'workspace':
+            case 'workspace': {
                 const workspace = await this.#workspaceManager.getWorkspace(context.workspaceId);
                 if (!workspace) {
                     throw new Error(`Workspace not found: ${context.workspaceId}`);
                 }
                 return path.join(workspace.rootPath, 'var', 'run');
+            }
 
             default:
                 throw new Error(`Unsupported role type for socket path: ${context.type}`);
@@ -315,6 +317,7 @@ class VolumeMapper {
      * @private
      */
     async #validateAbsolutePath(absolutePath, context) {
+        void this.#validateAbsolutePath;
         // Define allowed absolute path prefixes based on role type
         const allowedPrefixes = [];
 
@@ -400,7 +403,7 @@ class VolumeMapper {
      * @returns {Promise<Object>} Access check result
      * @private
      */
-    async #checkVolumeAccess(hostPath, context) {
+    async #checkVolumeAccess(hostPath, _context) {
         try {
             const stats = await fsPromises.stat(hostPath);
 

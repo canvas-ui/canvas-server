@@ -8,7 +8,7 @@ import { stripDeviceFeatureTags } from '../../../utils/device-features.js';
  * Workspace dotfiles routes (CRUD, status, init).
  * Git HTTP backend lives in ./git.js at /workspaces/:id/git/*
  */
-export default async function workspaceDotfilesRoutes(fastify, options) {
+export default async function workspaceDotfilesRoutes(fastify, _options) {
   const extractRequestInfo = (request) => {
     // Workspace should be resolved by middleware and available at request.workspace
     const workspace = request.workspace;

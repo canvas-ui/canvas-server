@@ -68,7 +68,7 @@ async function discoverWorkspaceCandidates(roots) {
             if (!dirent.isDirectory() && !dirent.isSymbolicLink()) continue;
 
             const dir = path.join(root, dirent.name);
-            let realDir = dir;
+            let realDir;
             try {
                 realDir = await fsPromises.realpath(dir);
             } catch {

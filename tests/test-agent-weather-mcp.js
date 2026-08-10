@@ -118,7 +118,7 @@ async function runTest(testCase) {
                                     foundResponse = true;
                                     break;
                                 }
-                            } catch (e) {
+                            } catch  {
                                 // Not JSON, skip
                             }
                         }

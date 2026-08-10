@@ -364,7 +364,7 @@ export default function setupWebSocketHandlers(fastify) {
     const now = Date.now();
     connections.forEach((conn, id) => {
       if (now - conn.lastActivity > 30 * 60_000) {
-        try { conn.socket.disconnect(true); } catch {}
+        try { conn.socket.disconnect(true); } catch { /* intentionally ignored */ }
         connections.delete(id);
       }
     });

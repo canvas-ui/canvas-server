@@ -4,7 +4,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import argv from 'node:process';
 import os from 'os';
-import crypto from 'crypto';
+import _crypto from 'crypto';
 
 // Runtime
 const SERVER_MODE = argv.argv.slice(2).includes('--user') ? 'user' : 'standalone';

@@ -9,7 +9,7 @@ import { readRecentLogs, subscribeToLogs } from '../../../utils/log.js';
  * @param {FastifyInstance} fastify - Fastify instance
  * @param {Object} options - Plugin options
  */
-export default async function adminRoutes(fastify, options) {
+export default async function adminRoutes(fastify, _options) {
 
   const parseLogFilters = (query = {}) => ({
     tail: query.tail,
@@ -206,7 +206,7 @@ export default async function adminRoutes(fastify, options) {
           await fastify.authService.setPassword(user.id, password);
         } catch (e) {
           // Best-effort rollback so the account doesn't exist without credentials
-          try { await fastify.users.delete(user.id); } catch (_) {}
+          try { await fastify.users.delete(user.id); } catch (_) { /* intentionally ignored */ }
           throw e;
         }
       }

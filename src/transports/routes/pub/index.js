@@ -10,7 +10,7 @@ import canvasRoutes from './canvases.js';
  * @param {FastifyInstance} fastify - Fastify instance
  * @param {Object} options - Plugin options
  */
-export default async function pubRoutes(fastify, options) {
+export default async function pubRoutes(fastify, _options) {
 
   // Register workspace sharing routes
   fastify.register(workspaceRoutes, { prefix: '/workspaces' });
@@ -25,7 +25,7 @@ export default async function pubRoutes(fastify, options) {
   fastify.register(canvasRoutes, { prefix: '/c' });
 
   // Health check endpoint for pub routes
-  fastify.get('/health', async (request, reply) => {
+  fastify.get('/health', async (_request, _reply) => {
     return {
       status: 'ok',
       timestamp: new Date().toISOString(),

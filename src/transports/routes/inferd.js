@@ -42,7 +42,7 @@ const TEST_PNG = Buffer.from(
     'base64',
 );
 
-export default async function inferdRoutes(fastify, options) {
+export default async function inferdRoutes(fastify, _options) {
 
     // Rate limits. The plugin is registered once at the server root
     // (transports/index.js) with `global: false`, which is what keeps it off

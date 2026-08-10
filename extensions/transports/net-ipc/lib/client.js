@@ -17,10 +17,10 @@ const log = require('debug')('net.ipc.client');
 // Constants
 const DEFAULT_SOCKET_PATH = xpipe(os.tmpdir() + '/net.ipc.sock');
 const CLIENT_ENABLE_RECONNECT = false;
-const CLIENT_SOCKET_TIMEOUT_MS = 1000;
+const _CLIENT_SOCKET_TIMEOUT_MS = 1000;
 const CLIENT_RECONNECT_TIMEOUT_MS = 2000;
 const CLIENT_RECONNECT_ERROR_COUNT = 3; // Number of connection errors till we attempt a reconnect
-const CLIENT_IGNORE_EVENTS = [
+const _CLIENT_IGNORE_EVENTS = [
     'ECONNREFUSED',
     'ECONNRESET',
     'ETIMEDOUT',

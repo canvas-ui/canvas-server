@@ -8,7 +8,7 @@ import ResponseObject from '../../ResponseObject.js';
  * @param {FastifyInstance} fastify - Fastify instance
  * @param {Object} options - Plugin options
  */
-export default async function contextTokenRoutes(fastify, options) {
+export default async function contextTokenRoutes(fastify, _options) {
 
   // Create a sharing token for the context
   fastify.post('/:contextId/tokens', {

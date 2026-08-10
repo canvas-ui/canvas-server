@@ -127,7 +127,6 @@ class WorkspaceManager extends EventEmitter {
     #userIndexes = new Map(); // userId -> Conf (lazily opened per-user index)
     #users;             // Users service
     #roles;             // Roles service
-    #contextManager;    // Context Manager
     #inferd;            // shared embedding service (optional; passed to each Workspace)
     #logger;
 
@@ -356,8 +355,7 @@ class WorkspaceManager extends EventEmitter {
         this.#roles = roles;
     }
 
-    setContextManager(contextManager) {
-        this.#contextManager = contextManager;
+    setContextManager(_contextManager) {
     }
 
     async listWorkspaces(userId) {
@@ -370,7 +368,7 @@ class WorkspaceManager extends EventEmitter {
             try {
                 const u = await this.#users.get(userId);
                 userEmail = u?.email || null;
-            } catch (e) {
+            } catch  {
                 userEmail = null;
             }
         }
@@ -399,12 +397,12 @@ class WorkspaceManager extends EventEmitter {
                     try {
                         const ownerUser = await this.#users.get(entry.owner);
                         if (ownerUser?.email) item.ownerEmail = ownerUser.email;
-                    } catch {}
+                    } catch { /* intentionally ignored */ }
                 } else {
                     try {
                         const ownerUser = await this.#users.get(entry.owner);
                         if (ownerUser?.email) item.ownerEmail = ownerUser.email;
-                    } catch {}
+                    } catch { /* intentionally ignored */ }
                 }
                 results.push(item);
             } else {
@@ -416,12 +414,12 @@ class WorkspaceManager extends EventEmitter {
                     try {
                         const ownerUser = await this.#users.get(entry.owner);
                         if (ownerUser?.email) item.ownerEmail = ownerUser.email;
-                    } catch {}
+                    } catch { /* intentionally ignored */ }
                 } else {
                     try {
                         const ownerUser = await this.#users.get(entry.owner);
                         if (ownerUser?.email) item.ownerEmail = ownerUser.email;
-                    } catch {}
+                    } catch { /* intentionally ignored */ }
                 }
                 results.push(item);
             }
@@ -901,7 +899,7 @@ class WorkspaceManager extends EventEmitter {
     async scanUserWorkspaces(userId) {
         const report = { discovered: [], adopted: [], updated: [], skipped: [], missing: [] };
 
-        let user = null;
+        let user;
         try {
             user = await this.#users.get(userId);
         } catch {
@@ -1106,7 +1104,7 @@ class WorkspaceManager extends EventEmitter {
     }
 
     async #enableConfiguredServices(workspace) {
-        const services = workspace.services || {};
+        const _services = workspace.services || {};
 
         // Home service is auto-enabled by workspace.start() based on config
     }

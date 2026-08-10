@@ -154,7 +154,7 @@ export function createWorkspaceACLMiddleware(requiredPermission = 'read', { allo
             userId = tokenResult.userId;
           } catch (error) {
             logger.debug(`API token verification failed: ${error.message}`);
-            throw new Error(`Token verification failed: ${error.message}`);
+            throw new Error(`Token verification failed: ${error.message}`, { cause: error });
           }
         }
         logger.debug(`Using canvas token for user: ${userId}`);
@@ -522,7 +522,7 @@ async function findWorkspaceByUserEmail(workspaceManager, workspaceIdentifier, u
  * @param {string} userId - Accessing user ID
  * @returns {Promise<Workspace|null>} Workspace instance if successful, null otherwise
  */
-async function loadWorkspaceForUserAccess(workspaceManager, workspaceEntry, userId) {
+async function loadWorkspaceForUserAccess(workspaceManager, workspaceEntry, _userId) {
   try {
     // Load the workspace by ID with the owner as the requesting user
     // This allows the user to access a workspace they have email-based permissions for

@@ -8,7 +8,7 @@ import ResponseObject from '../../ResponseObject.js';
  * cover the dataset lifecycle: enumerate and drop-with-documents. The virtual
  * 'default' dataset (unstamped documents) is engine-side and never listed here.
  */
-export default async function workspaceDatasetRoutes(fastify, options) {
+export default async function workspaceDatasetRoutes(fastify, _options) {
   async function getWorkspaceInstance(request, reply) {
     const identifier = request.params.id;
     const userId = request.user.id;

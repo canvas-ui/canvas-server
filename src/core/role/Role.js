@@ -292,7 +292,7 @@ class Role extends EventEmitter {
             this.#container = this.#docker.getContainer(containerName);
             await this.#container.inspect();
             logger.debug(`Found existing container: ${containerName}`);
-        } catch (error) {
+        } catch  {
             // Container doesn't exist, create it
             logger.debug(`Creating new container: ${containerName}`);
             await this.#createContainer();
@@ -345,7 +345,7 @@ class Role extends EventEmitter {
                     throw new Error(`Container exited with code ${info.State.ExitCode}`);
                 }
             } catch (error) {
-                throw new Error(`Failed to check container status: ${error.message}`);
+                throw new Error(`Failed to check container status: ${error.message}`, { cause: error });
             }
 
             await new Promise(resolve => setTimeout(resolve, 1000));

@@ -7,7 +7,7 @@ import ResponseObject from '../../ResponseObject.js';
  * @param {FastifyInstance} fastify - Fastify instance
  * @param {Object} options - Plugin options
  */
-export default async function contextShareRoutes(fastify, options) {
+export default async function contextShareRoutes(fastify, _options) {
 
   // Grant email-based access to a context
   fastify.post('/:id/shares', {
@@ -60,7 +60,7 @@ export default async function contextShareRoutes(fastify, options) {
           const response = new ResponseObject().notFound(`User with email '${userEmail}' not found on this server`);
           return reply.code(response.statusCode).send(response.getResponse());
         }
-      } catch (error) {
+      } catch  {
         const response = new ResponseObject().notFound(`User with email '${userEmail}' not found on this server`);
         return reply.code(response.statusCode).send(response.getResponse());
       }

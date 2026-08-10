@@ -15,7 +15,7 @@
  */
 
 import path from 'path';
-import { fileURLToPath } from 'url';
+import { fileURLToPath as _fileURLToPath } from 'url';
 import * as fsPromises from 'fs/promises';
 import { existsSync } from 'fs';
 

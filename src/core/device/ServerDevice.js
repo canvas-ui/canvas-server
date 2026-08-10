@@ -85,7 +85,7 @@ export function getServerDevice() {
     });
 
     // Persist only on material change so a plain restart never rewrites the file.
-    const material = ({ updatedAt, ...rest } = {}) => JSON.stringify(rest);
+    const material = ({ _updatedAt, ...rest } = {}) => JSON.stringify(rest);
     if (!saved || material(saved) !== material(device)) {
         try {
             fs.mkdirSync(path.dirname(filePath), { recursive: true });

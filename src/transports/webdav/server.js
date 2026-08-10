@@ -214,6 +214,7 @@ export class WebDAVHandler {
       }
 
       let tree = null;
+            void tree;
       try {
         tree = workspace.getTree(parts[0]);
       } catch {

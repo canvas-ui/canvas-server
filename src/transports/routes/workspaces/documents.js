@@ -42,7 +42,7 @@ function readCookie(request, name) {
  * @param {FastifyInstance} fastify - Fastify instance
  * @param {Object} options - Plugin options
  */
-export default async function workspaceDocumentRoutes(fastify, options) {
+export default async function workspaceDocumentRoutes(fastify, _options) {
   // `device/*` is engine-owned: synapsd DERIVES presence from a document's
   // locations. Clients neither assert it nor have it injected on their behalf —
   // we only strip what they should not be sending. Everything else passes
@@ -125,6 +125,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
   function rejectBackendsWrite(reply, workspace, selector) {
     if (!selector?.tree) return false;
     let isBackends = false;
+            void isBackends;
     try {
       isBackends = workspace.getBackendsTree()?.id === workspace.getTree(selector.tree)?.id;
     } catch (_) {

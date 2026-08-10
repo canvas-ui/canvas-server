@@ -10,7 +10,7 @@ const logger = createLogger('context-manager:context');
 
 // Includes
 import Url from './Url.js';
-import { parseDocumentId, parseDocumentIdArray } from '../../../utils/documentId.js';
+import { parseDocumentId as _parseDocumentId, parseDocumentIdArray } from '../../../utils/documentId.js';
 import { accessDenied, workspaceNotReady } from './errors.js';
 
 // Constants
@@ -196,7 +196,7 @@ class Context extends EventEmitter {
             this.#path = null;
             this.#pathArray = [];
             this.#contextBitmapArray = [];
-            throw new Error(`Failed to initialize context: ${error.message}`);
+            throw new Error(`Failed to initialize context: ${error.message}`, { cause: error });
         }
 
         logger.debug(`Context ${this.#id} constructor finished. Initial URL state: ${this.#url}, Base URL: ${this.#baseUrl}`);
@@ -229,7 +229,7 @@ class Context extends EventEmitter {
     get userId() { return this.#userId; }
     get baseUrl() { return this.#baseUrl; }
     get url() { return this.#url; }
-    set url(url) { return this.setUrl(url); }
+    set url(url) { this.setUrl(url); }
     get path() { return this.#path; }
     get pathArray() { return this.#pathArray; }
     get workspace() { return this.#workspace; }
@@ -953,7 +953,7 @@ class Context extends EventEmitter {
 
             logger.debug(`Context "${this.#id}" successfully switched to workspace "${workspaceName}"`);
         } catch (error) {
-            throw new Error(`Failed to switch workspace: ${error.message}`);
+            throw new Error(`Failed to switch workspace: ${error.message}`, { cause: error });
         }
     }
 

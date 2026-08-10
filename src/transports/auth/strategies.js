@@ -5,7 +5,7 @@ import imapAuthStrategy from './imap-strategy.js';
 import ldapAuthStrategy from './ldap-strategy.js';
 import createError from '@fastify/error';
 import { authService as _authService } from './service.js';
-import ResponseObject from '../ResponseObject.js';
+import _ResponseObject from '../ResponseObject.js';
 import { normalizeDeviceOs, normalizeDeviceType } from '../../utils/device-features.js';
 import { createLogger } from '../../utils/log.js';
 
@@ -148,7 +148,7 @@ async function enrichClientIdentity(request, userId, client = {}) {
  * @param {Object} request - Fastify request object
  * @param {Object} reply - Fastify reply object
  */
-export async function verifyJWT(request, reply) {
+export async function verifyJWT(request, _reply) {
   // Check for token in Authorization header
   if (!request.headers.authorization || !request.headers.authorization.startsWith('Bearer ')) {
     request.log.debug('JWT authentication rejected: missing bearer token');
@@ -261,7 +261,7 @@ export async function verifyJWT(request, reply) {
  * @param {Object} request - Fastify request object
  * @param {Object} reply - Fastify reply object
  */
-export async function verifyApiToken(request, reply) {
+export async function verifyApiToken(request, _reply) {
   // Check for token in Authorization header
   if (!request.headers.authorization || !request.headers.authorization.startsWith('Bearer ')) {
     request.log.debug('API token authentication rejected: missing bearer token');
@@ -444,7 +444,7 @@ export async function verifyApiToken(request, reply) {
  * - request.user (same shape as other auth strategies)
  * - request.client = { deviceId, appKey }
  */
-export async function verifyDeviceToken(request, reply) {
+export async function verifyDeviceToken(request, _reply) {
   if (!request.headers.authorization || !request.headers.authorization.startsWith('Bearer ')) {
     const error = new Error('Bearer token required');
     error.statusCode = 401;
@@ -527,7 +527,7 @@ export async function login(email, password, userManager, strategy = 'auto') {
     let existingUser;
     try {
       existingUser = await userManager.getByEmail(email);
-    } catch (error) {
+    } catch  {
       // User doesn't exist, which is fine for auto-detection
       existingUser = null;
     }
@@ -622,7 +622,7 @@ export async function login(email, password, userManager, strategy = 'auto') {
     let user;
     try {
       user = await userManager.getByEmail(email);
-    } catch (error) {
+    } catch  {
       logger.warn({ email }, 'Login failed: user not found');
       throw new InvalidCredentialsError('Invalid email or password');
     }

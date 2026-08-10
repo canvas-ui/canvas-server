@@ -257,7 +257,7 @@ async function writeOutputFile(text, fileSpec, { context, scope, workspace, logg
     const relPath = interpolate(String(fileSpec.path), scope).replace(/^\/+/, '');
     if (!relPath) { return; }
 
-    let location = null; // { url, checksum, size }
+    let location; // { url, checksum, size }
     if (backend === 'data') {
         const buffer = Buffer.from(fileSpec.append ? `${text}\n` : text, 'utf8');
         const persisted = await workspace.persistBlob(buffer);

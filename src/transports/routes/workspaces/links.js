@@ -11,7 +11,7 @@ import { requireWorkspaceRead, requireWorkspaceWrite } from '../../middleware/wo
  * Stored in workspace config:
  *   links: { [type]: string[] }
  */
-export default async function workspaceLinksRoutes(fastify, options) {
+export default async function workspaceLinksRoutes(fastify, _options) {
     /**
      * Get all links (by type)
      */

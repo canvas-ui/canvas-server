@@ -4,7 +4,7 @@ import ResponseObject from '../../ResponseObject.js';
 import { validateUser } from '../../auth/strategies.js';
 import { resolveContextAddress } from '../../middleware/address-resolver.js';
 
-export default async function lifecycleRoutes(fastify, options) {
+export default async function lifecycleRoutes(fastify, _options) {
   // Add a pre-handler hook to ensure user is authenticated and valid for all context document routes
   fastify.addHook('preHandler', async (request, reply) => {
     try {
@@ -122,7 +122,7 @@ export default async function lifecycleRoutes(fastify, options) {
           if (resourceAddress) {
             responsePayload.resourceAddress = resourceAddress;
           }
-        } catch (error) {
+        } catch  {
           // Ignore errors in address construction
         }
       }

@@ -2,7 +2,7 @@
 
 // Utils
 import path from 'path';
-import { existsSync } from 'fs';
+import { existsSync as _existsSync } from 'fs';
 import fsPromises from 'fs/promises';
 import EventEmitter from 'eventemitter2';
 import validator from 'validator';
@@ -227,7 +227,7 @@ class Users extends EventEmitter {
             // Auto-generate global API token for the user
             if (this.#authService) {
                 try {
-                    const globalToken = await this.#authService.createToken(user.id, {
+                    const _globalToken = await this.#authService.createToken(user.id, {
                         type: 'api',
                         name: 'Default API Token',
                         description: 'Auto-generated global API token for user access'
@@ -378,7 +378,7 @@ class Users extends EventEmitter {
         try {
             this.#validateUserSettings(updateDataForValidation, true);
         } catch (error) {
-            throw new Error(`Invalid user data: ${error.message}`);
+            throw new Error(`Invalid user data: ${error.message}`, { cause: error });
         }
 
         const updatedUserDataToStore = {

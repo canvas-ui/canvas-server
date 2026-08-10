@@ -17,8 +17,8 @@ const log = require('debug')('net.ipc.server');
 
 // Constants
 const DEFAULT_SOCKET_PATH = xpipe(os.tmpdir() + '/net.ipc.sock');
-const SERVER_SOCKET_TIMEOUT_MS = 1000;
-const SERVER_IGNORE_EVENTS = [];
+const _SERVER_SOCKET_TIMEOUT_MS = 1000;
+const _SERVER_IGNORE_EVENTS = [];
 
 class Server extends EE {
     constructor(opts = {}) {

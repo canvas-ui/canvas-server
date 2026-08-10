@@ -37,7 +37,7 @@ function parseSSHPublicKey(keyString) {
     // Validate key data is base64
     try {
         Buffer.from(keyData, 'base64');
-    } catch (error) {
+    } catch  {
         throw new Error('Invalid SSH key data: not valid base64');
     }
 

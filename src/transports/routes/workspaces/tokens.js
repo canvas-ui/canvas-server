@@ -1,6 +1,6 @@
 'use strict';
 
-import crypto from 'crypto';
+import _crypto from 'crypto';
 import ResponseObject from '../../ResponseObject.js';
 import { requireWorkspaceAdmin } from '../../middleware/workspace-acl.js';
 
@@ -9,7 +9,7 @@ import { requireWorkspaceAdmin } from '../../middleware/workspace-acl.js';
  * @param {FastifyInstance} fastify - Fastify instance
  * @param {Object} options - Plugin options
  */
-export default async function workspaceTokenRoutes(fastify, options) {
+export default async function workspaceTokenRoutes(fastify, _options) {
 
   // Create a sharing token for the workspace
   fastify.post('/', {

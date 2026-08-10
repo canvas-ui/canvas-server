@@ -4,7 +4,7 @@
 import { spawn } from 'child_process';
 import { setTimeout } from 'timers/promises';
 import http from 'http';
-import https from 'https';
+import _https from 'https';
 import { URL } from 'url';
 
 /**
@@ -18,7 +18,7 @@ const INVALID_TOKEN = 'canvas-a0ca1d5ce7da0235808d6b2d3e0a3530103c433e02b3d0f3';
 async function testInvalidTokenWithNodeFetch() {
   console.log('\n=== Test 1: Invalid token with Node.js HTTP request ===');
 
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve, _reject) => {
     const url = new URL('/rest/v2/auth/me', SERVER_URL);
     const startTime = Date.now();
 
@@ -87,7 +87,7 @@ async function testInvalidTokenWithNodeFetch() {
 async function testInvalidTokenWithCurl() {
   console.log('\n=== Test 2: Invalid token with curl (simulating CLI behavior) ===');
 
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve, _reject) => {
     const startTime = Date.now();
 
     // Use curl to test REST API endpoint with invalid token
@@ -146,7 +146,7 @@ async function testInvalidTokenWithCurl() {
 async function testConnectionReuse() {
   console.log('\n=== Test 3: Connection reuse behavior with invalid token ===');
 
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve, _reject) => {
     const startTime = Date.now();
 
     // Make multiple requests to see if connections are reused
@@ -162,7 +162,8 @@ async function testConnectionReuse() {
       `${SERVER_URL}/rest/v2/auth/me`
     ]);
 
-    let output = '';
+    let output;
+    void output;
     let error = '';
 
     curlProcess.stdout.on('data', (data) => {

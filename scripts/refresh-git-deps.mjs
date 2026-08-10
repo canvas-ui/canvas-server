@@ -58,7 +58,7 @@ try {
 // mid-flight step claimed.
 for (const [name, spec] of entries) {
   let version = '?';
-  try { version = JSON.parse(readFileSync(join(root, 'node_modules', name, 'package.json'), 'utf8')).version; } catch {}
+  try { version = JSON.parse(readFileSync(join(root, 'node_modules', name, 'package.json'), 'utf8')).version; } catch { /* intentionally ignored */ }
   console.log(`[refresh-git-deps] ${name} -> ${version} (github:${spec})`);
 }
 if (!refreshed) {

@@ -12,7 +12,7 @@ import {
  * @param {FastifyInstance} fastify - Fastify instance
  * @param {Object} options - Plugin options
  */
-export default async function pubWorkspaceRoutes(fastify, options) {
+export default async function pubWorkspaceRoutes(fastify, _options) {
 
   /**
    * Helper function to validate user is authenticated and has an id

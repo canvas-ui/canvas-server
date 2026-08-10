@@ -6,7 +6,7 @@ import { validateUser } from '../../auth/strategies.js';
 import { stripDeviceFeatureTags } from '../../../utils/device-features.js';
 import { normalizeSchemaId } from '../../../core/workspace/lib/classifier.js';
 
-export default async function documentRoutes(fastify, options) {
+export default async function documentRoutes(fastify, _options) {
   function buildAttributes(query) {
     const { allOf, noneOf, anyOf } = query;
     if (!allOf?.length && !noneOf?.length && !anyOf?.length) return undefined;

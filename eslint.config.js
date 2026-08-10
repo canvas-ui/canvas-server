@@ -7,6 +7,7 @@ const IGNORE_PATTERNS = [
     'dist/**',
     'build/**',
     '.cursor/**',
+    'server/**',
     'extensions/browser-extensions/**',
     'src/ui/**',
     'src/services/synapsd/**',

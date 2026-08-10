@@ -6,8 +6,8 @@ import ResponseObject from '../../ResponseObject.js';
  * Role Routes
  * Provides REST endpoints for role lifecycle management
  */
-export default async function roleRoutes(fastify, options) {
-  const { roles, users, workspaceManager } = fastify;
+export default async function roleRoutes(fastify, _options) {
+  const { roles, users, _workspaceManager } = fastify;
 
   if (!roles) {
     throw new Error('Roles service is required');

@@ -8,7 +8,7 @@ import schemaRegistry from 'canvas-synapsd/src/schemas/SchemaRegistry.js';
  * @param {FastifyInstance} fastify - Fastify instance
  * @param {Object} options - Plugin options
  */
-export default async function schemaRoutes(fastify, options) {
+export default async function schemaRoutes(fastify, _options) {
   // List all data schemas
   fastify.get('/', {
   }, async (request, reply) => {

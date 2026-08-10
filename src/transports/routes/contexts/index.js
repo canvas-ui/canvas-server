@@ -13,7 +13,7 @@ import { resolveContextAddress } from '../../middleware/address-resolver.js';
  * @param {FastifyInstance} fastify - Fastify instance
  * @param {Object} options - Plugin options
  */
-export default async function contextRoutes(fastify, options) {
+export default async function contextRoutes(fastify, _options) {
   fastify.register(lifecycleRoutes, { prefix: '/' });
   fastify.register(documentRoutes, {
     prefix: '/:id/documents',

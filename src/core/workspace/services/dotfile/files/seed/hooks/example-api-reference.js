@@ -10,26 +10,26 @@
 // into `rules.json` (or `rules/*.json`) — see `example-rules.json` for the format.
 
 export default async function hook({
-  event,          // { name, workspaceId, payload, timestamp, payloads? }
+  _event,          // { name, workspaceId, payload, timestamp, payloads? }
   eventName,      // string, e.g. 'document.inserted'
   payload,        // raw event payload (last one for a debounced burst)
-  payloads,       // array of payloads; [payload] unless debounced
+  _payloads,       // array of payloads; [payload] unless debounced
   workspace,      // workspace instance (workspace.link, .getContextTreeSelector, ...)
-  db,             // SynapsD instance when the workspace is active, else null
-  tree,           // default context tree when active, else null
+  _db,             // SynapsD instance when the workspace is active, else null
+  _tree,           // default context tree when active, else null
   logger,
-  emit,           // emit(name, payload) -> re-emit a workspace event
-  insert,         // insert(document, options)
-  update,         // update(id, document, options)
-  remove,         // remove(id, options) -> unlink
-  deleteDocument, // deleteDocument(id) -> hard delete
-  get,            // get(id, { parse: true })
-  list,           // list(spec)
-  find,           // find(spec) -> search
-  link,           // link(documentId, contextSelector | [selectors])
-  agent,          // agent(slug, prompt, options) -> assistant text reply
-  notify,         // notify(message, { channel? }) -> message the workspace owner
-  classify,       // classify() -> classification of the event's document:
+  _emit,           // emit(name, payload) -> re-emit a workspace event
+  _insert,         // insert(document, options)
+  _update,         // update(id, document, options)
+  _remove,         // remove(id, options) -> unlink
+  _deleteDocument, // deleteDocument(id) -> hard delete
+  _get,            // get(id, { parse: true })
+  _list,           // list(spec)
+  _find,           // find(spec) -> search
+  _link,           // link(documentId, contextSelector | [selectors])
+  _agent,          // agent(slug, prompt, options) -> assistant text reply
+  _notify,         // notify(message, { channel? }) -> message the workspace owner
+  _classify,       // classify() -> classification of the event's document:
                   //   c.isTab()/isEmail()/isFile()/isNote(), c.isLink()/isYoutube()/
                   //   isArxiv()/isImageUrl(), c.isImage()/isPdf()/mimeMatches('image/*'),
                   //   c.inPath('/to-sort'), c.url/host/from/subject/paths

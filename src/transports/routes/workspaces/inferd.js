@@ -25,7 +25,7 @@ import { checkConfigEndpoints } from 'canvas-inferd/src/endpoint-guard.js';
  *                       instant and costs no re-embedding at all
  *   4. DELETE …/vector-tables/:table  reclaim the superseded model when done
  */
-export default async function workspaceInferdRoutes(fastify, options) {
+export default async function workspaceInferdRoutes(fastify, _options) {
 
     // Opt-in rate limits. The plugin itself is registered once at the server
     // root with `global: false` (see transports/index.js); routes opt in by

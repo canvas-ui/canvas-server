@@ -318,8 +318,7 @@ class ContextManager extends EventEmitter {
             }
         }
 
-        try {
-            let contextInstance = null;
+        let contextInstance = null;
 
             if (this.#contexts.has(contextKey)) {
                 contextInstance = this.#contexts.get(contextKey);
@@ -338,6 +337,7 @@ class ContextManager extends EventEmitter {
                 // the context orphaned (its workspace was deleted or moved away)
                 // instead of failing opaquely.
                 let workspace = null;
+            void workspace;
                 try {
                     workspace = await this.#workspaceManager.getWorkspaceOrThrow(workspaceId, ownerUserId);
                 } catch (err) {
@@ -361,7 +361,7 @@ class ContextManager extends EventEmitter {
 
                 // Workspace is back — clear a stale orphan flag lazily
                 if (storedContextData.status === 'orphaned') {
-                    const { status, orphanedAt, ...clean } = storedContextData;
+                    const { _status, _orphanedAt, ...clean } = storedContextData;
                     this.#storeSet(ownerUserId, storedContextData.id, clean);
                     storedContextData = clean;
                 }
@@ -398,9 +398,6 @@ class ContextManager extends EventEmitter {
             }
 
             throw contextNotFound(`Context not found: ${contextKey}`);
-        } catch (error) {
-            throw error;
-        }
     }
 
     hasContext(userId, contextIdOrFullIdentifier) {
@@ -479,7 +476,7 @@ class ContextManager extends EventEmitter {
                             ...contextInstance.toJSON(),
                             ownerEmail: ownerUser.email
                         });
-                    } catch (error) {
+                    } catch  {
                         userContextsArray.push(contextInstance.toJSON());
                     }
                     processedKeys.add(key);
@@ -502,7 +499,7 @@ class ContextManager extends EventEmitter {
                                 workspaceActive: storedWorkspaceActive,
                                 ownerEmail: ownerUser.email
                             });
-                        } catch (error) {
+                        } catch  {
                             userContextsArray.push({ ...storedContextData, workspaceActive: storedWorkspaceActive });
                         }
                         processedKeys.add(key);
@@ -519,7 +516,7 @@ class ContextManager extends EventEmitter {
                                     type: 'shared',
                                     isShared: true
                                 });
-                            } catch (error) {
+                            } catch  {
                                 userContextsArray.push({
                                     ...storedContextData,
                                     workspaceActive: storedWorkspaceActive,
@@ -536,7 +533,7 @@ class ContextManager extends EventEmitter {
             // User-defined order at the source — same contract as workspaces
             // (explicit `order` first, unordered last).
             return userContextsArray.sort(compareByUserOrder);
-        } catch (error) {
+        } catch  {
             return [];
         }
     }
@@ -765,7 +762,7 @@ class ContextManager extends EventEmitter {
 
         // Check new format: acl.users[email] where userId matches
         if (contextData.acl.users) {
-            for (const [email, shareData] of Object.entries(contextData.acl.users)) {
+            for (const [_email, shareData] of Object.entries(contextData.acl.users)) {
                 if (shareData.userId === accessingUserId) {
                     return true;
                 }
@@ -809,7 +806,7 @@ class ContextManager extends EventEmitter {
             }
 
             return null;
-        } catch (error) {
+        } catch  {
             return null;
         }
     }
@@ -832,7 +829,7 @@ class ContextManager extends EventEmitter {
             }
 
             return `${user.name}/${context.id}`;
-        } catch (error) {
+        } catch  {
             return null;
         }
     }

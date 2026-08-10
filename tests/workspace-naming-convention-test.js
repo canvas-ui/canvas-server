@@ -29,7 +29,7 @@ async function testWorkspaceNamingConvention() {
 
     // Setup test environment
     const testDir = path.join(__dirname, 'temp-workspace-naming-test');
-    const indexStorePath = path.join(testDir, 'workspace-index.json');
+    const _indexStorePath = path.join(testDir, 'workspace-index.json');
 
     // Clean up any existing test directory
     if (existsSync(testDir)) {

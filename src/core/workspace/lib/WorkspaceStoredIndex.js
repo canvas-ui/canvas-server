@@ -877,7 +877,7 @@ export class WorkspaceStoredIndex {
             for (const loc of doc.locations) {
                 const parsed = parseLocationUrl(loc.url);
                 if (!parsed) { continue; }
-                let backend = null;
+                let backend;
                 if (parsed.scheme === 'stored') { backend = parsed.backend; }
                 else if (parsed.scheme === 'file') { backend = loc.metadata?.backend || null; }
                 else { continue; } // remote scheme — not a local path, leave alone

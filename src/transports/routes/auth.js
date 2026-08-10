@@ -1,6 +1,6 @@
 'use strict';
 
-import { authService, imapAuthStrategy, ldapAuthStrategy, login, register, verifyEmail, requestPasswordReset, resetPassword, validateUser, requestEmailVerification } from '../auth/strategies.js';
+import { authService, imapAuthStrategy, ldapAuthStrategy, login, register, verifyEmail, requestPasswordReset, resetPassword, validateUser as _validateUser, requestEmailVerification } from '../auth/strategies.js';
 import ResponseObject from '../ResponseObject.js';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -34,7 +34,7 @@ function rateLimit({ max, windowMs }, keyName = 'generic') {
           return reply.code(response.statusCode).send(response.getResponse());
         }
       }
-    } catch (e) {
+    } catch  {
       // If rate limiter fails, do not block request
     }
   };
@@ -45,7 +45,7 @@ function rateLimit({ max, windowMs }, keyName = 'generic') {
  * @param {FastifyInstance} fastify - Fastify instance
  * @param {Object} options - Plugin options
  */
-export default async function authRoutes(fastify, options) {
+export default async function authRoutes(fastify, _options) {
   // Get authentication configuration
   fastify.get('/config', async (request, reply) => {
     try {

@@ -87,6 +87,7 @@ export class WhatsAppAdapter {
     async #dispatchMessage(message) {
         const media = [];
         let text = '';
+            void text;
 
         if (message.type === 'text') {
             text = message.text?.body || '';

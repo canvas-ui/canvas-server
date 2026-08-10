@@ -11,7 +11,7 @@ import { stripDeviceFeatureTags } from '../../../utils/device-features.js';
  * @param {FastifyInstance} fastify - Fastify instance
  * @param {Object} options - Plugin options
  */
-export default async function contextDotfileRoutes(fastify, options) {
+export default async function contextDotfileRoutes(fastify, _options) {
   function buildAttributes(query) {
     const { allOf, noneOf, anyOf } = query;
     if (!allOf?.length && !noneOf?.length && !anyOf?.length) return undefined;

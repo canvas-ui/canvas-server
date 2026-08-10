@@ -15,7 +15,6 @@ const logger = createLogger('role-manager:socket-manager');
  */
 class UnixSocketManager {
 
-    #users;
     #workspaceManager;
 
     /**
@@ -32,7 +31,6 @@ class UnixSocketManager {
             throw new Error('WorkspaceManager is required for UnixSocketManager');
         }
 
-        this.#users = options.users;
         this.#workspaceManager = options.workspaceManager;
 
         logger.debug('UnixSocketManager initialized');
@@ -55,7 +53,7 @@ class UnixSocketManager {
                 // Global roles use system socket directory
                 return path.join('/var', 'run', 'canvas', 'roles', socketFileName);
 
-            case 'workspace':
+            case 'workspace': {
                 // Workspace roles use workspace var/run directory
                 if (!context.workspaceId) {
                     throw new Error('Workspace ID required for workspace role socket');
@@ -65,6 +63,7 @@ class UnixSocketManager {
                     throw new Error(`Workspace not found: ${context.workspaceId}`);
                 }
                 return path.join(workspace.rootPath, 'var', 'run', socketFileName);
+            }
 
             default:
                 throw new Error(`Unknown role type: ${context.type}`);
@@ -285,7 +284,7 @@ class UnixSocketManager {
         const env = [];
 
         // Add socket directory environment variable
-        const socketDir = path.dirname(await this.getSocketPath(context));
+        const _socketDir = path.dirname(await this.getSocketPath(context));
         env.push(`SOCKET_DIR=/var/run/sockets`);
         env.push(`ROLE_ID=${context.roleId}`);
         env.push(`ROLE_TYPE=${context.type}`);

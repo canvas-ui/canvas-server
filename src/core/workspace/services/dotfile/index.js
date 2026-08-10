@@ -46,7 +46,7 @@ async function chmodSeedScripts(workDir) {
     if (!existsSync(scriptsDir)) return;
     for (const entry of await fsPromises.readdir(scriptsDir)) {
         if (!entry.endsWith('.sh')) continue;
-        try { await fsPromises.chmod(path.join(scriptsDir, entry), 0o755); } catch (_) {}
+        try { await fsPromises.chmod(path.join(scriptsDir, entry), 0o755); } catch (_) { /* intentionally ignored */ }
     }
 }
 
@@ -181,7 +181,7 @@ class DotfileManager extends EventEmitter {
             await copySeedInto(tmpWorkDir);
             await repo.pushSeed(tmpWorkDir, 'Initialize Canvas workspace git repository');
         } finally {
-            try { await fsPromises.rm(tmpWorkDir, { recursive: true, force: true }); } catch (_) {}
+            try { await fsPromises.rm(tmpWorkDir, { recursive: true, force: true }); } catch (_) { /* intentionally ignored */ }
         }
 
         await repo.deploy(DEPLOY_PATHSPECS);

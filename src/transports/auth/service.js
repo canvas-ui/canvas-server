@@ -567,7 +567,7 @@ class AuthService {
 
     return Object.values(tokensJson).map(token => {
       // Never return the hash
-      const { hash, ...tokenWithoutHash } = token;
+      const { _hash, ...tokenWithoutHash } = token;
       return tokenWithoutHash;
     });
   }

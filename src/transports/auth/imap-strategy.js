@@ -145,7 +145,7 @@ class ImapAuthStrategy {
       console.log(`[IMAP] Successfully authenticated ${email}`);
 
       // Get some basic info about the user if possible
-      const mailboxes = await client.list();
+      const _mailboxes = await client.list();
 
       await client.logout();
 
@@ -162,7 +162,7 @@ class ImapAuthStrategy {
       // Close connection if it was opened
       try {
         await client.close();
-      } catch (closeError) {
+      } catch  {
         // Ignore close errors
       }
 
@@ -189,7 +189,7 @@ class ImapAuthStrategy {
     let existingUser;
     try {
       existingUser = await userManager.getByEmail(authResult.email);
-    } catch (error) {
+    } catch  {
       // User doesn't exist, which is fine
     }
 
@@ -228,7 +228,7 @@ class ImapAuthStrategy {
       return newUser;
     } catch (error) {
       console.error(`[IMAP] Failed to create user:`, error.message);
-      throw new Error(`Failed to create user: ${error.message}`);
+      throw new Error(`Failed to create user: ${error.message}`, { cause: error });
     }
   }
 

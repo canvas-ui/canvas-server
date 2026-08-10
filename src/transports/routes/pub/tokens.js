@@ -212,7 +212,7 @@ class TokenService {
 /**
  * Public token management routes for shared resources
  */
-export default async function pubTokenRoutes(fastify, options) {
+export default async function pubTokenRoutes(fastify, _options) {
   const tokenService = new TokenService(fastify.workspaceManager, fastify.contextManager);
 
   // Validate a token for any resource type

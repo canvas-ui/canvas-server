@@ -466,7 +466,7 @@ class Agents extends EventEmitter {
      */
 
     async setAccess(userId, agentIdentifier, accessSpec = {}, requestingUserId) {
-        const { owner, entry, agent, indexKey } = await this.#requireOwnedAgent(userId, agentIdentifier, requestingUserId);
+        const { owner, entry, agent, _indexKey } = await this.#requireOwnedAgent(userId, agentIdentifier, requestingUserId);
 
         const binding = await this.#normalizeBindingSpec(owner, accessSpec.binding);
         const permissions = normalizeAgentPermissions(accessSpec.permissions);
@@ -1345,10 +1345,6 @@ class Agents extends EventEmitter {
         if (data.name.length < 3 || data.name.length > 39) throw new Error('Agent name must be 3-39 chars');
         if (!/^[A-Za-z0-9_-]+$/.test(data.name)) throw new Error('Agent name: letters, numbers, _ and - only');
         if (data.color && !/^#[0-9A-Fa-f]{3,6}$/.test(data.color)) throw new Error('Invalid hex color');
-    }
-
-    #sanitizeAgentName(name) {
-        return (name || 'untitled').toString().trim().replace(/[^A-Za-z0-9_-]/g, '');
     }
 
     async #rebuildIndexes() {

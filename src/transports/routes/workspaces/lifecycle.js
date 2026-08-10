@@ -8,7 +8,7 @@ import { requireWorkspaceRead, requireWorkspaceWrite, requireWorkspaceAdmin } fr
  * @param {FastifyInstance} fastify - Fastify instance
  * @param {Object} options - Plugin options
  */
-export default async function workspaceLifecycleRoutes(fastify, options) {
+export default async function workspaceLifecycleRoutes(fastify, _options) {
   async function resolveWorkspaceId(request, reply) {
     const identifier = request.params.id;
     const userId = request.user.id;

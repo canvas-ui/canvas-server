@@ -14,7 +14,7 @@ import ContextManager from '../src/managers/context/index.js';
 import WorkspaceManager from '../src/managers/workspace/index.js';
 import UserManager from '../src/managers/user/index.js';
 import jim from '../src/utils/jim/index.js';
-import io from 'socket.io-client';
+import _io from 'socket.io-client';
 
 const debug = createDebug('test:websocket-events');
 

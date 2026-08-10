@@ -8,7 +8,7 @@ import { createSSHKeyHelpers } from './ssh-keys-helpers.js';
  *
  * Admin-only routes for managing all users
  */
-export default async function adminUsersRoutes(fastify, options) {
+export default async function adminUsersRoutes(fastify, _options) {
     const sshKeyHelpers = createSSHKeyHelpers(fastify.users);
 
     const checkAdmin = async (request, reply) => {

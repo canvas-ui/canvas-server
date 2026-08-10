@@ -37,7 +37,7 @@ class LdapAuthStrategy {
       try {
         const ldapModule = await import('ldapjs');
         this.#ldap = ldapModule.default || ldapModule;
-      } catch (importError) {
+      } catch  {
         console.warn('[LDAP] ldapjs module not found. LDAP authentication will be disabled.');
         console.warn('[LDAP] Install with: npm install ldapjs');
         return;
@@ -262,7 +262,7 @@ class LdapAuthStrategy {
     let existingUser;
     try {
       existingUser = await userManager.getByEmail(authResult.email);
-    } catch (error) {
+    } catch  {
       // User doesn't exist, which is fine
     }
 
@@ -304,7 +304,7 @@ class LdapAuthStrategy {
       return newUser;
     } catch (error) {
       console.error(`[LDAP] Failed to create user:`, error.message);
-      throw new Error(`Failed to create user: ${error.message}`);
+      throw new Error(`Failed to create user: ${error.message}`, { cause: error });
     }
   }
 

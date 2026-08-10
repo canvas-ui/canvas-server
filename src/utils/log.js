@@ -439,7 +439,7 @@ function patchDebug() {
         process.env.DEBUG_COLORS = 'no';
     }
 
-    debugModule.formatArgs = function (args) {
+    debugModule.formatArgs = function (_args) {
         // pino adds timestamp + module; keep the raw debug message only
     };
 

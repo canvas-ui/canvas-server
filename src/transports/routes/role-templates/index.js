@@ -9,7 +9,7 @@ import { existsSync } from 'fs';
  * Role Template Routes
  * Provides REST endpoints for browsing available role templates
  */
-export default async function roleTemplateRoutes(fastify, options) {
+export default async function roleTemplateRoutes(fastify, _options) {
 
   const templatesPath = path.join(process.cwd(), 'extensions', 'roles');
 

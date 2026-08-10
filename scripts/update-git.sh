@@ -304,19 +304,24 @@ run_as_canvas_user "/usr/bin/npm ci" || { log_message "npm ci failed"; exit 1; }
 
 # npm ci restores the LOCKFILE-PINNED commits of the git deps — which lag main
 # by however long ago the lockfile was regenerated. An update must leave every
-# component at its latest main: refresh them explicitly. --no-save keeps
-# package.json/lockfile untouched (the repo stays reproducible; the BOX runs
-# latest). Non-fatal: a refresh failure leaves the pinned versions serving.
+# component at its latest main. NOTE: `npm update` does NOT re-resolve a git
+# ref it considers satisfied (verified: reported "up to date" while main was
+# a version ahead) — only an explicit spec install forces the re-fetch.
+# --no-save keeps package.json/lockfile untouched (the repo stays
+# reproducible; the BOX runs latest). Per-dep and non-fatal: one failed
+# refresh keeps that dep at its pinned version without blocking the others.
 GIT_DEPS="${GIT_DEPS:-canvas-synapsd canvas-stored canvas-inferd}"
-log_message "Refreshing git deps to latest main ($GIT_DEPS)..."
-if run_as_canvas_user "/usr/bin/npm update $GIT_DEPS --no-save"; then
-    for dep in $GIT_DEPS; do
+GIT_DEPS_ORG="${GIT_DEPS_ORG:-canvas-ui}"
+GIT_DEPS_REF="${GIT_DEPS_REF:-main}"
+log_message "Refreshing git deps to latest $GIT_DEPS_REF ($GIT_DEPS)..."
+for dep in $GIT_DEPS; do
+    if run_as_canvas_user "/usr/bin/npm install $dep@github:$GIT_DEPS_ORG/$dep#$GIT_DEPS_REF --no-save"; then
         v=$(node -p "try{require('$CANVAS_ROOT/node_modules/$dep/package.json').version}catch{'?'}" 2>/dev/null)
         log_message "  $dep -> $v"
-    done
-else
-    log_message "Git dep refresh failed — keeping lockfile-pinned versions"
-fi
+    else
+        log_message "  $dep refresh failed — keeping the lockfile-pinned version"
+    fi
+done
 
 WEB_DIST="$CANVAS_ROOT/node_modules/canvas-web/dist"
 

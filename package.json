@@ -31,7 +31,7 @@
     "dev:synapsd": "npm install --no-save file:../canvas-synapsd",
     "dev:stored": "npm install --no-save file:../canvas-stored",
     "dev:reset": "npm install",
-    "deps:bump": "npm update canvas-synapsd canvas-stored",
+    "deps:bump": "npm update canvas-synapsd canvas-stored canvas-web",
     "postinstall": "node scripts/refresh-git-deps.mjs",
     "refresh": "node scripts/refresh-git-deps.mjs"
   },

@@ -135,3 +135,4 @@ build/Release
 
 # Claude Code per-machine settings (may contain command allowlists with tokens)
 .claude/settings.local.json
+/web-src/

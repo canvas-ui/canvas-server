@@ -28,8 +28,13 @@ Usage: $0 [-b branch] [-c config.json] [-m] [-h]
   -h  This help
 
 Config file: copy server/config/update.example.json to config/update.json
-Env overrides: TARGET_BRANCH, CANVAS_ROOT, CANVAS_SERVER_HOME, HTTP_PROXY, HTTPS_PROXY, NO_PROXY
+Env overrides: TARGET_BRANCH, CANVAS_ROOT, CANVAS_SERVER_HOME, HTTP_PROXY, HTTPS_PROXY, NO_PROXY,
+               WEB_BUILD, WEB_SRC_REPO, WEB_SRC_BRANCH, WEB_SRC_DIR
 Channel in JSON: "dev" -> branch dev, "prod" -> branch main (unless "branch" is set)
+
+Web UI: built fresh from the monorepo source on every update (config "web" block),
+so a push to the web repo is enough — no release tarball required. The pinned
+canvas-web tarball from npm ci remains the fallback if the source build fails.
 
 While the update runs, a stand-by page is served on the API port (8001 by default,
 override with maintenancePort/MAINTENANCE_PORT) and is torn down right before
@@ -57,6 +62,11 @@ const channel = c.channel === 'prod' ? 'main' : 'dev';
 line('TARGET_BRANCH', c.branch || channel);
 line('CANVAS_ROOT', c.canvasRoot);
 line('CANVAS_SERVER_HOME', c.canvasServerHome);
+const w = c.web || {};
+if (w.build === false) line('WEB_BUILD', 'false');
+line('WEB_SRC_REPO', w.repo);
+line('WEB_SRC_BRANCH', w.branch);
+line('WEB_SRC_DIR', w.srcDir);
 line('CANVAS_USER', c.canvasUser);
 line('CANVAS_GROUP', c.canvasGroup);
 line('LOG_FILE', c.logFile);
@@ -106,6 +116,12 @@ LOCKFILE="${LOCKFILE:-/var/run/canvas-update.lock}"
 MAINTENANCE_PAGE="${MAINTENANCE_PAGE:-true}"
 MAINTENANCE_PORT="${MAINTENANCE_PORT:-${CANVAS_API_PORT:-8001}}"
 MAINTENANCE_HOST="${MAINTENANCE_HOST:-${CANVAS_API_HOST:-0.0.0.0}}"
+# Web UI source build (the primary path — see build_web_ui). The packaged
+# canvas-web tarball is only the fallback when the source build cannot run.
+WEB_BUILD="${WEB_BUILD:-true}"
+WEB_SRC_REPO="${WEB_SRC_REPO:-https://github.com/canvas-ui/canvas.git}"
+WEB_SRC_BRANCH="${WEB_SRC_BRANCH:-main}"
+WEB_SRC_DIR="${WEB_SRC_DIR:-$CANVAS_ROOT/web-src}"
 [[ -n "$TARGET_BRANCH_CLI" ]] && TARGET_BRANCH="$TARGET_BRANCH_CLI"
 [[ -n "${MAINTENANCE_PAGE_CLI-}" ]] && MAINTENANCE_PAGE="$MAINTENANCE_PAGE_CLI"
 
@@ -180,6 +196,49 @@ stop_maintenance_page() {
     rm -f "${MAINTENANCE_SCRIPT:-}" 2>/dev/null || true
 }
 
+# Build the web UI from the monorepo source so a push is enough to update it —
+# the pinned canvas-web release tarball lags behind pushes (and may not even
+# exist yet for a fresh change). Build failures are NON-FATAL: whatever dist is
+# already in place (the npm-ci-installed tarball) keeps serving, so a broken UI
+# build can never take the server update down with it.
+#
+# Uses corepack to honour the monorepo's pinned pnpm (`packageManager` field);
+# the install is filtered to canvas-web + its workspace deps, not the whole
+# monorepo. The checkout lives outside node_modules (clean_node_modules wipes
+# those) and is shallow — history is not needed to build.
+build_web_ui() {
+    [[ "$WEB_BUILD" == "false" ]] && { log_message "Web UI source build disabled (web.build=false)"; return 0; }
+    if ! command -v corepack >/dev/null 2>&1; then
+        log_message "corepack not available — keeping the packaged web UI"
+        return 0
+    fi
+
+    log_message "Building web UI from $WEB_SRC_REPO#$WEB_SRC_BRANCH..."
+    if [[ -d "$WEB_SRC_DIR/.git" ]]; then
+        run_as_canvas_user "cd '$WEB_SRC_DIR' && /usr/bin/git fetch --depth 1 origin '$WEB_SRC_BRANCH' && /usr/bin/git reset --hard FETCH_HEAD" \
+            || { log_message "Web source fetch failed — keeping the packaged web UI"; return 0; }
+    else
+        run_as_canvas_user "/usr/bin/git clone --depth 1 --branch '$WEB_SRC_BRANCH' '$WEB_SRC_REPO' '$WEB_SRC_DIR'" \
+            || { log_message "Web source clone failed — keeping the packaged web UI"; return 0; }
+    fi
+
+    # COREPACK_ENABLE_DOWNLOAD_PROMPT=0: first corepack use downloads the pinned
+    # pnpm and must not stall an unattended update on a Y/n prompt.
+    if run_as_canvas_user "cd '$WEB_SRC_DIR' && COREPACK_ENABLE_DOWNLOAD_PROMPT=0 corepack pnpm install --filter canvas-web... --frozen-lockfile" \
+        && run_as_canvas_user "cd '$WEB_SRC_DIR/apps/web' && COREPACK_ENABLE_DOWNLOAD_PROMPT=0 corepack pnpm run build" \
+        && [[ -f "$WEB_SRC_DIR/apps/web/dist/index.html" ]]; then
+        rm -rf "$WEB_DIST"
+        mkdir -p "$(dirname "$WEB_DIST")"
+        cp -a "$WEB_SRC_DIR/apps/web/dist" "$WEB_DIST"
+        chown -R "$CANVAS_USER:$CANVAS_GROUP" "$WEB_DIST"
+        local rev
+        rev=$(cd "$WEB_SRC_DIR" && git rev-parse --short HEAD 2>/dev/null || echo '?')
+        log_message "Web UI built from source ($WEB_SRC_BRANCH@$rev)"
+    else
+        log_message "Web UI build failed — keeping the packaged canvas-web dist"
+    fi
+}
+
 clean_node_modules() {
     log_message "Recursively cleaning node_modules..."
     local dir
@@ -234,12 +293,18 @@ log_message "Installing dependencies..."
 # npm ci = strict, reproducible install from the committed package-lock.json
 # (fails on lockfile/package.json drift instead of silently re-resolving a
 # different, possibly-broken tree). Requires package-lock.json to be tracked.
-# synapsd/stored arrive as pinned git deps and the web UI as the prebuilt
-# canvas-web tarball — no submodules, no UI build step.
+# synapsd/stored arrive as pinned git deps; the pinned canvas-web tarball is
+# installed here too, but only as the FALLBACK web UI — build_web_ui below
+# replaces it with a fresh source build.
 run_as_canvas_user "/usr/bin/npm ci" || { log_message "npm ci failed"; exit 1; }
 
 WEB_DIST="$CANVAS_ROOT/node_modules/canvas-web/dist"
-[[ -f "$WEB_DIST/index.html" ]] || { log_message "Missing $WEB_DIST/index.html"; exit 1; }
+
+# Primary web UI path: build the latest from source (non-fatal on failure —
+# the tarball dist installed by npm ci above keeps serving).
+build_web_ui
+
+[[ -f "$WEB_DIST/index.html" ]] || { log_message "Missing $WEB_DIST/index.html (tarball install AND source build both failed)"; exit 1; }
 
 # Must happen before the real server starts, both want the same port.
 stop_maintenance_page

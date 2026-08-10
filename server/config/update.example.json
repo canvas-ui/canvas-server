@@ -11,6 +11,12 @@
   "maintenancePage": true,
   "maintenancePort": 8001,
   "maintenanceHost": "0.0.0.0",
+  "web": {
+    "build": true,
+    "repo": "https://github.com/canvas-ui/canvas.git",
+    "branch": "main",
+    "srcDir": "/opt/canvas-server/web-src"
+  },
   "proxy": {
     "http": "",
     "https": "",

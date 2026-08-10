@@ -168,6 +168,12 @@ export default async function workspaceLifecycleRoutes(fastify, options) {
         type: 'object',
         properties: {
           imageMaxDistance: { type: ['number', 'null'] },
+          // 'relative' (default) keeps hits within imageRelativeMargin of the
+          // query's own best hit — text→image distances shift per query and per
+          // model, so a single absolute cutoff cannot travel. 'absolute' is the
+          // pre-3.3 behaviour (imageMaxDistance alone).
+          imageFloorMode: { type: 'string', enum: ['relative', 'absolute'] },
+          imageRelativeMargin: { type: 'number', exclusiveMinimum: 0, maximum: 2 },
           searchWeights: {
             type: 'object',
             properties: {

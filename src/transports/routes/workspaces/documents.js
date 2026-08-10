@@ -263,6 +263,10 @@ export default async function workspaceDocumentRoutes(fastify, options) {
           // Calibration aid: attach raw (unfloored) image kNN cosine distances for
           // the query to the response (`.debug.imageDistances`), to pick a floor.
           debug: { type: 'boolean' },
+          // How many raw image distances to attach when debug is on. The top-25
+          // neighbours of any query cluster tightly, so calibrating a relevance
+          // floor needs a deeper window than the default.
+          debugLimit: { type: 'integer', minimum: 1, maximum: 500 },
           // 'workspace' drops the path bucket entirely → list every document in
           // the DB (synapsd default). 'path' (default) scopes to context/tree.
           scope: { type: 'string', enum: ['path', 'workspace'], default: 'path' },
@@ -332,9 +336,10 @@ export default async function workspaceDocumentRoutes(fastify, options) {
           minDistance,
           maxDistance,
           debug: request.query.debug,
+          debugLimit: request.query.debugLimit,
         });
       } else if (queries.length === 1) {
-        documents = await workspace.search({ query: queries[0], mode: request.query.mode, minDistance, maxDistance, debug: request.query.debug, ...spec });
+        documents = await workspace.search({ query: queries[0], mode: request.query.mode, minDistance, maxDistance, debug: request.query.debug, debugLimit: request.query.debugLimit, ...spec });
       } else {
         documents = await workspace.list(spec);
       }

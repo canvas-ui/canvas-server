@@ -294,6 +294,14 @@ class Workspace extends EventEmitter {
         if (Object.prototype.hasOwnProperty.call(tuning, 'imageMaxDistance')) {
             next.imageMaxDistance = tuning.imageMaxDistance;
         }
+        // Persisted alongside the ceiling so the mode survives a restart — the
+        // db applies them live, the config store is what replays them on start.
+        if (tuning.imageFloorMode === 'relative' || tuning.imageFloorMode === 'absolute') {
+            next.imageFloorMode = tuning.imageFloorMode;
+        }
+        if (Number.isFinite(tuning.imageRelativeMargin) && tuning.imageRelativeMargin > 0) {
+            next.imageRelativeMargin = tuning.imageRelativeMargin;
+        }
         if (tuning.searchWeights && typeof tuning.searchWeights === 'object') {
             next.searchWeights = { ...(current.searchWeights || {}), ...tuning.searchWeights };
         }
@@ -653,6 +661,8 @@ class Workspace extends EventEmitter {
                         // Workspace-level search tuning (persisted in workspace.json
                         // under `semantic`). Undefined → synapsd defaults.
                         imageMaxDistance: (this.#configStore.get('semantic', {}) || {}).imageMaxDistance,
+                        imageFloorMode: (this.#configStore.get('semantic', {}) || {}).imageFloorMode,
+                        imageRelativeMargin: (this.#configStore.get('semantic', {}) || {}).imageRelativeMargin,
                         searchWeights: (this.#configStore.get('semantic', {}) || {}).searchWeights,
                     }
                     : undefined,

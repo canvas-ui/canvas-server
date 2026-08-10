@@ -302,34 +302,15 @@ log_message "Installing dependencies..."
 # replaces it with a fresh source build.
 run_as_canvas_user "/usr/bin/npm ci" || { log_message "npm ci failed"; exit 1; }
 
-# npm ci restores the LOCKFILE-PINNED commits of the git deps — which lag main
-# by however long ago the lockfile was regenerated. An update must leave every
-# component at its latest main. NOTE: `npm update` does NOT re-resolve a git
-# ref it considers satisfied (verified: reported "up to date" while main was
-# a version ahead) — only an explicit spec install forces the re-fetch.
-# --no-save keeps package.json/lockfile untouched (the repo stays
-# reproducible; the BOX runs latest). Per-dep and non-fatal: one failed
-# refresh keeps that dep at its pinned version without blocking the others.
-# Entries are `name` (repo == name, ref == GIT_DEPS_REF) or `name=repo#ref`
-# for deps that live in a differently-named repo/branch — like canvas-web,
-# whose package is the CI-published web-dist branch of the canvas monorepo.
-GIT_DEPS="${GIT_DEPS:-canvas-synapsd canvas-stored canvas-inferd canvas-web=canvas#web-dist}"
-GIT_DEPS_ORG="${GIT_DEPS_ORG:-canvas-ui}"
-GIT_DEPS_REF="${GIT_DEPS_REF:-main}"
-log_message "Refreshing git deps ($GIT_DEPS)..."
-for entry in $GIT_DEPS; do
-    dep="${entry%%=*}"
-    spec="${entry#*=}"
-    if [[ "$spec" == "$entry" ]]; then spec="$dep#$GIT_DEPS_REF"; fi
-    repo="${spec%%#*}"
-    ref="${spec#*#}"
-    if run_as_canvas_user "/usr/bin/npm install $dep@github:$GIT_DEPS_ORG/$repo#$ref --no-save"; then
-        v=$(node -p "try{require('$CANVAS_ROOT/node_modules/$dep/package.json').version}catch{'?'}" 2>/dev/null)
-        log_message "  $dep -> $v (github:$GIT_DEPS_ORG/$repo#$ref)"
-    else
-        log_message "  $dep refresh failed — keeping the lockfile-pinned version"
-    fi
-done
+# Git-dep freshness is handled by scripts/refresh-git-deps.mjs, which ALSO
+# runs as npm postinstall (so the `npm ci` above already refreshed once — a
+# plain `npm install` anywhere gives latest main too). The explicit call
+# below is belt-and-braces + gives the deploy log its per-dep version lines.
+# Dep list: package.json "canvas".gitDeps — one registry for both paths.
+# `npm update` can NOT do this job: it never re-resolves a pinned git ref.
+log_message "Refreshing git deps (see canvas.gitDeps)..."
+run_as_canvas_user "/usr/bin/node scripts/refresh-git-deps.mjs" | tee -a "$LOG_FILE" \
+    || log_message "Git dep refresh failed — lockfile-pinned versions keep serving"
 
 WEB_DIST="$CANVAS_ROOT/node_modules/canvas-web/dist"
 

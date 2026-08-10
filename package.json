@@ -1,7 +1,7 @@
 {
   "name": "canvas-server",
   "productName": "Canvas Server",
-  "version": "2.3.2",
+  "version": "2.3.3",
   "description": "Context layer on top of your unstructured universe",
   "main": "./src/init.js",
   "type": "module",
@@ -31,7 +31,9 @@
     "dev:synapsd": "npm install --no-save file:../canvas-synapsd",
     "dev:stored": "npm install --no-save file:../canvas-stored",
     "dev:reset": "npm install",
-    "deps:bump": "npm update canvas-synapsd canvas-stored"
+    "deps:bump": "npm update canvas-synapsd canvas-stored",
+    "postinstall": "node scripts/refresh-git-deps.mjs",
+    "refresh": "node scripts/refresh-git-deps.mjs"
   },
   "workspaces": [
     ".",
@@ -134,5 +136,13 @@
     "roaring@2.7.0": true,
     "ssh2@1.17.0": true,
     "unrs-resolver@1.12.2": true
+  },
+  "canvas": {
+    "gitDeps": {
+      "canvas-synapsd": "canvas-ui/canvas-synapsd#main",
+      "canvas-stored": "canvas-ui/canvas-stored#main",
+      "canvas-inferd": "canvas-ui/canvas-inferd#main",
+      "canvas-web": "canvas-ui/canvas#web-dist"
+    }
   }
 }

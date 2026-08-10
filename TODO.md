@@ -5,7 +5,7 @@
 - We need to add a "simple" or "compact" UI version and leave the current one as 
   "advanced" 
 - Simple version
-  -  
+  - 
   - 
 
 -

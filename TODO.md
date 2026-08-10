@@ -2,12 +2,10 @@
 
 ## Simplify the canvas-web UI!!
 
-- We need to add a "simple" or "compact" UI version and leave the current one as 
-  "advanced" 
+- We need to add a "simple" or "compact" UI version and leave the current one as "advanced" 
 - Simple version
+  - Focused on context switching, Pinned tree layers, canvases + a A2UI canvas controlled via an internal inferd UI runtime thread
   - 
-  - 
-
 -
 
 ## Toolbox Apps (applets/widgets)

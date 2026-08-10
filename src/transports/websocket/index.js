@@ -6,6 +6,7 @@ import registerContextWebSocket from './channels/context.js';
 import registerWorkspaceWebSocket from './channels/workspace.js';
 import registerAgentWebSocket from './channels/agent.js';
 import registerEdgeWebSocket from './channels/edge.js';
+import registerSessionWebSocket from './channels/session.js';
 import EdgeRegistry from '../../edge/registry.js';
 
 const logger = createLogger('canvas-server:websocket:main');
@@ -333,6 +334,9 @@ export default function setupWebSocketHandlers(fastify) {
     logger.debug(`📋 Registering workspace WebSocket for socket ${socket.id}`);
     registerWorkspaceWebSocket(fastify, socket);
     registerEdgeWebSocket(fastify, socket);
+    // Query sessions are workspace-scoped, so share-token sockets get them too
+    // (clamped to their bound workspace inside the channel).
+    registerSessionWebSocket(fastify, socket);
 
     socket.emit('authenticated', { userId: user.id, email: user.email });
     logger.debug(`✅ Sent authentication confirmation to ${socket.id}`);

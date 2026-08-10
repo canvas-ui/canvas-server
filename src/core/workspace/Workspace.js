@@ -84,6 +84,7 @@ class Workspace extends EventEmitter {
     #status = WORKSPACE_STATUS_CODES.INACTIVE;
     #startPromise = null;
     #runtimeListeners = [];
+    #sessions = new Set();     // live QuerySessions opened over this workspace's db
 
     // Managers (injected)
     #storageManager = null;
@@ -710,6 +711,9 @@ class Workspace extends EventEmitter {
         this.#logger.debug({ workspaceId: this.id }, 'Stopping workspace');
         try {
             this.#unregisterInferd();
+            // Sessions subscribe to db events and hold its bitmaps — drop them
+            // before the db goes away, or they keep firing against a dead handle.
+            this.#closeSessions();
             await this.#stopStoredIndex();
             if (this.#db) {
                 this.#unbindRuntimeEvents();
@@ -1622,6 +1626,111 @@ class Workspace extends EventEmitter {
         const opts = { ...options, baseSpec };
         if (opts.maxDistance === undefined) { opts.maxDistance = Workspace.DEFAULT_MAX_COSINE_DISTANCE; }
         return await this.#getActiveDb().searchCompound(lines, opts);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Query sessions (live, delta-emitting views)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Normalize ONE session cue spec the same way list()/search() normalize a
+     * read: canvas querySpec folding + context/directory → the ctx:/dir: paths
+     * grammar.
+     *
+     * Cues are the CANDIDATE-SET stage: bitmap algebra (paths, features,
+     * filters incl. geo, literal id-sets) that can be cached, AND-ed and
+     * precisely invalidated. Text and image relevance are a SCORE, not a
+     * membership predicate — they have no bitmap key to invalidate and belong
+     * to the ranking stage (see buildMatch + QuerySession.materialize). Any
+     * text a canvas leaf folds in is therefore dropped here; the transport
+     * rejects caller-supplied text outright rather than silently ignoring it.
+     * `limit`/`offset` are paging concerns of the session as a whole (opts),
+     * not of a cue, and are dropped too.
+     */
+    normalizeSessionSpec(spec = {}) {
+        const cue = this.#normalizeQuerySpec(this.#composeCanvasQuerySpec(spec));
+        delete cue.query; delete cue.search; delete cue.q;
+        delete cue.limit; delete cue.offset; delete cue.page;
+        delete cue.sortBy; delete cue.order;
+        return cue;
+    }
+
+    /**
+     * Open a long-running, refinable query session over this workspace's db.
+     * Cue specs are workspace-normalized (see normalizeSessionSpec); everything
+     * else — modes, emit shapes, invalidation — is synapsd's QuerySession.
+     *
+     * Sessions hold a reference to the live db, so the workspace tracks them and
+     * closes them on stop(): a session surviving a shutdown would keep emitting
+     * against a torn-down db. The returned session's close() is idempotent and
+     * deregisters itself.
+     *
+     * @param {object|object[]} specs  one spec, an array of specs, or {spec,label}[]
+     * @param {object} opts            { mode, emit, combinator, debounceMs, limit, offset }
+     */
+    async openSession(specs = [], opts = {}) {
+        const db = this.#getActiveDb();
+        const list = (Array.isArray(specs) ? specs : (specs ? [specs] : []))
+            .filter(Boolean)
+            .map((entry) => (entry && typeof entry === 'object' && 'spec' in entry)
+                ? { label: entry.label, spec: this.normalizeSessionSpec(entry.spec) }
+                : this.normalizeSessionSpec(entry));
+
+        const session = await db.openSession(list, opts);
+        this.#sessions.add(session);
+        const close = session.close.bind(session);
+        session.close = () => { this.#sessions.delete(session); close(); };
+        return session;
+    }
+
+    /**
+     * Build a typed match descriptor for the RANKING stage — the second half of
+     * a session read, applied over the cue-narrowed candidate set.
+     *
+     * Text and image fuse: with both, the image rides as a vector leg on
+     * synapsd's typed match and RRF-merges with the full text pipeline (FTS +
+     * dense + text→image kNN), so "broken door" resurfaces the summarized NOTE
+     * about the entrance next to the photos the camera frame matched. Text
+     * alone stays a plain string (the classic fts/vector/hybrid path); an image
+     * alone is a single kNN leg and keeps its exact distance order.
+     *
+     * Returns null when there is nothing to rank by — the caller then gets the
+     * cheap listing path (bitmap slice, no Lance).
+     *
+     * @param {object} p
+     * @param {string|null}  p.text        free text ("broken door")
+     * @param {Buffer|null}  p.imageBytes  EPHEMERAL query image (camera frame) — embedded, never stored
+     * @param {string|null}  p.contentType mime for imageBytes
+     * @param {number|null}  p.similarTo   reuse an indexed document's stored image vector
+     */
+    async buildMatch({ text = null, imageBytes = null, contentType = null, similarTo = null, minDistance, maxDistance } = {}) {
+        const db = this.#getActiveDb();
+        const vectors = [];
+
+        if (imageBytes) {
+            if (!this.#inferd) { throw new Error('inferd service not available for image query embedding'); }
+            const vector = await this.#inferd.embedImageQuery(this.id, imageBytes, contentType);
+            if (!vector) { throw new Error('image query embedding failed (no image-capable provider for this workspace?)'); }
+            vectors.push({ space: 'image', vector, minDistance, maxDistance });
+        } else if (similarTo != null) {
+            const docId = parseDocumentId(similarTo, 'Document ID');
+            const vector = await db.getDocumentVector(docId, 'image');
+            if (!vector) { throw new Error(`document ${docId} has no image-space vector`); }
+            vectors.push({ space: 'image', vector, minDistance, maxDistance });
+        }
+
+        const query = typeof text === 'string' && text.trim().length > 0 ? text.trim() : null;
+        if (!query && vectors.length === 0) { return null; }
+        if (query && vectors.length === 0) { return query; }
+        return { text: query, vectors };
+    }
+
+    /** Close every session opened against this workspace (called from stop()). */
+    #closeSessions() {
+        for (const session of [...this.#sessions]) {
+            try { session.close(); } catch (err) { this.#logger.debug({ err: err.message }, 'Error closing query session'); }
+        }
+        this.#sessions.clear();
     }
 
     /**

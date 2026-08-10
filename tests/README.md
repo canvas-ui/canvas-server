@@ -4,7 +4,7 @@ All canvas-server tests live HERE, never next to the source — `npm test` runs
 every `tests/**/*.test.js` via the node test runner.
 
 - Unit/route tests mirror the `src/` layout (`tests/core/workspace/…`,
-  `tests/transports/…`, `tests/services/embedd/…`), with inner `src/`/`tests/`
+  `tests/transports/…`; inferd tests live in the `canvas-inferd` repository), with inner `src/`/`tests/`
   segments collapsed. Name them `<subject>.test.js` — the `*.test.js` glob is
   what `npm test` picks up.
 - The flat `test-*.js` / `*.sh` scripts in this directory are manual

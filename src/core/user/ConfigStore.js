@@ -24,14 +24,14 @@ import { userStatePath } from './lib/paths.js';
 
 // The name lands in a filesystem path, so an open parameter would be a
 // traversal vector. Whitelist rather than sanitize.
-const ALLOWED_CONFIGS = new Set(['webui', 'embedd']);
+const ALLOWED_CONFIGS = new Set(['webui', 'inferd']);
 
 // Configs the server acts on, which therefore may NOT be written through the
 // generic schema-less /me/config/:name route — they have a dedicated endpoint
 // that validates the shape, checks the endpoints it points at, and redacts
 // secrets on read. Without this the generic PUT would be a way to store an
 // arbitrary, unvalidated embedding config.
-const VALIDATED_CONFIGS = new Set(['embedd']);
+const VALIDATED_CONFIGS = new Set(['inferd']);
 
 const MAX_CONFIG_BYTES = 256 * 1024;
 

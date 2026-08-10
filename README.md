@@ -47,9 +47,8 @@ providers, routing, query embeddings, and the durable embedding queue. Canvas
 Server supplies workspace bytes/text and pushes vectors into SynapsD. SynapsD
 never receives raw media or loads a model.
 
-Canonical routes use `/inferd`; `/embedd` aliases remain during the persisted
-configuration rename. Image queries are ephemeral and can be fused with text
-before ranking.
+Inference routes use `/inferd`. Image queries are ephemeral and can be fused
+with text before ranking.
 
 ## (Temporary) Demo instance
 https://demo.cnvs.ai/pub/c/v64cxh0i

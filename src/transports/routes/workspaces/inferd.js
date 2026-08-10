@@ -6,10 +6,10 @@ import { redactConfig } from 'canvas-inferd/src/config.js';
 import { checkConfigEndpoints } from 'canvas-inferd/src/endpoint-guard.js';
 
 /**
- * Workspace embedding configuration — `/workspaces/:id/embedd`.
+ * Workspace inference configuration — `/workspaces/:id/inferd`.
  *
  * This is the PRIMARY surface for choosing embedding backends. The config lives
- * in the workspace's own workspace.json (`services.embedd`), so it travels with
+ * in the workspace's own workspace.json (`services.inferd`), so it travels with
  * the workspace: stop it, tar it, move it to another host or run it standalone
  * under canvas-edge, and it still embeds the way its vectors were built. Server
  * and per-user config are defaults a workspace inherits until it sets its own.
@@ -32,7 +32,7 @@ export default async function workspaceInferdRoutes(fastify, options) {
     // declaring `config.rateLimit`.
     const writeLimit = {
         rateLimit: {
-            max: Number(process.env.CANVAS_EMBEDD_CONFIG_RATE_MAX) || 30,
+            max: Number(process.env.CANVAS_INFERD_CONFIG_RATE_MAX) || 30,
             timeWindow: '1 minute',
         },
     };
@@ -40,7 +40,7 @@ export default async function workspaceInferdRoutes(fastify, options) {
     // during a drain are pure waste.
     const reindexLimit = {
         rateLimit: {
-            max: Number(process.env.CANVAS_EMBEDD_REINDEX_RATE_MAX) || 10,
+            max: Number(process.env.CANVAS_INFERD_REINDEX_RATE_MAX) || 10,
             timeWindow: '1 minute',
         },
     };
@@ -55,7 +55,7 @@ export default async function workspaceInferdRoutes(fastify, options) {
             return null;
         }
         if (!inferd()) {
-            const r = new ResponseObject().badRequest('Embedding service is disabled (CANVAS_EMBEDD_ENABLED=false)');
+            const r = new ResponseObject().badRequest('Inference service is disabled (CANVAS_INFERD_ENABLED=false)');
             reply.code(r.statusCode).send(r.getResponse());
             return null;
         }

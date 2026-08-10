@@ -13,7 +13,7 @@ const SERVER_MODE = argv.argv.slice(2).includes('--user') ? 'user' : 'standalone
 const SERVER_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const SERVER_HOME = process.env.CANVAS_SERVER_HOME || getServerHome();
 const USER_HOME = process.env.CANVAS_USER_HOME || getUserHome();
-const INFERD_CONFIG_PATH = process.env.CANVAS_EMBEDD_CONFIG || path.join(SERVER_HOME, 'config', 'embedd.json');
+const INFERD_CONFIG_PATH = process.env.CANVAS_INFERD_CONFIG || path.join(SERVER_HOME, 'config', 'inferd.json');
 
 // Read once at import. `process.env.npm_package_*` is only populated when the
 // process is started through an npm script — the container entrypoint
@@ -94,14 +94,14 @@ export const env = {
         // Server-managed embedding service (shared model runtimes, one queue per
         // workspace). Disabled → workspaces run store-only: existing vectors stay
         // searchable, no new embeddings, dense search degrades to FTS.
-        enabled: process.env.CANVAS_EMBEDD_ENABLED !== 'false',
+        enabled: process.env.CANVAS_INFERD_ENABLED !== 'false',
         ollamaHost: process.env.OLLAMA_HOST || null,
         // One shared fastembed model store for all workspaces (not per-workspace).
-        cacheDir: process.env.CANVAS_EMBEDD_CACHE_DIR || path.join(SERVER_HOME, 'embedd', 'models'),
+        cacheDir: process.env.CANVAS_INFERD_CACHE_DIR || path.join(SERVER_HOME, 'inferd', 'models'),
         // Max embedding batches in flight across ALL workspace queues. 1 keeps the
         // old single-serial-queue behaviour (right when inference is CPU-local);
         // raise it once the providers point at a GPU host that can take the load.
-        concurrency: Math.max(1, Number(process.env.CANVAS_EMBEDD_CONCURRENCY) || 1),
+        concurrency: Math.max(1, Number(process.env.CANVAS_INFERD_CONCURRENCY) || 1),
         // Optional providers + routing rules file. Absent → built-in providers and
         // DEFAULT_RULES, i.e. CPU-local ONNX + CLIP. This is the file that points
         // inferd at a remote/GPU inference host without a code change; see
@@ -112,8 +112,8 @@ export const env = {
         // is the right default: loopback and private ranges are where local
         // Ollama and in-office GPU boxes live. Set it to lock users down to
         // named hosts. Entries may be exact (`gpu.local`) or `*.suffix`.
-        allowHosts: (process.env.CANVAS_EMBEDD_ALLOW_HOSTS || '').split(',').map((h) => h.trim()).filter(Boolean),
-        ...readJsonConfig(INFERD_CONFIG_PATH, 'embedd'),
+        allowHosts: (process.env.CANVAS_INFERD_ALLOW_HOSTS || '').split(',').map((h) => h.trim()).filter(Boolean),
+        ...readJsonConfig(INFERD_CONFIG_PATH, 'inferd'),
     },
     messaging: {
         // User notification/chat channels (Slack, WhatsApp Cloud API). The

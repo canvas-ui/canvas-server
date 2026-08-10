@@ -203,7 +203,7 @@ class Workspace extends EventEmitter {
     }
 
     /**
-     * inferd's config (`services.embedd`): `{ providers?, spaces?, rules? }`.
+     * inferd's config (`services.inferd`): `{ providers?, spaces?, rules? }`.
      *
      * This lives IN workspace.json on purpose. A workspace is meant to be
      * self-contained and movable — stop it, tar it, scp it, run it under
@@ -220,14 +220,14 @@ class Workspace extends EventEmitter {
     }
 
     /**
-     * Single write authority for `services.embedd`. Validation happens above
+     * Single write authority for `services.inferd`. Validation happens above
      * this (the route asks inferd to resolve the candidate first) — a workspace
      * must never persist a config its own runtime would refuse.
      */
     setInferdConfig(config = {}) {
         const services = this.#configStore.get('services') || {};
         this.#configStore.set('services', { ...services, inferd: config });
-        this.emit('services.changed', { service: 'embedd', config });
+        this.emit('services.changed', { service: 'inferd', config });
         return this.inferdConfig;
     }
 
@@ -277,7 +277,7 @@ class Workspace extends EventEmitter {
                     const rule = router.spaceRule(sp);
                     if (rule) { spaces[sp] = { provider: rule.provider, model: rule.model, dim: rule.dim }; }
                 }
-                stats.embedder = { queue: this.#inferd.workspaceStatus(this.id), routing, spaces };
+                stats.inferd = { queue: this.#inferd.workspaceStatus(this.id), routing, spaces };
             } catch (_) { /* best effort */ }
         }
         return stats;
@@ -928,7 +928,7 @@ class Workspace extends EventEmitter {
     // every query must brute-force scan — search latency grows with ingest
     // progress until it times out. Runs inside the (sequential) inferd queue
     // handler, so it never races other vector writes.
-    static #EMBED_OPTIMIZE_EVERY = Math.max(50, Number(process.env.CANVAS_EMBED_OPTIMIZE_EVERY) || 500);
+    static #EMBED_OPTIMIZE_EVERY = Math.max(50, Number(process.env.CANVAS_INFERD_OPTIMIZE_EVERY) || 500);
 
     /** Vector sink: persist inferd-computed chunk vectors into a synapsd space. */
     async storeDocumentEmbeddings(docId, schema, updatedAt, chunks, opts = {}) {

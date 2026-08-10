@@ -23,7 +23,6 @@ Repo-local auto-memory (migrated from device-local store 2026-07-16, triaged: co
 - [project_document_comment_field.md](project_document_comment_field.md) — user comment field: FTS + reserved -1 vector chunk + feature/has-comment bitmap
 
 ## Search / embedding
-- [project_embedd_service.md](project_embedd_service.md) — embedd service owns all embedding; synapsd = pure store; seen-ledger trap
 - [project_synapsd_search_ranking.md](project_synapsd_search_ranking.md) — ngram tokenizer, weighted RRF, cosine floor 0.35 (retune pending), reindex endpoints
 - [project_image_clip_search.md](project_image_clip_search.md) — CLIP/SigLIP: forked-child ORT isolation, lockfile/deploy discipline
 - [project_vector_query_timeout_rootcause.md](project_vector_query_timeout_rootcause.md) — CLIP serialization, L2-metric ANN bug (image space annIndex:false), Lance fragmentation

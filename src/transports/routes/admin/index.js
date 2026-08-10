@@ -491,7 +491,7 @@ export default async function adminRoutes(fastify, options) {
       }
       const inferd = fastify.workspaceManager.inferd;
       if (!inferd) {
-        const response = new ResponseObject().badRequest('Embedding service is disabled (CANVAS_EMBEDD_ENABLED=false)');
+        const response = new ResponseObject().badRequest('Inference service is disabled (CANVAS_INFERD_ENABLED=false)');
         return reply.code(response.statusCode).send(response.getResponse());
       }
       const { space = null, reindex = false } = request.body || {};
@@ -579,7 +579,7 @@ export default async function adminRoutes(fastify, options) {
     try {
       const inferd = fastify.workspaceManager.inferd;
       if (!inferd) {
-        const response = new ResponseObject().badRequest('Embedding service is disabled (CANVAS_EMBEDD_ENABLED=false)');
+        const response = new ResponseObject().badRequest('Inference service is disabled (CANVAS_INFERD_ENABLED=false)');
         return reply.code(response.statusCode).send(response.getResponse());
       }
       const identifier = request.query?.workspaceId || null;
@@ -601,10 +601,6 @@ export default async function adminRoutes(fastify, options) {
   fastify.get('/inferd/status', { onRequest: [fastify.authenticate, requireAdmin] }, inferdControl('status'));
   fastify.post('/inferd/pause', { onRequest: [fastify.authenticate, requireAdmin], schema: inferdControlSchema }, inferdControl('pause'));
   fastify.post('/inferd/resume', { onRequest: [fastify.authenticate, requireAdmin], schema: inferdControlSchema }, inferdControl('resume'));
-  // Legacy aliases (pre-rename clients, incl. the prebuilt web artifact).
-  fastify.get('/embedd/status', { onRequest: [fastify.authenticate, requireAdmin] }, inferdControl('status'));
-  fastify.post('/embedd/pause', { onRequest: [fastify.authenticate, requireAdmin], schema: inferdControlSchema }, inferdControl('pause'));
-  fastify.post('/embedd/resume', { onRequest: [fastify.authenticate, requireAdmin], schema: inferdControlSchema }, inferdControl('resume'));
 
   // Compact + prune Lance tables and (re)build ANN indexes. `space`:
   //   'fts'          → the full-text (BM25) table

@@ -32,13 +32,9 @@ later (os-canvas or similar), immediately re-register `canvas-ui` as a
 placeholder org — org redirects die the moment someone claims the old login,
 and every `.gitmodules`/remote/`repository` field still says canvas-ui.
 
-Noticed during Slice 1 (pre-existing, not fixed here):
-
-- The cli resolves its home dir from `CANVAS_USER_HOME` (`src/core/paths.js:15`)
-  while `docs/client-spec.md` §1 specifies `$CANVAS_HOME`. One of them is wrong.
-- `embedd` imports `onnxruntime-node` (`src/providers/onnx.worker.js:27`)
-  without declaring it — it rides the server root's dependency. Must be added
-  to embedd's manifest at Phase 4 extraction or the package breaks standalone.
+Noticed during Slice 1 (pre-existing, not fixed here): the CLI resolves its
+home directory from `CANVAS_USER_HOME` while `docs/client-spec.md` specifies
+`$CANVAS_HOME`. One of them is wrong.
 
 ---
 
@@ -80,7 +76,6 @@ canvas                  Apache-2.0    monorepo (public — decided Slice 1)
     api-client                        ← ergonomic client over protocol, new
     schemas                           ← extracted, new
     plugin-api                        ← integration/adapter interfaces, new
-    embedd                            ← src/services/embedd
     messaging                         ← src/services/messaging
     voice                             ← src/services/voice
 
@@ -128,7 +123,8 @@ different sides of the line:
 
 They become dependencies rather than subdirectories, which leaves
 `canvas-server` with five cross-repository dependencies: `canvas-synapsd`,
-`canvas-stored`, `@augmentd-labs/canvas-embedd`, `@augmentd-labs/canvas-messaging` and `@augmentd-labs/canvas-voice`. See
+`canvas-stored`, `canvas-inferd`, `@augmentd-labs/canvas-messaging` and
+`@augmentd-labs/canvas-voice`. See
 [Tooling and distribution](#tooling-and-distribution) — the two standalone repos
 can be git dependencies, the three monorepo packages cannot.
 
@@ -157,7 +153,7 @@ currently committed.
 ### Why the change
 
 AGPL is copyleft: anything that links it must itself be AGPL. A closed
-`canvas-server` importing AGPL `stored` and `embedd` would be a copyleft
+`canvas-server` importing AGPL `stored` and `inferd` would be a copyleft
 violation but for the fact that a single author holds the copyright and cannot
 infringe himself. That works today and breaks the first time an outside
 contributor lands a commit in an AGPL package the closed core consumes — at
@@ -177,7 +173,7 @@ managing it in perpetuity.
 | `canvas-shell` | AGPL only | **Apache-2.0** | |
 | `canvas-fuse` | AGPL only | **Apache-2.0** | |
 | `canvas-stored` | AGPL [dual] | **Apache-2.0** | thin wrapper, nothing to protect |
-| `embedd` | AGPL [dual], in-tree | **Apache-2.0** | extract from `canvas-server` |
+| `canvas-inferd` | AGPL [dual], standalone | **Apache-2.0** | extracted from `canvas-server` |
 | `messaging` | AGPL [dual], in-tree | **Apache-2.0** | extract from `canvas-server` |
 | `voice` | AGPL [dual], in-tree | **Apache-2.0** | extract from `canvas-server` |
 | `protocol` / `api-client` / `schemas` | — | **Apache-2.0** | new |
@@ -473,27 +469,8 @@ stays standalone — it is Rust and does not belong in an npm workspace.
 
 ### Phase 4 — extract the open services from `canvas-server`
 
-`git filter-repo` extracts a subdirectory with its history:
-
-```bash
-git clone https://github.com/canvas-ui/canvas-server.git /tmp/extract-embedd
-cd /tmp/extract-embedd
-git filter-repo --path src/services/embedd \
-                --path-rename src/services/embedd/:packages/embedd/
-
-cd canvas
-git remote add embedd-src /tmp/extract-embedd
-git fetch embedd-src
-git merge --allow-unrelated-histories embedd-src/dev
-```
-
-Repeat for `messaging` and `voice`.
-
-These three are **self-contained** — verified: every reference they make to
-synapsd is a comment, with no real imports crossing out — so extraction is
-mechanical.
-
-- [ ] `embedd`, `messaging`, `voice` extracted with history
+- [x] `canvas-inferd` extracted with history and consumed as a dependency
+- [ ] `messaging` and `voice` extracted with history
 - [ ] `canvas-server` consumes them as dependencies
 - [ ] Transitional wiring via `file:../canvas/packages/<name>` until published
 
@@ -566,8 +543,8 @@ ripgrep does not traverse symlinks by default, and it honours `.gitignore`. Eith
 cause alone hides the tree from every search-based tool; the obvious setup has
 both.
 
-The danger is that this fails **silently** — empty results, not an error. An agent
-asked "has `embedd` been moved yet?" searches, finds nothing, concludes no, and
+The danger is that this fails **silently**: empty results, not an error. An agent
+asks whether a service moved, searches, finds nothing, concludes no, and
 redoes the move. "What still imports the old path?" returns clean. Explicit
 Read/Write through the link works fine, so driving an agent with exact paths is
 survivable; anything involving discovery is not.
@@ -642,7 +619,7 @@ not add it. This is the constraint that decides everything below.
   `"canvas-stored": "github:canvas-ui/canvas-stored#v1.2.0"` is legitimately
   good enough. Same for `canvas-synapsd`.
 - **`canvas-server` → monorepo packages is the case that needs a decision**, and
-  it applies to `@augmentd-labs/canvas-embedd`, `@augmentd-labs/canvas-messaging`, `@augmentd-labs/canvas-voice` and
+  it applies to `@augmentd-labs/canvas-messaging`, `@augmentd-labs/canvas-voice` and
   `@augmentd-labs/canvas-protocol`. `file:../canvas/packages/<name>` works locally with the
   sibling checkouts and is fine during the migration, but breaks in CI and
   Docker. **Revised (Slice 1): GitHub Release tarballs, not GitHub Packages.**

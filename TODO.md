@@ -115,71 +115,6 @@ Server
 
 ## Workspace hook TODO items in `TODO.hooks.md`
 
-## Refactor `embedd` (coupled to the workspace runtime)
-
-**LANDED 2026-07-27 — providers + routing are config, queues are per-workspace, models are
-swappable.** The blocker was never the provider set: `DEFAULT_RULES` was a const in router.js,
-`Server.js` never passed `options.rules`, and the provider map was three hardcoded constructors,
-so pointing embedd at the GPU box meant editing source. All three are now data.
-
-- **Config-driven providers + rules** — `src/services/embedd/src/config.js`; optional
-  `$SERVER_HOME/config/embedd.json` (`CANVAS_EMBEDD_CONFIG` overrides the path,
-  `server/config/embedd.example.json` documents the shape). Providers are `{ type, ...opts }`
-  under a caller-chosen id; `onnx`/`ollama`/`clip` always exist and are overridable by
-  re-declaring the id. JSON matchers accept an exact string, a `type/*` prefix, or
-  `/regex/flags`. Defaults reproduce the old routing exactly. Misconfiguration throws at boot
-  on purpose — a typo'd provider id would otherwise degrade dense search silently.
-- **`OpenAIProvider`** (`providers/openai.js`) — `POST {baseUrl}/v1/embeddings`, so one provider
-  covers vllm, TEI, infinity, LM Studio, OpenAI **and an EmbedAnything sidecar**. Images are
-  configurable rather than guessed: `imageInput: 'data-uri'` (infinity/TEI-style batched `input`)
-  or `'messages'` (vLLM multimodal, one request per image). Responses are re-paired by
-  `data[].index` and a short response throws — silently dropping documents is worse than failing.
-- **Model swap / revert / reclaim** — the router owns each space's model+dim, and
-  `Embedd#spaceConfigs()` feeds them to synapsd. A space on its **baseline** model keeps
-  `vec_text`/`vec_image` and its original bitmap keys (nothing existing is orphaned); any other
-  model gets its own `vec_<space>__<slug>__<dim>` table **plus its own presence/seen ledger**.
-  That last part is what makes a revert free: switch back and the old vectors are still there and
-  still marked embedded, so nothing re-embeds. Reclaim a superseded model via
-  `GET|DELETE /rest/v2/admin/workspaces/:id/vector-tables[/:table]` (refuses the live table).
-- **Per-workspace queues** — one `Queue` per registered workspace behind a shared `Semaphore`
-  (`CANVAS_EMBEDD_CONCURRENCY`, default 1 = byte-for-byte the old serial behaviour; raise it once
-  inference is remote). Per-workspace `pause`/`resume`/`drained`/`workspaceStatus`;
-  `/admin/embedd/{pause,resume}?workspaceId=` narrows to one. `onQueueDrained` now fires only for
-  the workspace that drained — the shared queue used to trigger a compact + ANN rebuild in EVERY
-  workspace on any drain. Settings → Database shows this workspace's own backlog (the
-  "· all workspaces" caveat is gone) plus the provider/model per space.
-- **`CANVAS_CLIP_MODEL` / `CANVAS_CLIP_DTYPE` are proper config** — `ClipProvider` takes
-  `model`/`dtype` and passes them to the worker, so the routing rule is authoritative and env is
-  just the fallback. (Changing dtype shifts the embeddings — re-embed the image space after.)
-- **Embedding ledger keys unified + renamed** (follow-up, same day). Both per-space ledgers now
-  live under one root and are always keyed `(space, model)` with the **model slug as the leaf**:
-  `internal/embed/vectors/<space>/<slug>` (presence) and `internal/embed/seen/<space>/<slug>`
-  (processed). This fixes a live defect, not just a naming wart: the legacy text presence bitmap
-  sat at `internal/lance/vectors`, which was **also the parent path of the image one**, and
-  `listBitmaps()` range-scans strictly below `prefix + '/'` — so listing `internal/lance/vectors`
-  returned image and silently omitted text, including through
-  `GET /workspaces/:id/bitmaps/internal/lance/vectors`. The rule the rest of synapsd already
-  follows (`internal/ts/…`, `data/mime/…`, `feature/…`): **a namespace is a directory, never also
-  a key.** Migration is idempotent via the existing `BitmapIndex.migrateKey`, runs at start before
-  any VectorIndex latches its key, and maps legacy → the *baseline* slug (not the configured one),
-  so a workspace upgrading straight onto a new model keeps its old vectors correctly attributed
-  and reachable on a revert. `presenceKey()`/`seenKey()` in embedd's constants.js are the single
-  source; a new modality (audio, spatial) slots in with no code change.
-- Tests: `tests/services/embedd/{config,openai-provider,queue-split}.test.js` (39 new).
-
-Remaining on this thread:
-- [ ] Point the in-office GPU box at it for real and verify an image model end-to-end — the
-      `imageInput` modes are written against the documented shapes but only tested against a
-      local fake server.
-- [ ] Rules are still server-wide. Making them **per-workspace** is what would finally let the
-      settings UI stop being read-only (see the router bullet below).
-- [ ] Model cache **search path** (workspace-local dir → server-shared fallback) for
-      containerized/standalone workspaces.
-- [ ] CLIP worker **pool** (~nCPUs-2, ORT intra-op threads capped so pool × threads ≈ nCPUs).
-      Much lower priority now: with remote providers the local CLIP child is the fallback path,
-      and the shared semaphore already bounds it.
-
-
 ### IMAP / email
 - [ ] Attachments as File docs + rel/ relations (rel/* bitmaps exist, nothing populates them; Synapses tab empty by design gap).
 - [ ] SMTP reply: per-mailbox smtp{} config, nodemailer send route, Reply button in EmailRenderer.
@@ -369,7 +304,7 @@ db becomes workspace-relative at write time (import/relocation already proves th
 
 ## Workspace runtime
 
-Future non-MVP direction, bundle workspace(synapsd, stored, embedd) in a single bun binary runnable from a folder in a standalone fashion(`ws`, would start a pm2 based daemon and use the same `ws` binary as the CLI), minimal REST+WS endpoints (only token auth), optional tauri UI frontend with a tray app
+Future non-MVP direction: bundle a workspace (synapsd, stored, inferd) into one Bun binary runnable from a folder, with minimal REST and WebSocket endpoints, token auth, and an optional Tauri tray UI.
 - Prerequisites: `canvas-edge` for the minimal API + autoregistration to a remote canvas-server
 
 ## Related with the workspace runtime, canvas-agent runtime

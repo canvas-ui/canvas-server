@@ -79,7 +79,7 @@ services:
 
       # Embedding service — CPU-local by default. Point OLLAMA_HOST at a
       # reachable Ollama (host.docker.internal / a LAN box) or disable it.
-      CANVAS_EMBEDD_ENABLED: ${CANVAS_EMBEDD_ENABLED:-true}
+      CANVAS_INFERD_ENABLED: ${CANVAS_INFERD_ENABLED:-true}
       OLLAMA_HOST: ${OLLAMA_HOST:-}
 
     volumes:

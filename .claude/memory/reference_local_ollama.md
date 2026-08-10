@@ -1,6 +1,6 @@
 ---
 name: reference_local_ollama
-description: Local Ollama host + models available for embedd Ollama provider / testing
+description: Local Ollama host + models available for inferd Ollama provider / testing
 metadata: 
   node_type: memory
   type: reference

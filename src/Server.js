@@ -240,7 +240,8 @@ class Server extends EventEmitter {
                 providers: env.inferd.providers,
                 spaces: env.inferd.spaces,
                 rules: env.inferd.rules,
-                resolveUserConfig: (userId) => this.#userConfig.read(userId, 'embedd'),
+                summarize: env.inferd.summarize,
+                resolveUserConfig: (userId) => this.#userConfig.read(userId, 'inferd'),
             });
         }
 

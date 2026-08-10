@@ -267,7 +267,7 @@ export async function createServer(options = {}) {
   // keeping it off them, so do not drop it.
   //
   // Registered once here because two separate route plugins need it
-  // (/rest/v2/embedd and /workspaces/:id/embedd). Per-plugin registration also
+  // (/rest/v2/inferd and /workspaces/:id/inferd). Per-plugin registration also
   // works — @fastify/rate-limit is fastify-plugin wrapped but still applies its
   // options per encapsulated scope — it just duplicates the setup.
   //
@@ -389,10 +389,7 @@ export async function createServer(options = {}) {
   server.register(messagingRoutes, { prefix: '/rest/v2/messaging' });
   server.register(messagingWebhookRoutes, { prefix: '/rest/v2/messaging/webhooks' });
   server.register(voiceRoutes, { prefix: '/rest/v2/voice' });
-  // Inference service (canvas-inferd). '/inferd' is the canonical prefix;
-  // '/embedd' is the legacy alias kept until every client has migrated.
   server.register(withoutAgentTokens(inferdRoutes), { prefix: '/rest/v2/inferd' });
-  server.register(withoutAgentTokens(inferdRoutes), { prefix: '/rest/v2/embedd' });
   server.register(withoutAgentTokens(adminRoutes), { prefix: '/rest/v2/admin' });
   server.register(withoutAgentTokens(roleRoutes), { prefix: '/rest/v2/roles' });
   server.register(withoutAgentTokens(roleTemplateRoutes), { prefix: '/rest/v2/role-templates' });

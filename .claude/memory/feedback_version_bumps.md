@@ -5,7 +5,7 @@ metadata:
   type: feedback
 ---
 
-Always bump the version number in the `package.json` (or Cargo.toml for canvas-fuse) of the component the session's work landed in - server root, synapsd, stored, embedd, web UI, browser extension, CLI, fuse - as part of finishing the work.
+Always bump the version number in the `package.json` (or Cargo.toml for canvas-fuse) of the component the session's work landed in - server root, synapsd, stored, inferd, web UI, browser extension, CLI, fuse - as part of finishing the work.
 
 **Why:** user request (2026-07-16). The project follows semver; version bumps are how deploys and submodule pointer updates are tracked (e.g. server ping reports version, browser ext versions its releases).
 

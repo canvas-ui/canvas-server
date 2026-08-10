@@ -54,13 +54,13 @@ fork every doc on the same switch.
 disclaims it: `index.js:263` "synapsd owns no embedding model"; `VectorIndex.js:29` "does not run the
 embedding model". `embeddingDimensions` can't be honored even in principle (one fixed dim per Lance
 table). The A/B-on-a-subset use case is the argument AGAINST per-doc config: a subset is a SET →
-embedd **router rule + feature/filter selector** = zero doc writes (per-doc config would rewrite N
+inferd **router rule + feature/filter selector** = zero doc writes (per-doc config would rewrite N
 docs to start an experiment and N more to end it). Split: **config → router rule; provenance
 (model/dim/embeddedAt) → Lance row column; document → nothing.**
 
 **Recommended**: key Lance tables by `(space, model, dim)` (`vec_text__qwen3-0.6b__1024`) — makes the
 drop hazard structurally impossible AND gives A/B + MRL sibling tables for free. MRL gotcha: a
-truncated matryoshka vector must be **L2-re-normalized** or cosine is silently wrong (do it in embedd
+truncated matryoshka vector must be **L2-re-normalized** or cosine is silently wrong (do it in inferd
 — synapsd owns no model semantics).
 
 **Schema simplification**: `tab` and `link` are the same doc with different field names

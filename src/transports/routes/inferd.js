@@ -32,7 +32,7 @@ import { env } from '../../env.js';
  * value, and a PUT that omits a key for an existing provider keeps the stored one.
  */
 
-const CONFIG_NAME = 'embedd';
+const CONFIG_NAME = 'inferd';
 
 // 1×1 PNG — the smallest real image every provider path can decode. Used by
 // POST /test with modality:'image' so "Test connection" exercises the image
@@ -54,14 +54,14 @@ export default async function inferdRoutes(fastify, options) {
     // amplification primitive than the config writes CodeQL flagged.
     const writeLimit = {
         rateLimit: {
-            max: Number(process.env.CANVAS_EMBEDD_CONFIG_RATE_MAX) || 30,
+            max: Number(process.env.CANVAS_INFERD_CONFIG_RATE_MAX) || 30,
             timeWindow: '1 minute',
         },
     };
     // Tighter: each call reaches out to a third-party host.
     const testLimit = {
         rateLimit: {
-            max: Number(process.env.CANVAS_EMBEDD_TEST_RATE_MAX) || 10,
+            max: Number(process.env.CANVAS_INFERD_TEST_RATE_MAX) || 10,
             timeWindow: '1 minute',
         },
     };
@@ -70,7 +70,7 @@ export default async function inferdRoutes(fastify, options) {
 
     const requireInferd = (reply) => {
         if (inferd()) { return true; }
-        const r = new ResponseObject().badRequest('Embedding service is disabled (CANVAS_EMBEDD_ENABLED=false)');
+        const r = new ResponseObject().badRequest('Inference service is disabled (CANVAS_INFERD_ENABLED=false)');
         reply.code(r.statusCode).send(r.getResponse());
         return false;
     };

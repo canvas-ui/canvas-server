@@ -1,7 +1,7 @@
 {
   "name": "canvas-server",
   "productName": "Canvas Server",
-  "version": "2.4.3",
+  "version": "2.5.0",
   "description": "Context layer on top of your unstructured universe",
   "main": "./src/init.js",
   "type": "module",
@@ -31,7 +31,7 @@
     "dev:synapsd": "npm install --no-save file:../canvas-synapsd",
     "dev:stored": "npm install --no-save file:../canvas-stored",
     "dev:reset": "npm install",
-    "deps:bump": "npm update canvas-synapsd canvas-stored canvas-web",
+    "deps:bump": "npm update canvas-inferd canvas-synapsd canvas-stored canvas-web",
     "postinstall": "node scripts/refresh-git-deps.mjs",
     "refresh": "node scripts/refresh-git-deps.mjs"
   },

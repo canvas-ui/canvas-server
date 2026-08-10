@@ -69,7 +69,7 @@ Rule of thumb:
   notification per sync): hook `document.inserted.batch` and work with `ids`.
 
 The legacy singular emission with `{ ids, batch: true }` (no document) is a
-compat signal for the ws bridge/embedd and is *not* dispatched to hooks or
+compat signal for the WebSocket bridge/inferd and is *not* dispatched to hooks or
 rules — you never see a doc-less `document.inserted`.
 
 ## File layout

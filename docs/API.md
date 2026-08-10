@@ -1149,15 +1149,15 @@ All admin routes require `authenticate` + admin role.
 | GET | `/admin/users/:userId/ssh-keys/:keyId` | admin | Get SSH key |
 | DELETE | `/admin/users/:userId/ssh-keys/:keyId` | admin | Delete SSH key |
 
-### Embedd (server-wide embedding queue)
+### Inferd (server-wide inference queue)
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| GET | `/admin/embedd/status` | admin | Queue + provider status: `{ queue: { pending, draining, paused, ingestDisabled }, providers, … }` |
-| POST | `/admin/embedd/pause` | admin | Pause embedding after the in-flight batch — the backlog holds (enqueues keep accumulating); runtime-only, a restart clears it |
-| POST | `/admin/embedd/resume` | admin | Resume draining the held backlog |
+| GET | `/admin/inferd/status` | admin | Queue + provider status: `{ queue: { pending, draining, paused, ingestDisabled }, providers, … }` |
+| POST | `/admin/inferd/pause` | admin | Pause inference after the in-flight batch; enqueues keep accumulating |
+| POST | `/admin/inferd/resume` | admin | Resume draining the held backlog |
 
-Env gates: `CANVAS_EMBEDD_INGEST_DISABLED=true` soft-disables ingest (enqueue/reconcile no-op; existing vectors still serve dense search); `CANVAS_EMBEDD_ENABLED=false` disables the service entirely (dense search degrades to FTS). Also surfaced as a Pause/Resume control on the queue row in workspace Settings → Database.
+Env gates: `CANVAS_INFERD_INGEST_DISABLED=true` soft-disables ingest while existing vectors still serve search; `CANVAS_INFERD_ENABLED=false` disables the service entirely and dense search degrades to FTS.
 
 ### Workspaces
 

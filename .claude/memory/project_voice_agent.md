@@ -9,7 +9,7 @@ metadata:
 
 Voice agent implemented (2026-07-03), server + web UI submodule.
 
-**Server:** `src/services/voice/` (embedd pattern, pure DI) — OpenAI audio API dialect both sides: STT `POST {base}/v1/audio/transcriptions` (speaches/faster-whisper/whisper.cpp), TTS `POST {base}/v1/audio/speech` (kokoro-fastapi/openedai-speech-piper). Each side activates only when its base URL env is set; `GET /rest/v2/voice/status` reports. Utility routes `/rest/v2/voice/{transcribe,speak}` (agent tokens rejected).
+**Server:** `src/services/voice/` (inferd pattern, pure DI) — OpenAI audio API dialect both sides: STT `POST {base}/v1/audio/transcriptions` (speaches/faster-whisper/whisper.cpp), TTS `POST {base}/v1/audio/speech` (kokoro-fastapi/openedai-speech-piper). Each side activates only when its base URL env is set; `GET /rest/v2/voice/status` reports. Utility routes `/rest/v2/voice/{transcribe,speak}` (agent tokens rejected).
 
 **Round-trip:** `POST /rest/v2/agents/:id/voice` (multipart audio OR JSON base64) → transcribe → `agents.prompt` → TTS → JSON `{transcript, reply, audio(base64), audioMimeType, voice}`. `?tts=false`, `voice`, `format`, `language` opts. TTS failure degrades to text-only (doesn't fail request).
 

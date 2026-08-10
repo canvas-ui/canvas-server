@@ -10,6 +10,47 @@
 ## Canvas Server
 Server runtime for the Canvas project.
 
+## Search and live sessions
+
+Workspace reads have two stages:
+
+1. **Cues** build a candidate set from paths, features, time, GPS, relations,
+   and literal document IDs. SynapsD keeps these as cached bitmap operands.
+2. **Match** ranks those candidates with text and/or caller-supplied vectors.
+   Inferd produces query vectors; SynapsD performs FTS, kNN, and RRF.
+
+Long-running sessions expose that model over socket.io:
+
+```
+session.open
+session.set
+session.patch
+session.remove
+session.ids
+session.materialize
+session.close
+```
+
+The server pushes `session.delta` with added and removed IDs. Clients hydrate
+only additions through the normal document route. `set` replaces a streaming
+cue such as the current camera-frame survivors; `patch` refines an existing
+cue and therefore merges array fields.
+
+Sessions are scoped to one socket and workspace, capped per connection, closed
+on disconnect, and tracked by the workspace lifecycle. A failed session open
+does not disable stateless search.
+
+## Inference
+
+[`canvas-inferd`](https://github.com/canvas-ui/canvas-inferd) owns model
+providers, routing, query embeddings, and the durable embedding queue. Canvas
+Server supplies workspace bytes/text and pushes vectors into SynapsD. SynapsD
+never receives raw media or loads a model.
+
+Canonical routes use `/inferd`; `/embedd` aliases remain during the persisted
+configuration rename. Image queries are ephemeral and can be fused with text
+before ranking.
+
 ## (Temporary) Demo instance
 https://demo.cnvs.ai/pub/c/v64cxh0i
 

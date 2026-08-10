@@ -230,10 +230,14 @@ build_web_ui() {
         rm -rf "$WEB_DIST"
         mkdir -p "$(dirname "$WEB_DIST")"
         cp -a "$WEB_SRC_DIR/apps/web/dist" "$WEB_DIST"
-        chown -R "$CANVAS_USER:$CANVAS_GROUP" "$WEB_DIST"
-        local rev
+        local rev webver
         rev=$(cd "$WEB_SRC_DIR" && git rev-parse --short HEAD 2>/dev/null || echo '?')
-        log_message "Web UI built from source ($WEB_SRC_BRANCH@$rev)"
+        webver=$(node -p "try{require('$WEB_SRC_DIR/apps/web/package.json').version}catch{'?'}" 2>/dev/null)
+        # Provenance marker: the final "Web UI serving" log reads this, and it
+        # makes "which build is this box actually serving" a one-file answer.
+        echo "$webver $WEB_SRC_BRANCH@$rev $(date -u '+%Y-%m-%dT%H:%M:%SZ')" > "$WEB_DIST/.source-build"
+        chown -R "$CANVAS_USER:$CANVAS_GROUP" "$WEB_DIST"
+        log_message "Web UI built from source ($webver, $WEB_SRC_BRANCH@$rev)"
     else
         log_message "Web UI build failed — keeping the packaged canvas-web dist"
     fi
@@ -298,6 +302,22 @@ log_message "Installing dependencies..."
 # replaces it with a fresh source build.
 run_as_canvas_user "/usr/bin/npm ci" || { log_message "npm ci failed"; exit 1; }
 
+# npm ci restores the LOCKFILE-PINNED commits of the git deps — which lag main
+# by however long ago the lockfile was regenerated. An update must leave every
+# component at its latest main: refresh them explicitly. --no-save keeps
+# package.json/lockfile untouched (the repo stays reproducible; the BOX runs
+# latest). Non-fatal: a refresh failure leaves the pinned versions serving.
+GIT_DEPS="${GIT_DEPS:-canvas-synapsd canvas-stored}"
+log_message "Refreshing git deps to latest main ($GIT_DEPS)..."
+if run_as_canvas_user "/usr/bin/npm update $GIT_DEPS --no-save"; then
+    for dep in $GIT_DEPS; do
+        v=$(node -p "try{require('$CANVAS_ROOT/node_modules/$dep/package.json').version}catch{'?'}" 2>/dev/null)
+        log_message "  $dep -> $v"
+    done
+else
+    log_message "Git dep refresh failed — keeping lockfile-pinned versions"
+fi
+
 WEB_DIST="$CANVAS_ROOT/node_modules/canvas-web/dist"
 
 # Primary web UI path: build the latest from source (non-fatal on failure —
@@ -305,6 +325,11 @@ WEB_DIST="$CANVAS_ROOT/node_modules/canvas-web/dist"
 build_web_ui
 
 [[ -f "$WEB_DIST/index.html" ]] || { log_message "Missing $WEB_DIST/index.html (tarball install AND source build both failed)"; exit 1; }
+if [[ -f "$WEB_DIST/.source-build" ]]; then
+    log_message "Web UI serving: source build $(cat "$WEB_DIST/.source-build")"
+else
+    log_message "Web UI serving: packaged tarball $(node -p "try{require('$CANVAS_ROOT/node_modules/canvas-web/package.json').version}catch{'?'}" 2>/dev/null) (SOURCE BUILD DID NOT RUN — check log above)"
+fi
 
 # Must happen before the real server starts, both want the same port.
 stop_maintenance_page

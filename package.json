@@ -1,7 +1,7 @@
 {
   "name": "canvas-server",
   "productName": "Canvas Server",
-  "version": "2.3.0",
+  "version": "2.3.1",
   "description": "Context layer on top of your unstructured universe",
   "main": "./src/init.js",
   "type": "module",
@@ -72,7 +72,7 @@
     "bcryptjs": "^3.0.3",
     "canvas-stored": "github:canvas-ui/canvas-stored#main",
     "canvas-synapsd": "github:canvas-ui/canvas-synapsd#main",
-    "canvas-web": "https://github.com/canvas-ui/canvas/releases/download/web-v2.3.0/canvas-web-2.3.0.tgz",
+    "canvas-web": "https://github.com/canvas-ui/canvas/releases/download/web-v2.3.1/canvas-web-2.3.1.tgz",
     "conf": "^14.0.0",
     "cross-env": "^10.1.0",
     "debug": "^4.4.3",

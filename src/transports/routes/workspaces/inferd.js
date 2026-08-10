@@ -2,8 +2,8 @@
 
 import ResponseObject from '../../ResponseObject.js';
 import { requireWorkspaceRead, requireWorkspaceWrite } from '../../middleware/workspace-acl.js';
-import { redactConfig } from '../../../services/inferd/src/config.js';
-import { checkConfigEndpoints } from '../../../services/inferd/src/endpoint-guard.js';
+import { redactConfig } from 'canvas-inferd/src/config.js';
+import { checkConfigEndpoints } from 'canvas-inferd/src/endpoint-guard.js';
 
 /**
  * Workspace embedding configuration — `/workspaces/:id/embedd`.

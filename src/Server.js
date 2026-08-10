@@ -27,7 +27,7 @@ import DeviceRegistry from './core/device/Registry.js';
 import UserConfigStore from './core/user/ConfigStore.js';
 import Roles from './core/role/index.js';
 import Agents from './core/agent/index.js';
-import Inferd from './services/inferd/src/index.js';
+import Inferd from 'canvas-inferd';
 import Voice from './services/voice/src/index.js';
 import Messaging from './services/messaging/src/index.js';
 import ChatRouter from './services/messaging/src/router.js';

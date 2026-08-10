@@ -1,7 +1,7 @@
 {
   "name": "canvas-server",
   "productName": "Canvas Server",
-  "version": "2.3.1",
+  "version": "2.3.2",
   "description": "Context layer on top of your unstructured universe",
   "main": "./src/init.js",
   "type": "module",
@@ -35,8 +35,7 @@
   },
   "workspaces": [
     ".",
-    "src/core/agent",
-    "src/services/inferd"
+    "src/core/agent"
   ],
   "overrides": {
     "@types/react": "19.2.14",
@@ -70,6 +69,7 @@
     "@slack/web-api": "^7.15.0",
     "adm-zip": "^0.5.16",
     "bcryptjs": "^3.0.3",
+    "canvas-inferd": "github:canvas-ui/canvas-inferd#main",
     "canvas-stored": "github:canvas-ui/canvas-stored#main",
     "canvas-synapsd": "github:canvas-ui/canvas-synapsd#main",
     "canvas-web": "https://github.com/canvas-ui/canvas/releases/download/web-v2.3.1/canvas-web-2.3.1.tgz",

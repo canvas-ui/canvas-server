@@ -105,7 +105,7 @@ export const env = {
         // Optional providers + routing rules file. Absent → built-in providers and
         // DEFAULT_RULES, i.e. CPU-local ONNX + CLIP. This is the file that points
         // inferd at a remote/GPU inference host without a code change; see
-        // src/services/inferd/src/config.js for the shape.
+        // canvas-inferd/src/config.js for the shape.
         configPath: INFERD_CONFIG_PATH,
         // Optional host allowlist for user-supplied provider URLs. Empty = only
         // the always-blocked ranges (link-local / cloud metadata) apply, which

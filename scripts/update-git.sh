@@ -307,7 +307,7 @@ run_as_canvas_user "/usr/bin/npm ci" || { log_message "npm ci failed"; exit 1; }
 # component at its latest main: refresh them explicitly. --no-save keeps
 # package.json/lockfile untouched (the repo stays reproducible; the BOX runs
 # latest). Non-fatal: a refresh failure leaves the pinned versions serving.
-GIT_DEPS="${GIT_DEPS:-canvas-synapsd canvas-stored}"
+GIT_DEPS="${GIT_DEPS:-canvas-synapsd canvas-stored canvas-inferd}"
 log_message "Refreshing git deps to latest main ($GIT_DEPS)..."
 if run_as_canvas_user "/usr/bin/npm update $GIT_DEPS --no-save"; then
     for dep in $GIT_DEPS; do

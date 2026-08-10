@@ -3,8 +3,8 @@
 import fs from 'fs/promises';
 import path from 'path';
 import ResponseObject from '../ResponseObject.js';
-import { redactConfig } from '../../services/inferd/src/config.js';
-import { checkConfigEndpoints, checkEndpoint, endpointFor } from '../../services/inferd/src/endpoint-guard.js';
+import { redactConfig } from 'canvas-inferd/src/config.js';
+import { checkConfigEndpoints, checkEndpoint, endpointFor } from 'canvas-inferd/src/endpoint-guard.js';
 import { env } from '../../env.js';
 
 /**

@@ -1,0 +1,2 @@
+- Always version-bump
+- Never push yourself

@@ -266,6 +266,11 @@ export default async function workspaceDocumentRoutes(fastify, options) {
           // 'workspace' drops the path bucket entirely → list every document in
           // the DB (synapsd default). 'path' (default) scopes to context/tree.
           scope: { type: 'string', enum: ['path', 'workspace'], default: 'path' },
+          // Literal id-set constraint (may repeat: ?ids=1&ids=2) — ANDs into the
+          // structured scope. The external-producer seam: a lens/camera refine
+          // sends its kNN survivors here. NO default — [] means "match nothing"
+          // in synapsd, so absent must stay absent.
+          ids: { type: 'array', items: { type: 'integer', minimum: 1 } },
           // Return document ids instead of documents — the cheap read a client
           // uses to check whether a cached result set is still current.
           idsOnly: { type: 'boolean', default: false },
@@ -305,6 +310,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
         directory: isSearch && dirSelector ? { ...dirSelector, recursive: true } : dirSelector,
         attributes: buildAttributes(request.query),
         filters: request.query.filters,
+        ...(request.query.ids?.length ? { ids: request.query.ids } : {}),
         limit: request.query.limit,
         offset: request.query.offset,
         page: request.query.page,
@@ -386,6 +392,8 @@ export default async function workspaceDocumentRoutes(fastify, options) {
           ...contextQueryProps,
           ...attributesQueryProps,
           ...filtersQueryProps,
+          // Literal id-set constraint (see GET /). ANDed into the shared scope.
+          ids: { type: 'array', items: { type: 'integer', minimum: 1 } },
           limit: { type: 'integer', default: 200 },
           offset: { type: 'integer' },
           mode: { type: 'string', enum: ['fts', 'vector', 'hybrid'] },
@@ -423,6 +431,7 @@ export default async function workspaceDocumentRoutes(fastify, options) {
         directory: dirSelector ? { ...dirSelector, recursive: true } : dirSelector,
         attributes: buildAttributes(body),
         filters: body.filters,
+        ...(body.ids?.length ? { ids: body.ids } : {}),
       };
 
       const documents = await workspace.searchCompound(lines, spec, {

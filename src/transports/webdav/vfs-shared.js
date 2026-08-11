@@ -144,8 +144,9 @@ function extractUrlFromShortcut(text) {
  *   3. the name on the canvas-owned copy (`stored://workspace:*`), which we set
  *      at ingest;
  *   4. any location name, by a STABLE sort (url), never array order;
- *   5. the URL basename, but only for schemes whose path really is a name —
- *      never for content-addressed `stored://`, whose key is a hash;
+ *   5. the URL basename, but only where the path really is a name — a
+ *      `stored://` key qualifies only when it looks like a filename, since a
+ *      content-addressed key is a hash;
  *   6. a schema-derived fallback.
  *
  * Mirrored in the web UI (`src/lib/document-display.ts`); keep them in step.
@@ -192,16 +193,31 @@ export function renamedRecord(doc, filename) {
         : { ...doc, data: { ...(doc.data || {}), filename } };
 }
 
-// Basename of a location URL, for schemes where the path IS a name. A
-// `stored://` key is a content hash, so it never yields one.
+/**
+ * Basename of a location URL, for schemes where the path IS a name.
+ *
+ * A `stored://` key is only sometimes a name: file-backed keys are the real
+ * workspace path (`stored://workspace:home/photos/OM_R2.png`), while cacache
+ * and auto-generated keys are content hashes (`ab/cd/<hex>`). So a stored key
+ * has to look like a filename — a plain extension, and not bare hex — before
+ * it may speak for the document; everything else stays anonymous rather than
+ * showing a hash to a human.
+ */
 function nameBearingBasename(url) {
-    if (!url || /^stored:\/\//i.test(url)) return null;
+    if (!url) return null;
     const afterScheme = String(url).replace(/^[a-z][a-z0-9+.-]*:\/\//i, '');
     const slash = afterScheme.indexOf('/');
     const key = slash >= 0 ? afterScheme.slice(slash + 1) : afterScheme;
     const base = key.split('/').filter(Boolean).pop();
     if (!base) return null;
-    try { return sanitize(decodeURIComponent(base)); } catch { return sanitize(base); }
+    let decoded; try { decoded = decodeURIComponent(base); } catch { decoded = base; }
+    if (/^stored:\/\//i.test(url) && !looksLikeFilename(decoded)) return null;
+    return sanitize(decoded);
+}
+
+// A name a person would recognise: has an extension and isn't a bare digest.
+function looksLikeFilename(base) {
+    return /\.[A-Za-z0-9]{1,12}$/.test(base) && !/^[a-f0-9]{16,}$/i.test(base.replace(/\.[^.]*$/, ''));
 }
 
 function sanitize(s) {

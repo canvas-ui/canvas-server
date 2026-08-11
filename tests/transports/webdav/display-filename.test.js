@@ -45,6 +45,20 @@ describe('display filename resolution', () => {
         assert.equal(displayFilename(file([{ url: 'file://device-1/home/me/notes.txt' }])), 'notes.txt');
     });
 
+    test('a file-backed stored key is a path, so it names the file', () => {
+        // `workspace:` keys are the real workspace path — refusing to read them
+        // left every ingested file showing as "File <id>" in the UI.
+        assert.equal(displayFilename(file([{ url: 'stored://workspace:home/Náš domček/OM_R2.png' }])), 'OM_R2.png');
+        assert.equal(displayFilename(file([{ url: 'stored://workspace:home/a%20b/my%20photo.png' }])), 'my photo.png');
+    });
+
+    test('content-addressed stored keys still stay anonymous', () => {
+        // cacache/auto-generated keys are sharded digests, with or without a
+        // suffix — a hash must never be shown to a person as a name.
+        assert.equal(displayFilename(file([{ url: 'stored://workspace:data/ab/cd/abcdef0123456789abcdef0123456789' }])), null);
+        assert.equal(displayFilename(file([{ url: 'stored://workspace:data/abcdef0123456789abcdef0123456789.bin' }])), null);
+    });
+
     test('unnamed locations fall back to a stable order, not array order', () => {
         const a = { url: 'file://a-device/one.txt' };
         const b = { url: 'file://b-device/two.txt' };

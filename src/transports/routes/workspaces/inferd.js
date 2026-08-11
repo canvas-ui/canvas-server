@@ -115,8 +115,48 @@ export default async function workspaceInferdRoutes(fastify, _options) {
         if (!workspace) { return; }
         const r = new ResponseObject().found({
             queue: inferd().workspaceStatus(workspace.id),
+            summarize: workspace.imageSummaryStatus,
         });
         return reply.code(r.statusCode).send(r.getResponse());
+    });
+
+    // Caption images into metadata.summary (BLIP/local ONNX by default). Async;
+    // poll GET /status → summarize for progress.
+    fastify.post('/summarize/images', {
+        onRequest: [fastify.authenticate, requireWorkspaceWrite()],
+        config: reindexLimit,
+        schema: {
+            body: {
+                type: 'object',
+                properties: {
+                    force: { type: 'boolean' },
+                },
+                additionalProperties: false,
+            },
+        },
+    }, async (request, reply) => {
+        const workspace = guard(request, reply);
+        if (!workspace) { return; }
+        if (!workspace.isActive) {
+            const r = new ResponseObject().workspaceNotActive();
+            return reply.code(r.statusCode).send(r.getResponse());
+        }
+        try {
+            const result = await workspace.startImageSummaries({
+                force: request.body?.force === true,
+            });
+            if (!result.started) {
+                const r = new ResponseObject().badRequest(result.error || 'Could not start image summaries');
+                return reply.code(r.statusCode).send(r.getResponse());
+            }
+            const r = new ResponseObject().success(result.status,
+                `Image summaries started (${result.status.total} candidate(s))`);
+            return reply.code(r.statusCode).send(r.getResponse());
+        } catch (error) {
+            request.log.error(error);
+            const r = new ResponseObject().badRequest(error.message || 'Failed to start image summaries');
+            return reply.code(r.statusCode).send(r.getResponse());
+        }
     });
 
     fastify.put('/config', {

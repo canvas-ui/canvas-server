@@ -91,6 +91,8 @@ class Workspace extends EventEmitter {
     #inferd = null;            // shared embedding service (optional; server-managed)
     #inferdRegistered = false;
     #embedStoreCount = 0;      // storeVectors calls since the last mid-ingest compaction
+    #imageSummaryRun = null;
+    #imageSummaryStatus = { running: false, total: 0, described: 0, skipped: 0, failed: 0 };
 
     constructor(options) {
         super({
@@ -216,6 +218,11 @@ class Workspace extends EventEmitter {
         return configured && typeof configured === 'object' ? configured : {};
     }
 
+    get imageSummaryStatus() {
+        const status = this.#imageSummaryStatus;
+        return { ...status, errors: [...(status.errors || [])] };
+    }
+
     /**
      * Single write authority for `services.inferd`. Validation happens above
      * this (the route asks inferd to resolve the candidate first) — a workspace
@@ -226,6 +233,82 @@ class Workspace extends EventEmitter {
         this.#configStore.set('services', { ...services, inferd: config });
         this.emit('services.changed', { service: 'inferd', config });
         return this.inferdConfig;
+    }
+
+    /**
+     * Caption images into `metadata.summary` via inferd.describeImage (BLIP by
+     * default). Scans `data/mime/image`, skips docs that already have a summary
+     * unless `force`, then enqueues embedding so the reserved summary chunk is
+     * filled. Returns immediately; poll `imageSummaryStatus`.
+     */
+    async startImageSummaries({ force = false } = {}) {
+        if (!this.isActive) { throw new Error('Workspace is not active'); }
+        if (!this.#inferd) { throw new Error('Inference service is not available'); }
+        if (this.#imageSummaryStatus.running) {
+            return { started: false, error: 'Image summary generation is already running', status: this.imageSummaryStatus };
+        }
+
+        const ctx = await this.#inferd.contextForWorkspace(this.id);
+        if (!ctx.config.summarize?.image?.enabled) {
+            throw new Error('image summaries are disabled — enable summarize.image first');
+        }
+
+        const bitmap = await this.getBitmap('data/mime/image', { includeData: true });
+        const ids = Array.isArray(bitmap?.ids) ? bitmap.ids : [];
+        this.#imageSummaryStatus = {
+            running: true,
+            total: ids.length,
+            described: 0,
+            skipped: 0,
+            failed: 0,
+            errors: [],
+            force: force === true,
+            startedAt: new Date().toISOString(),
+            finishedAt: null,
+        };
+
+        this.#imageSummaryRun = this.#runImageSummaries(ids, { force: force === true })
+            .finally(() => {
+                this.#imageSummaryRun = null;
+                this.#imageSummaryStatus = {
+                    ...this.#imageSummaryStatus,
+                    running: false,
+                    finishedAt: new Date().toISOString(),
+                };
+            });
+
+        return { started: true, status: this.imageSummaryStatus };
+    }
+
+    async #runImageSummaries(ids, { force }) {
+        for (const id of ids) {
+            try {
+                const input = await this.resolveEmbeddingInput(id);
+                if (!input || input.skip || input.modality !== 'image' || !input.bytes) {
+                    this.#imageSummaryStatus.skipped++;
+                    continue;
+                }
+                if (!force && input.summary) {
+                    this.#imageSummaryStatus.skipped++;
+                    continue;
+                }
+                const text = await this.#inferd.describeImage(this.id, input.bytes, {
+                    contentType: input.contentType || null,
+                });
+                await this.#getActiveDb().put({
+                    id,
+                    metadata: { summary: text },
+                    updatedAt: new Date().toISOString(),
+                });
+                this.#imageSummaryStatus.described++;
+            } catch (error) {
+                this.#imageSummaryStatus.failed++;
+                const errors = this.#imageSummaryStatus.errors || (this.#imageSummaryStatus.errors = []);
+                if (errors.length < 20) {
+                    errors.push({ id, error: error.message || String(error) });
+                }
+            }
+        }
     }
 
     get db() {

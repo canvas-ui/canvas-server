@@ -36,5 +36,14 @@
     { "space": "text", "match": { "schema": "data/schema/message/email" } },
     { "space": "text", "match": { "contentType": "text/*" } },
     { "space": "image", "match": { "contentType": "image/*" } }
-  ]
+  ],
+
+  "_summarize_comment": "Optional. Image captions default to local BLIP (disabled). Enable and POST /workspaces/:id/inferd/summarize/images.",
+  "summarize": {
+    "image": {
+      "enabled": false,
+      "provider": "blip",
+      "model": "Xenova/blip-image-captioning-base"
+    }
+  }
 }

@@ -253,6 +253,11 @@ class Workspace extends EventEmitter {
             throw new Error('image summaries are disabled — enable summarize.image first');
         }
 
+        // A previous run may have been stopped by a crashed model worker, which
+        // inferd refuses to respawn on its own. Starting a run by hand is the
+        // deliberate retry that re-arms it.
+        try { await this.#inferd.resetDescribeWorkers?.(this.id); } catch (_) { /* best effort */ }
+
         const bitmap = await this.getBitmap('data/mime/image', { includeData: true });
         const ids = Array.isArray(bitmap?.ids) ? bitmap.ids : [];
         this.#imageSummaryStatus = {
@@ -262,6 +267,10 @@ class Workspace extends EventEmitter {
             skipped: 0,
             failed: 0,
             errors: [],
+            // Set when a dead model worker cut the run short — the difference
+            // between "every image failed" and "we stopped after the first".
+            aborted: false,
+            abortedReason: null,
             force: force === true,
             startedAt: new Date().toISOString(),
             finishedAt: null,
@@ -306,6 +315,17 @@ class Workspace extends EventEmitter {
                 const errors = this.#imageSummaryStatus.errors || (this.#imageSummaryStatus.errors = []);
                 if (errors.length < 20) {
                     errors.push({ id, error: error.message || String(error) });
+                }
+                // The model worker died (OOM, native crash) and inferd will not
+                // respawn it. Carrying on would mark every remaining image
+                // failed against a provider that cannot answer — so stop here
+                // and say why, leaving the un-attempted images untouched for a
+                // later run.
+                if (error?.workerDead) {
+                    this.#imageSummaryStatus.aborted = true;
+                    this.#imageSummaryStatus.abortedReason = error.message || 'model worker died';
+                    console.warn(`workspace ${this.id}: image summaries stopped — ${this.#imageSummaryStatus.abortedReason}`);
+                    return;
                 }
             }
         }

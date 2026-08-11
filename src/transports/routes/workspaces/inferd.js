@@ -159,6 +159,27 @@ export default async function workspaceInferdRoutes(fastify, _options) {
         }
     });
 
+    // Stop a caption run in progress. Cooperative: the image being captioned
+    // finishes, then the run ends. Untouched images are simply left for later.
+    fastify.post('/summarize/images/stop', {
+        onRequest: [fastify.authenticate, requireWorkspaceWrite()],
+        config: writeLimit,
+    }, async (request, reply) => {
+        const workspace = guard(request, reply);
+        if (!workspace) { return; }
+        if (!workspace.isActive) {
+            const r = new ResponseObject().workspaceNotActive();
+            return reply.code(r.statusCode).send(r.getResponse());
+        }
+        const result = workspace.stopImageSummaries();
+        if (!result.stopped) {
+            const r = new ResponseObject().badRequest(result.error || 'Could not stop image summaries');
+            return reply.code(r.statusCode).send(r.getResponse());
+        }
+        const r = new ResponseObject().success(result.status, 'Image summaries stopping');
+        return reply.code(r.statusCode).send(r.getResponse());
+    });
+
     fastify.put('/config', {
         onRequest: [fastify.authenticate, requireWorkspaceWrite()],
         config: writeLimit,

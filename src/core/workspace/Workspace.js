@@ -93,6 +93,8 @@ class Workspace extends EventEmitter {
     #embedStoreCount = 0;      // storeVectors calls since the last mid-ingest compaction
     #imageSummaryRun = null;
     #imageSummaryStatus = { running: false, total: 0, described: 0, skipped: 0, failed: 0 };
+    // Set by stopImageSummaries(); the run checks it between images.
+    #imageSummaryCancel = false;
 
     constructor(options) {
         super({
@@ -271,11 +273,14 @@ class Workspace extends EventEmitter {
             // between "every image failed" and "we stopped after the first".
             aborted: false,
             abortedReason: null,
+            // Set when the operator stopped it on purpose.
+            cancelled: false,
             force: force === true,
             startedAt: new Date().toISOString(),
             finishedAt: null,
         };
 
+        this.#imageSummaryCancel = false;
         this.#imageSummaryRun = this.#runImageSummaries(ids, { force: force === true })
             .finally(() => {
                 this.#imageSummaryRun = null;
@@ -289,8 +294,29 @@ class Workspace extends EventEmitter {
         return { started: true, status: this.imageSummaryStatus };
     }
 
+    /**
+     * Ask a running caption run to stop.
+     *
+     * Cooperative rather than abortive: the in-flight image is allowed to
+     * finish (a caption takes seconds, and killing the worker mid-generation
+     * would just cost the model reload), then the loop exits at the next
+     * boundary. Images not yet attempted stay untouched, so a later run picks
+     * them up — nothing is half-written.
+     */
+    stopImageSummaries() {
+        if (!this.#imageSummaryStatus.running) {
+            return { stopped: false, error: 'No image summary run is in progress', status: this.imageSummaryStatus };
+        }
+        this.#imageSummaryCancel = true;
+        return { stopped: true, status: this.imageSummaryStatus };
+    }
+
     async #runImageSummaries(ids, { force }) {
         for (const id of ids) {
+            if (this.#imageSummaryCancel) {
+                this.#imageSummaryStatus.cancelled = true;
+                return;
+            }
             try {
                 const input = await this.resolveEmbeddingInput(id);
                 if (!input || input.skip || input.modality !== 'image' || !input.bytes) {

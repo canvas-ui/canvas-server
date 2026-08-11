@@ -38,12 +38,12 @@
     { "space": "image", "match": { "contentType": "image/*" } }
   ],
 
-  "_summarize_comment": "Optional. Image captions default to local BLIP (disabled). Enable and POST /workspaces/:id/inferd/summarize/images.",
+  "_summarize_comment": "Optional. Image captions default to local transformers.js captioner (disabled). Enable and POST /workspaces/:id/inferd/summarize/images.",
   "summarize": {
     "image": {
       "enabled": false,
       "provider": "blip",
-      "model": "Xenova/blip-image-captioning-base"
+      "model": "Xenova/vit-gpt2-image-captioning"
     }
   }
 }

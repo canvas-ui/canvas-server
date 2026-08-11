@@ -216,9 +216,7 @@ here and possibly commercialised later, that silence is not free.
       `/rest/v2/ping` were built to satisfy §13. A closed server has no §13
       obligation, so the legal framing in the code comments, `NOTICE`,
       `README.md`, `.env.example` and `CONTRIBUTING.md` becomes wrong and must
-      go. Keep the mechanism — it is still the only way to identify which build
-      is running, which matters more for support and for MBAG than it ever did
-      for compliance. Retarget the comments at build identity.
+      go. 
 - [ ] **`README.md` — update the Licence section** in every repository.
 - [ ] **`TODO.lic.md` — reconcile.** It is no longer present on `dev`; its open
       items (SynapsD missing a LICENSE file, neurald's ISC/AGPL contradiction,
@@ -241,38 +239,6 @@ here and possibly commercialised later, that silence is not free.
       tagged). Closing protects future divergence only; it retrieves nothing.
       The mitigation is simply that the fork point goes stale immediately.
 
-### MBAG — do this before closing anything
-
-Contractor-contributed code defaults to MBAG ownership, with an exception for
-open source. **That exception is currently what makes Canvas yours.** The moment
-`canvas-server`, `synapsd` and `agentd` become closed, the carve-out stops
-covering them, and MBAG's default rule can reach precisely the components being
-closed to protect them.
-
-Ordering matters, and the in-source licence is not first:
-
-1. [ ] **Written pre-existing-IP carve-out from MBAG** — a side letter or
-       amendment recording that Canvas is pre-existing IP owned by Jozef Melich
-       / Augmentd s.r.o., licensed to MBAG, and not work product under the
-       contractor agreement. Routine to ask for; much harder to obtain after
-       deployment.
-2. [ ] **Document provenance** — repository creation dates, commit history, the
-       public GitHub record predating the engagement. This is the evidence that
-       Canvas is pre-existing rather than developed on their time.
-3. [ ] **Then** the in-source deployment licence covering MBAG's use of the
-       closed core with source access. Straightforward once ownership is settled.
-
-Negotiate while it is still undeployed. That is the strongest position available
-— something they want, and no fait accompli to unwind.
-
-### Counsel review
-
-- [ ] Proprietary licence text for the closed core
-- [ ] The MBAG carve-out and the in-source deployment licence
-- [ ] Rewritten `COMMERCIAL.md` terms
-- [ ] How the Melich → Augmentd s.r.o. exclusive licence is papered
-
----
 
 ## Boundary artifacts
 

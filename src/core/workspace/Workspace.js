@@ -312,6 +312,13 @@ class Workspace extends EventEmitter {
     }
 
     async #runImageSummaries(ids, { force }) {
+        // A misconfiguration fails identically for every image — a model that
+        // cannot load, a family the runner has no path for. Marching through
+        // 1400 images to report the same sentence 1400 times is noise, so a run
+        // that only ever fails gives up early and says why.
+        const CONSECUTIVE_FAILURE_LIMIT = 5;
+        let consecutiveFailures = 0;
+
         for (const id of ids) {
             if (this.#imageSummaryCancel) {
                 this.#imageSummaryStatus.cancelled = true;
@@ -336,8 +343,10 @@ class Workspace extends EventEmitter {
                     updatedAt: new Date().toISOString(),
                 });
                 this.#imageSummaryStatus.described++;
+                consecutiveFailures = 0;
             } catch (error) {
                 this.#imageSummaryStatus.failed++;
+                consecutiveFailures++;
                 const errors = this.#imageSummaryStatus.errors || (this.#imageSummaryStatus.errors = []);
                 if (errors.length < 20) {
                     errors.push({ id, error: error.message || String(error) });
@@ -350,6 +359,13 @@ class Workspace extends EventEmitter {
                 if (error?.workerDead) {
                     this.#imageSummaryStatus.aborted = true;
                     this.#imageSummaryStatus.abortedReason = error.message || 'model worker died';
+                    console.warn(`workspace ${this.id}: image summaries stopped — ${this.#imageSummaryStatus.abortedReason}`);
+                    return;
+                }
+                if (consecutiveFailures >= CONSECUTIVE_FAILURE_LIMIT) {
+                    this.#imageSummaryStatus.aborted = true;
+                    this.#imageSummaryStatus.abortedReason =
+                        `${consecutiveFailures} images in a row failed — ${error.message || String(error)}`;
                     console.warn(`workspace ${this.id}: image summaries stopped — ${this.#imageSummaryStatus.abortedReason}`);
                     return;
                 }

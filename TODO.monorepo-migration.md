@@ -537,6 +537,33 @@ none will be executed:
 
 ---
 
+## Post-migration cleanup
+
+The migration's structural and licensing work is done; these are the loose
+ends, none blocking. (TODO consolidation itself — aggressively pruning
+shipped items across all the TODO files — is deferred to a dedicated
+session.)
+
+- [ ] **Web debt:** staged unwrap migration (~164 `.payload` sites across 14
+      service files, service-by-service, then drop `unwrap:false`); collapse
+      the duplicated envelope types onto protocol's `ResponseEnvelope`; the
+      294 pre-existing lint errors (web is excluded from the recursive lint
+      sweep until then).
+- [ ] **Extension:** move tags to doc-level `features` + adopt
+      `buildTabDoc` (fixes tag-removal unticking; doc-level `featureArray`
+      is inert, server-verified).
+- [ ] **Release plumbing:** web-release → server-URL-bump automation; sweep
+      of old release URLs (getcanvas.org, store listings). macOS is
+      descoped for now (x64 leg + code signing parked).
+- [ ] **Repo hygiene:** archive `canvas-neurald` once the agentd
+      consolidation lands; move `canvas-agentd` from the canvas-ai org to
+      canvas-ui (then update its NOTICE URL and the CLA/CI references).
+- [ ] **Security:** dependabot backlogs — `canvas-inferd` is the loud one
+      (1 critical, 9 high, 4 moderate), monorepo 1 moderate, server's
+      ~50-item backlog.
+
+---
+
 ## Working method
 
 **Do not reach the monorepo through a path inside `canvas-server`** — not as a

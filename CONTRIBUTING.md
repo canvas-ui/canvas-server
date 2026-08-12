@@ -16,6 +16,12 @@ pull request with:
 I have read the CLA document and I hereby sign the CLA.
 ```
 
+A status check enforces this automatically: the CLA bot posts instructions on
+your first pull request, records your signature against your GitHub account,
+and unblocks the check. One signature covers all the dual-licensed Canvas
+repositories' future contributions, though each repository's check records it
+once.
+
 If you are contributing on behalf of an employer, make sure whoever can bind
 them has agreed. See section 6 of the CLA.
 

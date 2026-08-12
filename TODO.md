@@ -1,92 +1,9 @@
 # TODO List
 
-## Simplify the canvas-web UI!!
+## Docs
 
-- We need to add a "simple" or "compact" UI version and leave the current one as "advanced" 
-- Simple version
-  - Focused on context switching, Pinned tree layers, canvases + a A2UI canvas controlled via an internal inferd UI runtime thread
-  - 
--
-
-## Toolbox Apps (applets/widgets)
-
-**Landed 2026-08-07 - Apps tab + applet framework + Notes applet (first pass):**
-- New top-level Apps tab in the Toolbox, FIRST in the icon row (`ToolboxPanel`,
-  `panels/AppsPanel.tsx`). Context/Global sub-tabs; each applet declares which modes it
-  supports (`components/toolbox/applets/registry.tsx` - `modes: ('context'|'global')[]`),
-  and the launcher lists it under the matching sub-tab(s). Applets are plain components
-  behind a descriptor, deliberately free of page-level assumptions so they can port to
-  the tauri desktop UI later.
-- Notes applet (`applets/NotesApplet.tsx`, modes: context): all notes in the focused
-  context (workspace path or context - context mode resolves its bound workspace for
-  writes) stacked in one editable document view. Per note: muted created-date + #id line,
-  editable title, editable auto-growing plain-text body; autosave debounced 1.2s +
-  flushed on blur, per-note save state (spinner/check/save failed). Top controls:
-  full-text search (client-side over the loaded set) with match counter, autoscroll to
-  the current match and Enter = advance + select the hit inside the body (notepad
-  find); created-date sort toggle; inline Add note (draft pinned above the list, saved
-  through the same submitDocuments path as the toolbox NoteForm). Listens to
-  workspace:documents:refresh so external creates land live.
-
-**Landed 2026-08-08 - Todos applet, standalone /apps routes, PWA shortcuts:**
-- Todos applet (`applets/TodosApplet.tsx`, registry id `todo`): same stacked notepad view
-  as Notes with a status checkbox (pending <-> completed), title + description editing,
-  due/status in the muted meta line; DONE ITEMS (completed/cancelled) HIDDEN BY DEFAULT
-  with an eye toggle + hidden count; draft due defaults to end of today.
-- Both applets: per-item Link To (opens the LinkToCard sidebar, any workspace/path,
-  multi-select) and Delete (removes from path, trash semantics) - quiet reveal-on-hover
-  controls in the meta row.
-- Standalone host `/apps/<id>` (`pages/apps/index.tsx`, chrome-free, outside AppShell):
-  binding lives in the URL - Bind to Path (`?workspace=&path=`, defaults universe + `/`,
-  first page only = APPLET_LIST_LIMIT 50) or Bind to Context (`?context=<id>`); `add=1`
-  opens the inline draft. Applets got an `AppletTargetProvider` (applet-target.tsx);
-  inside the toolbox the target still derives from focused navigation.
-- Quick-add landing `/apps/add/<kind>` (note|todo|link|file|photo) renders the B5
-  quick-add card (same hosting as share-target) - the add-then-Link-To workflow for
-  unbound capture.
-- PWA manifest `shortcuts` (vite.config.ts): Notes -> /apps/notes, Add Note ->
-  /apps/add/note, Add Todo -> /apps/add/todo, Add Photo -> /apps/add/photo.
-- Filter button on workspace/context pages turns info-blue ("Filter on") while any
-  toolbox filters are active, so a filtered-empty tree is explainable at a glance.
-
-Remaining:
-- [ ] Configurable keyboard shortcut to open an applet (Notes) directly, and a floating
-      "Applets" button for ad-hoc opening (the toolbox FAB currently opens Filters).
-- [ ] Global applets: none exist yet - a clock and/or calendar is the natural first one
-      (the Global sub-tab shows an empty state until then). The camera-stream showcase
-      (live synapsd results for a camera feed) is a global applet + the planned
-      services.streams work.
-- [ ] Standalone host niceties: tree-picker for the path binding (text input today),
-      context labels in the picker (shows ids), remember last binding per applet.
-- [ ] Manual ordering (needs order: in metadata - deliberately skipped).
-- [ ] Applet niceties: tag editing, search-term highlighting inside the body, load-more
-      beyond the first page.
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
------------------
-
+- [ ] Refactor `docs/hooks.md` + nice screenshots, OR better: a short youtube
+      video / animated gif walkthrough of the hooks + automation panel.
 
 Eval `/workspace/ingest/<driver>/<format>` ?stream?
 https://canvas.idnc.sk/home/pinned
@@ -113,9 +30,7 @@ Server
 
 ## Scheduled tasks
 
-## Workspace hook TODO items in `TODO.hooks.md`
-
-### IMAP / email
+## IMAP / email
 - [ ] Attachments as File docs + rel/ relations (rel/* bitmaps exist, nothing populates them; Synapses tab empty by design gap).
 - [ ] SMTP reply: per-mailbox smtp{} config, nodemailer send route, Reply button in EmailRenderer.
   - Sent-folder: postfix/dovecot does NOT copy sent mail into Sent — that's the client's job
@@ -139,27 +54,13 @@ Server
 
 ## Geotagging follow-ups
 
-Landed 2026-07-15: `metadata.geo = {lat, lon, alt?, accuracy?, source?}` with `source` = `device|exif|manual`, precedence **manual > exif > device** (rank, not write order → re-upserts idempotent). Owner: `src/core/workspace/lib/geo.js` (`pickGeo`). Opt-in device geotag toggle (default off) on note/todo create. Null-Island guard in synapsd `#indexDocumentGeo` (`Number(null) === 0` and is finite → `{lat:null,lon:null}` used to get indexed at 0,0 and answer bbox queries there).
+Geotagging landed 2026-07-15 (`metadata.geo`, precedence manual > exif > device — see README; owner `src/core/workspace/lib/geo.js` `pickGeo`). Open gaps:
 
 - [ ] **Nothing writes `source:'manual'` yet** — manual is the top rank precisely so a hand-fixed pin survives re-indexing, but the UI that would set it (drag-a-pin / edit geo in the doc modal) doesn't exist. The rank is in place ahead of the feature that needs it.
 - [ ] **No backfill of sentinel geo already in the S2 index** — the guard self-heals a doc only on re-put. Existing `{lat:null,lon:null}` docs stay indexed at 0,0 until touched. Candidate for the admin reindex endpoints.
 - [ ] Geotag toggle covers note/todo only — files/photos (FileForm/FileCardBody/share-target) still send no device geo. EXIF outranks it anyway, so this only matters for photos with no GPS.
 - [ ] `data/media/has-gps` feature is still watch-path-only (see also the extraction gaps in the blob metadata notes) — derive it server-side from `metadata.geo` on insert instead.
 - [ ] `alt` is inert — stored but nothing reads it (index + renderers use lat/lon only). Either surface it or drop the pretence.
-
-## WebUI cosmetics
-
-- [ ] (deffered) Content area section should support tabs 
-- [x] Layers M2 (WorkspaceM2 "Context layers" tab) now grouped by layer type — Canvases first,
-      then Datasets, Context layers, Workspaces, Universe, Labels, System, then any unknown type
-      as its own title-cased section (forward-compatible: a future `dataset` layer type slots in
-      with no code change). Section headers reuse the `text-[10px] uppercase tracking-wide` idiom
-      + a per-group count. (2026-07-21)
-- [x] Canvas layout Save button (CanvasGrid toolbar) goes **purple (`bg-violet-600`)** while the
-      layout is dirty — same affordance as the toolbox "Save filters" button (ToolsPanel) so an
-      unsaved canvas is spottable at a glance; neutral bordered look once saved. (2026-07-21)
-      NOTE: deliberately did NOT add "open canvas from the Layers menu" — a canvas fine-tuned for a
-      specific path renders misleadingly under `/`; a plain-root open is the wrong affordance.
 
 ## Pinned items (renderer-agnostic pin API) — design agreed 2026-07-21
 
@@ -217,14 +118,6 @@ Tasks:
 
 ## Remote workspaces
 
-- [x] **Add Remote UI landed 2026-08-07** - the webui was the only missing piece: "Add Remote..."
-  on the Workspaces page posts `{url, token}` to `POST /workspaces/import` (service fn
-  `importWorkspaceFromRemote` in `services/workspace.ts`). Verified end-to-end against a second
-  server instance. Known edge: importing from the SAME server as the SAME user fails, because the
-  remote archive and the local download resolve to the same Exports file and the best-effort
-  remote DELETE (portability.js) removes it before import; guard = skip the DELETE when the
-  resolved paths match, if self-import should ever work.
-
 ### Remote workspaces as local entries + pull-through cache (design agreed 2026-08-07)
 
 Driver: run canvas-server locally (systemd --user daemon or docker) while also using workspaces
@@ -257,14 +150,6 @@ Agreed shape, in phases:
 
 Open questions: token storage form in the index entry (raw vs wrapped - entries surface through
 admin/debug); live updates from the remote (socket subscription vs poll - deferred).
-
-- [x] **FIXED 2026-08-02** — the share-token auth gap was the culprit: workspace share tokens
-  (`canvas-workspace-*`) were rejected by both REST and websocket auth. They are now first-class,
-  single-workspace-clamped principals (see `WorkspaceManager.resolveWorkspaceShareToken`,
-  `enforceWorkspaceTokenScope`, `socket.workspaceBinding`). The transparent proxying middleware
-  exists too (`middleware/edge-proxy.js` over the edge tunnel, `docs/canvas-edge-protocol.md`);
-  protocol = existing http+socket.io. Cross-server pull also works:
-  `POST /workspaces/import { url, token }`.
 
 ## Workspace sync (design notes, non-MVP — parked 2026-08-02)
 
@@ -312,6 +197,16 @@ Future non-MVP direction: bundle a workspace (synapsd, stored, inferd) into one 
 Non-MVP, `ag` or `hi`, minimal bun or tauri runtime you can start from a folder directly(I'm included to tauri, you rename `hi` to `lucy`, put it into `~/Agents/Lucy` folder, double-click and you get a nice miminal toolbox-like UI with a button for voice-input and a dynamic mcpui/agui canvas), agent already includes / runs its own workspace so synapsd and all the rag goodies are built-in, `canvas-edge` will help it to (auto-)register if needed, great for local inference, the original idea of the whole project was small self-contained "workspaces", we can run both in a docker container/sandbox
 
 ## Server
+
+- [ ] Add `ids` filtering to context document routes (moved from canvas/TODO.md;
+      `transports/routes/contexts/documents.js` has only `idsOnly` today).
+- [ ] Verify image-query distance calibration with real query images —
+      image→image distances run much tighter than text→image; the 0.945
+      text-calibrated floor is loose for frame queries (search-by-vector applies
+      no implicit floor, clients pass maxDistance).
+- [ ] Eval a small batch-of-frames variant of `POST /search/image` (amortize
+      HTTP, server-side vector averaging) — measure whether 1 req/frame at
+      2 FPS is actually a problem first.
 
 CORS proxy or "fetch-through" proxy
 New `src/transports/routes/pdf-proxy.js`  endpoint for `/proxy/pdf` 
@@ -386,22 +281,6 @@ Lets design a `canvas-edge` service module with the following functionality
   - proxying
   - auth handoff
 
-### Import/export workspace(s)
-
-**LANDED 2026-08-02** — `src/core/workspace/lib/portability.js` + `routes/workspaces/portability.js`:
-tar.gz export (streamed, stopped-only), `:id`-scoped download/delete (read-ACL, share-token
-capable), import from Exports archive / server-side folder / **remote pull** `{url, token}`.
-Workspace id (uuid in workspace.json) survives the move. Original sketch below for reference —
-the zip format and owner-rewrite/rename-on-collision ideas were dropped (tar.gz only; same-id or
-same-name collisions are rejected instead of auto-renamed).
-
-Original: We need to reintroduce the importWorkspace() and exportWorkspace() methods in our workspace manager.
-
-The design should be as follows(I'm open to suggestsions here):
-- importWorkspace(): Takes a zip or tar/tar.gz as input. Server uploads it into the users workspaces dir with a random temporary name, once extracted, we'd search for a valid workspace.json, then rewrite the owner/sanitize the config, rename the workspace folder to the real workspace name or workspace.N if we colide and import that workspace into the index.
-
-- exportWorkspace(nameOrId, format = zip|tar|gzip) would first stop the workspace, then create an archive in the users workspaces path - then make it available for download.
-
 ### Config file search paths for workspaces
 
 ```text
@@ -458,38 +337,9 @@ Target workspace.json shape:
   } }
 ```
 
-DONE (foundation, 2026-07-19):
-- [x] Config path resolvers `Workspace#resolveWorkspacePath` / `#resolveDir` / `#backendRoot`
-      (absolute / workspace-relative / `{WORKSPACE_ROOT}`).
-- [x] Killed the hidden `.stored/` dir — Stored roots at `db/stored` (blob cache redirected to `cache/`);
-      idempotent migration moves legacy `.stored/index` → `db/stored/index`, drops the stale dir
-      (`WorkspaceStoredIndex#migrateLegacyStoredLayout`).
-- [x] Double-authority killed — `homePath`/`dataPath`/`cachePath` getters derive from the storage
-      backend `root` (single source: dataBackends) via `Workspace#backendRoot`; storage is NOT in the
-      `directories`/internals map. WebDAV, `/home` API, and stored's indexer can't diverge. Verified.
-- [x] Thumbnail 500-on-cache-miss fixed — `WorkspaceStoredIndex#getThumbnail` passes `resolve().data`
-      to sharp (resolve returns `{data,ranged}`, not raw bytes). Cache-miss thumbnails 200 + written to
-      `cache/`.
-
-- [x] Schema reshape LANDED (2026-07-19, plan `~/.claude/plans/effervescent-rolling-pebble.md`):
-      `internals` map (db/config/var/tmp) + `services.stored` { root, cache, sync, backends } +
-      `services.git.root`. `dataBackends` → `services.stored.backends` (storage only); `stored.cache`
-      fake-backend killed → first-class `services.stored.cache`; empty `services.stored.sync` slot.
-      Read path `Workspace#storedConfig` (legacy fallback), single write authority
-      `#writeStoredBackends`. Idempotent `Workspace#migrateConfigSchema` in `#doStart` rewrites
-      legacy workspace.json (verified on universe: migrate → restart no-op). Settings Data tab shows
-      no cache-as-backend row; "Clear thumbnails" is a standalone Stored Cache control. Backends API,
-      cache-miss thumbnails, unit tests all verified.
-- [x] Legacy `/services/data-backends` routes RETIRED (2026-07-19). **`/:id/backends` is the ONE
-      backend surface** — storage (file/cacache/s3) + connectors (imap), descriptors w/ capabilities;
-      it was built to retire the data-backends/services-imap split, so don't add parallel routes.
-      The home-toggle → stored-index lifecycle coupling and `exclude` validation moved into
-      `Workspace#updateBackend` (the facade), `getDataBackendStatus`/`resyncDataBackend` went
-      private (`#`-prefixed, descriptor plumbing only). NOTE: the stored **cache is integral to the
-      backend logic** (cache-first writes, pull-through, thumbnails) — it's just not *presented* as a
-      configurable backend; manage it via `DELETE /:id/thumbnails`. Principle: when a surface is
-      superseded, delete it same-change — no dead code, no "kept for compat" routes nothing ships
-      against.
+Schema + foundation landed 2026-07-19 (`internals` map, `services.stored`
+{ root, cache, sync, backends }, `/:id/backends` as the one backend surface —
+see README → Architecture). Still open:
 
 canvas-edge run (deferred — runtime, not schema):
 - [ ] Search-path loader (ROOT/workspace.json → .workspace.json → .workspace/workspace.json →

@@ -142,6 +142,24 @@ in the UI and fixed at creation:
 `CANVAS_WORKSPACE_LAYOUT` picks the default for new workspaces: `full` on a
 bare-metal install, `home` in the container.
 
+### Moving workspaces between servers
+
+Workspaces are portable. A **stopped** workspace exports as a streamed tar.gz
+(`POST /rest/v2/workspaces/:id/export`, then `:id`-scoped download/delete);
+the workspace id (uuid in `workspace.json`) survives the move. Import takes an
+uploaded archive, a server-side folder, or a **remote pull** —
+`POST /rest/v2/workspaces/import { url, token }`, also available in the web UI
+as "Add Remote..." on the Workspaces page. Same-id or same-name collisions are
+rejected rather than auto-renamed.
+
+The `token` is a **workspace share token** (`canvas-workspace-*`): a
+first-class principal clamped to a single workspace, accepted by both REST and
+websocket auth — hand one out to share exactly one workspace, nothing else.
+
+Known edge: importing from the same server as the same user fails — the remote
+archive and the local download resolve to the same Exports file and the
+best-effort remote cleanup removes it before import.
+
 ### Running it as a service
 
 ```bash
@@ -308,7 +326,11 @@ git clone https://canvas@your-canvas-server/rest/v2/workspaces/<workspace-id>/gi
 ```
 
 The same repo carries your dotfiles (see the dotfile routes under
-`/rest/v2/workspaces/:id/dotfiles`).
+`/rest/v2/workspaces/:id/dotfiles`). New repos are seeded with a universal
+`.gitignore` and a `.dot/` toolbox: run `.dot/install-hooks.sh` (idempotent,
+`--force` to overwrite) after cloning to install git hooks that encrypt files
+listed in `.dot/encrypted.index` before push and decrypt `*.encrypted` files
+after pull/checkout.
 
 ## Documentation
 
@@ -317,13 +339,15 @@ The same repo carries your dotfiles (see the dotfile routes under
 - [Authentication Guide](docs/auth.md)
 - [Security](docs/SECURITY.md)
 - [Client data-layout spec](docs/client-spec.md)
-- [Web UI frontend](src/ui/web/README.md) — bundled React frontend (standalone deployment, screenshots)
+- Web UI frontend — the bundled React frontend lives in the `canvas` monorepo under `apps/web` (standalone deployment, screenshots, applets)
 
 ## REST + Websocket transports
 
 - [API Documentation](docs/API.md)
 
 Document search: `GET /rest/v2/workspaces/:id/documents?q=<term>` (repeat `q=` to refine — each term AND-narrows across text + photos, the last ranks). Add `&debug=true` to include raw image-kNN cosine distances in `.debug.imageDistances`, for tuning the per-workspace image relevance floor (`imageMaxDistance`, editable in Settings → DB).
+
+Geotagging: documents can carry `metadata.geo = { lat, lon, alt?, accuracy?, source? }` with `source` one of `device | exif | manual`. Precedence is **manual > exif > device** by rank (not write order), so re-upserts are idempotent and a hand-fixed pin survives re-indexing. Device geotagging is an opt-in toggle (default off) on note/todo create; photo EXIF coordinates are extracted automatically. Geo-indexed documents answer bounding-box queries via the S2 index.
 
 ## Logs
 

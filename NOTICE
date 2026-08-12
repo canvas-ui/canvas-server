@@ -88,16 +88,17 @@ The server runtime and the services behind it, together the engine:
     [dual]  canvas-inferd   (dependency) inference service
     [dual]  canvas-agentd   (repository) agent runtime service, consolidating
                             the former canvas-neurald
+    [dual]  packages/*      (monorepo)   shared libraries: protocol, schemas,
+                            api-client
 
-The clients, integrations and shared packages, AGPL-only for everyone. Most
-live in the Canvas monorepo, https://github.com/canvas-ui/canvas:
+The client applications, AGPL-only for everyone. Most live in the Canvas
+monorepo, https://github.com/canvas-ui/canvas:
 
     [AGPL]  apps/cli               (monorepo) command-line client
     [AGPL]  apps/web               (monorepo) web UI, served by this server
     [AGPL]  apps/shell             (monorepo) shell client and applets
     [AGPL]  apps/desktop           (monorepo) desktop app
     [AGPL]  apps/browser-extension (monorepo) Chrome and Firefox extensions
-    [AGPL]  packages/*             (monorepo) protocol, schemas, api-client
     [AGPL]  canvas-fuse            (repository) FUSE filesystem client
 
 A commercial licence to a [dual] component grants no rights over an [AGPL] one.

@@ -18,15 +18,17 @@ no feature held back for paying customers. The AGPL version is the whole product
 
 A commercial licence covers the Canvas engine: **`canvas-server`** (including
 the embedding, messaging, voice and agent services), **`canvas-synapsd`**,
-**`canvas-stored`**, **`canvas-inferd`** and **`canvas-agentd`** (which
-consolidates the former `canvas-neurald`). That is everything needed to run
-Canvas as a hosted product.
+**`canvas-stored`**, **`canvas-inferd`**, **`canvas-agentd`** (which
+consolidates the former `canvas-neurald`) and the shared **`packages/*`**
+libraries in the Canvas monorepo (protocol, schemas, api-client) — so your
+own integrations can build on the official client libraries without copyleft
+obligations. That is everything needed to run Canvas as a hosted product and
+to integrate against it.
 
-It does not cover the clients, the web UI or the shared packages: the CLI, the
-web UI, the shell client, the FUSE client, the desktop app, the browser
-extensions and the `packages/*` libraries in the Canvas monorepo. Those are
-**AGPL-3.0-or-later only, for everyone**, and no commercial licence is offered
-for them.
+It does not cover the Canvas client applications: the CLI, the web UI, the
+shell client, the FUSE client, the desktop app and the browser extensions.
+Those are **AGPL-3.0-or-later only, for everyone**, and no commercial licence
+is offered for them.
 
 This line is not open to negotiation. You can build a proprietary product on the
 Canvas engine; the clients that people install on their own machines, and the

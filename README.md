@@ -544,7 +544,8 @@ module roots, never in `node_modules` or the image.
 ## Licence
 
 Copyright (C) 2023-2026 Jozef Melich. The Canvas **engine**, meaning this server
-plus SynapsD, StoreD, InferD and AgentD, is **dual-licensed**:
+plus SynapsD, StoreD, InferD, AgentD and the monorepo's shared `packages/*`
+libraries, is **dual-licensed**:
 
 - **[AGPL-3.0-or-later](LICENSE)**, free for everyone. Run it, modify it, build
   on it. If you distribute a modified version, or expose one to users over a
@@ -555,11 +556,10 @@ plus SynapsD, StoreD, InferD and AgentD, is **dual-licensed**:
 
 Same software either way. There is no cut-down community edition.
 
-The **clients and shared packages**, meaning the CLI, web UI, shell, FUSE,
-desktop, browser extensions and the monorepo `packages/*`, are
-**AGPL-3.0-or-later only**, for everyone, commercial licensees included. They
-stay free software in all cases. See [NOTICE](NOTICE) for the
-component-by-component breakdown.
+The **client applications**, meaning the CLI, web UI, shell, FUSE, desktop
+and browser extensions, are **AGPL-3.0-or-later only**, for everyone,
+commercial licensees included. They stay free software in all cases. See
+[NOTICE](NOTICE) for the component-by-component breakdown.
 
 Every response carries an `X-Source-Code` header, and `GET /rest/v2/ping`
 reports the running version, revision and source URL. That is how this server

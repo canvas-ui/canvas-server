@@ -149,15 +149,20 @@ rots and misleads about what the project actually is.
 **Final decision (2026-08-12): no Apache relicense, no closed core.** The
 licence topology is the dual-licensing model, kept and cleaned up:
 
-- **AGPL-3.0-or-later ONLY, for everyone, forever**: everything in the
-  monorepo (`canvas-ui/canvas` — cli, web, browser-extension, desktop, shell,
-  `packages/*`) and `canvas-fuse`. No commercial licence exists for these.
+- **AGPL-3.0-or-later ONLY, for everyone, forever**: the client applications
+  in the monorepo (`canvas-ui/canvas` `apps/*` — cli, web, browser-extension,
+  desktop, shell) and `canvas-fuse`. No commercial licence exists for these.
   Note `canvas-web` thereby *left* the dual set: it is now an AGPL-only open
   client, so even engine licensees must publish web-UI modifications they
   serve (deliberate — it is the anti-SaaS-freeride line).
 - **AGPL-3.0-or-later + commercial (dual)**: `canvas-server` (incl. embedd/
   messaging/voice/agent in-tree services), `canvas-synapsd`, `canvas-stored`,
-  `canvas-inferd`, `canvas-agentd` (consolidating `canvas-neurald`).
+  `canvas-inferd`, `canvas-agentd` (consolidating `canvas-neurald`), **and
+  the monorepo `packages/*`** (protocol, schemas, api-client — amended later
+  the same day: kept dual + CLA-covered so commercial deployments like MBAG
+  can build on the official client libraries, and so the commercial offer
+  survives outside contributions to the shared code; CLA v1.2, monorepo
+  CONTRIBUTING.md documents the apps=DCO / packages=CLA split).
 
 Executed 2026-08-12: monorepo got root `LICENSE` (AGPL) + `NOTICE` + README
 licensing section (replacing the interim "Apache later" text); server

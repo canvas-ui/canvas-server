@@ -6,9 +6,11 @@ is a work in progress, and the parts that get used are the parts that get good.
 ## Before you open a pull request
 
 **You will be asked to sign the [CLA](CLA.md).** It is a one-time thing and
-covers all your future contributions to the dual-licensed Canvas repositories:
-`canvas-server`, `canvas-synapsd`, `canvas-stored`, `canvas-inferd` and
-`canvas-agentd`. Comment on your first pull request with:
+covers all your future contributions to the dual-licensed Canvas components:
+`canvas-server`, `canvas-synapsd`, `canvas-stored`, `canvas-inferd`,
+`canvas-agentd` and the shared `packages/*` libraries in the
+[canvas monorepo](https://github.com/canvas-ui/canvas). Comment on your first
+pull request with:
 
 ```
 I have read the CLA document and I hereby sign the CLA.
@@ -42,11 +44,13 @@ to take the open version away.
 
 ## The clients ask for no CLA
 
-The [canvas monorepo](https://github.com/canvas-ui/canvas) (CLI, web UI,
-browser extensions, desktop app, shell client, shared packages) and
-`canvas-fuse` are AGPL-only. Nothing there is ever sublicensed, so there is
-nothing a CLA would need to grant, and a DCO sign-off (`git commit -s`) is all
-those repositories ask for.
+The client applications — `apps/*` in the
+[canvas monorepo](https://github.com/canvas-ui/canvas) (CLI, web UI, browser
+extensions, desktop app, shell client) and `canvas-fuse` — are AGPL-only.
+Nothing there is ever sublicensed, so there is nothing a CLA would need to
+grant, and a DCO sign-off (`git commit -s`) is all they ask for. The
+monorepo's `packages/*` libraries are the exception: they are part of the
+dual-licensed engine and take the CLA, as its CONTRIBUTING.md explains.
 
 If the CLA is what stops you, contribute there instead. The clients are the
 parts users touch first, and they are where help is most useful right now.

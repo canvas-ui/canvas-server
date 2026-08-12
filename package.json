@@ -1,7 +1,7 @@
 {
   "name": "canvas-server",
   "productName": "Canvas Server",
-  "version": "2.5.1",
+  "version": "2.5.2",
   "description": "Context layer on top of your unstructured universe",
   "main": "./src/init.js",
   "type": "module",

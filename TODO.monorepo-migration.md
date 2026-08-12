@@ -1,8 +1,10 @@
 # Monorepo migration
 
-Consolidate ten repositories into five, extract the shared client packages that
-do not exist yet, and move the licence boundary from "everything AGPL" to
-"permissive integrations, closed core".
+Consolidate ten repositories into five and extract the shared client packages
+that do not exist yet. Licence boundary (decided 2026-08-12, superseding the
+original "permissive integrations, closed core" target): monorepo + fuse are
+AGPL-only for everyone; server/synapsd/stored/inferd/agentd stay dual-licensed
+AGPL + commercial.
 
 Status: **in progress**. Slice 1 executed 2026-08-08 — Phase 1 (pnpm scaffold),
 Phase 2 (all three shared packages), and the cli folded in early as the Phase 3
@@ -11,7 +13,7 @@ verified under Bun). Slice 2 executed 2026-08-09 — shell, desktop and
 browser-extension folded in and building; Phase 3 now lacks only the web
 fold and the per-client repoints. Decisions locked: pnpm 10 for the monorepo (server stays
 npm), changesets, canvas-electron dropped, monorepo repo stays public,
-packages stay AGPL until Phase 6.
+packages stay AGPL — made permanent 2026-08-12 (Phase 6 void).
 
 **Naming (decided 2026-08-08): the product brands as Canvas OS; the npm scope
 is `@augmentd-labs`** — superseding the earlier `@canvas-os` npm plan from the
@@ -64,7 +66,7 @@ already the intended shape; the submodules are the half fighting it.
 ## Target topology
 
 ```
-canvas                  Apache-2.0    monorepo (public — decided Slice 1)
+canvas                  AGPL-only     monorepo (public — decided Slice 1)
   apps/
     web                               ← canvas-web
     cli                               ← canvas-cli (bun for build/compile)
@@ -79,10 +81,10 @@ canvas                  Apache-2.0    monorepo (public — decided Slice 1)
     messaging                         ← src/services/messaging
     voice                             ← src/services/voice
 
-canvas-stored           Apache-2.0    standalone, ad-hoc reuse
-canvas-fuse             Apache-2.0    standalone (Rust — no npm workspace fit)
-canvas-synapsd          closed        standalone, ad-hoc reuse
-canvas-server           closed        src/{core,transports,utils} · agentd · edge
+canvas-stored           AGPL+comm     standalone, ad-hoc reuse
+canvas-fuse             AGPL-only     standalone (Rust — no npm workspace fit)
+canvas-synapsd          AGPL+comm     standalone, ad-hoc reuse
+canvas-server           AGPL+comm     src/{core,transports,utils} · agentd · edge
 ```
 
 Ten repositories become five. SynapsD and StoreD stay standalone deliberately:
@@ -117,9 +119,9 @@ comes due later.
 That folder currently holds neurald, stored and synapsd, and they land on three
 different sides of the line:
 
-    synapsd   → closed, standalone repository
-    stored    → Apache-2.0, standalone repository
-    neurald   → agentd, closed, stays inside canvas-server
+    synapsd   → dual (AGPL + commercial), standalone repository
+    stored    → dual (AGPL + commercial), standalone repository
+    neurald   → agentd, dual (AGPL + commercial), standalone repository
 
 They become dependencies rather than subdirectories, which leaves
 `canvas-server` with five cross-repository dependencies: `canvas-synapsd`,
@@ -142,13 +144,35 @@ rots and misleads about what the project actually is.
 
 ---
 
-## Licensing: amendments required
+## Licensing: RESOLVED 2026-08-12 — the Apache/closed-core plan below is DEAD
 
-The current state on `dev` (v2.3.0) describes a **different model** to the target:
-every component AGPL, with `canvas-server` / `synapsd` / `stored` / `neurald` /
-`canvas-web` additionally dual-licensed, and the remaining clients AGPL-only
-forever. That model is superseded. Every item below is a delta from what is
-currently committed.
+**Final decision (2026-08-12): no Apache relicense, no closed core.** The
+licence topology is the dual-licensing model, kept and cleaned up:
+
+- **AGPL-3.0-or-later ONLY, for everyone, forever**: everything in the
+  monorepo (`canvas-ui/canvas` — cli, web, browser-extension, desktop, shell,
+  `packages/*`) and `canvas-fuse`. No commercial licence exists for these.
+  Note `canvas-web` thereby *left* the dual set: it is now an AGPL-only open
+  client, so even engine licensees must publish web-UI modifications they
+  serve (deliberate — it is the anti-SaaS-freeride line).
+- **AGPL-3.0-or-later + commercial (dual)**: `canvas-server` (incl. embedd/
+  messaging/voice/agent in-tree services), `canvas-synapsd`, `canvas-stored`,
+  `canvas-inferd`, `canvas-agentd` (consolidating `canvas-neurald`).
+
+Executed 2026-08-12: monorepo got root `LICENSE` (AGPL) + `NOTICE` + README
+licensing section (replacing the interim "Apache later" text); server
+`NOTICE`/`COMMERCIAL.md`/`CLA.md` (v1.1) updated to the new component split
+(web → AGPL-only, neurald → agentd, inferd/agentd listed, submodule wording
+dropped); same CLA/COMMERCIAL updates in `canvas-stored`/`canvas-synapsd`;
+`canvas-inferd` and `canvas-agentd` received the full kit
+(NOTICE/COMMERCIAL.md/CLA.md; agentd `license` field fixed from UNLICENSED).
+`canvas-fuse` was already correct. Phases 6–7 below are void; the MBAG
+pre-existing-IP carve-out (Phase 0) is no longer a licensing gate — nothing
+moves away from AGPL and nothing closes — though the carve-out remains worth
+having for provenance.
+
+Everything from here to the end of "Consents and irreversibility" is the
+superseded Apache/closed-core analysis, kept for the record.
 
 ### Why the change
 
@@ -462,9 +486,12 @@ drop it), and `.git/modules/*` leftovers can be pruned whenever.
 
 Per the section above. Still AGPL, still reversible.
 
-### Phase 6 — relicense the open layer
+### Phase 6 — relicense the open layer — VOID (superseded 2026-08-12)
 
-- [ ] Apache-2.0 `LICENSE` in the monorepo and `canvas-stored`
+Decision: the open layer stays AGPL-3.0-or-later, permanently. See
+"Licensing: RESOLVED 2026-08-12" above. Items kept for the record:
+
+- [ ] ~~Apache-2.0 `LICENSE` in the monorepo and `canvas-stored`~~
 - [ ] Per-package `license` fields in every manifest, plus `Cargo.toml` for fuse
 - [ ] `NOTICE` per repository
 - [ ] Retire `CLA.md`, adopt DCO, rewrite `CONTRIBUTING.md`
@@ -475,9 +502,11 @@ Per the section above. Still AGPL, still reversible.
       provenance on every release — see
       [Release mechanics](#release-mechanics-decided-2026-08-08-github-actions-only)
 
-### Phase 7 — close the core
+### Phase 7 — close the core — VOID (superseded 2026-08-12)
 
-Last, because it cannot be undone, and only once Phase 0's MBAG gate is cleared.
+Decision: nothing closes; the engine stays dual-licensed AGPL + commercial.
+See "Licensing: RESOLVED 2026-08-12" above. Items kept for the record —
+none will be executed:
 
 - [ ] `canvas-synapsd` → private, proprietary `LICENSE` (this also finally fixes
       it shipping no LICENSE file at all)

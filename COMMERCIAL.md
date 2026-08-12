@@ -18,19 +18,24 @@ no feature held back for paying customers. The AGPL version is the whole product
 
 A commercial licence covers the Canvas engine: **`canvas-server`** (including
 the embedding, messaging, voice and agent services), **`canvas-synapsd`**,
-**`canvas-stored`**, **`canvas-neurald`** and **`canvas-web`**. That is
-everything needed to run Canvas as a hosted product with its user interface.
+**`canvas-stored`**, **`canvas-inferd`** and **`canvas-agentd`** (which
+consolidates the former `canvas-neurald`). That is everything needed to run
+Canvas as a hosted product.
 
-It does not cover the standalone clients: the CLI, the shell client, the FUSE
-client, the desktop app and the browser extensions. Those are
+It does not cover the clients, the web UI or the shared packages: the CLI, the
+web UI, the shell client, the FUSE client, the desktop app, the browser
+extensions and the `packages/*` libraries in the Canvas monorepo. Those are
 **AGPL-3.0-or-later only, for everyone**, and no commercial licence is offered
 for them.
 
 This line is not open to negotiation. You can build a proprietary product on the
-Canvas engine; the clients that people install on their own machines stay free
-software. In practice it constrains few people. If you ship the clients
-unmodified, the AGPL asks nothing of you beyond passing the licence along. It
-only matters if you want to fork a client and keep the fork closed.
+Canvas engine; the clients that people install on their own machines, and the
+web UI they reach in their browser, stay free software. In practice it
+constrains few people. If you ship the clients and web UI unmodified, the AGPL
+asks nothing of you beyond passing the licence along. It only matters if you
+want to fork one and keep the fork closed: a forked client conveyed to users,
+or a modified web UI served to them over a network, comes with the obligation
+to offer its corresponding source, whatever engine licence you hold.
 
 ## When you need option 2
 
@@ -62,7 +67,7 @@ Email **lic@augmentd.eu** with roughly:
 
 - what you are building, and how Canvas fits into it
 - whether you are distributing it, hosting it, or both
-- which components you use (server, SynapsD, StoreD, NeuralD, the web UI)
+- which components you use (server, SynapsD, StoreD, InferD, AgentD)
 - rough scale, in seats, instances or end customers
 
 Terms are negotiated per case and there is no public price list yet. Licences

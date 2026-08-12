@@ -73,33 +73,38 @@ COMPONENTS
 
 Canvas is assembled from several repositories. They are not all licensed the
 same way. Every component is available under the AGPL-3.0-or-later; only those
-marked [dual] are also available under a commercial licence. Components marked
-(submodule) are separate repositories referenced by this one, each carrying its
-own LICENSE and NOTICE.
+marked [dual] are also available under a commercial licence. Components in
+separate repositories each carry their own LICENSE and NOTICE.
 
-The server runtime and the services it embeds, together the engine:
+The server runtime and the services behind it, together the engine:
 
     [dual]  canvas-server   this repository, server runtime, transports, core
+              src/services/embedd     embedding service
               src/services/messaging  notification and chat channels
               src/services/voice      speech-to-text and text-to-speech
               src/core/agent          agent runtime
-    [dual]  canvas-synapsd  (submodule) context indexing engine
+    [dual]  canvas-synapsd  (dependency) context indexing engine
+    [dual]  canvas-stored   (dependency) blob storage
     [dual]  canvas-inferd   (dependency) inference service
-    [dual]  canvas-stored   (submodule) blob storage
-    [dual]  canvas-neurald  (submodule) LLM and inference service
-    [dual]  canvas-web      (submodule) web UI
+    [dual]  canvas-agentd   (repository) agent runtime service, consolidating
+                            the former canvas-neurald
 
-The standalone clients and integrations, AGPL-only for everyone:
+The clients, integrations and shared packages, AGPL-only for everyone. Most
+live in the Canvas monorepo, https://github.com/canvas-ui/canvas:
 
-    [AGPL]  canvas-cli      (submodule) command-line client
-    [AGPL]  canvas-shell    (submodule) shell client and applets
-    [AGPL]  canvas-fuse     (submodule) FUSE filesystem client
-    [AGPL]  canvas-desktop  (submodule) desktop app
-    [AGPL]  canvas-browser-extensions (submodule) Chrome and Firefox extensions
+    [AGPL]  apps/cli               (monorepo) command-line client
+    [AGPL]  apps/web               (monorepo) web UI, served by this server
+    [AGPL]  apps/shell             (monorepo) shell client and applets
+    [AGPL]  apps/desktop           (monorepo) desktop app
+    [AGPL]  apps/browser-extension (monorepo) Chrome and Firefox extensions
+    [AGPL]  packages/*             (monorepo) protocol, schemas, api-client
+    [AGPL]  canvas-fuse            (repository) FUSE filesystem client
 
 A commercial licence to a [dual] component grants no rights over an [AGPL] one.
 If you hold a commercial licence to the server runtime and you modify and convey
-the CLI, the AGPL applies to that CLI in full.
+the CLI, the AGPL applies to that CLI in full. The same holds for the web UI:
+it is AGPL-only, and serving a modified web UI to users over a network obliges
+you to offer them its corresponding source, whatever engine licence you hold.
 
 
 THIRD-PARTY CODE

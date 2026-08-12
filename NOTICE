@@ -79,7 +79,6 @@ separate repositories each carry their own LICENSE and NOTICE.
 The server runtime and the services behind it, together the engine:
 
     [dual]  canvas-server   this repository, server runtime, transports, core
-              src/services/embedd     embedding service
               src/services/messaging  notification and chat channels
               src/services/voice      speech-to-text and text-to-speech
               src/core/agent          agent runtime

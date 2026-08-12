@@ -17,7 +17,7 @@ no feature held back for paying customers. The AGPL version is the whole product
 ## Scope, what a commercial licence covers
 
 A commercial licence covers the Canvas engine: **`canvas-server`** (including
-the embedding, messaging, voice and agent services), **`canvas-synapsd`**,
+the messaging, voice and agent services), **`canvas-synapsd`**,
 **`canvas-stored`**, **`canvas-inferd`**, **`canvas-agentd`** (which
 consolidates the former `canvas-neurald`) and the shared **`packages/*`**
 libraries in the Canvas monorepo (protocol, schemas, api-client) — so your

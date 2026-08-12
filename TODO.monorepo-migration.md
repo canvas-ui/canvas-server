@@ -155,8 +155,9 @@ licence topology is the dual-licensing model, kept and cleaned up:
   Note `canvas-web` thereby *left* the dual set: it is now an AGPL-only open
   client, so even engine licensees must publish web-UI modifications they
   serve (deliberate — it is the anti-SaaS-freeride line).
-- **AGPL-3.0-or-later + commercial (dual)**: `canvas-server` (incl. embedd/
-  messaging/voice/agent in-tree services), `canvas-synapsd`, `canvas-stored`,
+- **AGPL-3.0-or-later + commercial (dual)**: `canvas-server` (incl.
+  messaging/voice/agent in-tree services; embedd was extracted and renamed
+  to `canvas-inferd`), `canvas-synapsd`, `canvas-stored`,
   `canvas-inferd`, `canvas-agentd` (consolidating `canvas-neurald`), **and
   the monorepo `packages/*`** (protocol, schemas, api-client — amended later
   the same day: kept dual + CLA-covered so commercial deployments like MBAG
@@ -462,10 +463,22 @@ stays standalone — it is Rust and does not belong in an npm workspace.
       buildTabDoc in tab-manager at the same time (package root is
       browser-bundleable now — buildFileDoc's node:path import removed).
 
-### Phase 4 — extract the open services from `canvas-server`
+### Phase 4 — extract services from `canvas-server`
+
+Reframed 2026-08-12: this phase was licensing-driven ("open services" headed
+to permissive packages under the dead Apache plan). With everything staying
+dual-AGPL, extracting messaging/voice is optional modularity — do it if and
+when it pays for itself, not for the licence boundary. inferd's scope
+(decided 2026-08-12): (a) embeddings, (b) summaries/descriptions,
+(c) semantic anchors — experimental internal-state translation belongs in
+canvas-agentd, not here — over both local and remote runtimes. Name
+`canvas-inferd` is subject to change; a rename must sweep the legal docs
+(NOTICE/COMMERCIAL/CLA across all six repos) and the git-dep refs here.
 
 - [x] `canvas-inferd` extracted with history and consumed as a dependency
-- [ ] `messaging` and `voice` extracted with history
+      (formerly `src/services/embedd`; declares onnxruntime-node properly —
+      the old undeclared-dep landmine is defused)
+- [ ] (optional) `messaging` and `voice` extracted with history
 - [ ] `canvas-server` consumes them as dependencies
 - [ ] Transitional wiring via `file:../canvas/packages/<name>` until published
 

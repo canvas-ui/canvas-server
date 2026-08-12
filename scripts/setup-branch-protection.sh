@@ -43,5 +43,4 @@ protect canvas-server  main   # release branch
 protect canvas-stored  main
 protect canvas-synapsd main
 protect canvas-inferd  main
-# canvas-agentd: skipped — still on the canvas-ai org with the CLA workflow
-# uncommitted; protect it after the move to canvas-ui.
+protect canvas-agentd  main

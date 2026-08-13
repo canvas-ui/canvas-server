@@ -52,7 +52,7 @@ export default async function workspaceDatasetRoutes(fastify, _options) {
   }, async (request, reply) => {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
-      if (!workspace) return;
+      if (!workspace) return reply;
 
       const datasets = await workspace.listDatasets();
       const responseObject = new ResponseObject().found(datasets, 'Datasets retrieved successfully', 200, datasets.length, datasets.length);
@@ -89,7 +89,7 @@ export default async function workspaceDatasetRoutes(fastify, _options) {
   }, async (request, reply) => {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
-      if (!workspace) return;
+      if (!workspace) return reply;
 
       const name = request.params['*'];
       if (!name || name === 'default') {

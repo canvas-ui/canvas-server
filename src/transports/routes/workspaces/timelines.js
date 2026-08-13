@@ -69,7 +69,7 @@ export default async function workspaceTimelineRoutes(fastify, _options) {
   }, async (request, reply) => {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
-      if (!workspace) return;
+      if (!workspace) return reply;
 
       const timelines = await workspace.listTimelines();
       const ro = new ResponseObject().found(timelines, 'Timelines retrieved successfully', 200, timelines.length);
@@ -96,7 +96,7 @@ export default async function workspaceTimelineRoutes(fastify, _options) {
   }, async (request, reply) => {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
-      if (!workspace) return;
+      if (!workspace) return reply;
 
       const { name } = request.body;
       const result = await workspace.createTimeline(name);
@@ -115,7 +115,7 @@ export default async function workspaceTimelineRoutes(fastify, _options) {
   }, async (request, reply) => {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
-      if (!workspace) return;
+      if (!workspace) return reply;
 
       const { name } = request.params;
       const exists = workspace.hasTimeline(name);
@@ -139,7 +139,7 @@ export default async function workspaceTimelineRoutes(fastify, _options) {
   }, async (request, reply) => {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
-      if (!workspace) return;
+      if (!workspace) return reply;
 
       const { name } = request.params;
 
@@ -204,7 +204,7 @@ export default async function workspaceTimelineRoutes(fastify, _options) {
   }, async (request, reply) => {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
-      if (!workspace) return;
+      if (!workspace) return reply;
 
       const body = request.body;
       const { context: ctxSelector, directory: dirSelector } = body.scope === 'workspace'
@@ -249,7 +249,7 @@ export default async function workspaceTimelineRoutes(fastify, _options) {
   }, async (request, reply) => {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
-      if (!workspace) return;
+      if (!workspace) return reply;
 
       const { name } = request.params;
       const { start, end, scale, mode, scales } = request.body;
@@ -290,7 +290,7 @@ export default async function workspaceTimelineRoutes(fastify, _options) {
   }, async (request, reply) => {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
-      if (!workspace) return;
+      if (!workspace) return reply;
 
       const { name } = request.params;
       const { id, start, end, scale } = request.body;
@@ -313,7 +313,7 @@ export default async function workspaceTimelineRoutes(fastify, _options) {
   }, async (request, reply) => {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
-      if (!workspace) return;
+      if (!workspace) return reply;
 
       const { name, docId } = request.params;
       await workspace.removeTimelineEntry(name, docId);

@@ -57,7 +57,7 @@ export default async function workspaceBitmapRoutes(fastify, _options) {
   }, async (request, reply) => {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
-      if (!workspace) return;
+      if (!workspace) return reply;
 
       if (parseBool(request.query.includeRaw)) {
         const responseObject = new ResponseObject().badRequest('includeRaw is only supported for exact bitmap paths at /bitmaps/<key>');
@@ -104,7 +104,7 @@ export default async function workspaceBitmapRoutes(fastify, _options) {
   }, async (request, reply) => {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
-      if (!workspace) return;
+      if (!workspace) return reply;
 
       const requestedPath = request.params['*'];
       const forceRawBySuffix = typeof requestedPath === 'string' && requestedPath.endsWith('.bitmap');
@@ -173,7 +173,7 @@ export default async function workspaceBitmapRoutes(fastify, _options) {
   }, async (request, reply) => {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
-      if (!workspace) return;
+      if (!workspace) return reply;
 
       const bitmapKey = request.params['*'];
       if (!bitmapKey) {

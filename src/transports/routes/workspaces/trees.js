@@ -26,7 +26,7 @@ export default async function workspaceTreesRoutes(fastify) {
     onRequest: [fastify.authenticate],
   }, async (request, reply) => {
     const workspace = await getWorkspaceInstance(request, reply);
-    if (!workspace) return;
+    if (!workspace) return reply;
     const trees = await workspace.listTrees(request.query?.type || null);
     const count = Array.isArray(trees) ? trees.length : 0;
     const responseObject = new ResponseObject().found(trees, 'Trees retrieved successfully', 200, count, count);
@@ -48,7 +48,7 @@ export default async function workspaceTreesRoutes(fastify) {
   }, async (request, reply) => {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
-      if (!workspace) return;
+      if (!workspace) return reply;
       const tree = await workspace.createTree(request.body.name, request.body.type);
       const responseObject = new ResponseObject().created(tree, 'Tree created successfully');
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
@@ -72,7 +72,7 @@ export default async function workspaceTreesRoutes(fastify) {
   }, async (request, reply) => {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
-      if (!workspace) return;
+      if (!workspace) return reply;
       const tree = await workspace.renameTree(request.params.treeNameOrTreeId, request.body.name);
       const responseObject = new ResponseObject().success(tree, 'Tree renamed successfully');
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
@@ -89,7 +89,7 @@ export default async function workspaceTreesRoutes(fastify) {
   }, async (request, reply) => {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
-      if (!workspace) return;
+      if (!workspace) return reply;
       await workspace.destroyTree(request.params.treeNameOrTreeId);
       const responseObject = new ResponseObject().deleted(true, 'Tree deleted successfully');
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());

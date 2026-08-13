@@ -65,7 +65,13 @@ function setupProcessEventListeners() {
 
     // Handle unhandled rejections
     process.on('unhandledRejection', (reason, _promise) => {
-        logger.error({ reason }, 'Unhandled Rejection');
+        // Errors keep message/stack in non-enumerable props — serialize as
+        // `err` (pino's error serializer) or the log is just `{code}`.
+        if (reason instanceof Error) {
+            logger.error({ err: reason }, 'Unhandled Rejection');
+        } else {
+            logger.error({ reason }, 'Unhandled Rejection');
+        }
     });
 
     // Handle warnings

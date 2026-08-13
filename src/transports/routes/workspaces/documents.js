@@ -289,7 +289,7 @@ export default async function workspaceDocumentRoutes(fastify, _options) {
   }, async (request, reply) => {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
-      if (!workspace) return;
+      if (!workspace) return reply;
 
       // Whole-workspace scope = no path selector. Backend mirrors live in their
       // own tree (linkContextRoot:false), so root/context queries never see
@@ -412,7 +412,7 @@ export default async function workspaceDocumentRoutes(fastify, _options) {
   }, async (request, reply) => {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
-      if (!workspace) return;
+      if (!workspace) return reply;
 
       const body = request.body;
       const { context: ctxSelector, directory: dirSelector } = body.scope === 'workspace'
@@ -507,7 +507,7 @@ export default async function workspaceDocumentRoutes(fastify, _options) {
   }, async (request, reply) => {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
-      if (!workspace) return;
+      if (!workspace) return reply;
 
       const body = request.body;
       if (!body.image && !body.similarTo) {
@@ -614,11 +614,11 @@ export default async function workspaceDocumentRoutes(fastify, _options) {
   }, async (request, reply) => {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
-      if (!workspace) return;
+      if (!workspace) return reply;
 
       const isTopLevelArray = Array.isArray(request.body);
       const { treeType: insertTreeType, selector: insertSelector } = resolveInsertTarget(workspace, request.body, isTopLevelArray);
-      if (insertTreeType === 'directory' && rejectBackendsWrite(reply, workspace, insertSelector)) return;
+      if (insertTreeType === 'directory' && rejectBackendsWrite(reply, workspace, insertSelector)) return reply;
       const features = isTopLevelArray ? [] : (request.body.features || []);
       const enforcedFeatures = enforceClientTags(request, features);
 
@@ -670,7 +670,7 @@ export default async function workspaceDocumentRoutes(fastify, _options) {
   }, async (request, reply) => {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
-      if (!workspace) return;
+      if (!workspace) return reply;
       const { context: ctxSel, directory: dirSel } = resolveScopeSelectors(workspace, request.query, '/');
 
       const document = await workspace.get(request.params.docId);
@@ -717,7 +717,7 @@ export default async function workspaceDocumentRoutes(fastify, _options) {
   }, async (request, reply) => {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
-      if (!workspace) return;
+      if (!workspace) return reply;
       const { context: ctxSel, directory: dirSel } = resolveScopeSelectors(workspace, request.query, '/');
       const attrs = buildAttributes(request.query) || {};
       // normalizeSchemaId maps short names onto the hierarchical ids (`email`
@@ -779,7 +779,7 @@ export default async function workspaceDocumentRoutes(fastify, _options) {
   }, async (request, reply) => {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
-      if (!workspace) return;
+      if (!workspace) return reply;
 
       let itemsToUpdate;
       if (request.body.documents) {
@@ -792,7 +792,7 @@ export default async function workspaceDocumentRoutes(fastify, _options) {
       }
 
       const { treeType: updateTreeType, selector: updateSelector } = resolveInsertTarget(workspace, request.body, false);
-      if (updateTreeType === 'directory' && rejectBackendsWrite(reply, workspace, updateSelector)) return;
+      if (updateTreeType === 'directory' && rejectBackendsWrite(reply, workspace, updateSelector)) return reply;
       const result = await workspace.putMany(itemsToUpdate, {
         context: updateTreeType === 'directory' ? null : updateSelector,
         directory: updateTreeType === 'directory' ? updateSelector : null,
@@ -828,7 +828,7 @@ export default async function workspaceDocumentRoutes(fastify, _options) {
   }, async (request, reply) => {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
-      if (!workspace) return;
+      if (!workspace) return reply;
       // Note: NO rejectIncomingWrite here. Deleting a document from the index is
       // removal, not a write INTO the incoming tree — and we allow purging
       // backend-ingested incoming docs (it's the lightweight sibling of Destroy,
@@ -887,7 +887,7 @@ export default async function workspaceDocumentRoutes(fastify, _options) {
   }, async (request, reply) => {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
-      if (!workspace) return;
+      if (!workspace) return reply;
       const { context: ctxSel, directory: dirSel } = resolveScopeSelectors(workspace, request.query, '/');
 
       const attributes = buildAttributes(request.query);
@@ -962,7 +962,7 @@ export default async function workspaceDocumentRoutes(fastify, _options) {
   }, async (request, reply) => {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
-      if (!workspace) return;
+      if (!workspace) return reply;
       const contextSelector = resolveContextSelector(workspace, request.query, '/');
 
       const rawIds = Array.isArray(request.body) ? request.body : [request.body];
@@ -1049,7 +1049,7 @@ export default async function workspaceDocumentRoutes(fastify, _options) {
   }, async (request, reply) => {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
-      if (!workspace) return;
+      if (!workspace) return reply;
 
       const { documentIds: rawIds, urls = null, keepDocument = false } = request.body;
       let documentIds;
@@ -1092,7 +1092,7 @@ export default async function workspaceDocumentRoutes(fastify, _options) {
   }, async (request, reply) => {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
-      if (!workspace) return;
+      if (!workspace) return reply;
 
       let documentId;
       try {
@@ -1145,7 +1145,7 @@ export default async function workspaceDocumentRoutes(fastify, _options) {
     schema: { params: { type: 'object', required: ['id', 'docId'], properties: { id: { type: 'string' }, docId: { type: 'string' } } } },
   }, async (request, reply) => {
     const workspace = await getWorkspaceInstance(request, reply);
-    if (!workspace) return;
+    if (!workspace) return reply;
     const token = fastify.jwt.sign(
       { scope: 'media', ws: request.params.id, sub: request.user.id },
       { expiresIn: `${MEDIA_TICKET_TTL}s` },
@@ -1180,7 +1180,7 @@ export default async function workspaceDocumentRoutes(fastify, _options) {
   }, async (request, reply) => {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
-      if (!workspace) return;
+      if (!workspace) return reply;
 
       let documentId;
       try { documentId = parseDocumentId(request.params.docId, 'Document ID parameter'); }
@@ -1259,7 +1259,7 @@ export default async function workspaceDocumentRoutes(fastify, _options) {
   }, async (request, reply) => {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
-      if (!workspace) return;
+      if (!workspace) return reply;
 
       let documentId;
       try { documentId = parseDocumentId(request.params.docId, 'Document ID parameter'); }
@@ -1303,7 +1303,7 @@ export default async function workspaceDocumentRoutes(fastify, _options) {
   }, async (request, reply) => {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
-      if (!workspace) return;
+      if (!workspace) return reply;
 
       let documentId;
       try { documentId = parseDocumentId(request.params.docId, 'Document ID parameter'); }
@@ -1335,7 +1335,7 @@ export default async function workspaceDocumentRoutes(fastify, _options) {
   }, async (request, reply) => {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
-      if (!workspace) return;
+      if (!workspace) return reply;
 
       let documentId;
       try { documentId = parseDocumentId(request.params.docId, 'Document ID parameter'); }
@@ -1374,7 +1374,7 @@ export default async function workspaceDocumentRoutes(fastify, _options) {
   }, async (request, reply) => {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
-      if (!workspace) return;
+      if (!workspace) return reply;
       const { context: ctxSel, directory: dirSel } = resolveScopeSelectors(workspace, request.query, '/');
 
       const checksumString = `${request.params.algo}/${request.params.hash}`;
@@ -1418,7 +1418,7 @@ export default async function workspaceDocumentRoutes(fastify, _options) {
 
     try {
       const workspace = await getWorkspaceInstance(request, reply);
-      if (!workspace) return;
+      if (!workspace) return reply;
 
       if (!workspace.isActive) {
         fastify.log.info(`Workspace ${request.params.id} is not active, attempting to start...`);

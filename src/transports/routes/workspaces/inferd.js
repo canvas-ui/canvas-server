@@ -81,7 +81,7 @@ export default async function workspaceInferdRoutes(fastify, _options) {
         onRequest: [fastify.authenticate, requireWorkspaceRead()],
     }, async (request, reply) => {
         const workspace = guard(request, reply);
-        if (!workspace) { return; }
+        if (!workspace) { return reply; }
         try {
             const ctx = await inferd().contextForWorkspace(workspace.id);
             const r = new ResponseObject().found({
@@ -112,7 +112,7 @@ export default async function workspaceInferdRoutes(fastify, _options) {
         onRequest: [fastify.authenticate, requireWorkspaceRead()],
     }, async (request, reply) => {
         const workspace = guard(request, reply);
-        if (!workspace) { return; }
+        if (!workspace) { return reply; }
         const r = new ResponseObject().found({
             queue: inferd().workspaceStatus(workspace.id),
             summarize: workspace.imageSummaryStatus,
@@ -136,7 +136,7 @@ export default async function workspaceInferdRoutes(fastify, _options) {
         },
     }, async (request, reply) => {
         const workspace = guard(request, reply);
-        if (!workspace) { return; }
+        if (!workspace) { return reply; }
         if (!workspace.isActive) {
             const r = new ResponseObject().workspaceNotActive();
             return reply.code(r.statusCode).send(r.getResponse());
@@ -166,7 +166,7 @@ export default async function workspaceInferdRoutes(fastify, _options) {
         config: writeLimit,
     }, async (request, reply) => {
         const workspace = guard(request, reply);
-        if (!workspace) { return; }
+        if (!workspace) { return reply; }
         if (!workspace.isActive) {
             const r = new ResponseObject().workspaceNotActive();
             return reply.code(r.statusCode).send(r.getResponse());
@@ -185,7 +185,7 @@ export default async function workspaceInferdRoutes(fastify, _options) {
         config: writeLimit,
     }, async (request, reply) => {
         const workspace = guard(request, reply);
-        if (!workspace) { return; }
+        if (!workspace) { return reply; }
         const body = request.body;
         if (!body || typeof body !== 'object' || Array.isArray(body)) {
             const r = new ResponseObject().badRequest('Embedding config must be a JSON object');
@@ -267,7 +267,7 @@ export default async function workspaceInferdRoutes(fastify, _options) {
         },
     }, async (request, reply) => {
         const workspace = guard(request, reply);
-        if (!workspace) { return; }
+        if (!workspace) { return reply; }
         if (!workspace.isActive) {
             const r = new ResponseObject().workspaceNotActive();
             return reply.code(r.statusCode).send(r.getResponse());
@@ -295,7 +295,7 @@ export default async function workspaceInferdRoutes(fastify, _options) {
         onRequest: [fastify.authenticate, requireWorkspaceRead()],
     }, async (request, reply) => {
         const workspace = guard(request, reply);
-        if (!workspace) { return; }
+        if (!workspace) { return reply; }
         try {
             const r = new ResponseObject().found(await workspace.listVectorTables());
             return reply.code(r.statusCode).send(r.getResponse());
@@ -311,7 +311,7 @@ export default async function workspaceInferdRoutes(fastify, _options) {
         config: writeLimit,
     }, async (request, reply) => {
         const workspace = guard(request, reply);
-        if (!workspace) { return; }
+        if (!workspace) { return reply; }
         try {
             const result = await workspace.dropVectorTable(request.params.table);
             if (!result?.dropped) {

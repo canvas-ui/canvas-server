@@ -65,7 +65,7 @@ export default async function workspaceTrashRoutes(fastify) {
   }, async (request, reply) => {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
-      if (!workspace) { return; }
+      if (!workspace) { return reply; }
 
       const { limit = null, offset = 0 } = request.query || {};
       const result = await workspace.listTrash({ limit, offset });
@@ -90,7 +90,7 @@ export default async function workspaceTrashRoutes(fastify) {
   }, async (request, reply) => {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
-      if (!workspace) { return; }
+      if (!workspace) { return reply; }
 
       const result = await workspace.restoreFromTrash(request.body.documentIds);
       const r = new ResponseObject().success(result, 'Documents restored from trash', 200, result.restored.length);
@@ -116,7 +116,7 @@ export default async function workspaceTrashRoutes(fastify) {
   }, async (request, reply) => {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
-      if (!workspace) { return; }
+      if (!workspace) { return reply; }
 
       const requested = (request.body && typeof request.body === 'object' && !Array.isArray(request.body))
         ? request.body.documentIds

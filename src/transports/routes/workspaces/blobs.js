@@ -46,7 +46,7 @@ export default async function blobRoutes(fastify) {
     schema: { params: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } } },
   }, async (request, reply) => {
     const workspace = await getWorkspaceInstance(request, reply);
-    if (!workspace) { return; }
+    if (!workspace) { return reply; }
 
     // request.body is the raw Readable stream (or a Buffer for tiny bodies).
     const body = request.body;

@@ -1467,6 +1467,13 @@ class Workspace extends EventEmitter {
                 const data = res?.data;
                 if (data != null) return { ...(options.stream ? { stream: data } : { buffer: data }), url: loc.url, ranged: !!res.ranged };
             } catch (err) {
+                // A location on another device (no proxy yet) is an expected
+                // miss — fall through to the next location, and let an
+                // all-miss resolve return null (a clean 404) rather than 500.
+                if (err?.code === 'DEVICE_NOT_REACHABLE') {
+                    this.#logger.debug({ workspaceId: this.id, url: loc.url }, 'Location unreachable from this server (device not proxied)');
+                    continue;
+                }
                 lastError = err;
             }
         }

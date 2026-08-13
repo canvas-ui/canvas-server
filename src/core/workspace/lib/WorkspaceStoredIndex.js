@@ -1128,7 +1128,12 @@ export class WorkspaceStoredIndex {
                 }
                 return { data: createReadStream(local.abs), ranged: false };
             }
-            throw new Error(`Device-proxy resolution not implemented for ${url}`);
+            // Bytes live on another device (or an unconfigured mount) — an
+            // expected miss, not a server fault. The code lets resolveDocument
+            // treat it as "location unreachable" (404) instead of a 500.
+            const err = new Error(`Device-proxy resolution not implemented for ${url}`);
+            err.code = 'DEVICE_NOT_REACHABLE';
+            throw err;
         }
 
         throw new Error(`No resolver for scheme: ${scheme}`);

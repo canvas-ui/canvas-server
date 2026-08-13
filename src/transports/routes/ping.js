@@ -2,7 +2,35 @@
 
 import { env } from '../../env.js';
 import _os from 'os';
+import { readFileSync } from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import ResponseObject from '../ResponseObject.js';
+
+// Installed canvas components whose versions the About page reports. Read once
+// at startup — the installed tree cannot change under a running process.
+const COMPONENT_PACKAGES = [
+    'canvas-synapsd',
+    'canvas-stored',
+    'canvas-inferd',
+    'canvas-agentd',
+    'canvas-roles',
+    'canvas-web',
+];
+
+function readComponentVersions() {
+    const serverRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
+    const components = {};
+    for (const name of COMPONENT_PACKAGES) {
+        try {
+            const pkg = JSON.parse(readFileSync(path.join(serverRoot, 'node_modules', name, 'package.json'), 'utf8'));
+            if (pkg.version) components[name] = pkg.version;
+        } catch { /* not installed — omit */ }
+    }
+    return components;
+}
+
+const componentVersions = readComponentVersions();
 
 /**
  * Ping route for server status (no authentication required)
@@ -63,6 +91,8 @@ export default async function pingRoute(fastify, _options) {
       license: env.app.license,
       sourceUrl: env.app.sourceUrl,
       commit: env.app.commit,
+      // Versions of the installed canvas-* components (Settings > About)
+      components: componentVersions,
       uptime: process.uptime(),
       timestamp: new Date().toISOString(),
       defaults: {

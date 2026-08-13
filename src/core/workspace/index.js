@@ -589,8 +589,11 @@ class WorkspaceManager extends EventEmitter {
         if (!this.#initialized) throw new Error('Not initialized');
         if (!name || !userId) throw new Error('Name and UserID required');
 
-        // Sanitize Name
+        // Sanitize Name — the lowercased form is the workspace identity
+        // (index keys, uniqueness), the case-preserving form names the
+        // on-disk folder ("WorkspaceA" stays "WorkspaceA").
         const sanitizedName = this.#sanitizeWorkspaceName(name);
+        const dirName = this.#sanitizeWorkspaceDirName(name);
         const host = options.host || WORKSPACE_DEFAULT_HOST;
 
         // Check uniqueness
@@ -602,7 +605,7 @@ class WorkspaceManager extends EventEmitter {
         const layout = normalizeWorkspaceLayout(options.layout || this.#defaultLayout);
 
         const workspaceDir = options.rootPath
-            || path.join(await this.userWorkspacesPath(userId, options.userEmail), sanitizedName);
+            || path.join(await this.userWorkspacesPath(userId, options.userEmail), dirName);
 
         if (existsSync(workspaceDir)) {
             // A `home`-layout workspace is meant to wrap a folder the user
@@ -1429,6 +1432,12 @@ class WorkspaceManager extends EventEmitter {
 
     #sanitizeWorkspaceName(name) {
         return name.toLowerCase().replace(/[^a-z0-9-_]/g, '');
+    }
+
+    // Same character set, but case-preserving — used only for the on-disk
+    // folder name so "WorkspaceA" is created as WorkspaceA/.
+    #sanitizeWorkspaceDirName(name) {
+        return name.replace(/[^a-zA-Z0-9-_]/g, '');
     }
 
     #registerWorkspaceInstance(workspace) {

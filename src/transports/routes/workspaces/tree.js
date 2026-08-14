@@ -393,7 +393,11 @@ export default async function workspaceTreeRoutes(fastify) {
     }
   });
 
-  fastify.patch('/path/*', {
+  // Shared by '/path/*' and the bare '/path' root alias: the wildcard route
+  // does not match an empty splat, but the root layer's presentation
+  // (metadata.views, color, …) must be editable too — the web's content-view
+  // tabs save against whatever path is open, '/' included.
+  const updateTreePathOpts = {
     onRequest: [fastify.authenticate],
     schema: {
       body: {
@@ -411,7 +415,8 @@ export default async function workspaceTreeRoutes(fastify) {
         },
       },
     },
-  }, async (request, reply) => {
+  };
+  const updateTreePathHandler = async (request, reply) => {
     try {
       const resolved = await getTreeInstance(request, reply);
       if (!resolved) return;
@@ -453,7 +458,9 @@ export default async function workspaceTreeRoutes(fastify) {
       const responseObject = new ResponseObject().serverError(error.message || 'Failed to update path');
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
     }
-  });
+  };
+  fastify.patch('/path/*', updateTreePathOpts, updateTreePathHandler);
+  fastify.patch('/path', updateTreePathOpts, updateTreePathHandler);
 
   fastify.post('/path/*', {
     onRequest: [fastify.authenticate],

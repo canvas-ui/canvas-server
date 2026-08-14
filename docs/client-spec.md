@@ -19,12 +19,16 @@ cli, sourced functions for shell).
 
 ---
 
-## 1. Root: `$CANVAS_HOME`
+## 1. Root: `$CANVAS_USER_HOME`
 
 All client state lives under one root, resolved in this order:
 
-1. `$CANVAS_HOME` if set (absolute path).
+1. `$CANVAS_USER_HOME` if set (absolute path).
 2. `~/.canvas`
+
+The `USER` infix is load-bearing: the server pairs `CANVAS_USER_HOME` with
+`CANVAS_SERVER_HOME` (`src/env.js`), and a bare `CANVAS_HOME` would be
+ambiguous between the two on a host running both.
 
 One root keeps the install cohesive — easy to back up, sync, or wipe — at the
 cost of not following XDG base dirs. That is a deliberate trade (cf. `~/.docker`,
@@ -62,7 +66,7 @@ server mirror" (sticky-name databases, agent/role runtime working dirs) is
 ## 3. Layout
 
 ```
-$CANVAS_HOME/
+$CANVAS_USER_HOME/
   manifest.json                    # { version }
   config/                          # durable, hand-editable
     remotes.json                   # remote registry — the join key (see §4, §5)
@@ -168,13 +172,13 @@ this order:
 
 1. `$XDG_RUNTIME_DIR/canvas/` if `$XDG_RUNTIME_DIR` is set (tmpfs, 0700,
    per-user, auto-cleaned on logout — the correct home for sockets).
-2. `$CANVAS_HOME/var/run/` otherwise.
+2. `$CANVAS_USER_HOME/var/run/` otherwise.
 
 When falling back to `var/run`, the creating client owns **stale socket
 cleanup** (unlink on startup if no live listener), since this path is not
 auto-cleaned. Sockets are `0600`/`0700`; never world-accessible.
 
-Logs always go to `$CANVAS_HOME/var/log/<client>.log` regardless of
+Logs always go to `$CANVAS_USER_HOME/var/log/<client>.log` regardless of
 `XDG_RUNTIME_DIR` (logs are not ephemeral runtime).
 
 ---

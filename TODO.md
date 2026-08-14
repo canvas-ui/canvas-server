@@ -1,5 +1,32 @@
 # TODO List
 
+## Target topology (monorepo + server + services)
+
+```
+canvas                  AGPL-only     monorepo (public — decided Slice 1)
+  apps/
+    web                               ← canvas-web
+    cli                               ← canvas-cli (bun for build/compile)
+    desktop                           ← canvas-desktop (tauri)
+    browser-extension                 ← canvas-browser-extensions
+    shell                             ← canvas-shell
+  packages/
+    protocol                          ← wire contracts + transport adapters, new
+    api-client                        ← ergonomic client over protocol, new
+    schemas                           ← extracted, new
+    plugin-api                        ← integration/adapter interfaces, new
+    messaging                         ← src/services/messaging
+    voice                             ← src/services/voice
+
+canvas-stored           AGPL+comm     standalone, ad-hoc reuse
+canvas-fuse             AGPL-only     standalone (Rust — no npm workspace fit)
+canvas-synapsd          AGPL+comm     standalone, ad-hoc reuse
+canvas-server           AGPL+comm     src/{core,transports,utils} · agentd · edge
+```
+
+Only open cross-repository work belongs here. Implemented behavior belongs in
+the owning package's README.
+
 ## Docs
 
 - [ ] Refactor `docs/hooks.md` + nice screenshots, OR better: a short youtube

@@ -186,3 +186,17 @@ Current Security Issues:
   }
 }
 ```
+
+## Dependency vulnerability triage — 2026-08-16
+
+`npm audit` baseline was 20 findings (1 critical). After this pass: 16 (1 critical, accepted — see below). Fixed in v2.5.29:
+
+- **fast-uri host-confusion chain** (ajv / fast-json-stringify / @fastify/ajv-compiler): the existing `fast-uri` override sat at 3.1.2 — *inside* the vulnerable range — bumped to **3.1.5** (patched).
+- **adm-zip** (4GB-allocation DoS): was a direct dependency with zero imports anywhere — removed. (Still present transitively via canvas-inferd → onnxruntime-node.)
+
+Accepted / deferred, in priority order:
+
+1. **tar ≤7.5.20 (CRITICAL, via fastembed 2.1.0)** — no patched tar v6 exists and fastembed (latest) pins `^6.2.0` with `import tar from "tar"`, which breaks on tar v7 (no default export; verified: overriding kills the ONNX embeddings worker). Exploitation requires a malicious model archive, i.e. a compromised HuggingFace CDN or MITM past TLS — low likelihood, high impact. **Fix path: upstream fastembed PR** (`import * as tar from "tar"` + tar ^7), then bump fastembed in canvas-synapsd + canvas-inferd.
+2. **Fastify v4 EOL set** (fastify ≤5.8.2 DoS + content-type bypass, find-my-way HTTP/2 DDoS, @fastify/static route-guard bypass, fastify-socket.io): all fixed only in Fastify v5 — needs a planned **v4→v5 migration** (breaking). This is the highest-value follow-up: the server is internet-exposed and v4 no longer receives security patches.
+3. **@mariozechner/pi-coding-agent 0.27→0.49** (major): advisories are local-privilege-escalation / auth.json race on *shared* machines — low practical risk on single-user deployments; upgrade needs agent-runtime regression testing.
+4. **Git-dep repos**: canvas-inferd (sharp <0.35 libvips CVEs, onnxruntime-node→adm-zip), canvas-stored (image-size — **no patched release exists**, all versions; its use is lazy/optional in extractors, consider gating ICNS/JXL/HEIF), canvas-synapsd (fastembed→tar, same as #1).

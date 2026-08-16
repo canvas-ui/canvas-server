@@ -64,14 +64,26 @@ export default async function workspaceTimelineRoutes(fastify, _options) {
   }
 
   // GET /workspaces/:id/timelines
+  // Plain payload is a string[] of names (stable contract). `?verbose=true`
+  // returns [{ name, quantum }] — one call for a settings/legend UI instead of
+  // N per-name lookups.
   fastify.get('/', {
     onRequest: [fastify.authenticate],
+    schema: {
+      querystring: {
+        type: 'object',
+        properties: { verbose: { type: 'boolean', default: false } },
+      },
+    },
   }, async (request, reply) => {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return reply;
 
-      const timelines = await workspace.listTimelines();
+      const names = await workspace.listTimelines();
+      const timelines = request.query.verbose
+        ? names.map((name) => ({ name, quantum: workspace.getTimelineQuantum(name) }))
+        : names;
       const ro = new ResponseObject().found(timelines, 'Timelines retrieved successfully', 200, timelines.length);
       return reply.code(ro.statusCode).send(ro.getResponse());
     } catch (err) {
@@ -82,6 +94,9 @@ export default async function workspaceTimelineRoutes(fastify, _options) {
   });
 
   // POST /workspaces/:id/timelines
+  // Optional `quantum` parametrizes the timeline's membership granularity
+  // ('Gyr'|'Myr'|'Kyr'|'year'|'month'|'day'; default 'day') — set BEFORE any
+  // entry lands, since cells written under one quantum are not re-tiled.
   fastify.post('/', {
     onRequest: [fastify.authenticate],
     schema: {
@@ -90,6 +105,7 @@ export default async function workspaceTimelineRoutes(fastify, _options) {
         required: ['name'],
         properties: {
           name: { type: 'string' },
+          quantum: { type: 'string' },
         },
       },
     },
@@ -98,9 +114,20 @@ export default async function workspaceTimelineRoutes(fastify, _options) {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return reply;
 
-      const { name } = request.body;
+      const { name, quantum } = request.body;
+      if (quantum) {
+        try {
+          workspace.setTimelineQuantum(name, quantum);
+        } catch (err) {
+          const ro = new ResponseObject().badRequest(err.message);
+          return reply.code(ro.statusCode).send(ro.getResponse());
+        }
+      }
       const result = await workspace.createTimeline(name);
-      const ro = new ResponseObject().created(result, 'Timeline created successfully');
+      const ro = new ResponseObject().created(
+        { ...result, quantum: workspace.getTimelineQuantum(name) },
+        'Timeline created successfully',
+      );
       return reply.code(ro.statusCode).send(ro.getResponse());
     } catch (err) {
       fastify.log.error(err);
@@ -124,11 +151,86 @@ export default async function workspaceTimelineRoutes(fastify, _options) {
         return reply.code(ro.statusCode).send(ro.getResponse());
       }
 
-      const ro = new ResponseObject().found({ name, exists: true }, 'Timeline found');
+      const ro = new ResponseObject().found(
+        { name, exists: true, quantum: workspace.getTimelineQuantum(name) },
+        'Timeline found',
+      );
       return reply.code(ro.statusCode).send(ro.getResponse());
     } catch (err) {
       fastify.log.error(err);
       const ro = new ResponseObject().serverError('Failed to get timeline');
+      return reply.code(ro.statusCode).send(ro.getResponse());
+    }
+  });
+
+  // PUT /workspaces/:id/timelines/:name/quantum
+  // Persisted in workspace.json and applied to the live index. NOTE: existing
+  // membership cells are not re-tiled; changing quantum on a populated timeline
+  // is safe for coarser queries but new entries tile at the new quantum —
+  // prefer setting it before ingestion (the UI warns, the API allows).
+  fastify.put('/:name/quantum', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      body: {
+        type: 'object',
+        required: ['quantum'],
+        properties: { quantum: { type: 'string' } },
+      },
+    },
+  }, async (request, reply) => {
+    try {
+      const workspace = await getWorkspaceInstance(request, reply);
+      if (!workspace) return reply;
+
+      const { name } = request.params;
+      let quantum;
+      try {
+        quantum = workspace.setTimelineQuantum(name, request.body.quantum);
+      } catch (err) {
+        const ro = new ResponseObject().badRequest(err.message);
+        return reply.code(ro.statusCode).send(ro.getResponse());
+      }
+      const ro = new ResponseObject().updated({ name, quantum }, 'Timeline quantum updated');
+      return reply.code(ro.statusCode).send(ro.getResponse());
+    } catch (err) {
+      fastify.log.error(err);
+      const ro = new ResponseObject().serverError('Failed to set timeline quantum');
+      return reply.code(ro.statusCode).send(ro.getResponse());
+    }
+  });
+
+  // GET /workspaces/:id/timelines/:name/decompose?start=&end=&scale=
+  // Covering decomposition of a range at the timeline's quantum — the cells the
+  // membership plane would store/probe. Debug + UI density planning.
+  fastify.get('/:name/decompose', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      querystring: {
+        type: 'object',
+        required: ['start'],
+        properties: {
+          start: { type: 'string' },
+          end: { type: 'string' },
+          scale: { type: 'string' },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    try {
+      const workspace = await getWorkspaceInstance(request, reply);
+      if (!workspace) return reply;
+
+      const { name } = request.params;
+      const { start, end, scale } = request.query;
+      const interval = end != null ? { start, end } : { start, end: start };
+      if (scale) interval.scale = scale;
+
+      const result = workspace.decomposeTimelineRange(name, interval);
+      const ro = new ResponseObject().found(result, 'Timeline range decomposed', 200, result.cells.length);
+      return reply.code(ro.statusCode).send(ro.getResponse());
+    } catch (err) {
+      fastify.log.error(err);
+      const ro = new ResponseObject().badRequest(err.message || 'Failed to decompose timeline range');
       return reply.code(ro.statusCode).send(ro.getResponse());
     }
   });
@@ -241,7 +343,7 @@ export default async function workspaceTimelineRoutes(fastify, _options) {
           start: {},
           end: {},
           scale: { type: 'string' },
-          mode: { type: 'string', enum: ['union', 'layers'] },
+          mode: { type: 'string', enum: ['union', 'layers', 'grouped'] },
           scales: { type: 'array', items: { type: 'string' } },
         },
       },
@@ -270,21 +372,48 @@ export default async function workspaceTimelineRoutes(fastify, _options) {
     }
   });
 
+  // Normalize an entry body { start, end?, scale? } → engine interval value.
+  function entryInterval({ start, end, scale }) {
+    const interval = end != null ? { start, end } : { start, end: start };
+    if (scale) interval.scale = scale;
+    return interval;
+  }
+
   // POST /workspaces/:id/timelines/:name/entries
-  // Insert a manual timeline entry for a document.
-  // Body: { id, start, end?, scale? }
+  // Insert manual timeline positions for a document. Two forms:
+  // - single (back-compat): { id, start, end?, scale? } — the PRIMARY interval.
+  // - multi-position:       { id, entries: [{ start, end?, scale?, primary? }] }
+  //   The entry flagged `primary: true` (or the first) becomes the sortable
+  //   primary interval; the rest land in the tiled membership plane. Open-ended
+  //   intervals are only representable as the primary (engine contract).
   fastify.post('/:name/entries', {
     onRequest: [fastify.authenticate],
     schema: {
       body: {
         type: 'object',
-        required: ['id', 'start'],
+        required: ['id'],
         properties: {
           id: {},
           start: {},
           end: {},
           scale: { type: 'string' },
+          entries: {
+            type: 'array',
+            minItems: 1,
+            maxItems: 100,
+            items: {
+              type: 'object',
+              required: ['start'],
+              properties: {
+                start: {},
+                end: {},
+                scale: { type: 'string' },
+                primary: { type: 'boolean' },
+              },
+            },
+          },
         },
+        anyOf: [{ required: ['start'] }, { required: ['entries'] }],
       },
     },
   }, async (request, reply) => {
@@ -293,11 +422,25 @@ export default async function workspaceTimelineRoutes(fastify, _options) {
       if (!workspace) return reply;
 
       const { name } = request.params;
-      const { id, start, end, scale } = request.body;
-      const interval = end != null ? { start, end } : { start };
-      if (scale) interval.scale = scale;
+      const { id, entries } = request.body;
 
-      await workspace.insertTimelineEntry(name, id, interval);
+      if (Array.isArray(entries)) {
+        let primaryIndex = entries.findIndex((e) => e.primary === true);
+        if (primaryIndex === -1) primaryIndex = 0;
+        const extras = entries.filter((_, i) => i !== primaryIndex);
+
+        await workspace.insertTimelineEntry(name, id, entryInterval(entries[primaryIndex]));
+        if (extras.length > 0) {
+          await workspace.insertTimelineEntries(name, id, extras.map(entryInterval));
+        }
+        const ro = new ResponseObject().created(
+          { timelineName: name, id, entries: entries.length },
+          'Timeline entries inserted',
+        );
+        return reply.code(ro.statusCode).send(ro.getResponse());
+      }
+
+      await workspace.insertTimelineEntry(name, id, entryInterval(request.body));
       const ro = new ResponseObject().created({ timelineName: name, id }, 'Timeline entry inserted');
       return reply.code(ro.statusCode).send(ro.getResponse());
     } catch (err) {
@@ -308,15 +451,38 @@ export default async function workspaceTimelineRoutes(fastify, _options) {
   });
 
   // DELETE /workspaces/:id/timelines/:name/entries/:docId
+  // Removes the primary interval. Membership cells from manual multi-position
+  // entries are interval-derived — pass the intervals they were inserted with
+  // via an optional body { entries: [{ start, end?, scale? }] } to clear them
+  // too (document-declared entries never need this; the row re-derives).
   fastify.delete('/:name/entries/:docId', {
     onRequest: [fastify.authenticate],
+    schema: {
+      body: {
+        type: ['object', 'null'],
+        properties: {
+          entries: {
+            type: 'array',
+            maxItems: 100,
+            items: {
+              type: 'object',
+              required: ['start'],
+              properties: { start: {}, end: {}, scale: { type: 'string' } },
+            },
+          },
+        },
+      },
+    },
   }, async (request, reply) => {
     try {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return reply;
 
       const { name, docId } = request.params;
-      await workspace.removeTimelineEntry(name, docId);
+      const intervals = Array.isArray(request.body?.entries)
+        ? request.body.entries.map(entryInterval)
+        : null;
+      await workspace.removeTimelineEntry(name, docId, intervals ? { intervals } : {});
       const ro = new ResponseObject().deleted({ timelineName: name, id: docId }, 'Timeline entry removed');
       return reply.code(ro.statusCode).send(ro.getResponse());
     } catch (err) {

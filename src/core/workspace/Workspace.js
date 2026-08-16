@@ -789,6 +789,12 @@ class Workspace extends EventEmitter {
                 : undefined;
             this.#db = new Db({
                 path: dbPath,
+                // Per-timeline membership quantum (finest tsm cell granularity)
+                // for multi-position timelines, persisted in workspace.json under
+                // `timelines.quantum`. synapsd's quantum is constructor-
+                // deterministic (nothing persisted engine-side), so the workspace
+                // config is the durable source and must be handed over at open.
+                timelineQuantum: this.timelineSettings.quantum,
                 // synapsd owns no model; if the inferd service is present, hand it
                 // the query embedder so dense/hybrid search works. Absent → FTS.
                 semantic: this.#inferd
@@ -1733,8 +1739,57 @@ class Workspace extends EventEmitter {
         return await this.#getActiveDb().timeline.insert(timelineName, parseDocumentId(id, 'Document ID'), interval);
     }
 
-    async removeTimelineEntry(timelineName, id) {
-        return await this.#getActiveDb().timeline.remove(timelineName, parseDocumentId(id, 'Document ID'));
+    // Additional (non-primary) positions for a document on one timeline — the
+    // multi-position membership plane. The primary interval stays insert()'s.
+    async insertTimelineEntries(timelineName, id, intervals) {
+        return await this.#getActiveDb().timeline.insertEntries(timelineName, parseDocumentId(id, 'Document ID'), intervals);
+    }
+
+    // Removes the document's PRIMARY interval (BSI planes). Membership cells
+    // from multi-position entries are derived from intervals, so clearing them
+    // needs the intervals they were inserted with — pass them via
+    // `options.intervals` (document-declared entries never need this: the row
+    // is re-derived on update/delete).
+    async removeTimelineEntry(timelineName, id, options = {}) {
+        const db = this.#getActiveDb();
+        const docId = parseDocumentId(id, 'Document ID');
+        if (Array.isArray(options.intervals) && options.intervals.length > 0) {
+            await db.timeline.removeEntries(timelineName, docId, options.intervals);
+        }
+        return await db.timeline.remove(timelineName, docId);
+    }
+
+    // ── Parametrized timeline settings ───────────────────────────────────────
+    // Quantum = finest membership granularity per timeline ('Gyr'…'day').
+    // Engine-side it is constructor-deterministic; the workspace persists the
+    // map (workspace.json `timelines.quantum`) and re-applies it at open.
+
+    get timelineSettings() {
+        const stored = this.#configStore.get('timelines') || {};
+        return { quantum: { ...(stored.quantum || {}) } };
+    }
+
+    getTimelineQuantum(name) {
+        return this.#getActiveDb().timeline.getQuantum(name);
+    }
+
+    setTimelineQuantum(name, scale) {
+        // The engine call validates and normalizes ('myr' → 'Myr', sub-day
+        // rejected) — let it throw BEFORE anything is persisted.
+        const normalized = this.#getActiveDb().timeline.setQuantum(name, scale);
+        const stored = this.#configStore.get('timelines') || {};
+        this.#configStore.set('timelines', {
+            ...stored,
+            quantum: { ...(stored.quantum || {}), [name]: normalized },
+        });
+        this.emit('timelines.quantum.changed', { workspaceId: this.id, name, quantum: normalized });
+        return normalized;
+    }
+
+    // Covering decomposition of a range at the timeline's quantum — what the
+    // membership plane would store/probe. Debug/UI surface (density planning).
+    decomposeTimelineRange(timelineName, interval) {
+        return this.#getActiveDb().timeline.decomposeRange(timelineName, interval);
     }
 
     async hasByChecksumString(checksumString, { context = null, directory = null, features = [], attributes } = {}) {

@@ -266,4 +266,31 @@ export default async function workspaceBackendRoutes(fastify) {
             return reply.code(response.statusCode).send(response.getResponse());
         } catch (error) { return fail(request, reply, error); }
     });
+
+    // Write-back: update the remote object behind a synced document (edit /
+    // close / reopen a GitHub issue, …). Body is a driver-shaped patch.
+    fastify.patch('/:driver/:address/documents/:docId', {
+        onRequest: [fastify.authenticate, requireWorkspaceWrite()],
+    }, async (request, reply) => {
+        try {
+            const result = await request.workspace.updateBackendDocument(
+                drv(request.params.driver), arg(request.params.address), request.params.docId,
+                request.body || {},
+            );
+            return ok(reply, result);
+        } catch (error) { return fail(request, reply, error); }
+    });
+
+    // Write-back: delete the remote object (GitHub: closes as not_planned —
+    // issues cannot be deleted via REST; caldav: real DELETE + local drop).
+    fastify.delete('/:driver/:address/documents/:docId', {
+        onRequest: [fastify.authenticate, requireWorkspaceWrite()],
+    }, async (request, reply) => {
+        try {
+            const result = await request.workspace.deleteBackendDocument(
+                drv(request.params.driver), arg(request.params.address), request.params.docId,
+            );
+            return ok(reply, result);
+        } catch (error) { return fail(request, reply, error); }
+    });
 }

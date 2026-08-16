@@ -41,6 +41,16 @@ const DRIVERS = {
 
 export const CONNECTOR_DRIVERS = Object.keys(DRIVERS);
 
+// Provenance-URL scheme per driver — how the facade finds a synced document's
+// remote identity among its locations.
+export const CONNECTOR_SCHEMES = {
+    github: 'gh',
+    slack: 'slack',
+    gcal: 'gcal',
+    caldav: 'caldav',
+    teams: 'msteams',
+};
+
 const DEFAULT_POLL_INTERVAL = 300_000;
 // Unauthenticated GitHub gets 60 req/h — poll slowly unless a token is set.
 const MIN_POLL_INTERVAL = 60_000;
@@ -279,22 +289,75 @@ export class WorkspaceConnectorIndex extends EventEmitter {
      * Canvas immediately with correct provenance + identity checksum.
      */
     async createDocument(driver, address, containerId, payload = {}) {
-        const name = `${driver}:${normalizeSegment(address)}`;
-        const entry = this.#backends.get(name);
-        if (!entry?.instance) throw new Error(`Connector not enabled: ${driver}/${address}`);
-        if (typeof entry.instance.createEvent !== 'function' || !entry.instance.canWrite) {
-            throw new Error(`Connector ${driver}/${address} is read-only`);
-        }
-        const containers = await entry.instance.listContainers();
-        const container = containers.find((c) => c.id === containerId || c.name === containerId);
-        if (!container) throw new Error(`Container "${containerId}" not found on ${driver}/${address}`);
+        const { entry, name } = this.#writableEntry(driver, address, 'createDocument');
+        const container = await this.#resolveContainer(entry, driver, address, containerId);
 
-        const created = await entry.instance.createEvent(container, payload);
+        const created = await entry.instance.createDocument(container, payload);
         let docId = null;
         if (created?.document) {
             docId = await this.#ingest(name, entry, container, created.document);
         }
         return { uid: created?.uid, href: created?.href, docId };
+    }
+
+    /**
+     * Write-back: update the remote object behind a synced document. The
+     * caller (Workspace facade) resolves the local doc and passes its
+     * provenance URL; the driver's returned mirror is re-ingested (same
+     * identity checksum → clean upsert).
+     */
+    async updateDocument(driver, address, { provenanceUrl, containerId = null }, patch = {}) {
+        const { entry, name } = this.#writableEntry(driver, address, 'updateDocument');
+        const container = await this.#resolveContainer(entry, driver, address, containerId, provenanceUrl);
+        const updated = await entry.instance.updateDocument(container, provenanceUrl, patch);
+        let docId = null;
+        if (updated?.document) {
+            docId = await this.#ingest(name, entry, container, updated.document);
+        }
+        return { docId, remote: updated?.remote ?? null };
+    }
+
+    /**
+     * Write-back: delete (or the driver's closest equivalent — GitHub issues
+     * cannot be deleted via REST, so the driver closes as not_planned) the
+     * remote object. Returns { removedRemote, document? } — a returned
+     * document means the remote still exists in a terminal state and gets
+     * re-ingested; removedRemote true with no document means the caller
+     * should drop the local mirror.
+     */
+    async deleteDocument(driver, address, { provenanceUrl, containerId = null }) {
+        const { entry, name } = this.#writableEntry(driver, address, 'deleteDocument');
+        const container = await this.#resolveContainer(entry, driver, address, containerId, provenanceUrl);
+        const result = await entry.instance.deleteDocument(container, provenanceUrl);
+        if (result?.document) {
+            await this.#ingest(name, entry, container, result.document);
+        }
+        return { removedRemote: result?.removedRemote === true, hasMirror: Boolean(result?.document) };
+    }
+
+    #writableEntry(driver, address, method) {
+        const name = `${driver}:${normalizeSegment(address)}`;
+        const entry = this.#backends.get(name);
+        if (!entry?.instance) throw new Error(`Connector not enabled: ${driver}/${address}`);
+        if (!entry.instance.canWrite) throw new Error(`Connector ${driver}/${address} is read-only`);
+        if (typeof entry.instance[method] !== 'function') {
+            throw new Error(`Connector ${driver}/${address} does not support ${method}`);
+        }
+        return { entry, name };
+    }
+
+    async #resolveContainer(entry, driver, address, containerId, provenanceUrl = null) {
+        // No explicit container: derive it from the provenance URL (drivers
+        // know their own scheme layout).
+        const id = containerId
+            ?? (provenanceUrl && typeof entry.instance.containerIdFromProvenance === 'function'
+                ? entry.instance.containerIdFromProvenance(provenanceUrl)
+                : null);
+        if (!id) throw new Error(`Cannot resolve container on ${driver}/${address}`);
+        const containers = await entry.instance.listContainers();
+        const container = containers.find((c) => c.id === id || c.name === id);
+        if (!container) throw new Error(`Container "${id}" not found on ${driver}/${address}`);
+        return container;
     }
 
     async resync(driver, address) {

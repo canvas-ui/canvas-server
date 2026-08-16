@@ -23,7 +23,7 @@ import { extract as extractBlobMetadata } from 'canvas-stored/src/extractors/ind
 import { pickGeo } from './lib/geo.js';
 import { WorkspaceStoredIndex } from './lib/WorkspaceStoredIndex.js';
 import { WorkspaceMailIndex } from './services/imap/index.js';
-import { WorkspaceConnectorIndex, isConnectorDriver } from './services/connectors/index.js';
+import { WorkspaceConnectorIndex, isConnectorDriver, CONNECTOR_SCHEMES } from './services/connectors/index.js';
 import { getServerDevice } from '../device/ServerDevice.js';
 
 // Constants
@@ -2956,6 +2956,41 @@ class Workspace extends EventEmitter {
     async createBackendContainerDocument(driver, address, container, payload = {}) {
         if (!isConnectorDriver(driver)) throw new Error(`Backend "${driver}/${address}" does not support document creation`);
         return (await this.#connectors()).createDocument(driver, address, container, payload);
+    }
+
+    // Resolve a synced document's provenance URL for its connector driver.
+    async #connectorDocRef(driver, docId) {
+        const doc = await this.get(Number(docId));
+        if (!doc) throw new Error(`Document ${docId} not found`);
+        const scheme = CONNECTOR_SCHEMES[driver];
+        const provenanceUrl = (doc.locations || [])
+            .map((l) => l?.url)
+            .find((url) => typeof url === 'string' && url.startsWith(`${scheme}://`));
+        if (!provenanceUrl) throw new Error(`Document ${docId} has no ${driver} provenance location`);
+        return { provenanceUrl };
+    }
+
+    // Write-back: update the remote object behind a synced connector document
+    // (e.g. edit/close a GitHub issue). The driver's mirror re-ingests, so the
+    // local doc reflects the remote's post-update state.
+    async updateBackendDocument(driver, address, docId, patch = {}) {
+        if (!isConnectorDriver(driver)) throw new Error(`Backend "${driver}/${address}" does not support document updates`);
+        const ref = await this.#connectorDocRef(driver, docId);
+        return (await this.#connectors()).updateDocument(driver, address, ref, patch);
+    }
+
+    // Write-back: delete the remote object (or its terminal equivalent —
+    // GitHub closes as not_planned). When the remote is truly gone and no
+    // mirror remains (caldav), the local document is dropped too.
+    async deleteBackendDocument(driver, address, docId) {
+        if (!isConnectorDriver(driver)) throw new Error(`Backend "${driver}/${address}" does not support document deletion`);
+        const ref = await this.#connectorDocRef(driver, docId);
+        const result = await (await this.#connectors()).deleteDocument(driver, address, ref);
+        if (result.removedRemote && !result.hasMirror) {
+            await this.deleteMany([Number(docId)], { emitEvent: true }).catch((err) =>
+                this.#logger.warn({ workspaceId: this.id, docId, error: err.message }, 'Remote deleted but local mirror removal failed'));
+        }
+        return result;
     }
 
     async syncBackendContainer(driver, address, name) {

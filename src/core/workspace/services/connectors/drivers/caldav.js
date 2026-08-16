@@ -207,9 +207,9 @@ export default class CaldavDriver {
     /**
      * Create a VEVENT in a calendar. `data` follows the Event schema shape
      * ({title, start, end?, description?, location?, recurrence?, allDay?}).
-     * Returns { uid, href, ics } — the caller ingests the mirror document.
+     * Returns { uid, href, document } — the caller ingests the mirror.
      */
-    async createEvent(container, data = {}) {
+    async createDocument(container, data = {}) {
         if (!this.canWrite) throw new Error(`caldav backend ${this.#address} is read-only`);
         if (!data.title || !data.start) throw new Error('event requires title and start');
 
@@ -231,6 +231,41 @@ export default class CaldavDriver {
             throw new Error(`caldav PUT failed (${res.status}): ${body.slice(0, 200)}`);
         }
         return { uid, href, document: this.#toDocument(container, href, ics) };
+    }
+
+    /**
+     * Delete the VEVENT behind a caldav:// provenance URL
+     * (caldav://<address>/<calendar>/<uid>): resolve the resource href from
+     * the uid and DELETE it. Returns { removedRemote: true } — no terminal
+     * mirror remains, the caller drops the local document.
+     */
+    /** caldav://<address>/<calendar>/<uid> → container id <calendar>. */
+    containerIdFromProvenance(provenanceUrl) {
+        const m = /^caldav:\/\/[^/]+\/([^/]+)\//.exec(String(provenanceUrl || ''));
+        return m ? m[1] : null;
+    }
+
+    async deleteDocument(container, provenanceUrl) {
+        if (!this.canWrite) throw new Error(`caldav backend ${this.#address} is read-only`);
+        const uid = String(provenanceUrl || '').split('/').filter(Boolean).pop();
+        if (!uid) throw new Error(`Cannot resolve event uid from ${provenanceUrl}`);
+
+        // Resource name and UID are independent — resolve the href by UID.
+        const { status, text } = await this.#dav('REPORT', container.href, {
+            depth: 1,
+            body: `<?xml version="1.0"?><c:calendar-query ${DAV_NS_HINT}><d:prop><d:getetag/></d:prop><c:filter><c:comp-filter name="VCALENDAR"><c:comp-filter name="VEVENT"><c:prop-filter name="UID"><c:text-match>${this.#xmlEscape(uid)}</c:text-match></c:prop-filter></c:comp-filter></c:comp-filter></c:filter></c:calendar-query>`,
+        });
+        if (status !== 207) throw new Error(`caldav UID lookup failed (${status})`);
+        const hit = this.#responses(text).find((r) => /\.ics$/i.test(r.href));
+        // Already gone remotely — report removed so the local mirror clears.
+        if (!hit) return { removedRemote: true };
+
+        const href = new URL(hit.href, this.#origin()).toString();
+        const res = await fetch(href, { method: 'DELETE', headers: this.#headers() });
+        if (!(res.status === 200 || res.status === 204 || res.status === 404)) {
+            throw new Error(`caldav DELETE failed (${res.status})`);
+        }
+        return { removedRemote: true };
     }
 
     #buildIcs(uid, data) {

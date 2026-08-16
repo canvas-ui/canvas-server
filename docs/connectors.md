@@ -18,6 +18,23 @@ under the anchor-first grammar:
 /teams/<address>/<team>/<channel>      msgs    → data/schema/message  (data.platform: 'teams')
 ```
 
+**Write-back (readOnly: false):** connectors are read-only mirrors by
+default; flipping `readOnly: false` enables managing the remote FROM Canvas
+through three routes on the backends facade — POST (create) / PATCH (update)
+/ DELETE on `/backends/:driver/:address/…/documents`. The remote operation
+always runs FIRST; the driver's returned mirror re-ingests through the
+normal pipeline (same identity checksum → upsert), so Canvas reflects the
+remote's post-operation state. Per driver:
+
+- **github** (needs a PAT with repo scope): create issue from a task payload;
+  update maps task status → issue state (completed → closed, cancelled →
+  closed/not_planned, else open) plus title/description/labels; **delete
+  closes as not_planned** — GitHub's REST API cannot delete issues, so the
+  local mirror stays as the archive (status: cancelled).
+- **caldav**: create VEVENT (`If-None-Match: *`, never overwrites); delete
+  resolves the resource by UID (resource name ≠ UID) and DELETEs it — the
+  local mirror is dropped too.
+
 The `caldav` driver talks to ANY RFC 4791 endpoint (GroupOffice, Nextcloud,
 Radicale, SOGo, …): config `url` (calendar home or one collection), basic
 auth, optional calendar list, and `readOnly` (default **true**). With
@@ -103,6 +120,6 @@ write-back).
 
 ## Not in v1 (deliberate)
 
-Write-back beyond caldav events (close issue, RSVP, post message), webhook/event push, GH issue
+Write-back for slack/gcal/teams (post message, RSVP), webhook/event push, GH issue
 comments as child docs, Slack threads expansion, remote-deletion propagation,
 WhatsApp (device-side concern — canvas-edge, not a server connector).

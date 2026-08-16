@@ -28,6 +28,10 @@ export default class GithubDriver {
         this.#logger = logger || console;
     }
 
+    // Write-back needs BOTH the flag and a token (the PAT's scopes decide
+    // what GitHub actually permits; errors surface per call).
+    get canWrite() { return this.#config.readOnly === false && Boolean(this.#config.token); }
+
     #headers() {
         const headers = {
             'Accept': 'application/vnd.github+json',
@@ -67,7 +71,7 @@ export default class GithubDriver {
     async listContainers() {
         // Containers are the configured repos — deliberately not auto-discovery
         // of every repo a token can see.
-        return this.#repos().map((repo) => ({ id: repo, name: repo }));
+        return this.#repos().map((repo) => ({ id: repo, name: repo, writable: this.canWrite }));
     }
 
     async fetchChanges(container, cursor) {
@@ -92,6 +96,80 @@ export default class GithubDriver {
         // only re-returns the cursor boundary is done.
         const done = issues.length < PER_PAGE || maxUpdated === cursor;
         return { documents, nextCursor: maxUpdated, done };
+    }
+
+    async #send(method, pathname, body) {
+        const res = await fetch(`${API}${pathname}`, {
+            method,
+            headers: { ...this.#headers(), 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        const json = await res.json().catch(() => null);
+        if (!res.ok) {
+            throw new Error(`GitHub ${res.status} ${method} ${pathname}: ${json?.message || ''}`);
+        }
+        return json;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Write-back (readOnly: false + PAT). Task-shaped payloads/patches.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /** Create an issue from a task payload ({title, description?, labels?}). */
+    async createDocument(container, payload = {}) {
+        if (!payload.title) throw new Error('issue requires a title');
+        const issue = await this.#send('POST', `/repos/${container.id}/issues`, {
+            title: payload.title,
+            body: payload.description || undefined,
+            labels: Array.isArray(payload.labels) && payload.labels.length ? payload.labels : undefined,
+        });
+        return { uid: issue.node_id, href: issue.html_url, document: this.#toDocument(container.id, issue) };
+    }
+
+    /** gh://owner/repo/issues/N → container id "owner/repo". */
+    containerIdFromProvenance(provenanceUrl) {
+        const m = /^gh:\/\/([^/]+\/[^/]+)\/issues\/\d+$/.exec(String(provenanceUrl || ''));
+        return m ? m[1] : null;
+    }
+
+    #issueNumber(provenanceUrl) {
+        const m = /^gh:\/\/[^/]+\/[^/]+\/issues\/(\d+)$/.exec(String(provenanceUrl || ''));
+        if (!m) throw new Error(`Not a GitHub issue provenance URL: ${provenanceUrl}`);
+        return Number(m[1]);
+    }
+
+    /**
+     * Update the issue behind a gh:// provenance URL. Task-status semantics:
+     * completed → closed, cancelled → closed/not_planned, pending or
+     * in-progress → (re)open. Title/description patch through.
+     */
+    async updateDocument(container, provenanceUrl, patch = {}) {
+        const number = this.#issueNumber(provenanceUrl);
+        const body = {};
+        if (patch.title !== undefined) body.title = patch.title;
+        if (patch.description !== undefined) body.body = patch.description;
+        if (patch.status !== undefined) {
+            if (patch.status === 'completed') { body.state = 'closed'; body.state_reason = 'completed'; }
+            else if (patch.status === 'cancelled') { body.state = 'closed'; body.state_reason = 'not_planned'; }
+            else { body.state = 'open'; }
+        }
+        if (Array.isArray(patch.labels)) body.labels = patch.labels;
+        if (!Object.keys(body).length) throw new Error('empty issue patch');
+        const issue = await this.#send('PATCH', `/repos/${container.id}/issues/${number}`, body);
+        return { remote: { number, state: issue.state }, document: this.#toDocument(container.id, issue) };
+    }
+
+    /**
+     * GitHub's REST API cannot delete issues — the closest terminal state is
+     * closed as not_planned, which is what this does. The re-ingested mirror
+     * keeps the local document (status: cancelled) as the archive.
+     */
+    async deleteDocument(container, provenanceUrl) {
+        const number = this.#issueNumber(provenanceUrl);
+        const issue = await this.#send('PATCH', `/repos/${container.id}/issues/${number}`, {
+            state: 'closed', state_reason: 'not_planned',
+        });
+        return { removedRemote: false, document: this.#toDocument(container.id, issue) };
     }
 
     #toDocument(repo, issue) {

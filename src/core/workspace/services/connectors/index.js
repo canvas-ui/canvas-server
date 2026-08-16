@@ -8,6 +8,7 @@ import { getBackendFileContext, normalizeSegment } from '../../../../utils/backe
 import GithubDriver from './drivers/github.js';
 import SlackDriver from './drivers/slack.js';
 import GcalDriver from './drivers/gcal.js';
+import CaldavDriver from './drivers/caldav.js';
 import TeamsDriver from './drivers/teams.js';
 
 /*
@@ -34,6 +35,7 @@ const DRIVERS = {
     github: GithubDriver,
     slack: SlackDriver,
     gcal: GcalDriver,
+    caldav: CaldavDriver,
     teams: TeamsDriver,
 };
 
@@ -190,7 +192,11 @@ export class WorkspaceConnectorIndex extends EventEmitter {
             lastSyncAt: status.lastSyncAt || config.lastSyncAt || null,
             lastError: status.lastError || null,
             treePath: `/${normalizeSegment(entry.driver)}/${normalizeSegment(entry.address)}`,
-            capabilities: { sync: true, test: true, containers: true, mutableContainers: false, deleteObject: false },
+            capabilities: {
+                sync: true, test: true, containers: true, mutableContainers: false, deleteObject: false,
+                // Write-back (create-in-container) — caldav with readOnly:false.
+                write: Boolean(entry.instance?.canWrite),
+            },
             // Secrets are redacted; the settings panel only needs to know they
             // are set.
             config: this.#redactConfig(config),
@@ -264,6 +270,31 @@ export class WorkspaceConnectorIndex extends EventEmitter {
         const entry = this.#backends.get(`${driver}:${normalizeSegment(address)}`);
         if (!entry?.instance) throw new Error(`Connector not enabled: ${driver}/${address}`);
         return entry.instance.listContainers();
+    }
+
+    /**
+     * Write-back: create a document in a connector container (v1: caldav
+     * events). The remote is created FIRST; its returned mirror document is
+     * then ingested through the normal pipeline, so the new event shows up in
+     * Canvas immediately with correct provenance + identity checksum.
+     */
+    async createDocument(driver, address, containerId, payload = {}) {
+        const name = `${driver}:${normalizeSegment(address)}`;
+        const entry = this.#backends.get(name);
+        if (!entry?.instance) throw new Error(`Connector not enabled: ${driver}/${address}`);
+        if (typeof entry.instance.createEvent !== 'function' || !entry.instance.canWrite) {
+            throw new Error(`Connector ${driver}/${address} is read-only`);
+        }
+        const containers = await entry.instance.listContainers();
+        const container = containers.find((c) => c.id === containerId || c.name === containerId);
+        if (!container) throw new Error(`Container "${containerId}" not found on ${driver}/${address}`);
+
+        const created = await entry.instance.createEvent(container, payload);
+        let docId = null;
+        if (created?.document) {
+            docId = await this.#ingest(name, entry, container, created.document);
+        }
+        return { uid: created?.uid, href: created?.href, docId };
     }
 
     async resync(driver, address) {

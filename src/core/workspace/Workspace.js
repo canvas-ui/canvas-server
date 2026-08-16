@@ -2951,6 +2951,13 @@ class Workspace extends EventEmitter {
         return (await this.getBackend('imap', address)).containers || [];
     }
 
+    // Write-back into a connector container (v1: caldav events on a backend
+    // configured readOnly:false). Remote-first, then mirrored locally.
+    async createBackendContainerDocument(driver, address, container, payload = {}) {
+        if (!isConnectorDriver(driver)) throw new Error(`Backend "${driver}/${address}" does not support document creation`);
+        return (await this.#connectors()).createDocument(driver, address, container, payload);
+    }
+
     async syncBackendContainer(driver, address, name) {
         if (driver !== 'imap') throw new Error(`Backend "${driver}/${address}" has no containers`);
         const container = (await this.listBackendContainers('imap', address)).find((c) => c.name === name);

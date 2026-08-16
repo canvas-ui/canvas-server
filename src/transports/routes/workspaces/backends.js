@@ -250,4 +250,20 @@ export default async function workspaceBackendRoutes(fastify) {
             return ok(reply, result);
         } catch (error) { return fail(request, reply, error); }
     });
+
+    // Write-back: create a document in a connector container (v1: a calendar
+    // event on a rw caldav backend). The remote object is created first, then
+    // mirrored into the index — see WorkspaceConnectorIndex.createDocument.
+    fastify.post('/:driver/:address/containers/:name/documents', {
+        onRequest: [fastify.authenticate, requireWorkspaceWrite()],
+    }, async (request, reply) => {
+        try {
+            const result = await request.workspace.createBackendContainerDocument(
+                drv(request.params.driver), arg(request.params.address), arg(request.params.name),
+                request.body || {},
+            );
+            const response = new ResponseObject().created(result, 'Document created');
+            return reply.code(response.statusCode).send(response.getResponse());
+        } catch (error) { return fail(request, reply, error); }
+    });
 }

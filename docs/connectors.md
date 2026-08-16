@@ -14,8 +14,21 @@ under the anchor-first grammar:
 /github/<address>/<owner>/<repo>       issues  → data/schema/task
 /slack/<address>/<channel>             msgs    → data/schema/message  (data.platform: 'slack')
 /gcal/<address>/<calendar>             events  → data/schema/event    (data.type: 'calendar')
+/caldav/<address>/<calendar>           events  → data/schema/event    (data.type: 'calendar')
 /teams/<address>/<team>/<channel>      msgs    → data/schema/message  (data.platform: 'teams')
 ```
+
+The `caldav` driver talks to ANY RFC 4791 endpoint (GroupOffice, Nextcloud,
+Radicale, SOGo, …): config `url` (calendar home or one collection), basic
+auth, optional calendar list, and `readOnly` (default **true**). With
+`readOnly: false` the backend supports **write-back**: `POST
+/backends/caldav/<addr>/containers/<calendar>/documents` creates the VEVENT
+remotely first (`If-None-Match: *`, never overwrites), then mirrors it into
+the index — so an event-creation UI can offer "which calendar?" from the
+containers listing (each carries `writable`). Sync uses RFC 6578
+sync-collection tokens (fallback: windowed calendar-query; upsert identity
+makes re-runs harmless). Recurring series stay as RRULE masters — synapsd
+≥3.4 expands them into multi-position `events` timelines.
 
 `<address>` is a user-chosen account label (defaults: github owner, slack team,
 google account email, MS tenant) — it names the auth scope, like an imap
@@ -51,6 +64,7 @@ index never advances the cursor (imap contract).
 | github | max `updated_at` (ISO)       | `since` epoch → full history  |
 | slack  | latest message `ts`          | `initialSyncDays` window      |
 | gcal   | `nextSyncToken` (410 → full) | `timeMin = now - initialSyncDays` |
+| caldav | DAV sync-token (reject → full) | `initialSyncDays` calendar-query |
 | teams  | max `lastModifiedDateTime`   | `initialSyncDays` window      |
 
 All drivers use plain `fetch` — no new SDK dependencies.
@@ -89,6 +103,6 @@ write-back).
 
 ## Not in v1 (deliberate)
 
-Write-back verbs (close issue, RSVP, post message), webhook/event push, GH issue
+Write-back beyond caldav events (close issue, RSVP, post message), webhook/event push, GH issue
 comments as child docs, Slack threads expansion, remote-deletion propagation,
 WhatsApp (device-side concern — canvas-edge, not a server connector).

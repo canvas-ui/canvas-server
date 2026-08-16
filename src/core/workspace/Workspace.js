@@ -23,6 +23,7 @@ import { extract as extractBlobMetadata } from 'canvas-stored/src/extractors/ind
 import { pickGeo } from './lib/geo.js';
 import { WorkspaceStoredIndex } from './lib/WorkspaceStoredIndex.js';
 import { WorkspaceMailIndex } from './services/imap/index.js';
+import { WorkspaceConnectorIndex, isConnectorDriver } from './services/connectors/index.js';
 import { getServerDevice } from '../device/ServerDevice.js';
 
 // Constants
@@ -81,6 +82,8 @@ class Workspace extends EventEmitter {
     #storedIndex = null;
     #mailIndex = null;
     #mailRuntimeBinding = null;
+    #connectorIndex = null;
+    #connectorRuntimeBinding = null;
     #tokens = null;
     #status = WORKSPACE_STATUS_CODES.INACTIVE;
     #startPromise = null;
@@ -2639,7 +2642,11 @@ class Workspace extends EventEmitter {
     }
 
     async listBackends() {
-        return [...this.#listStorageBackends(), ...(await this.#listImapBackends())];
+        return [
+            ...this.#listStorageBackends(),
+            ...(await this.#listImapBackends()),
+            ...(await this.#connectorsReadonly().listStoredBackends()),
+        ];
     }
 
     /**
@@ -2668,6 +2675,7 @@ class Workspace extends EventEmitter {
 
     async addBackend(driver, config = {}) {
         if (driver === 'imap') return this.saveImapMailbox(config);
+        if (isConnectorDriver(driver)) return (await this.#connectors()).saveBackend(driver, config);
         if (driver === 'fs') driver = 'file'; // UX alias for the local-folder driver
         if (driver === 'file') return this.#addFileBackend(config);
         const name = config.name || config.address;
@@ -2780,6 +2788,7 @@ class Workspace extends EventEmitter {
     }
 
     async updateBackend(driver, address, patch = {}) {
+        if (isConnectorDriver(driver)) return (await this.#connectors()).saveBackend(driver, { ...patch, address });
         if (driver === 'imap') {
             // Account-level settings/creds are shared across the account's folder
             // mailboxes, so apply the patch to each.
@@ -2807,6 +2816,7 @@ class Workspace extends EventEmitter {
     }
 
     async removeBackend(driver, address) {
+        if (isConnectorDriver(driver)) return (await this.#connectors()).removeBackend(driver, address);
         if (driver === 'imap') {
             const targets = (await this.listImapMailboxes())
                 .filter((m) => normalizeSegment(m.account || m.user || '') === normalizeSegment(address));
@@ -2839,6 +2849,7 @@ class Workspace extends EventEmitter {
      */
     async syncBackend(driver, address, { background = true } = {}) {
         if (driver === 'imap') return (await this.#mail()).resyncAccount(address);
+        if (isConnectorDriver(driver)) return (await this.#connectors()).resync(driver, address);
         // Storage: address is the backend name / config key verbatim
         // (workspace:home, or a user mount's case-preserving slug).
         return this.#resyncDataBackend(address, { background });
@@ -2854,6 +2865,7 @@ class Workspace extends EventEmitter {
     }
 
     async testBackend(driver, address) {
+        if (isConnectorDriver(driver)) return (await this.#connectors()).testBackend(driver, address);
         if (driver !== 'imap') throw new Error(`Backend "${driver}/${address}" does not support test`);
         const target = (await this.listImapMailboxes())
             .find((m) => normalizeSegment(m.account || m.user || '') === normalizeSegment(address));
@@ -2868,6 +2880,11 @@ class Workspace extends EventEmitter {
     }
 
     async listBackendContainers(driver, address, { available = false } = {}) {
+        if (isConnectorDriver(driver)) {
+            // `available` and subscribed coincide for connectors in v1: the
+            // driver lists what its config exposes (repos/channels/calendars).
+            return (await this.#connectors()).listContainers(driver, address);
+        }
         if (driver !== 'imap') throw new Error(`Backend "${driver}/${address}" has no containers`);
         if (available) {
             // Folders available on the server (for subscribing more), from the
@@ -3058,9 +3075,11 @@ class Workspace extends EventEmitter {
         this.#storedIndex = this.#buildStoredIndex();
         await this.#storedIndex.start();
         await this.#startMailIndex();
+        await this.#startConnectorIndex();
     }
 
     async #stopStoredIndex() {
+        await this.#stopConnectorIndex();
         await this.#stopMailIndex();
         if (!this.#storedIndex) return;
         await this.#storedIndex.stop();
@@ -3114,6 +3133,53 @@ class Workspace extends EventEmitter {
     async #mail() {
         if (!this.#mailIndex?.isRunning) await this.#startStoredIndex();
         return this.#mailIndex;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Connectors (github / slack / gcal / teams) — delegated to the
+    // per-workspace connector service (WorkspaceConnectorIndex). Config in
+    // config/stored.json alongside the storage + imap backends; synced docs
+    // land only in the backends tree. See docs/connectors.md.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #buildConnectorIndex() {
+        return new WorkspaceConnectorIndex({
+            rootPath: this.#rootPath,
+            workspaceId: this.id,
+            logger: this.#logger,
+            put: (record, options = {}) => this.put(record, { ...options, allowBackendsWrite: true }),
+            getBackendsTreeSelector: this.getBackendsTreeSelector.bind(this),
+            insertBackendPath: (treePath) => this.getBackendsTree().insertPath(treePath, { ignoreLocks: true }),
+            lockBackendNode: (path, holder) => this.lockBackendTreeNode(path, holder),
+            unlockBackendNode: (path, holder) => this.unlockBackendTreeNode(path, holder),
+        });
+    }
+
+    async #startConnectorIndex() {
+        if (this.#connectorIndex?.isRunning) return;
+        this.#connectorIndex = this.#buildConnectorIndex();
+        this.#connectorRuntimeBinding = this.#createRuntimeListener(this.#connectorIndex, 'connectors');
+        await this.#connectorIndex.start();
+    }
+
+    async #stopConnectorIndex() {
+        if (this.#connectorRuntimeBinding) {
+            this.#connectorRuntimeBinding.emitter.off('**', this.#connectorRuntimeBinding.listener);
+            this.#connectorRuntimeBinding = null;
+        }
+        if (!this.#connectorIndex) return;
+        await this.#connectorIndex.stop();
+        this.#connectorIndex = null;
+    }
+
+    async #connectors() {
+        if (!this.#connectorIndex?.isRunning) await this.#startStoredIndex();
+        return this.#connectorIndex;
+    }
+
+    // Read-only view that does NOT boot sources (safe for status polls).
+    #connectorsReadonly() {
+        return this.#connectorIndex?.isRunning ? this.#connectorIndex : this.#buildConnectorIndex();
     }
 
     // Read-only view that does NOT boot sources (safe for status polls).

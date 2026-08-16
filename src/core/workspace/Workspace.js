@@ -3115,7 +3115,7 @@ class Workspace extends EventEmitter {
     }
 
     /**
-     * On-demand cached thumbnail for an image document (see
+     * On-demand cached thumbnail for an image or PDF document (see
      * WorkspaceStoredIndex.getThumbnail). Returns {buffer, mime} or null.
      */
     async getDocumentThumbnail(doc, size = 256) {

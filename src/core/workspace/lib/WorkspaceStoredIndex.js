@@ -1149,15 +1149,17 @@ export class WorkspaceStoredIndex {
      * keyed `thumb:<checksum>:<size>` — derived artifacts never touch the main
      * index and the cache is purgeable at any time (purgeThumbnails on
      * delete/destroy, clearThumbnailCache for a full wipe).
-     * @param {object} doc image File document (metadata.contentType image/*)
+     * @param {object} doc File document (metadata.contentType image/* or
+     *   application/pdf — PDFs thumbnail as a raster of page 1)
      * @param {number} [size] longest-edge px, clamped to THUMBNAIL_SIZES
-     * @returns {Promise<{buffer: Buffer, mime: string}|null>} null when not an
-     *   image / no checksum / no reachable bytes
+     * @returns {Promise<{buffer: Buffer, mime: string}|null>} null when not
+     *   thumbnailable / no checksum / no reachable bytes
      */
     async getThumbnail(doc, size = 256) {
         if (!this.#stored) throw new Error('WorkspaceStoredIndex is not running');
         const contentType = String(doc?.metadata?.contentType || '');
-        if (!contentType.startsWith('image/')) return null;
+        const isPdf = contentType === 'application/pdf';
+        if (!contentType.startsWith('image/') && !isPdf) return null;
         const checksum = Array.isArray(doc?.checksumArray) ? doc.checksumArray[0] : null;
         if (!checksum) return null;
 
@@ -1182,8 +1184,11 @@ export class WorkspaceStoredIndex {
         }
         if (!original) return null;
 
+        const source = isPdf ? await this.#renderPdfFirstPage(original, edge) : original;
+        if (!source) return null;
+
         const { default: sharp } = await import('sharp');
-        const buffer = await sharp(original)
+        const buffer = await sharp(source)
             .rotate() // honor EXIF orientation
             .resize(edge, edge, { fit: 'inside', withoutEnlargement: true })
             .webp({ quality: 80 })
@@ -1191,6 +1196,68 @@ export class WorkspaceStoredIndex {
         await cache.put(cacheKey, buffer, { source: checksum, size: edge }).catch((err) =>
             this.#logger.warn({ workspaceId: this.#workspaceId, error: err.message }, 'Thumbnail cache write failed'));
         return { buffer, mime: 'image/webp' };
+    }
+
+    // Bounds for PDF first-page rasterization — a hostile or degenerate PDF
+    // must not stall the request path or balloon memory.
+    static PDF_THUMBNAIL_MAX_BYTES = 50 * 1024 * 1024;
+    static PDF_THUMBNAIL_TIMEOUT_MS = 20_000;
+
+    /**
+     * Rasterize page 1 of a PDF to a PNG buffer using pdfjs-dist +
+     * @napi-rs/canvas — a pure-JS parse (no native PDF library), with
+     * embedded-script eval disabled.
+     * @param {Buffer} bytes the whole PDF
+     * @param {number} edge longest-edge px of the target render
+     * @returns {Promise<Buffer|null>} null when oversized, unparsable, or the
+     *   render exceeds the timeout
+     */
+    async #renderPdfFirstPage(bytes, edge) {
+        if (!Buffer.isBuffer(bytes) || bytes.length === 0
+            || bytes.length > WorkspaceStoredIndex.PDF_THUMBNAIL_MAX_BYTES) return null;
+        let timer;
+        const timeout = new Promise((resolve) => {
+            timer = setTimeout(() => resolve(null), WorkspaceStoredIndex.PDF_THUMBNAIL_TIMEOUT_MS);
+            timer.unref?.();
+        });
+        const render = (async () => {
+            const { getDocument } = await import('pdfjs-dist/legacy/build/pdf.mjs');
+            const { createCanvas } = await import('@napi-rs/canvas');
+            const { createRequire } = await import('node:module');
+            // Built-in Type1 fonts (Helvetica etc.) ship with pdfjs — without
+            // this, text set in a standard font renders blank.
+            const standardFontDataUrl = path.join(
+                path.dirname(createRequire(import.meta.url).resolve('pdfjs-dist/package.json')),
+                'standard_fonts',
+            ) + path.sep;
+            const task = getDocument({
+                data: new Uint8Array(bytes),
+                isEvalSupported: false,
+                useSystemFonts: false,
+                standardFontDataUrl,
+            });
+            try {
+                const pdf = await task.promise;
+                const page = await pdf.getPage(1);
+                const base = page.getViewport({ scale: 1 });
+                const scale = edge / Math.max(base.width, base.height, 1);
+                const viewport = page.getViewport({ scale });
+                const canvas = createCanvas(Math.max(1, Math.ceil(viewport.width)), Math.max(1, Math.ceil(viewport.height)));
+                const ctx = canvas.getContext('2d');
+                // PDFs have no intrinsic background — paint the page white.
+                ctx.fillStyle = '#ffffff';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                await page.render({ canvasContext: ctx, viewport }).promise;
+                return canvas.toBuffer('image/png');
+            } finally {
+                task.destroy().catch(() => {});
+            }
+        })().catch((err) => {
+            this.#logger.warn({ workspaceId: this.#workspaceId, error: err.message }, 'PDF thumbnail render failed');
+            return null;
+        });
+        try { return await Promise.race([render, timeout]); }
+        finally { clearTimeout(timer); }
     }
 
     /**

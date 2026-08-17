@@ -143,7 +143,117 @@ export class WorkspaceStoredIndex {
             ...status,
             running: !!backend,
             watching: backend?.watching || false,
+            // Network mount (NFS/CIFS/sshfs/…) detected from the kernel mount
+            // table by the file driver, or declared in config. The UI badges it
+            // and clients can warn before triggering an expensive full resync.
+            remote: backend?.remote === true,
+            transport: backend?.transport || null,
         };
+    }
+
+    /**
+     * Shared preflight for copy/move. Both ends must be LIVE backends, not
+     * transiently registered ones: dropping a transient registration afterwards
+     * prunes that backend's locations from stored's index, which would undo the
+     * transfer we just made. "Enable the backend first" is the honest answer.
+     */
+    #transferEndpoints(url, target) {
+        if (!this.#stored) throw new Error('Stored index is not running');
+        const parsed = parseLocationUrl(url);
+        if (!parsed || parsed.scheme !== 'stored') throw new Error(`Not a stored:// URL: ${url}`);
+        if (!target) throw new Error('A target backend is required');
+        if (!this.#stored.getBackend(parsed.backend)) {
+            throw new Error(`Source backend "${parsed.backend}" is not enabled`);
+        }
+        if (!this.#stored.getBackend(target)) {
+            throw new Error(`Target backend "${target}" is not enabled`);
+        }
+        if (this.#dataBackends[target]?.readOnly === true) {
+            throw new Error(`Target backend "${target}" is read-only`);
+        }
+        return `${parsed.backend}:${parsed.key}`;
+    }
+
+    /**
+     * Map a document location back to the (backend, key) pair that addresses its
+     * bytes. Both address forms resolve: `stored://<backend>/<key>` directly,
+     * and a device-scoped `file://<deviceId>/<abs>` through its owning mount
+     * (external mounts carry ONLY the file:// form, so without this a NAS mount
+     * would have nothing to transfer from). Null for anything not ours —
+     * imap://, https://, foreign devices.
+     */
+    #locationEndpoint(location) {
+        const parsed = parseLocationUrl(location?.url);
+        if (!parsed) return null;
+        if (parsed.scheme === 'stored') return { backend: parsed.backend, key: parsed.key };
+        if (parsed.scheme === 'file' && location?.metadata?.backend) {
+            const key = this.#backendLocationKey(location.metadata.backend, location);
+            return key ? { backend: location.metadata.backend, key } : null;
+        }
+        return null;
+    }
+
+    /**
+     * Every location of this document that addresses bytes we can transfer,
+     * as (backend, key) pairs. Used by rules to pick a source and to build a
+     * destination key from the current filename.
+     */
+    locationEndpoints(doc) {
+        return (doc?.locations || []).map((l) => this.#locationEndpoint(l)).filter(Boolean);
+    }
+
+    /**
+     * Copy or move one document's bytes onto `to`. The source is whichever of
+     * its locations is not already on the target (or `from`, when the caller
+     * has already picked one); being already there is reported rather than
+     * silently succeeding, so a batch result says what actually happened per
+     * document.
+     *
+     * `key` renames on arrival — a rule filing photos as YYYY/MM/…jpg passes
+     * one — and `onConflict` decides what happens when that key is taken.
+     */
+    async transferDocument(doc, { to, mode = 'copy', key = undefined, onConflict = undefined, from = null } = {}) {
+        const endpoints = this.locationEndpoints(doc);
+        if (endpoints.length === 0) throw new Error('Document has no transferable byte location');
+        const source = from
+            ? endpoints.find((e) => e.backend === from.backend && e.key === from.key)
+            : endpoints.find((e) => e.backend !== to);
+        if (!source) throw new Error(from ? `No location on "${from.backend}"` : `Already on "${to}"`);
+
+        const url = `stored://${source.backend}/${source.key}`;
+        const options = { to, key, onConflict };
+        return mode === 'move' ? this.moveObject(url, options) : this.copyObject(url, options);
+    }
+
+    /** This document's location URLs that live on any of `backends`. */
+    locationUrlsOnBackends(doc, backends = []) {
+        const wanted = new Set(backends);
+        return (doc?.locations || [])
+            .filter((l) => { const e = this.#locationEndpoint(l); return e && wanted.has(e.backend); })
+            .map((l) => l.url);
+    }
+
+    /**
+     * Copy the object behind a `stored://` URL onto another backend. Content
+     * identity is preserved: the document gains a location, and the resulting
+     * `object:location:add` patches it in place.
+     */
+    async copyObject(url, { to, key, onConflict } = {}) {
+        const idOrKey = this.#transferEndpoints(url, to);
+        return this.#stored.copy(idOrKey, { to, key, onConflict, from: url });
+    }
+
+    /**
+     * Move the object behind a `stored://` URL to another backend. The source is
+     * only released once the destination write is durable; a move onto a
+     * `type:'remote'` backend returns `state:'pending'` and completes on sync.
+     */
+    async moveObject(url, { to, key, onConflict } = {}) {
+        const idOrKey = this.#transferEndpoints(url, to);
+        if (this.#dataBackends[parseLocationUrl(url).backend]?.readOnly === true) {
+            throw new Error('Source backend is read-only — copy instead of move');
+        }
+        return this.#stored.move(idOrKey, { to, key, onConflict, from: url });
     }
 
     async start() {
@@ -694,6 +804,13 @@ export class WorkspaceStoredIndex {
             'object:add': dispatch,
             'object:change': dispatch,
             'object:unlink': (payload) => this.#unlinkDocument(payload),
+            // Location mutations that preserve content identity (copy/move
+            // between backends, cache eviction). These MUST be patched in
+            // place: routing them through unlink+add would drop the document's
+            // curated tree placements and rebuild it under a new id.
+            'object:move': (payload) => this.#applyLocationChange(payload),
+            'object:location:add': (payload) => this.#applyLocationChange(payload),
+            'object:location:remove': (payload) => this.#applyLocationChange(payload),
         };
 
         this.#listeners = Object.entries(eventMap).map(([eventName, handler]) => {
@@ -946,6 +1063,47 @@ export class WorkspaceStoredIndex {
             }
         }
         return docId;
+    }
+
+    /**
+     * Apply a location-set change (`object:move`, `object:location:add|remove`)
+     * to the document behind the content. Identity is unchanged by definition —
+     * the same bytes simply live somewhere else — so the document keeps its id,
+     * its checksums and every curated placement it has been given.
+     *
+     * The stored layer suppresses its own watcher echoes for the keys it writes
+     * and deletes during a transfer, so a move never also arrives here as an
+     * unlink of the source path.
+     *
+     * `#upsertDocument` already rebuilds locations from stored's canonical list
+     * and prunes stale backends-tree paths, which is exactly the required work.
+     * It bails out when the target has no mirrored tree path (the managed blob
+     * store is opaque by design) — in that case the locations are patched
+     * directly, because a document must never keep pointing at a location the
+     * object no longer has.
+     */
+    async #applyLocationChange(payload = {}) {
+        const docId = await this.#upsertDocument(payload);
+        if (docId) return docId;
+        return this.#patchDocumentLocations(payload);
+    }
+
+    async #patchDocumentLocations(payload = {}) {
+        const checksumArray = this.#buildChecksumArray(payload.checksums);
+        if (checksumArray.length === 0) return null;
+
+        const db = this.#getDb();
+        const doc = await db.getByChecksumString(checksumArray[0]).catch(() => null);
+        if (!doc?.id) return null;
+
+        const locations = this.#buildDocumentLocations(Array.isArray(payload.locations) ? payload.locations : []);
+        if (locations.length === 0) {
+            // Nothing left to point at — hand over to the orphan path so the
+            // no-location marker and retention semantics stay in one place.
+            return this.#reconcileRemovedLocations(doc, (doc.locations || []).map((l) => l.url));
+        }
+        await this.#put({ id: doc.id, locations }, { context: null });
+        return doc.id;
     }
 
     async #unlinkDocument(storedFile = {}) {

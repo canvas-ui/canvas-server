@@ -1016,6 +1016,74 @@ export default async function workspaceDocumentRoutes(fastify, _options) {
     }
   });
 
+  // ── Backend transfer (copy / move / delete-from-backend) ────────────────
+  //
+  // Batch counterpart of the per-object backends route: addressed by document
+  // id, because that is what a UI selection holds. Each document's own source
+  // location is resolved server-side, so external mounts (device file:// URLs)
+  // work without the client knowing the address grammar.
+  //
+  // Body: { documentIds: number[], to: string[], mode?: 'copy'|'move'|'delete',
+  //         keepDocument?: boolean }
+  //   copy   → each document gains a location on every target backend
+  //   move   → exactly one target; source released only once the copy is durable
+  //   delete → bytes removed from the target backends only (other copies stay)
+  //
+  // Per-document outcomes: one document already living on the target must not
+  // fail the rest of the batch, so the response carries successful[] + failed[].
+  fastify.post('/transfer', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      params: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } },
+      body: {
+        type: 'object',
+        required: ['documentIds', 'to'],
+        properties: {
+          documentIds: {
+            type: 'array',
+            items: { anyOf: [{ type: 'string' }, { type: 'number' }] },
+            minItems: 1,
+          },
+          to: { type: 'array', items: { type: 'string' }, minItems: 1 },
+          mode: { type: 'string', enum: ['copy', 'move', 'delete'], default: 'copy' },
+          keepDocument: { type: 'boolean', default: false },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    try {
+      const workspace = await getWorkspaceInstance(request, reply);
+      if (!workspace) return reply;
+
+      const { documentIds: rawIds, to, mode = 'copy', keepDocument = false } = request.body;
+      let documentIds;
+      try {
+        documentIds = parseDocumentIdArray(rawIds, 'Document ID array');
+      } catch (e) {
+        const r = new ResponseObject().badRequest(e.message);
+        return reply.code(r.statusCode).send(r.getResponse());
+      }
+
+      let results;
+      try {
+        results = await workspace.transferDocumentsToBackends(documentIds, { to, mode, keepDocument });
+      } catch (e) {
+        // Request-level refusals (unknown/read-only backend, multi-target move)
+        // are the caller's mistake, not a server fault.
+        const r = new ResponseObject().badRequest(e.message);
+        return reply.code(r.statusCode).send(r.getResponse());
+      }
+
+      const verb = mode === 'delete' ? 'Deleted from backend' : `${mode === 'move' ? 'Moved' : 'Copied'} to backend`;
+      const r = new ResponseObject().success(results, `${verb}: ${results.successful.length} document(s)`);
+      return reply.code(r.statusCode).send(r.getResponse());
+    } catch (error) {
+      fastify.log.error(error);
+      const r = new ResponseObject().serverError('Failed to transfer documents');
+      return reply.code(r.statusCode).send(r.getResponse());
+    }
+  });
+
   // ── Destroy documents (storage-level wipe via Stored) ───────────────────
   //
   // Removes blobs through Stored.deleteByUrl for every targeted location

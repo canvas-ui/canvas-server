@@ -28,6 +28,11 @@ import { WORKSPACE_DIRECTORIES } from '../../lib/constants.js';
  * `when` keys AND together; a key's value may be an array (any-of / OR).
  * Every matching rule fires — there is no first-match-wins, which keeps the
  * format trivially composable for a UI rule builder.
+ *
+ * Actions: link, unlink, tag, store, delete, destroy, agent, notify, script,
+ * emit. `store` is the storage-layer one — it moves/copies a document's BYTES
+ * between backends and can rename them by template (see the action below);
+ * everything else operates on the index.
  */
 
 // ── Loading ──────────────────────────────────────────────────────────────────
@@ -311,6 +316,84 @@ async function writeOutputFile(text, fileSpec, { context, scope, workspace, logg
     }
 }
 
+// ── Storage-key templating ───────────────────────────────────────────────────
+
+// Extension for a mime type when the source key has none — uploads land in the
+// blob store under a content-hash key, so `image/jpeg` is often all we have.
+const MIME_EXTENSIONS = {
+    'image/jpeg': '.jpg', 'image/png': '.png', 'image/gif': '.gif', 'image/webp': '.webp',
+    'image/heic': '.heic', 'image/heif': '.heif', 'image/avif': '.avif', 'image/tiff': '.tiff',
+    'image/svg+xml': '.svg', 'image/bmp': '.bmp',
+    'video/mp4': '.mp4', 'video/quicktime': '.mov', 'video/webm': '.webm', 'video/x-matroska': '.mkv',
+    'audio/mpeg': '.mp3', 'audio/mp4': '.m4a', 'audio/flac': '.flac', 'audio/ogg': '.ogg', 'audio/wav': '.wav',
+    'application/pdf': '.pdf', 'text/plain': '.txt', 'text/markdown': '.md',
+};
+
+/**
+ * The moment a document's content is *about*, best-effort, for date-templated
+ * storage keys. EXIF capture time first — a photo imported years later belongs
+ * under the year it was taken, not the year it was uploaded.
+ *
+ * EXIF timestamps carry no timezone: exifr parses them as server-local wall
+ * clock, and the formatter below reads them back with local getters, so the
+ * filename shows the time the camera showed. Falls back through the content
+ * timeline, document created/updated stamps, then now.
+ */
+function documentDate(doc) {
+    const candidates = [
+        doc?.metadata?.exif?.capturedAt,
+        (doc?.timelines || []).find((t) => (t?.timeline || t?.name) === 'content')?.start,
+        doc?.createdAt,
+        doc?.created,
+        doc?.metadata?.mtime,
+    ];
+    for (const candidate of candidates) {
+        if (!candidate) { continue; }
+        const date = candidate instanceof Date ? candidate : new Date(candidate);
+        if (!Number.isNaN(date.getTime())) { return date; }
+    }
+    return new Date();
+}
+
+function filenameOf(doc, sourceKey) {
+    const own = String(doc?.metadata?.filename || doc?.data?.filename || '').trim();
+    if (own) { return own; }
+    return path.posix.basename(String(sourceKey || '').split(path.sep).join('/'));
+}
+
+/**
+ * Expand `{{YYYY}}`-style tokens in a storage key template.
+ *
+ * Date: YYYY, YY, MM, DD, HH, mm, ss. File: ext (with the dot, lowercased),
+ * basename (filename without extension), filename. Everything else is left for
+ * the generic {{doc.*}} interpolation, which runs first.
+ */
+export function expandKeyTemplate(template, { doc, sourceKey } = {}) {
+    const date = documentDate(doc);
+    const pad = (n, width = 2) => String(n).padStart(width, '0');
+    const filename = filenameOf(doc, sourceKey);
+    const ext = (path.posix.extname(filename)
+        || MIME_EXTENSIONS[String(doc?.metadata?.contentType || '').toLowerCase()]
+        || '').toLowerCase();
+
+    const tokens = {
+        YYYY: String(date.getFullYear()),
+        YY: pad(date.getFullYear() % 100),
+        MM: pad(date.getMonth() + 1),
+        DD: pad(date.getDate()),
+        HH: pad(date.getHours()),
+        mm: pad(date.getMinutes()),
+        ss: pad(date.getSeconds()),
+        ext,
+        basename: ext && filename.toLowerCase().endsWith(ext) ? filename.slice(0, -ext.length) : filename,
+        filename,
+    };
+
+    return String(template).replace(/\{\{\s*([A-Za-z]+)\s*\}\}/g, (match, token) => (
+        Object.prototype.hasOwnProperty.call(tokens, token) ? tokens[token] : match
+    ));
+}
+
 const ACTIONS = {
     // Link the document to tree paths, optionally with feature tags. Paths
     // default to the context tree; 'dir:/path' targets the directory tree.
@@ -330,6 +413,63 @@ const ACTIONS = {
             });
             logger.debug(`rule link: ${doc.id} -> ${target.tree}:${target.path}`);
         }
+    },
+
+    /**
+     * Move (or copy) the document's BYTES to a storage backend, optionally
+     * renaming them by template. The index entry, its id and every tree
+     * placement stay exactly as they are — only `locations[]` changes.
+     *
+     * The canonical use: uploads land in the managed blob store
+     * (`workspace:data`, content-hash keys, opaque by design); a rule watching
+     * a curated path files them onto a real filesystem under a real name.
+     *
+     *   { "action": "store", "to": "workspace:home", "from": "workspace:data",
+     *     "key": "Fotky/{{YYYY}}/{{MM}}/{{YYYY}}{{MM}}{{DD}}_{{HH}}{{mm}}{{ss}}{{ext}}" }
+     *
+     * `from` (backend name or array) is the guard that makes this idempotent:
+     * once the bytes have moved, no source matches and re-runs are no-ops, so
+     * the rule can safely fire on both document.inserted and document.linked.
+     */
+    async store(action, { workspace, doc, scope, logger }) {
+        if (!doc?.id) { return; }
+        const to = String(action.to || '').trim();
+        if (!to) { logger.warn('rule store: "to" (target backend) is required'); return; }
+        const mode = action.mode === 'copy' ? 'copy' : 'move';
+
+        const endpoints = await workspace.documentByteEndpoints(doc);
+        if (!endpoints.length) {
+            logger.debug(`rule store: ${doc.id} has no transferable byte location, skipping`);
+            return;
+        }
+
+        const sources = asArray(action.from || []).filter(Boolean).map(String);
+        const source = sources.length
+            ? endpoints.find((e) => sources.includes(e.backend))
+            : endpoints.find((e) => e.backend !== to);
+        if (!source) {
+            // Already where the rule wants it (or never on the source backend).
+            logger.debug(`rule store: ${doc.id} has nothing on ${sources.join(', ') || `a backend other than ${to}`}, skipping`);
+            return;
+        }
+
+        // Key tokens expand BEFORE the generic {{doc.*}} interpolation: both use
+        // {{…}}, and interpolate() resolves any unknown word to an empty string
+        // — running it first would silently eat {{YYYY}} and file everything
+        // under `Fotky///`.
+        const key = action.key
+            ? interpolate(expandKeyTemplate(String(action.key), { doc, sourceKey: source.key }), scope)
+            : undefined;
+
+        const res = await workspace.transferDocumentBytes(doc, {
+            to,
+            mode,
+            key,
+            onConflict: action.onConflict || 'rename',
+            from: source,
+        });
+        const landed = res?.to?.url || res?.added?.[0] || `stored://${to}/${key ?? source.key}`;
+        logger.debug(`rule store: ${doc.id} ${mode}d ${source.backend}:${source.key} -> ${landed}${res?.state === 'pending' ? ' (pending sync)' : ''}`);
     },
 
     // Tag the document in place (on the paths it already landed in).

@@ -267,6 +267,28 @@ export default async function workspaceBackendRoutes(fastify) {
         } catch (error) { return fail(request, reply, error); }
     });
 
+    // Copy/move an object to another storage backend. Body:
+    // { key, to, targetKey?, mode: 'copy'|'move' }. The document keeps its
+    // identity and placements — only its locations change. A move onto a
+    // sync-queued backend answers with state:'pending' and completes when the
+    // destination write lands.
+    fastify.post('/:driver/:address/objects/transfer', {
+        onRequest: [fastify.authenticate, requireWorkspaceWrite()],
+    }, async (request, reply) => {
+        try {
+            const result = await request.workspace.transferBackendObject(
+                drv(request.params.driver), arg(request.params.address),
+                {
+                    key: String(request.body?.key || ''),
+                    to: String(request.body?.to || ''),
+                    targetKey: request.body?.targetKey ? String(request.body.targetKey) : undefined,
+                    mode: request.body?.mode === 'move' ? 'move' : 'copy',
+                },
+            );
+            return ok(reply, result);
+        } catch (error) { return fail(request, reply, error); }
+    });
+
     // Write-back: update the remote object behind a synced document (edit /
     // close / reopen a GitHub issue, …). Body is a driver-shaped patch.
     fastify.patch('/:driver/:address/documents/:docId', {

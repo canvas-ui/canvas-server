@@ -20,6 +20,7 @@ import { parseLocationUrl } from 'canvas-synapsd/src/utils/path-helpers.js';
 import { WorkspaceTokens } from './lib/WorkspaceTokens.js';
 import { classifyDocument } from './lib/classifier.js';
 import { extract as extractBlobMetadata } from 'canvas-stored/src/extractors/index.js';
+import { detectMountSync } from 'canvas-stored/src/utils/mount.js';
 import { pickGeo } from './lib/geo.js';
 import { WorkspaceStoredIndex } from './lib/WorkspaceStoredIndex.js';
 import { WorkspaceMailIndex } from './services/imap/index.js';
@@ -2540,6 +2541,11 @@ class Workspace extends EventEmitter {
                 lastScanAt: runtime.lastScanAt || null,
                 lastError: runtime.lastError || null,
                 cacheStats: runtime.cacheStats || null,
+                // Runtime truth (kernel mount table) beats the stored config —
+                // a folder can become a mountpoint, or stop being one, between
+                // restarts.
+                remote: runtime.remote === true || config.remote === true,
+                transport: runtime.transport || config.transport || null,
                 // Full exclusion set applied to watch + resync (defaults ∪ user
                 // `exclude`) so the settings UI can show both.
                 effectiveExclusions: this.#storedIndex?.isRunning
@@ -2633,6 +2639,13 @@ class Workspace extends EventEmitter {
                 managed: status.managed === true,
                 supported: status.supported !== false,
                 watch: status.watch === true,
+                // Network mount (cifs/nfs/sshfs/…). Detected from the kernel
+                // mount table by the file driver unless declared in config. The
+                // UI badges these and warns before a full resync; watching them
+                // needs explicit polling, since inotify never sees another
+                // client's writes.
+                remote: status.remote === true,
+                transport: status.transport || null,
                 resync: Boolean(status.resync),
                 exclude: Array.isArray(status.exclude) ? status.exclude : [],
                 effectiveExclusions: Array.isArray(status.effectiveExclusions) ? status.effectiveExclusions : undefined,
@@ -2795,13 +2808,27 @@ class Workspace extends EventEmitter {
         const exclude = Array.isArray(config.exclude)
             ? config.exclude.filter((p) => typeof p === 'string' && p.trim())
             : [];
+        // Is this folder a network share (NFS/CIFS/sshfs/…)? Snapshotted at
+        // mount time so the UI can badge it before the stored index boots; the
+        // live backend re-detects on every registration, and runtime wins.
+        // An explicit flag in the request always overrides detection.
+        const mount = detectMountSync(root);
+        const remote = config.remote ?? mount.remote;
         await this.setDataBackendConfig(name, {
             enabled: true,
             supported: true,
             driver: 'file',
             label,
             root,
-            watch: config.watch === true,
+            remote,
+            transport: config.transport ?? mount.transport,
+            // inotify does not carry another client's writes over the wire, so
+            // watching a share is opt-in polling or nothing. Never silently
+            // enable a watcher that would look live and miss everything.
+            watch: config.watch === true && (!remote || config.usePolling === true),
+            ...(remote && config.usePolling === true
+                ? { usePolling: true, pollInterval: Number(config.pollInterval) || 30000 }
+                : {}),
             resync: true,
             exclude,
             readOnly: config.readOnly === true,
@@ -2810,6 +2837,163 @@ class Workspace extends EventEmitter {
             device: { id: device.deviceId, name: device.name },
         });
         return this.getBackend('file', name);
+    }
+
+    /**
+     * Copy or move an object from one storage backend to another.
+     *
+     * Content identity is preserved either way — the document keeps its id,
+     * checksums and every curated placement; only `locations[]` changes. A move
+     * releases the source solely after the destination write is durable, so a
+     * failed transfer degrades to a copy and never to data loss.
+     *
+     * @param {string} driver Source driver ('file', 'cacache', …)
+     * @param {string} address Source backend address
+     * @param {object} options
+     * @param {string} options.key Object key on the source backend
+     * @param {string} options.to Target backend address
+     * @param {string} [options.targetKey] Key on the target (defaults to `key`)
+     * @param {'copy'|'move'} [options.mode='copy']
+     */
+    async transferBackendObject(driver, address, { key, to, targetKey, mode = 'copy' } = {}) {
+        if (isConnectorDriver(driver) || driver === 'imap') {
+            throw new Error(`Backend "${driver}/${address}" does not store transferable objects`);
+        }
+        if (!key) throw new Error('Object key is required');
+        if (!to) throw new Error('A target backend is required');
+        if (mode !== 'copy' && mode !== 'move') throw new Error(`Unknown transfer mode: ${mode}`);
+        if (!this.#storedIndex?.isRunning) await this.#startStoredIndex();
+
+        const url = `stored://${address}/${key}`;
+        const result = mode === 'move'
+            ? await this.#storedIndex.moveObject(url, { to, key: targetKey })
+            : await this.#storedIndex.copyObject(url, { to, key: targetKey });
+        // stored reports refusals as { ok:false, reason } — surface them as
+        // errors so the HTTP layer does not answer 200 for a transfer that
+        // never happened.
+        if (!result?.ok) {
+            const detail = result?.detail ? ` (${result.detail})` : '';
+            throw new Error(`${mode} failed: ${result?.reason || 'unknown error'}${detail}`);
+        }
+        return result;
+    }
+
+    /**
+     * Where this document's bytes live, as (backend, key) pairs — both address
+     * forms resolved (`stored://` and device-scoped `file://` mounts). Hook
+     * rules use it to pick a source backend and to derive a destination
+     * filename from the current one.
+     */
+    async documentByteEndpoints(doc) {
+        if (!this.#storedIndex?.isRunning) await this.#startStoredIndex();
+        return this.#storedIndex.locationEndpoints(doc);
+    }
+
+    /**
+     * Copy or move ONE document's bytes to another backend, optionally renaming
+     * on arrival. The single-document counterpart of
+     * `transferDocumentsToBackends` — used by hook rules, which decide the
+     * destination key per document (photos filed as YYYY/MM/…jpg, say).
+     *
+     * @param {object} doc Parsed document
+     * @param {object} options
+     * @param {string} options.to Target backend address
+     * @param {'copy'|'move'} [options.mode='move']
+     * @param {string} [options.key] Destination key (defaults to the source key)
+     * @param {'error'|'rename'|'overwrite'} [options.onConflict='rename'] What to
+     *   do when other content already holds that key. Defaults to renaming here
+     *   (not erroring as in stored): templated names collide by construction —
+     *   two photos taken in the same second — and losing one is not an option.
+     * @param {{backend: string, key: string}} [options.from] Source location
+     */
+    async transferDocumentBytes(doc, { to, mode = 'move', key, onConflict = 'rename', from = null } = {}) {
+        if (!doc?.id) throw new Error('A document is required');
+        if (!to) throw new Error('A target backend is required');
+        if (!this.dataBackends[to]) throw new Error(`Unknown backend: ${to}`);
+        if (this.dataBackends[to].readOnly === true) throw new Error(`Backend "${to}" is read-only`);
+        if (!this.#storedIndex?.isRunning) await this.#startStoredIndex();
+
+        const res = await this.#storedIndex.transferDocument(doc, { to, mode, key, onConflict, from });
+        if (!res?.ok) {
+            const detail = res?.detail ? ` (${res.detail})` : '';
+            throw new Error(`${mode} failed: ${res?.reason || 'unknown error'}${detail}`);
+        }
+        return res;
+    }
+
+    /**
+     * Batch backend op over documents — the surface behind the UI's
+     * "Copy to / Move to / Delete from backend" actions.
+     *
+     * Addressed by document id rather than (backend, key) because that is what a
+     * selection in the UI holds; each document's own source location is resolved
+     * server-side, which also makes external mounts (file:// device locations)
+     * work without the client knowing the address grammar.
+     *
+     * Partial success is normal — one document already living on the target must
+     * not fail the other 49 — so every document reports its own outcome instead
+     * of the batch throwing.
+     *
+     * @param {Array<number|string>} documentIds
+     * @param {object} options
+     * @param {string[]} options.to Target backend addresses
+     * @param {'copy'|'move'|'delete'} [options.mode='copy']
+     * @param {boolean} [options.keepDocument=false] delete mode: keep the index
+     *   entry when its last location goes (otherwise the doc is cascaded)
+     * @returns {Promise<{successful: object[], failed: object[]}>}
+     */
+    async transferDocumentsToBackends(documentIds = [], { to = [], mode = 'copy', keepDocument = false } = {}) {
+        if (!['copy', 'move', 'delete'].includes(mode)) throw new Error(`Unknown transfer mode: ${mode}`);
+        const targets = [...new Set((Array.isArray(to) ? to : [to]).filter(Boolean).map(String))];
+        if (targets.length === 0) throw new Error('At least one target backend is required');
+        // A move has one destination by definition: with two, "which one may the
+        // source be dropped for?" has no answer. Copy fans out freely.
+        if (mode === 'move' && targets.length > 1) throw new Error('A move takes exactly one target backend');
+        if (mode !== 'delete') {
+            for (const target of targets) {
+                if (!this.dataBackends[target]) throw new Error(`Unknown backend: ${target}`);
+                if (this.dataBackends[target].readOnly === true) throw new Error(`Backend "${target}" is read-only`);
+            }
+        }
+        if (!this.#storedIndex?.isRunning) await this.#startStoredIndex();
+
+        const results = { successful: [], failed: [] };
+        for (const rawId of documentIds) {
+            const id = Number(rawId);
+            try {
+                const doc = await this.get(id);
+                if (!doc) { results.failed.push({ id, reason: 'not found' }); continue; }
+
+                if (mode === 'delete') {
+                    const urls = this.#storedIndex.locationUrlsOnBackends(doc, targets);
+                    if (urls.length === 0) { results.failed.push({ id, reason: 'no location on the selected backend(s)' }); continue; }
+                    const res = await this.#storedIndex.destroy(doc, { urls, keepDocument });
+                    results.successful.push({ id, mode, ...res });
+                    continue;
+                }
+
+                const transfers = [];
+                for (const target of targets) {
+                    const res = await this.#storedIndex.transferDocument(doc, { to: target, mode });
+                    if (!res?.ok) {
+                        const detail = res?.detail ? ` (${res.detail})` : '';
+                        throw new Error(`${res?.reason || 'unknown error'}${detail}`);
+                    }
+                    // `unchanged` means the object was already there — a no-op,
+                    // not a transfer. Reporting it as "complete" would let a
+                    // stale index (or a repeat click) look like work happened.
+                    transfers.push({
+                        backend: target,
+                        state: res.unchanged ? 'unchanged' : (res.state || 'complete'),
+                        locations: res.locations,
+                    });
+                }
+                results.successful.push({ id, mode, transfers });
+            } catch (err) {
+                results.failed.push({ id, reason: err.message });
+            }
+        }
+        return results;
     }
 
     /** On-demand on-disk size of a local storage backend (slow walk — user-triggered). */

@@ -1,7 +1,31 @@
 {
   "$schema": "canvas.hook-rules/v1",
-  "$comment": "Declarative hook rules — the no-code companion to JS hooks. Rename to rules.json — strip the example- prefix — (or drop files into hooks/rules/*.json) to activate. `when` keys AND together; give a key an array for OR. Every matching rule fires. Matchers: event (required), schema, path (prefix), url (substring or {host,prefix,contains,regex}), from, to (any To/Cc recipient), subject (substring or {equals,contains,startsWith,regex}), mime ('image/*' globs), attachment (true = any; 'application/pdf' / ['image/*'] = attachment mime; {mime,filename} for both). Actions: link, unlink, tag, delete, destroy, agent, notify, script, emit. `{{doc.data.subject}}`-style templates work in agent prompts, notify messages and script args.",
+  "$comment": "Declarative hook rules — the no-code companion to JS hooks. Rename to rules.json — strip the example- prefix — (or drop files into hooks/rules/*.json) to activate. `when` keys AND together; give a key an array for OR. Every matching rule fires. Matchers: event (required), schema, path (prefix), url (substring or {host,prefix,contains,regex}), from, to (any To/Cc recipient), subject (substring or {equals,contains,startsWith,regex}), mime ('image/*' globs), attachment (true = any; 'application/pdf' / ['image/*'] = attachment mime; {mime,filename} for both). Actions: link, unlink, tag, store (move/copy the document's BYTES between storage backends, with {{YYYY}}/{{MM}}/{{DD}}/{{HH}}/{{mm}}/{{ss}}/{{ext}}/{{basename}} key templating), delete, destroy, agent, notify, script, emit. `{{doc.data.subject}}`-style templates work in agent prompts, notify messages and script args.",
   "rules": [
+    {
+      "id": "photos-to-home",
+      "enabled": true,
+      "description": "Photos filed under /Fotky move out of the blob store onto workspace:home as Fotky/YYYY/MM/YYYYMMDD_HHMMSS.jpg",
+      "when": {
+        "event": [
+          "document.inserted",
+          "document.linked"
+        ],
+        "schema": "file",
+        "mime": "image/*",
+        "path": "/Fotky"
+      },
+      "then": [
+        {
+          "action": "store",
+          "to": "workspace:home",
+          "from": "workspace:data",
+          "mode": "move",
+          "key": "Fotky/{{YYYY}}/{{MM}}/{{YYYY}}{{MM}}{{DD}}_{{HH}}{{mm}}{{ss}}{{ext}}",
+          "onConflict": "rename"
+        }
+      ]
+    },
     {
       "id": "youtube-to-media",
       "enabled": true,
@@ -9,10 +33,20 @@
       "when": {
         "event": "document.inserted",
         "schema": "tab",
-        "url": { "host": "youtube.com" }
+        "url": {
+          "host": "youtube.com"
+        }
       },
       "then": [
-        { "action": "link", "paths": ["/media/youtube"], "tags": ["custom/media/video"] }
+        {
+          "action": "link",
+          "paths": [
+            "/media/youtube"
+          ],
+          "tags": [
+            "custom/media/video"
+          ]
+        }
       ]
     },
     {
@@ -23,10 +57,17 @@
         "event": "document.inserted",
         "schema": "email",
         "from": "foo@bar.baz",
-        "subject": { "contains": "dc migration" }
+        "subject": {
+          "contains": "dc migration"
+        }
       },
       "then": [
-        { "action": "link", "paths": ["/projects/dc-migration"] }
+        {
+          "action": "link",
+          "paths": [
+            "/projects/dc-migration"
+          ]
+        }
       ]
     },
     {
@@ -36,11 +77,21 @@
       "when": {
         "event": "document.inserted",
         "schema": "email",
-        "subject": ["urgent", "outage"]
+        "subject": [
+          "urgent",
+          "outage"
+        ]
       },
       "then": [
-        { "action": "agent", "slug": "assistant", "prompt": "An email arrived from {{doc.data.from}} with subject \"{{doc.data.subject}}\". Assess whether it needs my attention right now and reply with one short sentence." },
-        { "action": "notify", "message": "[canvas] urgent mail: {{doc.data.subject}}" }
+        {
+          "action": "agent",
+          "slug": "assistant",
+          "prompt": "An email arrived from {{doc.data.from}} with subject \"{{doc.data.subject}}\". Assess whether it needs my attention right now and reply with one short sentence."
+        },
+        {
+          "action": "notify",
+          "message": "[canvas] urgent mail: {{doc.data.subject}}"
+        }
       ]
     },
     {
@@ -50,10 +101,20 @@
       "when": {
         "event": "document.inserted",
         "schema": "tab",
-        "url": { "regex": "\\.pdf($|\\?)" }
+        "url": {
+          "regex": "\\.pdf($|\\?)"
+        }
       },
       "then": [
-        { "action": "link", "paths": ["/to-read"], "tags": ["custom/format/pdf"] }
+        {
+          "action": "link",
+          "paths": [
+            "/to-read"
+          ],
+          "tags": [
+            "custom/format/pdf"
+          ]
+        }
       ]
     },
     {
@@ -63,12 +124,29 @@
       "when": {
         "event": "document.inserted",
         "schema": "email",
-        "to": ["invoice@my-company.tld", "faktury@my-company.tld"],
+        "to": [
+          "invoice@my-company.tld",
+          "faktury@my-company.tld"
+        ],
         "attachment": "application/pdf"
       },
       "then": [
-        { "action": "link", "paths": ["/finance/invoices/inbox"], "tags": ["custom/finance/invoice"] },
-        { "action": "script", "path": "scripts/process-invoice.sh", "args": ["{{doc.id}}"] }
+        {
+          "action": "link",
+          "paths": [
+            "/finance/invoices/inbox"
+          ],
+          "tags": [
+            "custom/finance/invoice"
+          ]
+        },
+        {
+          "action": "script",
+          "path": "scripts/process-invoice.sh",
+          "args": [
+            "{{doc.id}}"
+          ]
+        }
       ]
     },
     {
@@ -81,7 +159,13 @@
         "mime": "image/*"
       },
       "then": [
-        { "action": "script", "path": "scripts/on-image.sh", "args": ["{{doc.id}}"] }
+        {
+          "action": "script",
+          "path": "scripts/on-image.sh",
+          "args": [
+            "{{doc.id}}"
+          ]
+        }
       ]
     }
   ]

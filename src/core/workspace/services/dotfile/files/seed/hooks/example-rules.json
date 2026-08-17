@@ -1,6 +1,6 @@
 {
   "$schema": "canvas.hook-rules/v1",
-  "$comment": "Declarative hook rules — the no-code companion to JS hooks. Rename to rules.json — strip the example- prefix — (or drop files into hooks/rules/*.json) to activate. `when` keys AND together; give a key an array for OR. Every matching rule fires. Matchers: event (required), schema, path (prefix), url (substring or {host,prefix,contains,regex}), from, to (any To/Cc recipient), subject (substring or {equals,contains,startsWith,regex}), mime ('image/*' globs), attachment (true = any; 'application/pdf' / ['image/*'] = attachment mime; {mime,filename} for both). Actions: link, unlink, tag, store (move/copy the document's BYTES between storage backends, with {{YYYY}}/{{MM}}/{{DD}}/{{HH}}/{{mm}}/{{ss}}/{{ext}}/{{basename}} key templating), delete, destroy, agent, notify, script, emit. `{{doc.data.subject}}`-style templates work in agent prompts, notify messages and script args.",
+  "$comment": "Declarative hook rules — the no-code companion to JS hooks. Rename to rules.json — strip the example- prefix — (or drop files into hooks/rules/*.json) to activate. `when` keys AND together; give a key an array for OR. Every matching rule fires. Matchers: event (required), schema, path (prefix), url (substring or {host,prefix,contains,regex}), from, to (any To/Cc recipient), subject (substring or {equals,contains,startsWith,regex}), mime ('image/*' globs), attachment (true = any; 'application/pdf' / ['image/*'] = attachment mime; {mime,filename} for both). Actions: link, unlink, tag, store (move/copy the document's BYTES between storage backends, with {{YYYY}}/{{MM}}/{{DD}}/{{HH}}/{{mm}}/{{ss}}/{{ext}}/{{basename}} key templating), unstore (delete the bytes from named backends, keeping the copies elsewhere), delete, destroy, agent, notify, script, emit. `{{doc.data.subject}}`-style templates work in agent prompts, notify messages and script args.",
   "rules": [
     {
       "id": "photos-to-home",
@@ -23,6 +23,28 @@
           "mode": "move",
           "key": "Fotky/{{YYYY}}/{{MM}}/{{YYYY}}{{MM}}{{DD}}_{{HH}}{{mm}}{{ss}}{{ext}}",
           "onConflict": "rename"
+        }
+      ]
+    },
+    {
+      "id": "drop-staging-copies",
+      "enabled": false,
+      "description": "Once a photo is safely on workspace:home, delete the staging copy from the blob store",
+      "when": {
+        "event": [
+          "document.inserted",
+          "document.updated"
+        ],
+        "schema": "file",
+        "mime": "image/*",
+        "path": "/Fotky"
+      },
+      "then": [
+        {
+          "action": "unstore",
+          "from": "workspace:data",
+          "ifOn": "workspace:home",
+          "keepLast": true
         }
       ]
     },

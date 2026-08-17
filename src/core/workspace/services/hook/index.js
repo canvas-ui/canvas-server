@@ -512,27 +512,29 @@ class HookService extends EventEmitter {
     // for it, sequentially — a 50-message imap batch must not spawn 50
     // concurrent hook chains (agents, scripts).
     async #fanOutBatch(workspace, eventName, batchPayload, automated = false) {
-        for (const id of batchPayload.ids) {
+        // Inherit-by-default, subtract what is batch-shaped. An allow-list here
+        // silently dropped every field the emitter added that this function had
+        // not been taught about (that is how `reason` went missing for batch
+        // writes) — and it cannot work at all for foreign schemas or
+        // connector-specific event fields, which by definition nobody can
+        // enumerate up front. Same shape as buildReplayEnvelope.
+        const { ids, count, documents: _documents, ...inherited } = batchPayload;
+
+        for (const id of ids) {
             let document = null;
             try { document = await workspace.get(id); }
             catch (err) { logger.debug(`Batch fan-out: failed to load doc ${id}: ${err.message}`); }
             if (!document) { continue; }
 
             const payload = {
+                ...inherited,
+                // Per-document identity replaces the batch's collective fields.
                 id,
                 document,
                 context: batchPayload.context ?? null,
                 directory: batchPayload.directory ?? null,
                 batch: true,
-                batchCount: batchPayload.count ?? batchPayload.ids.length,
-                ...(batchPayload.workspaceId ? { workspaceId: batchPayload.workspaceId } : {}),
-                ...(batchPayload.source ? { source: batchPayload.source } : {}),
-                // Provenance rides through the fan-out unchanged: the per-doc
-                // dispatch is the same event, not a new automation step.
-                ...(batchPayload.eventId ? { eventId: batchPayload.eventId } : {}),
-                ...(batchPayload.origin ? { origin: batchPayload.origin } : {}),
-                ...(batchPayload.causedBy ? { causedBy: batchPayload.causedBy } : {}),
-                ...(Number.isInteger(batchPayload.depth) ? { depth: batchPayload.depth } : {}),
+                batchCount: count ?? ids.length,
             };
             await Promise.allSettled([
                 this.#runWorkspaceHook(workspace, eventName, payload, automated),
@@ -572,17 +574,85 @@ class HookService extends EventEmitter {
     // Declarative rules: rules.json + rules/*.json evaluated against the
     // event's classified document. Runs alongside JS hooks with no precedence;
     // every matching rule fires (no first-match-wins).
+    /**
+     * Give the rule matcher what the event payload happens not to carry.
+     *
+     * Two gaps, both of which otherwise make a rule match on one event and
+     * silently never match on another for reasons the author cannot see:
+     *   - membership-only events (`document.updated` from a re-link or a
+     *     location change) carry no `document`, so `schema` / `mime` conditions
+     *     can never be true;
+     *   - events that carry no context/directory selector leave `path` with
+     *     nothing to test, though the document IS filed somewhere.
+     *
+     * Both are looked up lazily — only when a loaded rule actually asks for
+     * them — and any failure leaves the payload as-is: matching must not depend
+     * on a best-effort read succeeding.
+     */
+    async #enrichPayloadForRules(workspace, payload, rules) {
+        if (!payload) { return payload; }
+        const documentId = payload.document?.id ?? payload.id ?? payload.documentId;
+        if (documentId == null) { return payload; }
+
+        const whens = rules.map((r) => r?.when).filter((w) => w && typeof w === 'object');
+        const DOC_KEYS = ['schema', 'mime', 'attachment', 'from', 'to', 'subject', 'url'];
+        // `reason:'membership'` is the emitter saying outright that no document
+        // is coming (synapsd ≥ 2.4.x); the absence check keeps older emitters
+        // and non-synapsd events working the same way.
+        const needsDocument = !payload.document && whens.some((w) => DOC_KEYS.some((k) => w[k] !== undefined));
+        const hasPaths = (spec) => (Array.isArray(spec?.paths) ? spec.paths.length > 0 : Boolean(spec?.path));
+        const needsPaths = whens.some((w) => w.path !== undefined)
+            && !hasPaths(payload.context) && !hasPaths(payload.directory) && !payload.treePaths;
+
+        if (!needsDocument && !needsPaths) { return payload; }
+
+        let next = payload;
+        if (needsDocument) {
+            const document = await workspace.get(documentId).catch(() => null);
+            if (document) { next = { ...next, document }; }
+        }
+        if (needsPaths) {
+            try {
+                // `treePaths` ({ treeName: [paths] }) is the classifier's own
+                // channel for live placements — the backfill endpoint feeds it
+                // the same way. Keyed by tree name so tree-qualified prefixes
+                // ('backends:/…') keep working.
+                const treePaths = {};
+                for (const tree of (await workspace.listTrees()) || []) {
+                    const paths = await workspace.listDocumentTreeMemberships(documentId, tree.id).catch(() => []);
+                    if (paths?.length) { treePaths[tree.name] = paths; }
+                }
+                if (Object.keys(treePaths).length) { next = { ...next, treePaths }; }
+            } catch (err) {
+                logger.debug(`Membership lookup for rule path matching failed: ${err.message}`);
+            }
+        }
+        return next;
+    }
+
     async #runWorkspaceRules(workspace, eventName, payload, automated = false) {
         const hooksRoot = workspace.hooksPath || path.join(workspace.rootPath, 'hooks');
         const ruleFiles = resolveRuleFiles(hooksRoot);
         if (ruleFiles.length === 0) { return; }
 
-        const classification = classifyDocument(payload?.document, payload);
+        const rulesByFile = ruleFiles.map((filePath) => [filePath, loadRuleFile(filePath, this.#ruleFileCache, logger)]);
+        // A `path` condition asks where the document IS FILED, which is a
+        // property of the document — but only events that carry a context /
+        // directory selector (insert, link) put paths on the payload. Without
+        // this, the same rule matches on insert and silently never matches on,
+        // say, a location change. Looked up lazily: one DB read, and only when
+        // a loaded rule actually asks about paths.
+        const enriched = await this.#enrichPayloadForRules(
+            workspace,
+            payload,
+            rulesByFile.flatMap(([, rules]) => rules),
+        );
+        const classification = classifyDocument(enriched?.document, enriched);
         let context = null;
 
         const runLog = this.runLogFor(workspace);
-        for (const filePath of ruleFiles) {
-            for (const rule of loadRuleFile(filePath, this.#ruleFileCache, logger)) {
+        for (const [, rules] of rulesByFile) {
+            for (const rule of rules) {
                 if (!matchRule(rule, eventName, classification)) { continue; }
                 // Cascade gate AFTER matching so the run log only records
                 // skips for rules that would actually have fired.
@@ -604,7 +674,11 @@ class HookService extends EventEmitter {
                     await this.#proposeFromRule(workspace, rule, eventName, payload, held);
                 }
                 if (!immediate.length) { continue; }
-                context = context || this.#buildHookContext(workspace, eventName, payload, 'rule');
+                // Built from the ENRICHED payload: an action reading
+                // `payload.document` must see the same document the matcher
+                // did, or a rule that matched on a membership-only event finds
+                // no document and silently does nothing.
+                context = context || this.#buildHookContext(workspace, eventName, enriched, 'rule');
                 const t0 = Date.now();
                 const actions = await executeRuleActions({ ...rule, then: immediate }, context, logger);
                 runLog?.append({

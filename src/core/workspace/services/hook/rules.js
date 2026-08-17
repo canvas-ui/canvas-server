@@ -17,8 +17,8 @@ import { WORKSPACE_DIRECTORIES } from '../../lib/constants.js';
  *
  * Rule shape:
  *   { id, enabled?, description?, cascade?, approval?, editable?, ttl?,
- *     when: { event, schema?, path?, url?, from?, to?, subject?, mime?,
- *     attachment? }, then: [ { action, ..., approval? } ] }
+ *     when: { event, reason?, schema?, path?, url?, from?, to?, subject?,
+ *     mime?, attachment? }, then: [ { action, ..., approval? } ] }
  *
  * `approval: true` (rule-level: hold the whole `then` block; action-level:
  * hold that action only) diverts execution into the pending-actions review
@@ -29,10 +29,10 @@ import { WORKSPACE_DIRECTORIES } from '../../lib/constants.js';
  * Every matching rule fires — there is no first-match-wins, which keeps the
  * format trivially composable for a UI rule builder.
  *
- * Actions: link, unlink, tag, store, delete, destroy, agent, notify, script,
- * emit. `store` is the storage-layer one — it moves/copies a document's BYTES
- * between backends and can rename them by template (see the action below);
- * everything else operates on the index.
+ * Actions: link, unlink, tag, store, unstore, delete, destroy, agent, notify,
+ * script, emit. `store`/`unstore` are the storage-layer pair — they move/copy a
+ * document's BYTES between backends (with template renaming) and delete them
+ * from named backends; everything else operates on the index.
  */
 
 // ── Loading ──────────────────────────────────────────────────────────────────
@@ -130,6 +130,10 @@ function safeRegex(pattern) {
 // (the explain endpoint's matcher-by-matcher breakdown).
 const WHEN_CHECKS = {
     event: (c, matcher, eventName) => Boolean(matcher) && asArray(matcher).includes(eventName),
+    // Which KIND of change fired the event: 'content' (the document changed)
+    // vs 'membership' (only its tree placement did). Lets a rule say "only when
+    // the file itself changed" instead of re-running on every re-filing.
+    reason: (c, matcher) => Boolean(matcher) && asArray(matcher).includes(c.reason),
     schema: (c, matcher) => asArray(matcher).some((s) => c.isSchema(s)),
     path: (c, matcher) => asArray(matcher).some((p) => c.inPath(p)),
     url: (c, matcher) => asArray(matcher).some((u) => matchUrl(c, u)),
@@ -191,7 +195,7 @@ export function matchRule(rule, eventName, c) {
     if (!when || typeof when !== 'object') { return false; }
 
     if (!WHEN_CHECKS.event(c, when.event, eventName)) { return false; }
-    for (const key of ['schema', 'path', 'url', 'from', 'to', 'subject', 'mime', 'attachment']) {
+    for (const key of ['reason', 'schema', 'path', 'url', 'from', 'to', 'subject', 'mime', 'attachment']) {
         if (when[key] !== undefined && !WHEN_CHECKS[key](c, when[key])) { return false; }
     }
 
@@ -432,7 +436,7 @@ const ACTIONS = {
      * the rule can safely fire on both document.inserted and document.linked.
      */
     async store(action, { workspace, doc, scope, logger }) {
-        if (!doc?.id) { return; }
+        if (!doc?.id) { logger.debug('rule store: event carries no document, skipping'); return; }
         const to = String(action.to || '').trim();
         if (!to) { logger.warn('rule store: "to" (target backend) is required'); return; }
         const mode = action.mode === 'copy' ? 'copy' : 'move';
@@ -470,6 +474,58 @@ const ACTIONS = {
         });
         const landed = res?.to?.url || res?.added?.[0] || `stored://${to}/${key ?? source.key}`;
         logger.debug(`rule store: ${doc.id} ${mode}d ${source.backend}:${source.key} -> ${landed}${res?.state === 'pending' ? ' (pending sync)' : ''}`);
+    },
+
+    /**
+     * Delete the document's bytes from specific backends — the dedupe action.
+     * Copies on every other backend, and the index entry itself, stay.
+     *
+     *   { "action": "unstore", "from": "workspace:data", "ifOn": "workspace:home" }
+     *
+     * Two guards, because a rule fires unattended on every matching event:
+     *   - `keepLast` (default true) refuses to remove the object's LAST
+     *     location. Deleting the only copy is `destroy`'s job, and it should
+     *     take saying so.
+     *   - `ifOn` requires the content to also live on those backends first —
+     *     "drop the staging copy once it is safely on the NAS", stated in the
+     *     order it actually has to happen.
+     */
+    async unstore(action, { workspace, doc, logger }) {
+        if (!doc?.id) { logger.debug('rule unstore: event carries no document, skipping'); return; }
+        const from = asArray(action.from || action.backends || []).filter(Boolean).map(String);
+        if (!from.length) { logger.warn('rule unstore: "from" (backend to delete from) is required'); return; }
+
+        const endpoints = await workspace.documentByteEndpoints(doc);
+        const targeted = endpoints.filter((e) => from.includes(e.backend));
+        if (!targeted.length) {
+            logger.debug(`rule unstore: ${doc.id} has nothing on ${from.join(', ')}, skipping`);
+            return;
+        }
+
+        const required = asArray(action.ifOn || []).filter(Boolean).map(String);
+        if (required.length && !required.every((backend) => endpoints.some((e) => e.backend === backend && !from.includes(e.backend)))) {
+            logger.debug(`rule unstore: ${doc.id} is not on ${required.join(', ')} yet, keeping the copy on ${from.join(', ')}`);
+            return;
+        }
+
+        // Count survivors across ALL locations, not just the transferable ones:
+        // an imap:// or https:// location is still somewhere the bytes are.
+        const removedUrls = new Set(targeted.map((e) => e.url));
+        const survivors = (doc.locations || []).filter((l) => !removedUrls.has(l?.url));
+        if (action.keepLast !== false && survivors.length === 0) {
+            logger.warn(`rule unstore: refusing to delete the last location of ${doc.id} (set keepLast:false or use destroy)`);
+            return;
+        }
+
+        const results = await workspace.transferDocumentsToBackends([doc.id], {
+            to: from,
+            mode: 'delete',
+            keepDocument: action.keepDocument === true,
+        });
+        const failure = results.failed[0];
+        if (failure) { throw new Error(failure.reason); }
+        const outcome = results.successful[0] || {};
+        logger.debug(`rule unstore: ${doc.id} deleted from ${from.join(', ')} (${outcome.deleted?.length || 0} location(s), ${survivors.length} kept)`);
     },
 
     // Tag the document in place (on the paths it already landed in).

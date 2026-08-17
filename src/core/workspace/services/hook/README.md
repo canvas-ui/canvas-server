@@ -62,3 +62,30 @@ lowercased — from the filename, else the mime type), `{{basename}}`,
 **`path` matches prefixes**, so `/Fotky` covers `/Fotky/2019/07` and every other
 subfolder. Bind the rule to both `document.inserted` (uploaded straight into the
 folder) and `document.linked` (filed there later).
+
+## Dedupe — the `unstore` action
+
+The inverse of `store`: delete a document's bytes from named backends while
+every other copy, and the index entry, stay. For clearing staging copies once
+the content is safely somewhere else, or for pruning a backend you are retiring.
+
+```json
+{
+  "action": "unstore",
+  "from": "workspace:data",
+  "ifOn": "workspace:home",
+  "keepLast": true
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `from` | Backend(s) to delete the bytes from (required) |
+| `ifOn` | Only when the content ALSO lives on these backends — "drop the staging copy once it is on the NAS", stated in the order it has to happen |
+| `keepLast` | Default `true`: refuse to remove the object's last remaining location. Deleting the only copy is `destroy`'s job and should take saying so |
+| `keepDocument` | With `keepLast:false`, keep the index entry (no locations) instead of cascading the document delete |
+
+Both guards matter because a rule fires unattended on every matching event: a
+`from` that happens to hold the only copy would otherwise be a silent data
+delete. Locations that are not byte backends (`imap://`, `https://`) count as
+survivors — the bytes are still reachable there.

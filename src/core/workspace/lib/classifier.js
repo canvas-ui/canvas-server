@@ -125,6 +125,10 @@ function toPattern(value) {
 class Classification {
     constructor(doc, payload) {
         this.doc = doc || null;
+        // Why the event fired, when the emitter says so ('content' vs
+        // 'membership' on document.updated). Null for events that carry no
+        // discriminator — a `reason` condition simply never matches those.
+        this.reason = typeof payload?.reason === 'string' ? payload.reason : null;
         this.schema = typeof doc?.schema === 'string' ? doc.schema.toLowerCase() : null;
         this.mime = doc?.metadata?.contentType || null;
         // A file blob's identity is its bytes, not inline JSON — so a missing or

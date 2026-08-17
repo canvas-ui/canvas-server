@@ -185,10 +185,10 @@ export class WorkspaceStoredIndex {
     #locationEndpoint(location) {
         const parsed = parseLocationUrl(location?.url);
         if (!parsed) return null;
-        if (parsed.scheme === 'stored') return { backend: parsed.backend, key: parsed.key };
+        if (parsed.scheme === 'stored') return { backend: parsed.backend, key: parsed.key, url: location.url };
         if (parsed.scheme === 'file' && location?.metadata?.backend) {
             const key = this.#backendLocationKey(location.metadata.backend, location);
-            return key ? { backend: location.metadata.backend, key } : null;
+            return key ? { backend: location.metadata.backend, key, url: location.url } : null;
         }
         return null;
     }

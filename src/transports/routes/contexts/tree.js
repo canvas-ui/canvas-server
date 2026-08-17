@@ -39,7 +39,17 @@ export default async function treeRoutes(fastify) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
-      const tree = workspace.getTree(context.treeId);
+      // Stale binding: the tree the context was created against can vanish
+      // (tree recreated/renamed since) — getTree then THROWS, which used to
+      // surface as an opaque 500 and an empty picker. Fall back to the
+      // workspace's default context tree so the URL picker still renders.
+      let tree;
+      try {
+        tree = workspace.getTree(context.treeId);
+      } catch {
+        fastify.log.warn(`Context ${contextId}: bound treeId ${context.treeId} not found in workspace ${workspace.id} — serving the default context tree instead`);
+        tree = workspace.getDefaultContextTree();
+      }
       const treeData = tree.buildJsonTree();
 
       if (treeData === undefined || treeData === null) {
@@ -56,7 +66,9 @@ export default async function treeRoutes(fastify) {
         const response = new ResponseObject().workspaceNotActive();
         return reply.code(response.statusCode).send(response.getResponse());
       }
-      const response = new ResponseObject().error('Failed to get context tree');
+      // Carry the actual reason (workspace deleted/renamed, db closed, …) —
+      // the client renders this under the empty tree instead of guessing.
+      const response = new ResponseObject().error(`Failed to get context tree: ${error.message}`);
         return reply.code(response.statusCode).send(response.getResponse());
     }
   });

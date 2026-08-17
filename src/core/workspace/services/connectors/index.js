@@ -71,13 +71,17 @@ export class WorkspaceConnectorIndex extends EventEmitter {
     #insertBackendPath;
     #lockBackendNode;
     #unlockBackendNode;
+    // Deletion-sync seams (all three required for pruneRemoved to act)
+    #listDocumentIdsUnderBackendPath;
+    #getDocumentsByIdArray;
+    #reconcileRemovedLocations;
 
     #started = false;
     #backends = new Map(); // name (`<driver>:<address>`) -> { driver, address, config, instance }
     #status = new Map();   // name -> { syncing, lastSyncAt, lastError, backoff }
     #timers = new Map();   // name -> timeout handle
 
-    constructor({ rootPath, workspaceId, logger, put, getBackendsTreeSelector, insertBackendPath = null, lockBackendNode = null, unlockBackendNode = null }) {
+    constructor({ rootPath, workspaceId, logger, put, getBackendsTreeSelector, insertBackendPath = null, lockBackendNode = null, unlockBackendNode = null, listDocumentIdsUnderBackendPath = null, getDocumentsByIdArray = null, reconcileRemovedLocations = null }) {
         super({ wildcard: true, delimiter: '.', maxListeners: 100 });
         if (!rootPath) throw new Error('rootPath is required');
         if (!put || !getBackendsTreeSelector) throw new Error('put and getBackendsTreeSelector are required');
@@ -89,6 +93,9 @@ export class WorkspaceConnectorIndex extends EventEmitter {
         this.#insertBackendPath = insertBackendPath;
         this.#lockBackendNode = lockBackendNode;
         this.#unlockBackendNode = unlockBackendNode;
+        this.#listDocumentIdsUnderBackendPath = listDocumentIdsUnderBackendPath;
+        this.#getDocumentsByIdArray = getDocumentsByIdArray;
+        this.#reconcileRemovedLocations = reconcileRemovedLocations;
     }
 
     get isRunning() { return this.#started; }
@@ -206,6 +213,8 @@ export class WorkspaceConnectorIndex extends EventEmitter {
                 sync: true, test: true, containers: true, mutableContainers: false, deleteObject: false,
                 // Write-back (create-in-container) — caldav with readOnly:false.
                 write: Boolean(entry.instance?.canWrite),
+                // Deletion-sync possible: the driver can fully traverse the source.
+                prune: typeof entry.instance?.listIdentities === 'function',
             },
             // Secrets are redacted; the settings panel only needs to know they
             // are set.
@@ -445,6 +454,72 @@ export class WorkspaceConnectorIndex extends EventEmitter {
                 await this.patchStoredBackend(name, { cursors, lastSyncAt: new Date().toISOString() });
             }
             if (done) break;
+        }
+
+        // Deletion-sync (opt-in): after a clean incremental sync, mirror
+        // source-side removals. A prune failure never fails the sync.
+        if (entry.config.pruneRemoved === true) {
+            await this.#pruneContainer(name, entry, container).catch((error) =>
+                this.#logger.warn({ workspaceId: this.#workspaceId, backend: name, container: container.id, error: error.message }, 'Connector prune failed'));
+        }
+    }
+
+    /**
+     * Mirror source-side deletions: drop the locations of indexed documents
+     * whose remote object no longer exists, using the stored index's
+     * orphan-not-delete semantics (doc keeps curated placements, gains
+     * data/no-location + orphanedAt, purged later by retention GC).
+     *
+     * Guard rails:
+     * - Only drivers that can FULLY traverse the source (listIdentities);
+     *   any API error there skips the prune — a partial listing must never
+     *   masquerade as "these are all".
+     * - Only docs whose identity checksum derives from their provenance URL
+     *   (i.e. connector-ingested) are ever touched.
+     * - An empty source listing against a non-empty mirror is refused —
+     *   a wiped repo/calendar is rare, a misbehaving API is not.
+     */
+    async #pruneContainer(name, entry, container) {
+        const { instance } = entry;
+        if (typeof instance?.listIdentities !== 'function') return; // driver can't traverse the source
+        if (!this.#listDocumentIdsUnderBackendPath || !this.#getDocumentsByIdArray || !this.#reconcileRemovedLocations) return;
+
+        const liveUrls = await instance.listIdentities(container);
+        if (!Array.isArray(liveUrls)) return;
+        const live = new Set(liveUrls.map((url) => WorkspaceConnectorIndex.identityChecksum(url)));
+
+        const rootPath = `/${normalizeSegment(entry.driver)}/${normalizeSegment(entry.address)}`;
+        const ids = await this.#listDocumentIdsUnderBackendPath(rootPath);
+        if (!Array.isArray(ids) || ids.length === 0) return;
+        const docs = await this.#getDocumentsByIdArray(ids);
+
+        // Scope to this container (drivers that can attribute provenance) and
+        // to genuinely connector-ingested docs.
+        const inScope = [];
+        for (const doc of (Array.isArray(docs) ? docs : [])) {
+            const provenance = (doc?.locations || []).find((l) => l?.metadata?.provenance)?.url;
+            if (!provenance) continue;
+            if (typeof instance.containerIdFromProvenance === 'function'
+                && instance.containerIdFromProvenance(provenance) !== container.id) continue;
+            if (doc.checksumArray?.[0] !== WorkspaceConnectorIndex.identityChecksum(provenance)) continue;
+            inScope.push({ doc, provenance });
+        }
+        if (inScope.length === 0) return;
+        if (live.size === 0) {
+            this.#logger.warn({ workspaceId: this.#workspaceId, backend: name, container: container.id, indexed: inScope.length },
+                'Connector prune refused: source listing came back empty against a non-empty mirror');
+            return;
+        }
+
+        let pruned = 0;
+        for (const { doc } of inScope) {
+            if (live.has(doc.checksumArray[0])) continue;
+            await this.#reconcileRemovedLocations(doc, (doc.locations || []).map((l) => l?.url).filter(Boolean));
+            pruned++;
+        }
+        if (pruned > 0) {
+            this.#logger.info({ workspaceId: this.#workspaceId, backend: name, container: container.id, pruned }, 'Connector prune: source-deleted documents orphaned');
+            this.emit('object:prune', { source: name, container: container.id, count: pruned });
         }
     }
 

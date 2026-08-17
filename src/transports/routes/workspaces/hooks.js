@@ -475,17 +475,48 @@ export default async function workspaceHooksRoutes(fastify) {
       // matcher (short names → full ids via the classifier map — plain prefix
       // concat cannot reach hierarchical ids like data/schema/message/email).
       const ruleSchemas = rule?.when?.schema ? (Array.isArray(rule.when.schema) ? rule.when.schema : [rule.when.schema]) : [];
-      const schemas = (schema ? [schema] : ruleSchemas)
-        .map((s) => normalizeSchemaId(s));
+      const requested = (schema ? [schema] : ruleSchemas)
+        .map((s) => normalizeSchemaId(s))
+        .filter(Boolean);
 
-      let documents;
+      // Hierarchical expansion against the schema bitmaps actually present:
+      // a parent-schema rule ('message') must discover sub-schema docs
+      // ('message/email'), mirroring the matcher's segment-bounded semantics.
+      let schemas = requested;
+      if (requested.length) {
+        const available = await request.workspace.listBitmaps('data/schema/')
+          .then((bitmaps) => bitmaps.map((b) => b.key))
+          .catch(() => null);
+        if (available) {
+          schemas = [...new Set(requested.flatMap((id) => {
+            const matches = available.filter((key) => key === id || key.startsWith(`${id}/`));
+            return matches.length ? matches : [id];
+          }))];
+        }
+      }
+
+      // One query per expanded schema, unioned by id — alternative schemas are
+      // OR in the rule engine, and a single features array would intersect.
+      let docs;
       try {
-        documents = await request.workspace.list({ ...(schemas.length ? { features: schemas } : {}), limit });
+        if (schemas.length) {
+          const seen = new Map();
+          for (const key of schemas) {
+            const batch = await request.workspace.list({ features: [key], limit });
+            for (const doc of (Array.isArray(batch) ? batch : batch?.data || [])) {
+              if (doc?.id != null && !seen.has(doc.id)) seen.set(doc.id, doc);
+            }
+            if (seen.size >= limit) break;
+          }
+          docs = [...seen.values()].slice(0, limit);
+        } else {
+          const documents = await request.workspace.list({ limit });
+          docs = (Array.isArray(documents) ? documents : documents?.data || []).slice(0, limit);
+        }
       } catch (error) {
         const response = new ResponseObject().serverError(`Document discovery failed (workspace active?): ${error.message}`);
         return reply.code(response.statusCode).send(response.getResponse());
       }
-      const docs = (Array.isArray(documents) ? documents : documents?.data || []).slice(0, limit);
 
       const results = [];
       let matched = 0;

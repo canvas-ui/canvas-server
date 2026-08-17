@@ -98,6 +98,27 @@ export default class GithubDriver {
         return { documents, nextCursor: maxUpdated, done };
     }
 
+    /**
+     * Full traversal of the repo's CURRENT issue provenance URLs — the
+     * deletion-sync (pruneRemoved) baseline. Includes closed issues (closed ≠
+     * deleted). Throws on any API error, so a partial listing can never
+     * masquerade as complete.
+     */
+    async listIdentities(container) {
+        const urls = [];
+        for (let page = 1; page <= 100; page++) {
+            const issues = await this.#get(`/repos/${container.id}/issues`, {
+                state: 'all', per_page: PER_PAGE, page,
+            });
+            for (const issue of issues) {
+                if (issue.pull_request) continue;
+                urls.push(`gh://${container.id}/issues/${issue.number}`);
+            }
+            if (issues.length < PER_PAGE) break;
+        }
+        return urls;
+    }
+
     async #send(method, pathname, body) {
         const res = await fetch(`${API}${pathname}`, {
             method,

@@ -337,7 +337,9 @@ level and recorded — nothing fails silently anymore.
 - `POST /rest/v2/workspaces/:id/hooks/backfill`
   `{ ruleId | hookFile, event?, schema?, limit? (≤500), dryRun? }` — run ONE
   rule/hook against existing documents as if each had just been inserted.
-  Discovery filters by `schema` (defaults to the rule's own `when.schema`).
+  Discovery filters by `schema` (defaults to the rule's own `when.schema`),
+  expanded hierarchically against the schema bitmaps actually present — a
+  parent schema like `message` also discovers `message/email` documents.
   `dryRun` returns the per-document matcher breakdown without executing.
   Synthesized envelopes carry `origin:'backfill'` — downstream writes are
   cascade-guarded like any automation. Each envelope carries the document's

@@ -967,6 +967,15 @@ export class WorkspaceStoredIndex {
     }
 
     /**
+     * Public entry for other services (connector deletion-sync): drop the
+     * given location URLs from a document, with the full orphan-not-delete
+     * semantics of #reconcileRemovedLocations below.
+     */
+    async reconcileRemovedLocations(doc, removedUrls = []) {
+        return this.#reconcileRemovedLocations(doc, removedUrls);
+    }
+
+    /**
      * A backing blob vanished from one or more locations. Drop those locations;
      * the doc keeps its survivors and unticks only the backends-tree path(s) the
      * dead locations backed. When NO locations survive the doc is ORPHANED,

@@ -100,9 +100,20 @@ All drivers use plain `fetch` — no new SDK dependencies.
 ## Deletion / destroy
 
 Connector locations are **not deletable** in v1 — Destroy degrades to a
-reference drop (same policy as read-only backends). Remote deletions are not
-propagated locally yet (documents persist as an archive; revisit with
-write-back).
+reference drop (same policy as read-only backends).
+
+**Source → Canvas deletion-sync (`pruneRemoved: true`, opt-in per backend).**
+After each clean container sync, drivers that can FULLY traverse the source
+(`listIdentities(container)` → every current provenance URL; github so far)
+compare that listing against the indexed mirror. Docs whose remote object is
+gone are handed to the stored index's orphan-not-delete machinery
+(`reconcileRemovedLocations`): locations dropped, backends-mirror paths
+unticked, `data/no-location` + `orphanedAt` stamped — curated placements
+survive, and the doc is purged later by orphan retention GC (Settings >
+Database). Guard rails: any traversal error skips the prune (a partial
+listing must never masquerade as complete); only docs whose identity checksum
+derives from their provenance URL are touched; an empty source listing
+against a non-empty mirror is refused.
 
 ## Field mapping highlights
 
@@ -121,5 +132,6 @@ write-back).
 ## Not in v1 (deliberate)
 
 Write-back for slack/gcal/teams (post message, RSVP), webhook/event push, GH issue
-comments as child docs, Slack threads expansion, remote-deletion propagation,
+comments as child docs, Slack threads expansion, deletion-sync for
+slack/gcal/caldav/teams (needs per-driver `listIdentities`; github shipped),
 WhatsApp (device-side concern — canvas-edge, not a server connector).

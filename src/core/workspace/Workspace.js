@@ -3249,6 +3249,15 @@ class Workspace extends EventEmitter {
             insertBackendPath: (treePath) => this.getBackendsTree().insertPath(treePath, { ignoreLocks: true }),
             lockBackendNode: (path, holder) => this.lockBackendTreeNode(path, holder),
             unlockBackendNode: (path, holder) => this.unlockBackendTreeNode(path, holder),
+            // Deletion-sync (pruneRemoved): enumerate a connector's mirror docs
+            // and drop locations of source-deleted items with the stored
+            // index's orphan-not-delete semantics.
+            listDocumentIdsUnderBackendPath: (treePath) => this.documentIdsUnderScope(`${Workspace.BACKENDS_TREE_NAME}://${treePath}`),
+            getDocumentsByIdArray: (ids) => this.getDocumentsByIdArray(ids),
+            reconcileRemovedLocations: async (doc, urls) => {
+                if (!this.#storedIndex?.isRunning) await this.#startStoredIndex();
+                return this.#storedIndex.reconcileRemovedLocations(doc, urls);
+            },
         });
     }
 

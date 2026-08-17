@@ -131,11 +131,21 @@ export default async function workspaceHooksRoutes(fastify) {
   fastify.get('/meta', {
     onRequest: [fastify.authenticate, requireWorkspaceRead()],
   }, async (request, reply) => {
+    // Schemas actually present in THIS workspace (schema feature bitmaps),
+    // with live document counts — so pickers offer what the DB really holds
+    // instead of a hand-maintained list.
+    const schemas = await request.workspace.listBitmaps('data/schema/')
+      .then((bitmaps) => bitmaps
+        .filter((b) => b.size > 0)
+        .map((b) => ({ id: b.key, name: b.key.replace(/^data\/schema\//, ''), count: b.size }))
+        .sort((a, b) => b.count - a.count))
+      .catch(() => []);
     const response = new ResponseObject().found({
       events: HOOK_EVENTS,
       actions: HOOK_ACTIONS.map(({ id, label, description }) => ({ id, label, description })),
       classifier: CLASSIFIER_SURFACE,
       contextApi: HOOK_CONTEXT_API,
+      schemas,
     }, 'Workspace hook metadata retrieved successfully');
     return reply.code(response.statusCode).send(response.getResponse());
   });
@@ -345,8 +355,8 @@ export default async function workspaceHooksRoutes(fastify) {
 
   // Explain: which rules and JS hooks would fire for a document + event, with
   // a matcher-by-matcher breakdown ("why didn't my rule run"). Path matchers
-  // evaluate against `paths` from the body (a live event carries the landing
-  // paths, which a stored document does not) — pass the paths to simulate.
+  // evaluate against `paths` from the body when given (simulating a landing);
+  // otherwise against the document's live tree placements.
   fastify.post('/explain', {
     onRequest: [fastify.authenticate, requireWorkspaceRead()],
     schema: {
@@ -374,7 +384,18 @@ export default async function workspaceHooksRoutes(fastify) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
-      const payload = { id: documentId, document, context: paths.length ? { paths } : null };
+      // Explicit body paths simulate a landing; otherwise evaluate against the
+      // document's LIVE placements (same shape backfill uses).
+      const treePaths = {};
+      if (!paths.length) {
+        const placements = await request.workspace.listDocumentPlacements(documentId).catch(() => []);
+        for (const placement of placements) {
+          if (!placement?.paths?.length) { continue; }
+          const key = placement.type === 'context' ? 'context' : placement.tree;
+          treePaths[key] = [...new Set([...(treePaths[key] || []), ...placement.paths])];
+        }
+      }
+      const payload = { id: documentId, document, context: paths.length ? { paths } : null, treePaths };
       const classification = classifyDocument(document, payload);
 
       const rules = [];
@@ -408,8 +429,10 @@ export default async function workspaceHooksRoutes(fastify) {
   // Backfill: run ONE rule or JS hook against existing documents, as if each
   // had just been inserted. dryRun evaluates matchers only (per-doc breakdown).
   // Synthesized envelopes carry origin:'backfill' — downstream writes are
-  // cascade-guarded like any automation. NOTE: stored documents carry no live
-  // landing paths, so `when.path` matchers evaluate false during backfill.
+  // cascade-guarded like any automation. Each envelope carries the document's
+  // LIVE tree placements (payload.treePaths), so `when.path` matchers — incl.
+  // tree-qualified ones like 'backends:/github/x' — evaluate against where
+  // the document is filed right now.
   fastify.post('/backfill', {
     onRequest: [fastify.authenticate, requireWorkspaceWrite()],
     schema: {
@@ -469,11 +492,21 @@ export default async function workspaceHooksRoutes(fastify) {
       let failed = 0;
       for (const document of docs) {
         if (!document?.id) { continue; }
+        // Live placements ({ treeName: [paths] }; context-type trees merged
+        // under 'context' to mirror live-event payload shape).
+        const treePaths = {};
+        const placements = await request.workspace.listDocumentPlacements(document.id).catch(() => []);
+        for (const placement of placements) {
+          if (!placement?.paths?.length) { continue; }
+          const key = placement.type === 'context' ? 'context' : placement.tree;
+          treePaths[key] = [...new Set([...(treePaths[key] || []), ...placement.paths])];
+        }
         const payload = {
           id: document.id,
           document,
           context: null,
           directory: null,
+          treePaths,
           eventId: crypto.randomUUID(),
           origin: 'backfill',
           depth: 0,

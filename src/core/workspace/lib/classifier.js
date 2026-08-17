@@ -156,12 +156,28 @@ class Classification {
         this.treePaths = {};
         if (contextPaths.length) { this.treePaths.context = contextPaths; }
         if (directoryPaths.length) { this.treePaths[directoryTree] = directoryPaths; }
-        this.paths = [...new Set([...contextPaths, ...directoryPaths])];
+        // Pre-built map from the emitter ({ treeName: [paths] }) — backfill
+        // loads a document's LIVE placements this way, since a stored doc has
+        // no landing selectors.
+        if (payload?.treePaths && typeof payload.treePaths === 'object') {
+            for (const [tree, paths] of Object.entries(payload.treePaths)) {
+                const valid = extractPaths({ paths });
+                if (valid.length) { this.treePaths[tree] = [...new Set([...(this.treePaths[tree] || []), ...valid])]; }
+            }
+        }
+        this.paths = [...new Set(Object.values(this.treePaths).flat())];
     }
 
     // ── Schema predicates ───────────────────────────────────────────────────
+    /**
+     * Exact or hierarchical match: 'message' (data/schema/message) also
+     * matches sub-schemas like data/schema/message/email. Segment-bounded, so
+     * 'note' never matches a hypothetical data/schema/notebook.
+     */
     isSchema(name) {
-        return this.schema !== null && this.schema === normalizeSchemaId(name);
+        const target = normalizeSchemaId(name);
+        if (this.schema === null || target === null) { return false; }
+        return this.schema === target || this.schema.startsWith(`${target}/`);
     }
     isTab() { return this.isSchema('tab'); }
     isEmail() { return this.isSchema('email'); }

@@ -340,8 +340,10 @@ level and recorded — nothing fails silently anymore.
   Discovery filters by `schema` (defaults to the rule's own `when.schema`).
   `dryRun` returns the per-document matcher breakdown without executing.
   Synthesized envelopes carry `origin:'backfill'` — downstream writes are
-  cascade-guarded like any automation. Path matchers evaluate false during
-  backfill (stored docs carry no landing paths). UI: ▶ button on a rule row
+  cascade-guarded like any automation. Each envelope carries the document's
+  live tree placements (`payload.treePaths`), so path matchers — incl.
+  tree-qualified ones like `backends:/github/x` — evaluate against where the
+  document is filed right now. UI: ▶ button on a rule row
   (dry-run → confirm). CLI: `canvas ws <name> hooks backfill --rule <id>
   [--dry-run] [--schema email] [--limit 100]`.
 - `POST /rest/v2/workspaces/:id/hooks/runs/:runId/replay` — re-deliver a

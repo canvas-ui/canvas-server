@@ -111,6 +111,7 @@ packer_cache/
 *.seed
 *.sock
 *.socket
+*.swp
 
 # Diagnostic reports (https://nodejs.org/api/report.html)
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json

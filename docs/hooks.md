@@ -161,7 +161,7 @@ entries).
 |---|---|
 | `event` | required; exact event name |
 | `schema` | short (`tab`) or full (`data/schema/tab`) schema id |
-| `path` | prefix match against the paths the document landed in |
+| `path` | prefix match against the paths the document landed in. A `tree:` qualifier scopes it to one tree by its actual name — `ctx:/a`, `dir:/a`, `backends:/github/owner/repo` (connector-ingested docs); unqualified matches any tree |
 | `url` | string = case-insensitive substring; object = `{ host, prefix, contains, regex }` |
 | `from`, `subject` | string = case-insensitive substring; object = `{ equals, contains, startsWith, regex }` |
 | `to` | same string/object semantics as `from`, matched against every To/Cc recipient address |
@@ -195,8 +195,8 @@ Executed sequentially; an action error is logged and the rest continue.
 
 | Action | Fields | Effect |
 |---|---|---|
-| `link` | `paths`, `tags?` | link doc to tree paths (`emitEvent:false`, loop-safe). Paths hit the context tree by default; `dir:/a/b` targets the directory tree, `ctx:/a/b` is explicit |
-| `unlink` | `paths` | remove the doc from tree paths (inverse of `link`; same `dir:`/`ctx:` prefixes). The doc survives on its other paths |
+| `link` | `paths`, `tags?` | link doc to tree paths (`emitEvent:false`, loop-safe). Paths hit the context tree by default; a `tree:` qualifier picks another tree by name — `dir:/a/b` / `directory:/a/b` (directory tree), `ctx:/a/b` / `context:/a/b` (explicit). The backends mirror is read-only for rules (a `backends:` link target errors) |
+| `unlink` | `paths` | remove the doc from tree paths (inverse of `link`; same tree qualifiers). The doc survives on its other paths |
 | `tag` | `tags` | re-link doc on its own paths with feature tags |
 | `delete` | — | purge the doc from the index. Bytes on storage backends (blobs, files, mail) stay untouched |
 | `destroy` | — | **irreversible**: delete the doc's bytes on every deletable location (stored:// blob, workspace file, imap EXPUNGE; read-only locations degrade to a reference drop), then purge it from the index |

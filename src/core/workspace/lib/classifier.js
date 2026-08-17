@@ -144,7 +144,19 @@ class Classification {
         this.to = [...normalizeAddressList(doc?.data?.to), ...normalizeAddressList(doc?.data?.cc)];
         this.subject = typeof doc?.data?.subject === 'string' ? doc.data.subject : null;
         this.attachments = Array.isArray(doc?.data?.attachments) ? doc.data.attachments : [];
-        this.paths = [...new Set([...extractPaths(payload?.context), ...extractPaths(payload?.directory)])];
+        // Paths keyed by tree so inPath can be tree-qualified: context paths
+        // under 'context'; directory-type trees under their actual tree name
+        // (the payload selector carries it — 'directory', 'backends', custom).
+        const contextPaths = extractPaths(payload?.context);
+        const directoryPaths = extractPaths(payload?.directory);
+        // Prefer the human tree NAME (stamped by the hook dispatcher); the raw
+        // selector `tree` is usually a resolved tree id.
+        const directoryTree = [payload?.directory?.treeName, payload?.directory?.tree]
+            .find((t) => typeof t === 'string' && t) || 'directory';
+        this.treePaths = {};
+        if (contextPaths.length) { this.treePaths.context = contextPaths; }
+        if (directoryPaths.length) { this.treePaths[directoryTree] = directoryPaths; }
+        this.paths = [...new Set([...contextPaths, ...directoryPaths])];
     }
 
     // ── Schema predicates ───────────────────────────────────────────────────
@@ -222,12 +234,25 @@ class Classification {
     }
 
     // ── Path predicate ──────────────────────────────────────────────────────
-    /** True when the document landed under `prefix` in any of the event's trees. */
+    /**
+     * True when the document landed under `prefix` in any of the event's
+     * trees. A tree qualifier scopes the match to one tree by its actual
+     * name: 'ctx:/a' / 'context:/a', 'dir:/a' / 'directory:/a',
+     * 'backends:/github/x'. Unqualified prefixes match any tree.
+     */
     inPath(prefix) {
         if (!prefix) { return false; }
-        const target = String(prefix).replace(/\/+$/, '') || '/';
-        if (target === '/') { return this.paths.length > 0; }
-        return this.paths.some((p) => p === target || p.startsWith(`${target}/`));
+        let raw = String(prefix);
+        let pool = this.paths;
+        const qualifier = raw.match(/^([A-Za-z][\w-]*):(?=\/|$)/);
+        if (qualifier) {
+            const tree = ({ ctx: 'context', dir: 'directory' })[qualifier[1]] || qualifier[1];
+            pool = this.treePaths[tree] || [];
+            raw = raw.slice(qualifier[0].length);
+        }
+        const target = raw.replace(/\/+$/, '') || '/';
+        if (target === '/') { return pool.length > 0; }
+        return pool.some((p) => p === target || p.startsWith(`${target}/`));
     }
 
     // ── Embedding ───────────────────────────────────────────────────────────

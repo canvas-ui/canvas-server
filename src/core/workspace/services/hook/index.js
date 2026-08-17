@@ -167,6 +167,11 @@ class HookService extends EventEmitter {
             return;
         }
 
+        // Directory selectors in event payloads carry the resolved tree ID
+        // (selector normalization); the classifier's tree-qualified matching
+        // ('backends:/github/x') needs the NAME — resolve once and stamp it.
+        HookService.#stampDirectoryTreeName(workspace, payload);
+
         // Cascade ceiling: automation-caused events beyond maxDepth never reach
         // any handler — this is the hard loop terminator (the opt-in `cascade`
         // flag below only governs depth 1..maxDepth-1).
@@ -205,6 +210,19 @@ class HookService extends EventEmitter {
         }
 
         await Promise.allSettled(promises);
+    }
+
+    // Best-effort: leaves the payload untouched when the tree is unknown (the
+    // qualifier then simply doesn't match) or already carries a treeName.
+    static #stampDirectoryTreeName(workspace, payload) {
+        const dir = payload?.directory;
+        if (!dir || typeof dir !== 'object' || dir.treeName) { return; }
+        const ref = dir.tree ?? dir.treeId;
+        if (!ref) { return; }
+        try {
+            const tree = workspace.db?.getTree?.(ref);
+            if (tree?.name) { dir.treeName = tree.name; }
+        } catch { /* payload stays as-is */ }
     }
 
     static #BATCH_FANOUT = {

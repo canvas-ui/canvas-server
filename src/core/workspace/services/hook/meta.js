@@ -166,7 +166,7 @@ export const CLASSIFIER_SURFACE = Object.freeze({
         'isLink()', 'isYoutube()', 'isArxiv()', 'isImageUrl()', "hostMatches('youtube.com')", "urlMatches('substring'|RegExp)",
         'isText()', 'isImage()', 'isAudio()', 'isVideo()', 'isPdf()', 'isBlob()', "mimeMatches('image/*')",
         "sentTo('invoice@corp.tld')", "hasAttachment('application/pdf'?)",
-        "inPath('/to-sort')",
+        "inPath('/to-sort')", "inPath('backends:/github/owner/repo')",
     ],
     fields: ['url', 'parsedUrl', 'host', 'from', 'to', 'subject', 'attachments', 'mime', 'paths', 'schema', 'doc'],
 });

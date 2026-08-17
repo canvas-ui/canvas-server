@@ -211,13 +211,25 @@ export function interpolate(template, scope) {
     });
 }
 
-// A link target is a context-tree path by default; 'ctx:/a/b' is explicit and
-// 'dir:/a/b' targets the directory tree instead.
+// A link target is a context-tree path by default; a 'tree:' qualifier picks
+// another tree by its actual name: 'ctx:'/'context:' (explicit context),
+// 'dir:'/'directory:' (the directory tree), or any directory-type tree such
+// as 'backends:/github/x'. Note the backends mirror itself is read-only for
+// rules — 'backends:' works in path CONDITIONS, but as a link/unlink target
+// the workspace guard refuses it (the run log shows the error).
 function parseLinkTarget(raw) {
     const value = String(raw || '');
-    if (value.startsWith('dir:')) { return { tree: 'directory', path: value.slice(4) || '/' }; }
-    if (value.startsWith('ctx:')) { return { tree: 'context', path: value.slice(4) || '/' }; }
-    return { tree: 'context', path: value };
+    const qualifier = value.match(/^([A-Za-z][\w-]*):(?=\/|$)/);
+    if (!qualifier) { return { tree: 'context', path: value }; }
+    const tree = ({ ctx: 'context', dir: 'directory' })[qualifier[1]] || qualifier[1];
+    return { tree, path: value.slice(qualifier[0].length) || '/' };
+}
+
+// Directory selector for a parsed non-context target. The default
+// 'directory' tree keeps the legacy bare-path form; named trees go
+// tree-qualified so 'backends:'/custom trees resolve to the right tree.
+function directorySelector(target) {
+    return target.tree === 'directory' ? target.path : { tree: target.tree, path: target.path };
 }
 
 // Shared output pipeline for actions that produce text (agent reply, script
@@ -238,7 +250,7 @@ async function handleActionOutput(text, output, { context, scope, workspace, log
         const title = interpolate(String(output.note.title || scope.rule?.description || `Automation output (${label})`), scope);
         const note = await context.insert(
             { schema: 'data/schema/note', data: { title, content: String(text) } },
-            target.tree === 'directory' ? { context: null, directory: target.path } : { context: target.path },
+            target.tree !== 'context' ? { context: null, directory: directorySelector(target) } : { context: target.path },
         );
         logger.debug(`rule ${label}: output saved as note ${note?.id ?? note} at ${target.tree}:${target.path}`);
     }
@@ -293,7 +305,7 @@ async function writeOutputFile(text, fileSpec, { context, scope, workspace, logg
         };
         const inserted = await context.insert(
             doc,
-            target.tree === 'directory' ? { context: null, directory: target.path } : { context: target.path },
+            target.tree !== 'context' ? { context: null, directory: directorySelector(target) } : { context: target.path },
         );
         logger.debug(`rule ${label}: output file indexed as ${inserted?.id ?? inserted} at ${target.tree}:${target.path}`);
     }
@@ -307,8 +319,8 @@ const ACTIONS = {
         if (!doc?.id) { return; }
         for (const rawPath of asArray(action.paths || action.path || []).filter(Boolean)) {
             const target = parseLinkTarget(rawPath);
-            const selector = target.tree === 'directory'
-                ? { directory: target.path }
+            const selector = target.tree !== 'context'
+                ? { directory: directorySelector(target) }
                 : { context: workspace.getContextTreeSelector(target.path) };
             await workspace.link(doc.id, {
                 ...selector,
@@ -337,8 +349,8 @@ const ACTIONS = {
         if (!doc?.id) { return; }
         for (const rawPath of asArray(action.paths || action.path || []).filter(Boolean)) {
             const target = parseLinkTarget(rawPath);
-            const selector = target.tree === 'directory'
-                ? { directory: target.path }
+            const selector = target.tree !== 'context'
+                ? { directory: directorySelector(target) }
                 : { context: workspace.getContextTreeSelector(target.path) };
             // The resulting document.removed / document.unlinked events carry
             // origin:'rule' + depth, so cascade defaults keep them from

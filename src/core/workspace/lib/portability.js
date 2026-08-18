@@ -167,7 +167,11 @@ export async function deleteExport(manager, userEmail, name) {
  *
  * Returns the registered index entry.
  */
-export async function importWorkspaceFromRemote(manager, { userId, userEmail, url, token, fetchImpl = fetch, allowInsecure = false }) {
+export async function importWorkspaceFromRemote(manager, { userId, userEmail, url, token, fetchImpl = fetch, allowInsecure = false, report = null }) {
+  // Phase/progress reporting is optional so direct callers (CLI, tests) can
+  // ignore it; the REST layer passes a job reporter through.
+  const phase = (name) => report?.phase?.(name);
+  const progress = (received, total) => report?.progress?.(received, total);
   // SSRF guard: the url is fully attacker-controlled, so validate it is a
   // public https host up front and pin every outbound request (redirects
   // included) to a DNS-lookup guard that refuses private/loopback addresses.
@@ -176,6 +180,74 @@ export async function importWorkspaceFromRemote(manager, { userId, userEmail, ur
   // halves for self-hosted deployments, where the peer canvas-server is
   // legitimately on http at a private address. It is off by default because on
   // a public instance it turns this into an internal-network probe.
+  const { base, headers, guarded, api } = remoteApi({ url, token, allowInsecure, fetchImpl });
+
+  phase('resolving');
+  const info = await api('/rest/v2/workspaces/token-info');
+  if (!info?.workspaceId) throw fail('Remote did not resolve the token to a workspace', 'REMOTE_ERROR', 502);
+
+  // A workspace has to be stopped to be archived, and a shared workspace is
+  // normally running — so ask the remote to stop it, but only when the token
+  // carries write. With a read-only token the remote answers 409 and the user
+  // learns the source has to be stopped on the far side.
+  phase('exporting');
+  const canStop = Array.isArray(info.permissions) && info.permissions.includes('write');
+  const exported = await api(`/rest/v2/workspaces/${info.workspaceId}/export`, {
+    method: 'POST',
+    body: JSON.stringify({ stop: canStop }),
+    headers: { ...headers, 'Content-Type': 'application/json' },
+  });
+  if (!exported?.name) throw fail('Remote export did not return an archive name', 'REMOTE_ERROR', 502);
+
+  const dir = exportsDir(manager, userEmail);
+  await fsPromises.mkdir(dir, { recursive: true });
+  const localArchive = exportFilePath(manager, userEmail, exported.name);
+  const archiveRoute = `/rest/v2/workspaces/${info.workspaceId}/exports/${encodeURIComponent(exported.name)}`;
+
+  phase('downloading');
+  let download;
+  try {
+    download = await fetchImpl(`${base}${archiveRoute}`, { ...guarded, headers });
+  } catch (err) {
+    throw fail(`Remote unreachable: ${base} (${err.message})`, 'REMOTE_UNREACHABLE', 502);
+  }
+  if (!download.ok || !download.body) {
+    throw fail(`Archive download failed: ${download.status}`, 'REMOTE_ERROR', download.status || 502);
+  }
+  // Download to a .part file and rename on success. A partial transfer must
+  // never sit in Exports/ under the real name: it would be listed as a valid
+  // archive and offered for download and import. The suffix also keeps the
+  // in-flight file out of listExports(), which matches on archive extensions.
+  const partFile = `${localArchive}.part`;
+  // fetchImpl is pluggable, so do not assume a full Response object here
+  const expected = Number(download.headers?.get?.('content-length')) || null;
+  let received = 0;
+  progress(0, expected);
+  try {
+    const body = Readable.fromWeb(download.body);
+    body.on('data', (chunk) => {
+      received += chunk.length;
+      progress(received, expected);
+    });
+    await pipeline(body, fs.createWriteStream(partFile));
+    await fsPromises.rename(partFile, localArchive);
+  } catch (err) {
+    await fsPromises.rm(partFile, { force: true }).catch(() => {});
+    throw fail(`Archive download failed: ${err.message}`, 'REMOTE_ERROR', 502);
+  }
+
+  // the source keeps no leftovers; failure here is not fatal
+  try { await fetchImpl(`${base}${archiveRoute}`, { ...guarded, method: 'DELETE', headers }); } catch { /* best-effort */ }
+
+  return importWorkspace(manager, { userId, userEmail, source: localArchive, report });
+}
+
+/**
+ * One authenticated client for a remote canvas-server, shared by the flows that
+ * talk to one: the URL policy, the SSRF dispatcher pinning and the envelope
+ * unwrapping must not drift apart between them.
+ */
+export function remoteApi({ url, token, allowInsecure = false, fetchImpl = fetch }) {
   let parsedUrl;
   try {
     parsedUrl = allowInsecure
@@ -191,6 +263,7 @@ export async function importWorkspaceFromRemote(manager, { userId, userEmail, ur
   // The DNS guard is what refuses private addresses at connect time, so it has
   // to come off too when private targets are deliberately permitted.
   const guarded = allowInsecure ? {} : { dispatcher: guardedDispatcher };
+
   const api = async (route, options = {}) => {
     let res;
     try {
@@ -210,52 +283,20 @@ export async function importWorkspaceFromRemote(manager, { userId, userEmail, ur
     return body?.payload;
   };
 
+  return { base, headers, guarded, api };
+}
+
+/**
+ * Resolve {url, token} to the workspace the share token is bound to, without
+ * transferring anything. Used to validate a remote reference before storing it.
+ */
+export async function resolveRemoteToken({ url, token, allowInsecure = false, fetchImpl = fetch }) {
+  const { api } = remoteApi({ url, token, allowInsecure, fetchImpl });
   const info = await api('/rest/v2/workspaces/token-info');
-  if (!info?.workspaceId) throw fail('Remote did not resolve the token to a workspace', 'REMOTE_ERROR', 502);
-
-  // A workspace has to be stopped to be archived, and a shared workspace is
-  // normally running — so ask the remote to stop it, but only when the token
-  // carries write. With a read-only token the remote answers 409 and the user
-  // learns the source has to be stopped on the far side.
-  const canStop = Array.isArray(info.permissions) && info.permissions.includes('write');
-  const exported = await api(`/rest/v2/workspaces/${info.workspaceId}/export`, {
-    method: 'POST',
-    body: JSON.stringify({ stop: canStop }),
-    headers: { ...headers, 'Content-Type': 'application/json' },
-  });
-  if (!exported?.name) throw fail('Remote export did not return an archive name', 'REMOTE_ERROR', 502);
-
-  const dir = exportsDir(manager, userEmail);
-  await fsPromises.mkdir(dir, { recursive: true });
-  const localArchive = exportFilePath(manager, userEmail, exported.name);
-  const archiveRoute = `/rest/v2/workspaces/${info.workspaceId}/exports/${encodeURIComponent(exported.name)}`;
-
-  let download;
-  try {
-    download = await fetchImpl(`${base}${archiveRoute}`, { ...guarded, headers });
-  } catch (err) {
-    throw fail(`Remote unreachable: ${base} (${err.message})`, 'REMOTE_UNREACHABLE', 502);
+  if (!info?.workspaceId) {
+    throw fail('Remote did not resolve the token to a workspace', 'REMOTE_ERROR', 502);
   }
-  if (!download.ok || !download.body) {
-    throw fail(`Archive download failed: ${download.status}`, 'REMOTE_ERROR', download.status || 502);
-  }
-  // Download to a .part file and rename on success. A partial transfer must
-  // never sit in Exports/ under the real name: it would be listed as a valid
-  // archive and offered for download and import. The suffix also keeps the
-  // in-flight file out of listExports(), which matches on archive extensions.
-  const partFile = `${localArchive}.part`;
-  try {
-    await pipeline(Readable.fromWeb(download.body), fs.createWriteStream(partFile));
-    await fsPromises.rename(partFile, localArchive);
-  } catch (err) {
-    await fsPromises.rm(partFile, { force: true }).catch(() => {});
-    throw fail(`Archive download failed: ${err.message}`, 'REMOTE_ERROR', 502);
-  }
-
-  // the source keeps no leftovers; failure here is not fatal
-  try { await fetchImpl(`${base}${archiveRoute}`, { ...guarded, method: 'DELETE', headers }); } catch { /* best-effort */ }
-
-  return importWorkspace(manager, { userId, userEmail, source: localArchive });
+  return info;
 }
 
 /**
@@ -286,7 +327,7 @@ function assertLoopbackOrPublicUrl(rawUrl) {
  *  - a .tar.gz/.tgz archive → extracted into the user's Workspaces dir, then registered
  * Returns the registered index entry.
  */
-export async function importWorkspace(manager, { userId, userEmail, source }) {
+export async function importWorkspace(manager, { userId, userEmail, source, report = null }) {
   if (!source || !path.isAbsolute(source)) {
     throw fail('An absolute source path is required', 'BAD_REQUEST', 400);
   }
@@ -321,8 +362,10 @@ export async function importWorkspace(manager, { userId, userEmail, source }) {
   // rather than surfacing as an opaque registration failure.
   await fsPromises.mkdir(workspacesDir, { recursive: true });
   try {
+    report?.phase?.('extracting');
     await run('tar', ['-C', workspacesDir, '-xf', source]);
     await validateWorkspaceDir(target);
+    report?.phase?.('loading');
     return await manager.registerWorkspacePath(userId, target);
   } catch (err) {
     // extraction/validation/registration failed — leave no orphan behind

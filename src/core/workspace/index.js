@@ -124,6 +124,7 @@ function constructWorkspaceReference(userIdentifier, workspaceSlug, host = WORKS
 class WorkspaceManager extends EventEmitter {
 
     #indexFactory;      // Jim instance — per-user index files (db/users/<id>/workspaces.json)
+    #userRemoteIndexes = new Map(); // userId → remote-workspace reference index
     #userIndexes = new Map(); // userId -> Conf (lazily opened per-user index)
     #users;             // Users service
     #roles;             // Roles service
@@ -1036,6 +1037,57 @@ class WorkspaceManager extends EventEmitter {
     }
 
     /**
+     * Remote workspace references
+     *
+     * A reference to a workspace that stays on ANOTHER canvas-server: we store
+     * the credentials needed to reach it, not its data. This is deliberately
+     * NOT a workspace in the index — it has no rootPath, cannot be started and
+     * must never be mistaken for local data by anything that walks workspaces.
+     * Opening one for real (proxying reads/writes through to its server) is
+     * canvas-edge's job; until then these are placeholders the UI can list.
+     */
+
+    async listRemoteWorkspaces(userId) {
+        const store = this.#getUserRemoteIndex(userId).store || {};
+        return Object.values(store).sort((a, b) => String(a.addedAt).localeCompare(String(b.addedAt)));
+    }
+
+    async addRemoteWorkspace(userId, { url, token, workspaceId, workspaceName, label = null, permissions = [] }) {
+        if (!url || !token) throw new Error('A remote workspace needs a url and a token');
+        if (!workspaceId) throw new Error('A remote workspace needs the resolved workspaceId');
+
+        const index = this.#getUserRemoteIndex(userId);
+        const normalizedUrl = String(url).replace(/\/+$/, '');
+        // One reference per (server, workspace): re-adding refreshes the token
+        // rather than stacking duplicates a user then has to clean up.
+        const existing = Object.values(index.store || {})
+            .find((entry) => entry.url === normalizedUrl && entry.workspaceId === workspaceId);
+
+        const entry = {
+            id: existing?.id || uuidv4(),
+            type: 'remote-workspace',
+            status: 'remote',
+            url: normalizedUrl,
+            token,
+            workspaceId,
+            workspaceName: workspaceName || null,
+            label: label || workspaceName || workspaceId,
+            permissions,
+            addedAt: existing?.addedAt || new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+        };
+        index.set(entry.id, entry);
+        return entry;
+    }
+
+    async removeRemoteWorkspace(userId, id) {
+        const index = this.#getUserRemoteIndex(userId);
+        if (!index.get(id)) return false;
+        index.delete(id);
+        return true;
+    }
+
+    /**
      * Resolution Methods
      */
 
@@ -1141,6 +1193,15 @@ class WorkspaceManager extends EventEmitter {
             this.#userIndexes.set(userId, this.#indexFactory.getOrCreateIndex('workspaces', { scope: `users/${userId}` }));
         }
         return this.#userIndexes.get(userId);
+    }
+
+    // Lazily open a user's remote-workspace index
+    // (db/users/<userId>/remote-workspaces.json).
+    #getUserRemoteIndex(userId) {
+        if (!this.#userRemoteIndexes.has(userId)) {
+            this.#userRemoteIndexes.set(userId, this.#indexFactory.getOrCreateIndex('remote-workspaces', { scope: `users/${userId}` }));
+        }
+        return this.#userRemoteIndexes.get(userId);
     }
 
     // Union of users known to the Users service and indexes already opened

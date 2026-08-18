@@ -13,7 +13,9 @@ import {
   importWorkspace,
   importWorkspaceFromRemote,
   saveUploadedArchive,
+  resolveRemoteToken,
 } from '../../../core/workspace/lib/portability.js';
+import { importJobs } from '../../../core/workspace/lib/import-jobs.js';
 
 /**
  * Workspace export/import.
@@ -309,6 +311,100 @@ export default async function portabilityRoutes(fastify) {
   });
 
   /**
+   * Remote workspace references — "open" a workspace that stays on another
+   * canvas-server, as opposed to /import which pulls a full copy locally.
+   *
+   * Today this validates the credentials and records the reference so the UI
+   * can list it; actually serving reads/writes from the remote is canvas-edge's
+   * job, so a reference is explicitly marked as a placeholder.
+   */
+  fastify.get('/remotes', {
+    onRequest: [fastify.authenticate],
+  }, async (request, reply) => {
+    try {
+      const items = (await fastify.workspaceManager.listRemoteWorkspaces(request.user.id))
+        // the token is write-only: it is a credential, not display data
+        .map(({ token: _token, ...rest }) => ({ ...rest, openable: false }));
+      const response = new ResponseObject().found(items, 'Remote workspaces retrieved', 200, items.length);
+      return reply.code(response.statusCode).send(response.getResponse());
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  fastify.post('/remotes', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      body: {
+        type: 'object',
+        required: ['url', 'token'],
+        properties: { url: { type: 'string' }, token: { type: 'string' }, label: { type: 'string' } },
+      },
+    },
+  }, async (request, reply) => {
+    try {
+      const { url, token, label } = request.body;
+
+      // Resolve the token against the remote before storing anything: a
+      // reference whose credentials do not work is worse than no reference,
+      // and this is also what gives us the workspace's id and name.
+      const info = await resolveRemoteToken({
+        url,
+        token,
+        allowInsecure: env.workspace?.allowInsecureRemoteImport === true,
+      });
+
+      const entry = await fastify.workspaceManager.addRemoteWorkspace(request.user.id, {
+        url,
+        token,
+        workspaceId: info.workspaceId,
+        workspaceName: info.workspaceName,
+        permissions: info.permissions || [],
+        label,
+      });
+      const { token: _token, ...safe } = entry;
+      const response = new ResponseObject().created({ ...safe, openable: false }, 'Remote workspace added');
+      return reply.code(response.statusCode).send(response.getResponse());
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  fastify.delete('/remotes/:remoteId', {
+    onRequest: [fastify.authenticate],
+  }, async (request, reply) => {
+    try {
+      const removed = await fastify.workspaceManager.removeRemoteWorkspace(request.user.id, request.params.remoteId);
+      const response = removed
+        ? new ResponseObject().deleted({ id: request.params.remoteId }, 'Remote workspace removed')
+        : new ResponseObject().notFound(`Remote workspace not found: ${request.params.remoteId}`);
+      return reply.code(response.statusCode).send(response.getResponse());
+    } catch (err) {
+      return sendError(reply, err);
+    }
+  });
+
+  fastify.get('/import/jobs', {
+    onRequest: [fastify.authenticate],
+  }, async (request, reply) => {
+    const items = importJobs.list(request.user.id);
+    const response = new ResponseObject().found(items, 'Import jobs retrieved', 200, items.length);
+    return reply.code(response.statusCode).send(response.getResponse());
+  });
+
+  fastify.get('/import/jobs/:jobId', {
+    onRequest: [fastify.authenticate],
+  }, async (request, reply) => {
+    const job = importJobs.get(request.user.id, request.params.jobId);
+    if (!job) {
+      const response = new ResponseObject().notFound(`Import job not found: ${request.params.jobId}`);
+      return reply.code(response.statusCode).send(response.getResponse());
+    }
+    const response = new ResponseObject().found(job, 'Import job retrieved');
+    return reply.code(response.statusCode).send(response.getResponse());
+  });
+
+  /**
    * Import from the user's local drive. The browser streams the archive here
    * and it lands in the user's own Exports dir — the client supplies a
    * filename, never a path, which is what keeps this scoped to the user's
@@ -341,16 +437,29 @@ export default async function portabilityRoutes(fastify) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
-      const entry = await importWorkspace(fastify.workspaceManager, {
-        userId: request.user.id,
-        userEmail: request.user.email,
-        source: exportFilePath(fastify.workspaceManager, request.user.email, stored.name),
+      // The upload itself had to be synchronous (it IS the request body), but
+      // extracting a multi-GB archive is not something to hold a connection
+      // open for — hand it to a job like the other archive imports.
+      const { userEmail, userId } = { userEmail: request.user.email, userId: request.user.id };
+      const archiveName = stored.name;
+      const job = importJobs.start(userId, async (report) => {
+        try {
+          return await importWorkspace(fastify.workspaceManager, {
+            userId,
+            userEmail,
+            source: exportFilePath(fastify.workspaceManager, userEmail, archiveName),
+            report,
+          });
+        } catch (err) {
+          // A rejected archive is not worth keeping; the upload only existed
+          // to be imported.
+          await deleteExport(fastify.workspaceManager, userEmail, archiveName).catch(() => {});
+          throw err;
+        }
       });
-      const response = new ResponseObject().created({ ...entry, archive: stored }, 'Workspace imported');
+      const response = new ResponseObject().created({ job, archive: stored }, 'Archive uploaded; import started', 202);
       return reply.code(response.statusCode).send(response.getResponse());
     } catch (err) {
-      // A rejected archive is not worth keeping around; the upload only
-      // existed to be imported.
       if (stored?.name) {
         await deleteExport(fastify.workspaceManager, request.user.email, stored.name).catch(() => {});
       }
@@ -374,28 +483,42 @@ export default async function portabilityRoutes(fastify) {
   }, async (request, reply) => {
     try {
       const { path: sourcePath, export: exportName, url, token } = request.body || {};
+      const userId = request.user.id;
+      const userEmail = request.user.email;
 
       // Remote pull: {url, token} fetches the workspace from another
-      // canvas-server instance using a workspace share token.
+      // canvas-server instance using a workspace share token. Export +
+      // download + extract runs for minutes on a real workspace, so it goes to
+      // a job and the client polls — holding the request open here is exactly
+      // what made this fail behind a proxy.
       if (url) {
-        const entry = await importWorkspaceFromRemote(fastify.workspaceManager, {
-          userId: request.user.id,
-          userEmail: request.user.email,
+        const job = importJobs.start(userId, (report) => importWorkspaceFromRemote(fastify.workspaceManager, {
+          userId,
+          userEmail,
           url,
           token,
           allowInsecure: env.workspace?.allowInsecureRemoteImport === true,
-        });
-        const response = new ResponseObject().created(entry, 'Workspace imported from remote');
+          report,
+        }));
+        const response = new ResponseObject().created(job, 'Remote import started', 202);
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
-      const source = exportName
-        ? exportFilePath(fastify.workspaceManager, request.user.email, exportName)
-        : sourcePath;
+      // A stored archive still has to be extracted, which is slow for the same
+      // reason — also a job.
+      if (exportName) {
+        const source = exportFilePath(fastify.workspaceManager, userEmail, exportName);
+        const job = importJobs.start(userId, (report) => importWorkspace(fastify.workspaceManager, {
+          userId, userEmail, source, report,
+        }));
+        const response = new ResponseObject().created(job, 'Import started', 202);
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+
+      // Registering an existing on-disk folder is just an index write: fast,
+      // so it stays synchronous and returns the workspace directly.
       const entry = await importWorkspace(fastify.workspaceManager, {
-        userId: request.user.id,
-        userEmail: request.user.email,
-        source,
+        userId, userEmail, source: sourcePath,
       });
       const response = new ResponseObject().created(entry, 'Workspace imported');
       return reply.code(response.statusCode).send(response.getResponse());

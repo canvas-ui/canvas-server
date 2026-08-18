@@ -255,7 +255,7 @@ class Roles extends EventEmitter {
             throw new Error(`Role not found: ${roleId}`);
         }
 
-        if (!this.#checkRolePermissions(roleConfig, requestingUserId)) {
+        if (!(await this.#checkRolePermissions(roleConfig, requestingUserId))) {
             throw new Error(`Permission denied to start role: ${roleId}`);
         }
 
@@ -300,7 +300,7 @@ class Roles extends EventEmitter {
             throw new Error(`Role not found: ${roleId}`);
         }
 
-        if (!this.#checkRolePermissions(roleConfig, requestingUserId)) {
+        if (!(await this.#checkRolePermissions(roleConfig, requestingUserId))) {
             throw new Error(`Permission denied to stop role: ${roleId}`);
         }
 
@@ -342,7 +342,7 @@ class Roles extends EventEmitter {
             throw new Error(`Role not found: ${roleId}`);
         }
 
-        if (!this.#checkRolePermissions(roleConfig, requestingUserId)) {
+        if (!(await this.#checkRolePermissions(roleConfig, requestingUserId))) {
             throw new Error(`Permission denied to remove role: ${roleId}`);
         }
 
@@ -407,7 +407,7 @@ class Roles extends EventEmitter {
         const roleConfig = this.#indexStore.get(roleId);
         if (!roleConfig) return null;
 
-        if (!this.#checkRolePermissions(roleConfig, requestingUserId)) {
+        if (!(await this.#checkRolePermissions(roleConfig, requestingUserId))) {
             return null;
         }
 
@@ -518,18 +518,24 @@ class Roles extends EventEmitter {
      * @returns {boolean} Permission granted
      * @private
      */
-    #checkRolePermissions(roleConfig, userId) {
-        // Global roles - allow for now (admin check can be added later)
-        if (roleConfig.type === ROLE_TYPES.GLOBAL) {
-            return true;
-        }
+    async #checkRolePermissions(roleConfig, userId) {
+        if (!userId) { return false; }
 
-        // Workspace roles - check ownership
+        // A workspace-scoped role is controlled by its owner.
         if (roleConfig.userId) {
             return roleConfig.userId === userId;
         }
 
-        return true;
+        // Global roles are server-wide infrastructure, and an ownerless role is
+        // no one's to control — both are restricted to admins. (Previously this
+        // returned true for either case, letting any authenticated user
+        // start/stop/delete server-wide roles and read their container logs.)
+        try {
+            const user = await this.#users.get(userId);
+            return user?.userType === 'admin';
+        } catch {
+            return false;
+        }
     }
 
     /**

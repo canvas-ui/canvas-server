@@ -43,40 +43,6 @@ export default async function pingRoute(fastify, _options) {
     return { pong: `Hello, world! (${env.app.name} v${env.app.version})` };
   });
 
-  // Debug endpoint to check auth and server decorators
-  fastify.get('/debug', {
-    onRequest: [fastify.authenticate]
-  }, async (request, _reply) => {
-    // List all decorators on the server
-    const decorators = Object.keys(fastify).filter(key =>
-      typeof fastify[key] !== 'function' ||
-      key.startsWith('has') ||
-      ['decorate', 'register', 'listen'].includes(key)
-    );
-
-    // Get user information if authenticated
-    const userInfo = request.user ? {
-      id: request.user.id,
-      email: request.user.email,
-      isApiToken: !!request.isApiTokenAuth
-    } : null;
-
-    return {
-      auth: {
-        authenticated: !!request.user,
-        method: request.isApiTokenAuth ? 'api_token' : 'jwt',
-        user: userInfo
-      },
-      server: {
-        decorators: decorators,
-        hasUserManager: fastify.hasDecorator('userManager'),
-        hasWorkspaceManager: fastify.hasDecorator('workspaceManager'),
-        hasContextManager: fastify.hasDecorator('contextManager'),
-        hasAuthService: fastify.hasDecorator('authService')
-      }
-    };
-  });
-
   fastify.get('/rest/v2/ping', {
   }, async (request, reply) => {
     // Basic system info

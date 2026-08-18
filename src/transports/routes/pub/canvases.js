@@ -175,6 +175,18 @@ async function buildPublicCanvasPayload(fastify, code, query = {}) {
 }
 
 export default async function pubCanvasRoutes(fastify) {
+  // Public share codes are short (8 chars) and unauthenticated, so the read
+  // routes are a code-enumeration surface. Opt into the (global:false) rate
+  // limiter — keyed by IP for anonymous callers — with a ceiling generous
+  // enough for a real viewer loading a canvas and its documents, but far below
+  // what brute-forcing the code space needs. Env-overridable for large galleries.
+  const publicReadLimit = {
+    rateLimit: {
+      max: Number(process.env.CANVAS_PUB_CANVAS_RATE_MAX) || 240,
+      timeWindow: '1 minute',
+    },
+  };
+
   fastify.get('/', {
     onRequest: [fastify.authenticate],
     schema: {
@@ -274,6 +286,7 @@ export default async function pubCanvasRoutes(fastify) {
   });
 
   fastify.get('/:code', {
+    config: publicReadLimit,
     schema: {
       params: {
         type: 'object',
@@ -319,6 +332,7 @@ export default async function pubCanvasRoutes(fastify) {
   });
 
   fastify.get('/:code/documents/:docId/content', {
+    config: publicReadLimit,
     schema: {
       params: {
         type: 'object',
@@ -418,6 +432,7 @@ export default async function pubCanvasRoutes(fastify) {
   // Public mirror of the on-demand document thumbnail (visibility-gated like
   // the content route above).
   fastify.get('/:code/documents/:docId/thumbnail', {
+    config: publicReadLimit,
     schema: {
       params: {
         type: 'object',

@@ -5,6 +5,7 @@ import { pipeline } from 'stream/promises';
 import VirtualNamedContextFS from '../webdav/VirtualNamedContextFS.js';
 import ResponseObject from '../ResponseObject.js';
 import { createLogger } from '../../utils/log.js';
+import { throttleKey, isThrottled, recordFailure, clearFailures } from '../lib/basic-auth-throttle.js';
 
 const logger = createLogger('context-webdav:routes');
 
@@ -51,10 +52,20 @@ export default async function contextWebdavRoutes(fastify) {
                 if (password?.startsWith('canvas-')) {
                     token = password;
                 } else {
+                    const tkey = throttleKey(request, username);
+                    if (isThrottled(tkey)) {
+                        return reply.code(429).send(new ResponseObject().tooManyRequests('Too many failed authentication attempts, try again later').getResponse());
+                    }
                     const user = await fastify.users.getByEmail(username);
                     if (!user || !(await fastify.authService.verifyPassword(user.id, password))) {
+                        recordFailure(tkey);
                         return reply.code(401).send(new ResponseObject().unauthorized('Invalid credentials').getResponse());
                     }
+                    if (user.status && user.status !== 'active') {
+                        recordFailure(tkey);
+                        return reply.code(403).send(new ResponseObject().forbidden('User account is not active').getResponse());
+                    }
+                    clearFailures(tkey);
                     request.user = { id: user.id, name: user.name || user.email, email: user.email, userType: user.userType || 'user' };
                 }
             } catch {

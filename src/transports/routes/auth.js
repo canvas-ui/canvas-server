@@ -336,6 +336,8 @@ export default async function authRoutes(fastify, _options) {
 
   // Reset password endpoint
   fastify.post('/reset-password', {
+    // Reset tokens are secrets guessed here — throttle to stop brute forcing.
+    onRequest: [rateLimit({ max: authService.getRateLimitConfig('passwordReset')?.maxAttempts || 3, windowMs: authService.getRateLimitConfig('passwordReset')?.windowMs || 60 * 60 * 1000 }, 'reset-password')],
     schema: {
       body: {
         type: 'object',
@@ -404,6 +406,8 @@ export default async function authRoutes(fastify, _options) {
 
   // Verify email token endpoint
   fastify.get('/verify-email/:token', {
+    // Same secret-token brute-force surface as the POST sibling — throttle it.
+    onRequest: [rateLimit({ max: authService.getRateLimitConfig('tokenOperations')?.maxAttempts || 5, windowMs: authService.getRateLimitConfig('tokenOperations')?.windowMs || 5 * 60 * 1000 }, 'verify-email-token')],
     schema: {
       params: {
         type: 'object',
@@ -691,6 +695,11 @@ export default async function authRoutes(fastify, _options) {
 
   // Verify token endpoint (no auth required)
   fastify.post('/token/verify', {
+    // Unauthenticated by design (integrations validate a token they hold), so
+    // throttle it — otherwise it is an offline-harvested-token confirmation and
+    // account-discovery oracle. userType is withheld from the response below to
+    // avoid turning it into an admin-account finder.
+    onRequest: [rateLimit({ max: authService.getRateLimitConfig('tokenOperations')?.maxAttempts || 5, windowMs: authService.getRateLimitConfig('tokenOperations')?.windowMs || 5 * 60 * 1000 }, 'token-verify')],
     schema: {
       body: {
         type: 'object',
@@ -713,8 +722,7 @@ export default async function authRoutes(fastify, _options) {
         valid: true,
         user: {
           id: result.user.id,
-          email: result.user.email,
-          userType: result.user.userType
+          email: result.user.email
         }
       }, 'Token verified successfully');
       return reply.code(response.statusCode).send(response.getResponse());

@@ -130,6 +130,12 @@ export const env = {
             phoneNumberId: process.env.WHATSAPP_PHONE_ID || null,
             // Shared secret for Cloud API webhook subscription verification.
             verifyToken: process.env.WHATSAPP_VERIFY_TOKEN || null,
+            // Meta App Secret — used to verify the X-Hub-Signature-256 HMAC on
+            // inbound webhook deliveries so forged POSTs are rejected. When
+            // unset, inbound webhooks are refused (fail closed) unless
+            // WHATSAPP_ALLOW_UNSIGNED_WEBHOOKS=true is explicitly set.
+            appSecret: process.env.WHATSAPP_APP_SECRET || null,
+            allowUnsignedWebhooks: process.env.WHATSAPP_ALLOW_UNSIGNED_WEBHOOKS === 'true',
         },
     },
     voice: {

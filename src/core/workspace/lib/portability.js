@@ -6,6 +6,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import { assertPublicUrl, guardedDispatcher } from '../../../utils/ssrf-guard.js';
 
 /**
  * Workspace export/import — a workspace is a self-describing folder, so
@@ -131,15 +132,24 @@ export async function deleteExport(manager, userEmail, name) {
  * Returns the registered index entry.
  */
 export async function importWorkspaceFromRemote(manager, { userId, userEmail, url, token, fetchImpl = fetch }) {
-  if (!/^https?:\/\//.test(url || '')) throw fail('A http(s) remote url is required', 'BAD_REQUEST', 400);
+  // SSRF guard: the url is fully attacker-controlled, so validate it is a
+  // public https host up front and pin every outbound request (redirects
+  // included) to a DNS-lookup guard that refuses private/loopback addresses.
+  let parsedUrl;
+  try {
+    parsedUrl = assertPublicUrl(url || '');
+  } catch (err) {
+    throw fail(`Invalid remote url: ${err.message}`, 'BAD_REQUEST', 400);
+  }
   if (!token) throw fail('A workspace share token is required', 'BAD_REQUEST', 400);
 
-  const base = url.replace(/\/+$/, '');
+  const base = parsedUrl.toString().replace(/\/+$/, '');
   const headers = { Authorization: `Bearer ${token}` };
+  const guarded = { dispatcher: guardedDispatcher };
   const api = async (route, options = {}) => {
     let res;
     try {
-      res = await fetchImpl(`${base}${route}`, { ...options, headers });
+      res = await fetchImpl(`${base}${route}`, { ...guarded, ...options, headers });
     } catch (err) {
       throw fail(`Remote unreachable: ${base} (${err.message})`, 'REMOTE_UNREACHABLE', 502);
     }
@@ -163,7 +173,7 @@ export async function importWorkspaceFromRemote(manager, { userId, userEmail, ur
 
   let download;
   try {
-    download = await fetchImpl(`${base}${archiveRoute}`, { headers });
+    download = await fetchImpl(`${base}${archiveRoute}`, { ...guarded, headers });
   } catch (err) {
     throw fail(`Remote unreachable: ${base} (${err.message})`, 'REMOTE_UNREACHABLE', 502);
   }
@@ -178,7 +188,7 @@ export async function importWorkspaceFromRemote(manager, { userId, userEmail, ur
   }
 
   // the source keeps no leftovers; failure here is not fatal
-  try { await fetchImpl(`${base}${archiveRoute}`, { method: 'DELETE', headers }); } catch { /* best-effort */ }
+  try { await fetchImpl(`${base}${archiveRoute}`, { ...guarded, method: 'DELETE', headers }); } catch { /* best-effort */ }
 
   return importWorkspace(manager, { userId, userEmail, source: localArchive });
 }
@@ -197,7 +207,12 @@ export async function importWorkspace(manager, { userId, userEmail, source }) {
   if (!stat) throw fail(`Source not found: ${source}`, 'SOURCE_NOT_FOUND', 404);
 
   if (stat.isDirectory()) {
-    return manager.registerWorkspacePath(userId, source);
+    // In-place registration of an existing on-disk directory must NOT adopt:
+    // rewriting a foreign workspace's owner here is a cross-tenant takeover.
+    // A user may register a directory in place only if they already own it.
+    // (Adoption of a genuinely imported workspace happens on the archive
+    // branch below, where the folder is a fresh copy in the user's own dir.)
+    return manager.registerWorkspacePath(userId, source, { adopt: false });
   }
 
   if (!ARCHIVE_RE.test(source)) {

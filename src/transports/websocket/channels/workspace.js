@@ -69,8 +69,12 @@ export default function registerWorkspaceWebSocket(fastify, socket) {
         }
       }
 
+      // Every workspace-originated event is stamped with a workspaceId by the
+      // manager (core/workspace/index.js), so a genuinely untagged event can
+      // only come from a direct workspaceManager.emit — i.e. the edge relay.
+      // Broadcasting it to this socket would bypass the subscription + ACL
+      // checks below, so drop it rather than fan it out unconditionally.
       if (workspaceIdentifiers.length === 0) {
-        socket.emit(eventName, eventPayload);
         return;
       }
 

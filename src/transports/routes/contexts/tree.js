@@ -3,6 +3,18 @@
 import ResponseObject from '../../ResponseObject.js';
 import { validateUser } from '../../auth/strategies.js';
 
+// Tree mutations touch the owner's workspace tree directly (the Tree methods
+// take no accessing-user argument), so read access to the context is not
+// enough — a read-only ACL grantee must not be able to restructure or delete
+// paths/layers. Owner passes trivially; write/readWrite grantees pass; a
+// documentRead grantee is rejected. Read routes stay ungated.
+function ensureContextWrite(context, request, reply) {
+  if (context.checkPermission(request.user.id, 'documentWrite')) { return true; }
+  const response = new ResponseObject().forbidden('Write permission required for this context');
+  reply.code(response.statusCode).send(response.getResponse());
+  return false;
+}
+
 export default async function treeRoutes(fastify) {
   // Add a pre-handler hook to ensure user is authenticated and valid
   fastify.addHook('preHandler', async (request, reply) => {
@@ -143,6 +155,7 @@ export default async function treeRoutes(fastify) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
+      if (!ensureContextWrite(context, request, reply)) { return reply; }
       const tree = workspace.getTree(context.treeId);
       const result = await tree.insertPath(
         request.body.path,
@@ -202,6 +215,7 @@ export default async function treeRoutes(fastify) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
+      if (!ensureContextWrite(context, request, reply)) { return reply; }
       const tree = workspace.getTree(context.treeId);
       const success = await tree.removePath(
         request.query.path,
@@ -257,6 +271,7 @@ export default async function treeRoutes(fastify) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
+      if (!ensureContextWrite(context, request, reply)) { return reply; }
       const tree = workspace.getTree(context.treeId);
       const { path, ...updates } = request.body;
       const layer = tree.getLayerForPath(path);
@@ -312,6 +327,7 @@ export default async function treeRoutes(fastify) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
+      if (!ensureContextWrite(context, request, reply)) { return reply; }
       const tree = workspace.getTree(context.treeId);
       const success = await tree.movePath(
         request.body.from,
@@ -369,6 +385,7 @@ export default async function treeRoutes(fastify) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
+      if (!ensureContextWrite(context, request, reply)) { return reply; }
       const tree = workspace.getTree(context.treeId);
       const success = await tree.copyPath(
         request.body.from,
@@ -425,6 +442,7 @@ export default async function treeRoutes(fastify) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
+      if (!ensureContextWrite(context, request, reply)) { return reply; }
       const tree = workspace.getTree(context.treeId);
       const result = await tree.mergeLayer(request.body.layerId, request.body.targetLayers);
       if (result.error) {
@@ -478,6 +496,7 @@ export default async function treeRoutes(fastify) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
+      if (!ensureContextWrite(context, request, reply)) { return reply; }
       const tree = workspace.getTree(context.treeId);
       const result = await tree.subtractLayer(request.body.layerId, request.body.targetLayers);
       if (result.error) {

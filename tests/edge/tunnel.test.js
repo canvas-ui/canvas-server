@@ -38,14 +38,47 @@ test('registry: announce + proxyRequest round trip', async () => {
   assert.equal(frame.method, 'GET');
   assert.equal(frame.path, '/rest/v2/workspaces');
 
-  registry.handleRes({ id: frame.id, status: 200, headers: { 'content-type': 'application/json' } });
-  registry.handleChunk({ id: frame.id, seq: 0, data: Buffer.from('{"ok":').toString('base64') });
-  registry.handleChunk({ id: frame.id, seq: 1, data: Buffer.from('true}').toString('base64') });
-  registry.handleEnd({ id: frame.id });
+  // Response frames must carry the id of the socket that received edge:req —
+  // the registry drops frames from any other socket.
+  registry.handleRes({ id: frame.id, status: 200, headers: { 'content-type': 'application/json' } }, socket.id);
+  registry.handleChunk({ id: frame.id, seq: 0, data: Buffer.from('{"ok":').toString('base64') }, socket.id);
+  registry.handleChunk({ id: frame.id, seq: 1, data: Buffer.from('true}').toString('base64') }, socket.id);
+  registry.handleEnd({ id: frame.id }, socket.id);
 
   const res = await pending;
   assert.equal(res.status, 200);
   assert.equal(res.body.toString(), '{"ok":true}');
+});
+
+test('registry: response frames from a foreign socket are ignored', async () => {
+  const registry = new EdgeRegistry();
+  const socket = fakeSocket('s1', 'u1');
+  registry.register(socket, { instanceId: 'edge-1' });
+
+  const pending = registry.proxyRequest('edge-1', { method: 'GET', path: '/x', timeoutMs: 100 });
+  const [, frame] = socket.sent.at(-1);
+
+  // An attacker socket sprays a forged response for a guessed id — must NOT
+  // resolve the victim's request.
+  registry.handleRes({ id: frame.id, status: 200, headers: {} }, 'attacker-socket');
+  registry.handleEnd({ id: frame.id }, 'attacker-socket');
+
+  await assert.rejects(pending, (err) => err.code === 'EDGE_TIMEOUT');
+});
+
+test('registry: request ids are unguessable, not sequential', async () => {
+  const registry = new EdgeRegistry();
+  const socket = fakeSocket();
+  registry.register(socket, { instanceId: 'edge-1' });
+  // Short timeout + swallow so these never-answered requests do not leak.
+  registry.proxyRequest('edge-1', { method: 'GET', path: '/a', timeoutMs: 20 }).catch(() => {});
+  registry.proxyRequest('edge-1', { method: 'GET', path: '/b', timeoutMs: 20 }).catch(() => {});
+  const [, a] = socket.sent.at(-2);
+  const [, b] = socket.sent.at(-1);
+  assert.notEqual(a.id, 'r1');
+  assert.notEqual(b.id, 'r2');
+  assert.match(a.id, /^r[0-9a-f]{36}$/);
+  await new Promise((r) => setTimeout(r, 40));
 });
 
 test('registry: edge error rejects the pending request', async () => {
@@ -55,7 +88,7 @@ test('registry: edge error rejects the pending request', async () => {
 
   const pending = registry.proxyRequest('edge-1', { method: 'GET', path: '/x' });
   const [, frame] = socket.sent.at(-1);
-  registry.handleErr({ id: frame.id, code: 'EDGE_DISPATCH_FAILED', message: 'boom' });
+  registry.handleErr({ id: frame.id, code: 'EDGE_DISPATCH_FAILED', message: 'boom' }, socket.id);
 
   await assert.rejects(pending, (err) => err.code === 'EDGE_DISPATCH_FAILED' && err.message === 'boom');
 });

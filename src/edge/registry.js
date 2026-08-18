@@ -1,5 +1,7 @@
 'use strict';
 
+import crypto from 'node:crypto';
+
 const DEFAULT_TIMEOUT_MS = 30_000;
 
 /**
@@ -13,8 +15,7 @@ const DEFAULT_TIMEOUT_MS = 30_000;
  */
 export class EdgeRegistry {
   #edges = new Map(); // instanceId → { socket, userId, announce, connectedAt }
-  #pending = new Map(); // requestId → { resolve, reject, timer, res, chunks }
-  #seq = 0;
+  #pending = new Map(); // requestId → { resolve, reject, timer, res, chunks, socketId }
 
   register(socket, announce = {}) {
     const instanceId = String(announce.instanceId || '').trim();
@@ -58,6 +59,37 @@ export class EdgeRegistry {
     return null;
   }
 
+  /**
+   * Does an edge announced over THIS socket (owned by userId) export the given
+   * workspace? Gates edge:event relay so a socket can only inject events for
+   * workspaces its own edge actually serves — not arbitrary (or another user's)
+   * workspace ids.
+   */
+  socketExportsWorkspace(socketId, userId, { workspaceId, workspaceName } = {}) {
+    if (!socketId || !userId) { return false; }
+    for (const [instanceId, edge] of this.#edges) {
+      if (edge.socket.id !== socketId || edge.userId !== userId) { continue; }
+      // The workspace id doubles as the tunnel instanceId for single-workspace
+      // edges, so an exact instanceId match counts.
+      if (instanceId === workspaceId || instanceId === workspaceName) { return true; }
+      const exportsList = Array.isArray(edge.announce?.exports) ? edge.announce.exports : [];
+      const hit = exportsList.some((entry) => entry?.type === 'workspace' && (
+        entry.id === workspaceId || entry.name === workspaceName
+        || entry.id === workspaceName || entry.name === workspaceId
+      ));
+      if (hit) { return true; }
+    }
+    return false;
+  }
+
+  /** True if this socket has announced at least one edge (i.e. it is an edge). */
+  socketHasEdge(socketId) {
+    for (const edge of this.#edges.values()) {
+      if (edge.socket.id === socketId) { return true; }
+    }
+    return false;
+  }
+
   /** Drop every edge announced over this socket, failing its in-flight requests. */
   removeBySocket(socketId) {
     const removed = [];
@@ -85,7 +117,10 @@ export class EdgeRegistry {
       return Promise.reject(err);
     }
 
-    const id = `r${++this.#seq}`;
+    // Unguessable request id: the id is the only key on #pending, so a
+    // predictable sequential counter let any connected socket resolve another
+    // socket's in-flight request with a forged edge:res/edge:end frame.
+    const id = `r${crypto.randomBytes(18).toString('hex')}`;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => this.#fail(id, 'EDGE_TIMEOUT', `edge request timed out after ${timeoutMs}ms`), timeoutMs);
       this.#pending.set(id, { resolve, reject, timer, res: null, chunks: [], socketId: edge.socket.id });
@@ -98,18 +133,27 @@ export class EdgeRegistry {
     });
   }
 
-  handleRes({ id, status, headers } = {}) {
+  // Every response frame is bound to the socket that received the matching
+  // edge:req. A frame arriving from any other socket is ignored, so a
+  // guessed/sprayed id cannot inject a response into another socket's request.
+  #ownedPending(id, socketId) {
     const pending = this.#pending.get(id);
+    if (!pending || pending.socketId !== socketId) { return null; }
+    return pending;
+  }
+
+  handleRes({ id, status, headers } = {}, socketId) {
+    const pending = this.#ownedPending(id, socketId);
     if (pending) pending.res = { status, headers };
   }
 
-  handleChunk({ id, data } = {}) {
-    const pending = this.#pending.get(id);
+  handleChunk({ id, data } = {}, socketId) {
+    const pending = this.#ownedPending(id, socketId);
     if (pending && data) pending.chunks.push(Buffer.from(data, 'base64'));
   }
 
-  handleEnd({ id } = {}) {
-    const pending = this.#pending.get(id);
+  handleEnd({ id } = {}, socketId) {
+    const pending = this.#ownedPending(id, socketId);
     if (!pending) return;
     clearTimeout(pending.timer);
     this.#pending.delete(id);
@@ -122,7 +166,8 @@ export class EdgeRegistry {
     pending.resolve({ ...pending.res, body: Buffer.concat(pending.chunks) });
   }
 
-  handleErr({ id, code, message } = {}) {
+  handleErr({ id, code, message } = {}, socketId) {
+    if (!this.#ownedPending(id, socketId)) { return; }
     this.#fail(id, code || 'EDGE_ERROR', message || 'edge request failed');
   }
 

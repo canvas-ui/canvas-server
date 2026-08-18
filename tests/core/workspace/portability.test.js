@@ -168,7 +168,7 @@ test('remote import surfaces remote failures with their status', async () => {
     return { ok: false, status: 409, json: async () => ({ message: 'Workspace active' }) };
   };
   await assert.rejects(
-    importWorkspaceFromRemote(manager, { userId: USER, userEmail: EMAIL, url: 'http://src.example', token: 't', fetchImpl }),
+    importWorkspaceFromRemote(manager, { userId: USER, userEmail: EMAIL, url: 'https://src.example', token: 't', fetchImpl }),
     (err) => err.code === 'REMOTE_ERROR' && err.statusCode === 409 && /Workspace active/.test(err.message)
   );
 });

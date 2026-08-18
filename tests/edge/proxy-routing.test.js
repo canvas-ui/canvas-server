@@ -34,11 +34,13 @@ async function buildLoopback() {
 
   // wire the two ends without socket.io
   const clientSocket = {
+    // Response frames route back tagged with the edge socket's id ('s1'), which
+    // is what received edge:req — the registry now binds frames to that socket.
     emit(event, frame) {
-      if (event === 'edge:res') registry.handleRes(frame);
-      else if (event === 'edge:chunk') registry.handleChunk(frame);
-      else if (event === 'edge:end') registry.handleEnd(frame);
-      else if (event === 'edge:err') registry.handleErr(frame);
+      if (event === 'edge:res') registry.handleRes(frame, 's1');
+      else if (event === 'edge:chunk') registry.handleChunk(frame, 's1');
+      else if (event === 'edge:end') registry.handleEnd(frame, 's1');
+      else if (event === 'edge:err') registry.handleErr(frame, 's1');
     },
   };
   const serverSocket = {

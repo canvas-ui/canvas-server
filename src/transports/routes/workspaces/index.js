@@ -303,10 +303,17 @@ export default async function workspaceRoutes(fastify, _options) {
       return;
     }
     try {
+      // Adoption rewrites a foreign on-disk workspace's owner to the caller —
+      // a cross-tenant takeover primitive if any authenticated user may do it.
+      // Restrict it to admins; a normal user may only (re)register a path whose
+      // config.owner already matches them (enforced by registerWorkspacePath
+      // when adopt is false).
+      const isAdmin = (await fastify.users.get(request.user.id))?.userType === 'admin';
+      const adopt = isAdmin && request.body.adopt !== false;
       const entry = await fastify.workspaceManager.registerWorkspacePath(
         request.user.id,
         request.body.path,
-        { adopt: request.body.adopt !== false }
+        { adopt }
       );
       const response = new ResponseObject().created(entry, 'Workspace registered successfully');
       return reply.code(response.statusCode).send(response.getResponse());

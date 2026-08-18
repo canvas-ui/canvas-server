@@ -228,6 +228,12 @@ class HookService extends EventEmitter {
     static #BATCH_FANOUT = {
         'document.inserted.batch': 'document.inserted',
         'document.updated.batch': 'document.updated',
+        // Bulk link/unlink. Without these a rule bound to document.linked
+        // (the seeded photos-to-home rule, for one) fired when you filed ONE
+        // document and silently never when you multi-selected — the batch
+        // path had no first-class membership event to fan out at all.
+        'document.linked.batch': 'document.linked',
+        'document.unlinked.batch': 'document.unlinked',
     };
 
     static #payloadDocIds(payload = {}) {

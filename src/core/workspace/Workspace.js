@@ -1189,10 +1189,13 @@ class Workspace extends EventEmitter {
         // the common case — they emit `.batch` events with an id array. We
         // subscribe to both the singular and `.batch` variants: some bulk
         // emitters (putManyDirectoryPaths) fire only the singular event with
-        // `ids`, regular putMany fires both, and linkMany fires only `.batch`.
-        // The queue dedups by `${wsId}:${id}`, so the one overlap (putMany
-        // emitting both) is a harmless no-op — no path is missed or embedded
-        // twice.
+        // `ids`, regular putMany fires both. The queue dedups by
+        // `${wsId}:${id}`, so the one overlap (putMany emitting both) is a
+        // harmless no-op — no path is missed or embedded twice.
+        //
+        // `document.updated` also fires for membership-only changes; the
+        // handler drops those on `reason` (see below) — a link changes no
+        // bytes, so there is nothing to re-embed.
         this.on('document.inserted', this.#onDocEventForEmbed);
         this.on('document.updated', this.#onDocEventForEmbed);
         this.on('document.inserted.batch', this.#onDocEventForEmbed);
@@ -1214,6 +1217,11 @@ class Workspace extends EventEmitter {
     // enqueueMany routes through the same deduped queue as enqueue.
     #onDocEventForEmbed = (payload) => {
         if (!this.#inferd) { return; }
+        // A membership-only update (link/unlink) did not touch a single byte of
+        // the document — re-embedding it is pure waste, and on a bulk link of a
+        // photo folder it is a CLIP pass over the whole folder for nothing.
+        // This is what the `reason` discriminator is for.
+        if (payload?.reason === 'membership') { return; }
         const ids = Array.isArray(payload?.ids)
             ? payload.ids
             : (payload?.id != null ? [payload.id] : []);

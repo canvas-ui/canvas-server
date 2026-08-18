@@ -157,9 +157,19 @@ class Classification {
         // selector `tree` is usually a resolved tree id.
         const directoryTree = [payload?.directory?.treeName, payload?.directory?.tree]
             .find((t) => typeof t === 'string' && t) || 'directory';
+        // Membership events (link/unlink, singular and batch) name what changed
+        // in `changed` rather than in a landing selector — already normalized to
+        // path arrays by the engine. On a link these are the paths the document
+        // was just filed into, on an unlink the ones it left; either way they
+        // are what a `path` condition on those events is asking about, and
+        // reading them here saves the dispatcher a full membership lookup.
+        const changedContext = extractPaths({ paths: payload?.changed?.context });
+        const changedDirectory = extractPaths({ paths: payload?.changed?.directory });
         this.treePaths = {};
-        if (contextPaths.length) { this.treePaths.context = contextPaths; }
-        if (directoryPaths.length) { this.treePaths[directoryTree] = directoryPaths; }
+        const allContext = [...new Set([...contextPaths, ...changedContext])];
+        const allDirectory = [...new Set([...directoryPaths, ...changedDirectory])];
+        if (allContext.length) { this.treePaths.context = allContext; }
+        if (allDirectory.length) { this.treePaths[directoryTree] = allDirectory; }
         // Pre-built map from the emitter ({ treeName: [paths] }) — backfill
         // loads a document's LIVE placements this way, since a stored doc has
         // no landing selectors.

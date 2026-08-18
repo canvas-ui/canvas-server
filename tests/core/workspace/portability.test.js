@@ -5,6 +5,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { Readable } from 'node:stream';
+import { execFileSync } from 'node:child_process';
 
 import {
   exportWorkspace,
@@ -13,6 +15,9 @@ import {
   exportFilePath,
   importWorkspace,
   importWorkspaceFromRemote,
+  inspectArchive,
+  validateWorkspaceDir,
+  saveUploadedArchive,
 } from '../../../src/core/workspace/lib/portability.js';
 
 const EMAIL = 'tester@canvas.local';
@@ -39,6 +44,13 @@ beforeEach(() => {
     async registerWorkspacePath(userId, absolutePath) {
       this.registered.push({ userId, absolutePath });
       return { id: 'imported-id', rootPath: absolutePath };
+    },
+    stopped: [],
+    async stopWorkspace(workspaceId, userId) {
+      this.stopped.push({ workspaceId, userId });
+      const entry = this.entries.find((candidate) => candidate.id === workspaceId);
+      if (entry) { entry.status = 'inactive'; entry.isActive = false; }
+      return true;
     },
   };
 });
@@ -190,4 +202,89 @@ test('import rejects non-archive files and missing sources', async () => {
   await assert.rejects(importWorkspace(manager, { userId: USER, userEmail: EMAIL, source: stray }), (err) => err.statusCode === 400);
   await assert.rejects(importWorkspace(manager, { userId: USER, userEmail: EMAIL, source: path.join(root, 'nope.tar.gz') }), (err) => err.statusCode === 404);
   await assert.rejects(importWorkspace(manager, { userId: USER, userEmail: EMAIL, source: 'relative/path' }), (err) => err.statusCode === 400);
+});
+
+
+test('export with stop:true stops an active workspace, then archives it', async () => {
+  manager.entries[0].status = 'active';
+  manager.entries[0].isActive = true;
+
+  const item = await exportWorkspace(manager, { userId: USER, userEmail: EMAIL, workspaceId: 'ws-1', stop: true });
+
+  assert.deepEqual(manager.stopped, [{ workspaceId: 'ws-1', userId: USER }]);
+  assert.equal(item.stoppedWorkspace, true);
+  assert.ok(item.size > 0);
+  // left stopped — restarting is the caller's call
+  assert.equal(manager.entries[0].status, 'inactive');
+});
+
+test('export of an already-stopped workspace does not stop anything', async () => {
+  const item = await exportWorkspace(manager, { userId: USER, userEmail: EMAIL, workspaceId: 'ws-1', stop: true });
+  assert.deepEqual(manager.stopped, []);
+  assert.equal(item.stoppedWorkspace, false);
+});
+
+test('import accepts a bzip2 archive as well as gzip', async () => {
+  const archive = path.join(root, 'my-ws.tar.bz2');
+  execFileSync('tar', ['-C', path.dirname(wsDir), '-cjf', archive, path.basename(wsDir)]);
+  fs.rmSync(wsDir, { recursive: true, force: true });
+
+  const entry = await importWorkspace(manager, { userId: USER, userEmail: EMAIL, source: archive });
+  assert.equal(entry.id, 'imported-id');
+  assert.ok(fs.existsSync(path.join(wsDir, 'workspace.json')));
+});
+
+test('inspectArchive rejects traversal entries anywhere in the archive', async () => {
+  // a nested ../ escapes the extraction dir even with a clean top-level name
+  const evil = path.join(root, 'evil');
+  fs.mkdirSync(path.join(evil, 'ws'), { recursive: true });
+  fs.writeFileSync(path.join(evil, 'ws', 'ok.txt'), 'x');
+  const archive = path.join(root, 'evil.tar.gz');
+  execFileSync('tar', ['-C', evil, '-czf', archive, 'ws', '--transform', 's|ok.txt|../../escaped.txt|'], { stdio: 'ignore' });
+
+  await assert.rejects(inspectArchive(archive), (err) => err.code === 'BAD_ARCHIVE');
+});
+
+test('inspectArchive rejects a file that is not a tar archive', async () => {
+  const notTar = path.join(root, 'nope.tar.gz');
+  fs.writeFileSync(notTar, 'definitely not a tarball');
+  await assert.rejects(inspectArchive(notTar), (err) => err.code === 'BAD_ARCHIVE');
+});
+
+test('import rejects an archive whose folder is not a workspace', async () => {
+  const plain = path.join(root, 'plain', 'not-a-ws');
+  fs.mkdirSync(plain, { recursive: true });
+  fs.writeFileSync(path.join(plain, 'readme.txt'), 'nothing to see');
+  const archive = path.join(root, 'plain.tar.gz');
+  execFileSync('tar', ['-C', path.dirname(plain), '-czf', archive, path.basename(plain)]);
+
+  await assert.rejects(
+    importWorkspace(manager, { userId: USER, userEmail: EMAIL, source: archive }),
+    (err) => err.code === 'BAD_ARCHIVE' && /no workspace.json/i.test(err.message)
+  );
+  // and the failed extraction is not left behind
+  assert.equal(fs.existsSync(path.join(root, EMAIL, 'Workspaces', 'not-a-ws')), false);
+});
+
+test('validateWorkspaceDir rejects a workspace.json missing required fields', async () => {
+  const dir = path.join(root, 'bad-ws');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'workspace.json'), JSON.stringify({ name: 'no-id' }));
+  await assert.rejects(validateWorkspaceDir(dir), (err) => /missing id/.test(err.message));
+});
+
+test('uploaded archives land in Exports under a sanitised, non-clobbering name', async () => {
+  const first = await saveUploadedArchive(manager, EMAIL, '../../etc/eviL name.tar.gz', Readable.from(['payload']));
+  assert.equal(first.name, 'eviL_name.tar.gz');
+  assert.equal(path.dirname(exportFilePath(manager, EMAIL, first.name)), path.join(root, EMAIL, 'Exports'));
+
+  const second = await saveUploadedArchive(manager, EMAIL, 'eviL name.tar.gz', Readable.from(['payload']));
+  assert.equal(second.name, 'eviL_name-1.tar.gz');
+});
+
+test('uploads must look like an archive', async () => {
+  await assert.rejects(
+    saveUploadedArchive(manager, EMAIL, 'workspace.zip', Readable.from(['x'])),
+    (err) => err.statusCode === 400
+  );
 });

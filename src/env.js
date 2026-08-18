@@ -89,6 +89,16 @@ export const env = {
         // roaming profile — into a workspace without scattering db/ and cache/
         // through it, so the container ships with it (see docker-compose.yml).
         defaultLayout: process.env.CANVAS_WORKSPACE_LAYOUT === 'home' ? 'home' : 'full',
+
+        // Pulling a workspace from another canvas-server makes THIS server issue
+        // requests to a user-supplied URL, so by default only public https hosts
+        // are allowed (see utils/ssrf-guard.js). That rules out exactly the case
+        // self-hosters actually have: another canvas-server on the LAN, on plain
+        // http, at a private address or a .local name. Setting this to 'true'
+        // permits http and private/loopback targets for remote workspace import
+        // only — do NOT set it on a multi-tenant public instance, where it lets
+        // any authenticated user probe your internal network.
+        allowInsecureRemoteImport: process.env.CANVAS_ALLOW_INSECURE_REMOTE_IMPORT === 'true',
     },
     inferd: {
         // Server-managed embedding service (shared model runtimes, one queue per

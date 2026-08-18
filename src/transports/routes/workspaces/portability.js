@@ -3,6 +3,7 @@
 import fs from 'node:fs';
 import fsPromises from 'node:fs/promises';
 import ResponseObject from '../../ResponseObject.js';
+import { env } from '../../../env.js';
 import { requireWorkspaceRead } from '../../middleware/workspace-acl.js';
 import {
   exportWorkspace,
@@ -11,6 +12,7 @@ import {
   exportFilePath,
   importWorkspace,
   importWorkspaceFromRemote,
+  saveUploadedArchive,
 } from '../../../core/workspace/lib/portability.js';
 
 /**
@@ -35,7 +37,64 @@ import {
  * share token (see importWorkspaceFromRemote). Export = full read, so 'read'
  * is the honest permission level.
  */
+// Short-lived, HttpOnly cookie that lets the browser download an export
+// archive directly. An archive is routinely GB-sized, so it must stream to
+// disk via the browser's own download machinery — fetching it into a Blob to
+// attach an Authorization header would pull the whole thing into memory, and
+// putting a token in the URL would leak it into history and logs. Same shape
+// as the media ticket on the document content route.
+const EXPORT_COOKIE = 'cvs_export';
+const EXPORT_TICKET_TTL = 3600; // seconds — a large download needs real time
+
+function readCookie(request, name) {
+  const raw = request.headers.cookie;
+  if (!raw) return null;
+  for (const part of raw.split(';')) {
+    const eq = part.indexOf('=');
+    if (eq === -1) continue;
+    if (part.slice(0, eq).trim() !== name) continue;
+    const val = part.slice(eq + 1).trim();
+    try { return decodeURIComponent(val); } catch { return val; }
+  }
+  return null;
+}
+
+// Ceiling for a single uploaded archive (4 GiB). The body is streamed straight
+// to disk, never buffered, so this bounds disk use rather than memory.
+const ARCHIVE_UPLOAD_LIMIT = 4 * 1024 * 1024 * 1024;
+
 export default async function portabilityRoutes(fastify) {
+  // Archive uploads arrive as a raw binary body (not multipart): the global
+  // multipart limit is sized for small attachments, and a workspace export is
+  // routinely orders of magnitude larger. Handing the stream through
+  // unparsed keeps a multi-GB upload out of memory. Scoped to this plugin, so
+  // JSON on the sibling workspace routes is unaffected.
+  fastify.addContentTypeParser(
+    ['application/gzip', 'application/x-gzip', 'application/x-bzip2', 'application/x-tar', 'application/octet-stream'],
+    { bodyLimit: ARCHIVE_UPLOAD_LIMIT },
+    (_req, payload, done) => done(null, payload),
+  );
+
+  // Bearer if present, otherwise a valid export ticket cookie. The route's
+  // own ownership/ACL checks still run afterwards either way.
+  async function authenticateExport(request, reply) {
+    if (request.headers.authorization) {
+      try { await fastify.authenticate(request, reply); return; } catch { /* try the ticket */ }
+    }
+    const token = readCookie(request, EXPORT_COOKIE);
+    if (token) {
+      try {
+        const payload = fastify.jwt.verify(token);
+        if (payload?.scope === 'export' && payload.sub && payload.email) {
+          request.user = { id: payload.sub, email: payload.email };
+          return;
+        }
+      } catch { /* fall through to 401 */ }
+    }
+    const r = new ResponseObject().unauthorized('Authentication required');
+    return reply.code(r.statusCode).send(r.getResponse());
+  }
+
   const sendError = (reply, err) => {
     const statusCode = err.statusCode || 500;
     const response = new ResponseObject().error(err.message, null, statusCode);
@@ -76,12 +135,31 @@ export default async function portabilityRoutes(fastify) {
 
   fastify.post('/:id/export', {
     onRequest: [fastify.authenticate, requireWorkspaceRead({ allowIndexFallback: true })],
+    schema: {
+      body: {
+        type: 'object',
+        // Stopping a running workspace is a side effect on someone's live
+        // session, so it is opt-in per request rather than implied by export.
+        properties: { stop: { type: 'boolean', default: false } },
+      },
+    },
   }, async (request, reply) => {
     try {
+      // Read is enough to export, but stopping a workspace interrupts whoever
+      // is using it — that needs write. Otherwise a read-only share token
+      // could shut down the owner's live workspace as a side effect of a pull.
+      const wantsStop = request.body?.stop === true;
+      const binding = request.resourceToken;
+      if (wantsStop && binding?.type === 'workspace' && !binding.permissions?.includes('write')) {
+        const response = new ResponseObject().forbidden('Stopping the workspace requires write permission');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+
       const item = await exportWorkspace(fastify.workspaceManager, {
         userId: request.user.id,
         userEmail: await ownerEmail(request),
         workspaceId: request.params.id,
+        stop: wantsStop,
       });
       const response = new ResponseObject().created({
         ...item,
@@ -167,8 +245,38 @@ export default async function portabilityRoutes(fastify) {
     }
   });
 
-  fastify.get('/exports/:name', {
+  /**
+   * Mint the download ticket cookie (authed by bearer), so a plain browser
+   * navigation to /exports/:name streams the archive straight to disk.
+   * Scoped to this user's export routes only.
+   */
+  fastify.post('/exports/ticket', {
     onRequest: [fastify.authenticate],
+  }, async (request, reply) => {
+    const token = fastify.jwt.sign(
+      { scope: 'export', sub: request.user.id, email: request.user.email },
+      { expiresIn: `${EXPORT_TICKET_TTL}s` },
+    );
+    // Derive the cookie path from this request's own URL so it stays correct
+    // regardless of the API mount prefix.
+    const urlPath = request.url.split('?')[0];
+    const cut = urlPath.indexOf('/exports');
+    const cookiePath = cut >= 0 ? urlPath.slice(0, cut + '/exports'.length) : '/';
+    const cookie = [
+      `${EXPORT_COOKIE}=${encodeURIComponent(token)}`,
+      `Path=${cookiePath}`,
+      `Max-Age=${EXPORT_TICKET_TTL}`,
+      'HttpOnly',
+      'SameSite=Strict',
+      request.protocol === 'https' ? 'Secure' : null,
+    ].filter(Boolean).join('; ');
+    reply.header('Set-Cookie', cookie);
+    const response = new ResponseObject().success({ ttl: EXPORT_TICKET_TTL }, 'Export ticket issued');
+    return reply.code(response.statusCode).send(response.getResponse());
+  });
+
+  fastify.get('/exports/:name', {
+    onRequest: [authenticateExport],
   }, async (request, reply) => {
     try {
       const file = exportFilePath(fastify.workspaceManager, request.user.email, request.params.name);
@@ -200,6 +308,56 @@ export default async function portabilityRoutes(fastify) {
     }
   });
 
+  /**
+   * Import from the user's local drive. The browser streams the archive here
+   * and it lands in the user's own Exports dir — the client supplies a
+   * filename, never a path, which is what keeps this scoped to the user's
+   * home no matter what it sends.
+   *
+   * `?import=false` uploads only (the archive shows up in the Exports list);
+   * the default also runs extract -> validate -> load and returns the
+   * registered workspace.
+   */
+  fastify.post('/import/upload', {
+    onRequest: [fastify.authenticate],
+  }, async (request, reply) => {
+    let stored;
+    try {
+      const filename = request.query?.filename || 'upload.tar.gz';
+      if (!request.body || typeof request.body.pipe !== 'function') {
+        const response = new ResponseObject().badRequest('Send the archive as a binary request body');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+
+      stored = await saveUploadedArchive(
+        fastify.workspaceManager,
+        request.user.email,
+        filename,
+        request.body,
+      );
+
+      if (request.query?.import === 'false') {
+        const response = new ResponseObject().created(stored, 'Archive uploaded');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+
+      const entry = await importWorkspace(fastify.workspaceManager, {
+        userId: request.user.id,
+        userEmail: request.user.email,
+        source: exportFilePath(fastify.workspaceManager, request.user.email, stored.name),
+      });
+      const response = new ResponseObject().created({ ...entry, archive: stored }, 'Workspace imported');
+      return reply.code(response.statusCode).send(response.getResponse());
+    } catch (err) {
+      // A rejected archive is not worth keeping around; the upload only
+      // existed to be imported.
+      if (stored?.name) {
+        await deleteExport(fastify.workspaceManager, request.user.email, stored.name).catch(() => {});
+      }
+      return sendError(reply, err);
+    }
+  });
+
   fastify.post('/import', {
     onRequest: [fastify.authenticate],
     schema: {
@@ -225,6 +383,7 @@ export default async function portabilityRoutes(fastify) {
           userEmail: request.user.email,
           url,
           token,
+          allowInsecure: env.workspace?.allowInsecureRemoteImport === true,
         });
         const response = new ResponseObject().created(entry, 'Workspace imported from remote');
         return reply.code(response.statusCode).send(response.getResponse());

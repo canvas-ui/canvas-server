@@ -1532,6 +1532,55 @@ class Workspace extends EventEmitter {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
+    // Relations — typed doc<->doc edges (synapsd edge plane)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Create `from --predicate--> to`. Idempotent (dupSort dedups the pair).
+     *
+     * No meta is passed: a relation a user drew in the UI is ASSERTED, and the
+     * asserted convention is the ABSENCE of a meta row. It deliberately does not
+     * go through `data.relations` — that would rewrite the document's data and
+     * regenerate its checksums (dedup churn + a content re-embed) for what is a
+     * pure graph write. `#syncDocumentRelations` only ever removes edges that
+     * were in a document's PREVIOUS `data.relations`, so an edge written here
+     * cannot be dropped by a later document update.
+     */
+    async relate(fromId, predicate, toId, options = {}) {
+        return await this.#getActiveDb().relate(
+            parseDocumentId(fromId, 'Relation source document ID'),
+            predicate,
+            parseDocumentId(toId, 'Relation target document ID'),
+            options,
+        );
+    }
+
+    /** Remove `from --predicate--> to` (both adjacency mirrors + meta). */
+    async unrelate(fromId, predicate, toId) {
+        return await this.#getActiveDb().unrelate(
+            parseDocumentId(fromId, 'Relation source document ID'),
+            predicate,
+            parseDocumentId(toId, 'Relation target document ID'),
+        );
+    }
+
+    /**
+     * Every edge touching this document, both directions, with provenance.
+     * `meta.src` is 'doc' for asserted edges (the synthesized default) and
+     * 'extractor:<name>' / 'agent:<hookId>' for derived ones — the UI only
+     * offers to delete the former.
+     */
+    listDocumentRelations(id) {
+        const docId = parseDocumentId(id, 'Document ID');
+        const edges = this.#getActiveDb().edges;
+        const { outgoing, incoming } = edges.edgesOf(docId);
+        return {
+            outgoing: outgoing.map(({ p, to }) => ({ p, to, meta: edges.edge(docId, p, to)?.meta ?? null })),
+            incoming: incoming.map(({ p, from }) => ({ p, from, meta: edges.edge(from, p, docId)?.meta ?? null })),
+        };
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
     // Trash — see docs/data-representation.md
     // ─────────────────────────────────────────────────────────────────────────
 

@@ -6,6 +6,7 @@ import { stripDeviceFeatureTags } from '../../../utils/device-features.js';
 import { parseByteRange } from '../../lib/http-range.js';
 import { resolveContentType } from '../../lib/mime.js';
 import { normalizeSchemaId } from '../../../core/workspace/lib/classifier.js';
+import { PREDICATES } from 'canvas-synapsd/src/indexes/edges/predicates.js';
 
 // Human filename for a location URL: basename of the key after scheme://backend/.
 function locationFilename(url) {
@@ -226,6 +227,48 @@ export default async function workspaceDocumentRoutes(fastify, _options) {
     filters: { type: 'array', items: { type: 'string' }, default: [] },
   };
 
+  // Graph-adjacency constraint, one hop from a known document. Repeatable
+  // (?rel=mentions:12&rel=!replies-to:34), same sigil trio as features:
+  //
+  //   mentions:12        anyOf  — documents 12 mentions
+  //   +mentions:12       allOf
+  //   !mentions:12       noneOf
+  //   mentions:12:in     the incoming axis — documents that mention 12
+  //
+  // DIRECTION IS AN AXIS, never a predicate name (synapsd indexes/edges/
+  // predicates.js) — hence the trailing `:in`/`:out` rather than an inverse
+  // spelling. Shape errors throw here so a malformed token is a 400, not a
+  // silently-wider result set.
+  const relQueryProps = {
+    rel: { type: 'array', items: { type: 'string' }, default: [] },
+  };
+
+  const REL_SIGILS = { '+': 'allOf', '!': 'noneOf' };
+
+  function parseRelTokens(tokens = []) {
+    const parsed = [];
+    for (const raw of tokens) {
+      const token = String(raw).trim();
+      if (!token) continue;
+      const op = REL_SIGILS[token[0]] || 'anyOf';
+      const body = REL_SIGILS[token[0]] ? token.slice(1) : token;
+      const [p, of, dir = 'out'] = body.split(':');
+      if (!p || !of) {
+        throw new Error(`rel token "${token}" must be "<predicate>:<documentId>[:in|:out]"`);
+      }
+      // Checked here so an unknown (or inverse-style) predicate is a 400 rather
+      // than a 500 thrown from deep inside the query resolver.
+      if (!Object.hasOwn(PREDICATES, p)) {
+        throw new Error(`rel token "${token}" uses an unknown predicate. Allowed: ${Object.keys(PREDICATES).join(', ')}`);
+      }
+      if (dir !== 'in' && dir !== 'out') {
+        throw new Error(`rel token "${token}" direction must be 'in' or 'out'`);
+      }
+      parsed.push({ op, p, of: parseDocumentId(of, `rel token "${token}" document id`), dir });
+    }
+    return parsed;
+  }
+
   const paginationQueryProps = {
     limit: { type: 'integer', default: 200 },
     offset: { type: 'integer' },
@@ -251,6 +294,7 @@ export default async function workspaceDocumentRoutes(fastify, _options) {
           ...contextQueryProps,
           ...attributesQueryProps,
           ...filtersQueryProps,
+          ...relQueryProps,
           ...paginationQueryProps,
           // q may repeat (?q=car&q=red): a stack of text queries that AND-narrow
           // each other (stateless refinement). Single q == ordinary search.
@@ -306,6 +350,12 @@ export default async function workspaceDocumentRoutes(fastify, _options) {
         .filter((s) => typeof s === 'string' && s.trim().length > 0);
       const isSearch = queries.length > 0;
 
+      // A malformed rel token is a caller bug, like an unknown filter — 400 it
+      // instead of letting the generic catch report a 500.
+      let relFilters;
+      try { relFilters = parseRelTokens(request.query.rel); }
+      catch (e) { const r = new ResponseObject().badRequest(e.message); return reply.code(r.statusCode).send(r.getResponse()); }
+
       const spec = {
         context: ctxSelector,
         // Directory membership is node-exact (docs tick only their leaf node),
@@ -315,6 +365,7 @@ export default async function workspaceDocumentRoutes(fastify, _options) {
         directory: isSearch && dirSelector ? { ...dirSelector, recursive: true } : dirSelector,
         attributes: buildAttributes(request.query),
         filters: request.query.filters,
+        ...(relFilters.length ? { rel: relFilters } : {}),
         ...(request.query.ids?.length ? { ids: request.query.ids } : {}),
         limit: request.query.limit,
         offset: request.query.offset,
@@ -1427,6 +1478,183 @@ export default async function workspaceDocumentRoutes(fastify, _options) {
     } catch (error) {
       fastify.log.error(error);
       const r = new ResponseObject().serverError('Failed to list document tree memberships');
+      return reply.code(r.statusCode).send(r.getResponse());
+    }
+  });
+
+  // ── Document relations (typed doc<->doc edges) ──────────────────────────
+  // The synapsd edge plane, surfaced for the object card's Synapses tab and the
+  // "Link to…" relation picker. Direction is an AXIS, not a predicate name:
+  // `outgoing` is this document as subject, `incoming` is it as object.
+
+  const RELATION_PREDICATES = Object.keys(PREDICATES);
+
+  // Body shared by POST/DELETE: which edge, and on which axis.
+  const relationBodySchema = {
+    type: 'object',
+    required: ['p', 'to'],
+    properties: {
+      p: { type: 'string', enum: RELATION_PREDICATES },
+      to: {
+        anyOf: [
+          { type: 'array', items: { anyOf: [{ type: 'string' }, { type: 'integer' }] }, minItems: 1 },
+          { type: 'string' },
+          { type: 'integer' },
+        ],
+      },
+      // 'out' (default): :docId --p--> to. 'in': to --p--> :docId.
+      dir: { type: 'string', enum: ['in', 'out'], default: 'out' },
+    },
+  };
+
+  // Resolve the far side of each edge to a document, so a client can render a
+  // relation list without an N+1 round trip. Capped: a hub document can have
+  // thousands of incoming edges and this is a detail-panel read.
+  const RELATION_RESOLVE_CAP = 200;
+
+  async function resolveRelationTargets(workspace, entries, key) {
+    const resolved = [];
+    for (const entry of entries.slice(0, RELATION_RESOLVE_CAP)) {
+      const otherId = entry[key];
+      const document = await workspace.get(otherId).catch(() => null);
+      resolved.push({ ...entry, document: document ?? null });
+    }
+    // Beyond the cap the edge is still reported, just without its document.
+    for (const entry of entries.slice(RELATION_RESOLVE_CAP)) {
+      resolved.push({ ...entry, document: null });
+    }
+    return resolved;
+  }
+
+  fastify.get('/:docId/relations', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      params: { type: 'object', required: ['id', 'docId'], properties: { id: { type: 'string' }, docId: { type: 'string' } } },
+      querystring: {
+        type: 'object',
+        properties: {
+          // Skip the per-edge document read when the caller only wants the shape
+          // of the graph (ids + predicates).
+          resolve: { type: 'boolean', default: true },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    try {
+      const workspace = await getWorkspaceInstance(request, reply);
+      if (!workspace) return reply;
+
+      let documentId;
+      try { documentId = parseDocumentId(request.params.docId, 'Document ID parameter'); }
+      catch (e) { const r = new ResponseObject().badRequest(e.message); return reply.code(r.statusCode).send(r.getResponse()); }
+
+      const doc = await workspace.get(documentId);
+      if (!doc) { const r = new ResponseObject().notFound('Document not found'); return reply.code(r.statusCode).send(r.getResponse()); }
+
+      const { outgoing, incoming } = workspace.listDocumentRelations(documentId);
+      const payload = {
+        documentId,
+        predicates: RELATION_PREDICATES,
+        outgoing: request.query.resolve === false ? outgoing : await resolveRelationTargets(workspace, outgoing, 'to'),
+        incoming: request.query.resolve === false ? incoming : await resolveRelationTargets(workspace, incoming, 'from'),
+      };
+
+      const r = new ResponseObject().found(payload, 'Document relations retrieved');
+      return reply.code(r.statusCode).send(r.getResponse());
+    } catch (error) {
+      fastify.log.error(error);
+      const r = new ResponseObject().serverError('Failed to list document relations');
+      return reply.code(r.statusCode).send(r.getResponse());
+    }
+  });
+
+  fastify.post('/:docId/relations', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      params: { type: 'object', required: ['id', 'docId'], properties: { id: { type: 'string' }, docId: { type: 'string' } } },
+      body: relationBodySchema,
+    },
+  }, async (request, reply) => {
+    try {
+      const workspace = await getWorkspaceInstance(request, reply);
+      if (!workspace) return reply;
+
+      let documentId; let targets;
+      try {
+        documentId = parseDocumentId(request.params.docId, 'Document ID parameter');
+        targets = parseDocumentIdArray(request.body.to, 'Relation target document ID');
+      } catch (e) { const r = new ResponseObject().badRequest(e.message); return reply.code(r.statusCode).send(r.getResponse()); }
+
+      const doc = await workspace.get(documentId);
+      if (!doc) { const r = new ResponseObject().notFound('Document not found'); return reply.code(r.statusCode).send(r.getResponse()); }
+
+      // A relation to a document that does not exist would be invisible anyway
+      // (query-time candidate intersection drops it), so reject it up front
+      // rather than storing a promise the graph cannot keep.
+      const missing = [];
+      for (const target of targets) {
+        if (!(await workspace.get(target).catch(() => null))) missing.push(target);
+      }
+      if (missing.length) {
+        const r = new ResponseObject().badRequest(`Relation target document(s) not found: ${missing.join(', ')}`);
+        return reply.code(r.statusCode).send(r.getResponse());
+      }
+
+      const incoming = request.body.dir === 'in';
+      for (const target of targets) {
+        if (incoming) await workspace.relate(target, request.body.p, documentId);
+        else await workspace.relate(documentId, request.body.p, target);
+      }
+
+      const r = new ResponseObject().success({ documentId, p: request.body.p, to: targets, dir: incoming ? 'in' : 'out' }, 'Relations created');
+      return reply.code(r.statusCode).send(r.getResponse());
+    } catch (error) {
+      fastify.log.error(error);
+      // Predicate errors from synapsd are caller mistakes, not server faults.
+      const message = String(error?.message || '');
+      const r = /predicate/i.test(message)
+        ? new ResponseObject().badRequest(message)
+        : new ResponseObject().serverError('Failed to create document relations');
+      return reply.code(r.statusCode).send(r.getResponse());
+    }
+  });
+
+  fastify.delete('/:docId/relations', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      params: { type: 'object', required: ['id', 'docId'], properties: { id: { type: 'string' }, docId: { type: 'string' } } },
+      body: relationBodySchema,
+    },
+  }, async (request, reply) => {
+    try {
+      const workspace = await getWorkspaceInstance(request, reply);
+      if (!workspace) return reply;
+
+      let documentId; let targets;
+      try {
+        documentId = parseDocumentId(request.params.docId, 'Document ID parameter');
+        targets = parseDocumentIdArray(request.body.to, 'Relation target document ID');
+      } catch (e) { const r = new ResponseObject().badRequest(e.message); return reply.code(r.statusCode).send(r.getResponse()); }
+
+      // No existence check on the far side here: unlinking an edge whose target
+      // was deleted is exactly the case that has to keep working.
+      const incoming = request.body.dir === 'in';
+      let removed = 0;
+      for (const target of targets) {
+        const ok = incoming
+          ? await workspace.unrelate(target, request.body.p, documentId)
+          : await workspace.unrelate(documentId, request.body.p, target);
+        if (ok) removed += 1;
+      }
+
+      const r = new ResponseObject().success({ documentId, p: request.body.p, to: targets, dir: incoming ? 'in' : 'out', removed }, 'Relations removed');
+      return reply.code(r.statusCode).send(r.getResponse());
+    } catch (error) {
+      fastify.log.error(error);
+      const message = String(error?.message || '');
+      const r = /predicate/i.test(message)
+        ? new ResponseObject().badRequest(message)
+        : new ResponseObject().serverError('Failed to remove document relations');
       return reply.code(r.statusCode).send(r.getResponse());
     }
   });

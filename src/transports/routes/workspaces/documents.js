@@ -269,6 +269,55 @@ export default async function workspaceDocumentRoutes(fastify, _options) {
     return parsed;
   }
 
+  // ── Inline relation grammar in q ──────────────────────────────────────────
+  // `@<predicate>:<value>[:in|:out]` inside a text query, negated with a
+  // leading `!`. The value is a document id (`42` / `#42`) or an identity
+  // name (`jane`, `"Jane Doe"` — quoted for spaces), resolved against
+  // data/schema/identity documents by FTS; several matches union into ONE
+  // rel operand (multi-id `of`), AND-ed with the rest of the query.
+  //
+  // DEFAULT DIRECTION IS THE SUBJECT READING: `@authored-by:jane` means
+  // "documents that declare authored-by → jane", which on the engine axis is
+  // `in` (scan jane's incoming edges). Every predicate reads naturally this
+  // way (document-as-subject convention, indexes/edges/predicates.js) — the
+  // raw `?rel=` parameter's anchor-outward default is id-plumbing for the
+  // object card, not a grammar for humans. Append `:out` for the mirror
+  // ("documents jane points at"). Unknown predicates are NOT stripped — the
+  // token stays ordinary search text, so an email address or handle in a
+  // query never 400s.
+  const INLINE_REL_RE = /(^|\s)(!?)@([a-z][a-z-]*):("[^"]*"|[^\s"]+?)(:(in|out))?(?=\s|$)/g;
+
+  function parseInlineRelQuery(query) {
+    const tokens = [];
+    const text = String(query).replace(INLINE_REL_RE, (match, lead, bang, p, value, _dirGroup, dir) => {
+      if (!Object.hasOwn(PREDICATES, p)) { return match; }
+      if (value.startsWith('"')) { value = value.slice(1, -1); }
+      if (!value) { return lead; }
+      tokens.push({ negated: bang === '!', p, value, dir: dir === 'out' ? 'out' : 'in' });
+      return lead;
+    }).trim();
+    return { text, tokens };
+  }
+
+  // A token value → anchor document ids. Numeric (with optional `#`) is used
+  // as-is; anything else resolves by FTS over identity documents, whole
+  // workspace (an identity is rarely filed in the current context).
+  async function resolveRelAnchors(workspace, value) {
+    const bare = value.startsWith('#') ? value.slice(1) : value;
+    if (/^\d+$/.test(bare)) { return [parseInt(bare, 10)]; }
+    const matches = await workspace.search({
+      query: value,
+      mode: 'fts',
+      context: null,
+      directory: null,
+      attributes: { allOf: ['data/schema/identity'] },
+      idsOnly: true,
+      limit: 8,
+      applyCanvasQuerySpec: false,
+    });
+    return Array.isArray(matches) ? matches.filter((id) => Number.isInteger(id)) : [];
+  }
+
   const paginationQueryProps = {
     limit: { type: 'integer', default: 200 },
     offset: { type: 'integer' },
@@ -345,16 +394,36 @@ export default async function workspaceDocumentRoutes(fastify, _options) {
       // Collect the (possibly stacked) text queries. `q` may be a string or an
       // array (repeated param); `search` is a legacy single alias.
       const rawQ = request.query.q;
-      const queries = (Array.isArray(rawQ) ? rawQ : (rawQ ? [rawQ] : []))
+      const rawQueries = (Array.isArray(rawQ) ? rawQ : (rawQ ? [rawQ] : []))
         .concat(request.query.search ? [request.query.search] : [])
         .filter((s) => typeof s === 'string' && s.trim().length > 0);
-      const isSearch = queries.length > 0;
 
       // A malformed rel token is a caller bug, like an unknown filter — 400 it
       // instead of letting the generic catch report a 500.
       let relFilters;
       try { relFilters = parseRelTokens(request.query.rel); }
       catch (e) { const r = new ResponseObject().badRequest(e.message); return reply.code(r.statusCode).send(r.getResponse()); }
+
+      // Inline `@predicate:value` tokens: strip them from the text, resolve
+      // values to anchor ids, fold into the rel filters. A POSITIVE token that
+      // resolves to no identity short-circuits to an empty result — running
+      // without the constraint would silently widen. A NEGATED one that
+      // resolves to nothing excludes nothing, so it is simply dropped.
+      const queries = [];
+      for (const q of rawQueries) {
+        const { text, tokens } = parseInlineRelQuery(q);
+        if (text) { queries.push(text); }
+        for (const token of tokens) {
+          const anchors = await resolveRelAnchors(workspace, token.value);
+          if (anchors.length === 0) {
+            if (token.negated) { continue; }
+            const r = new ResponseObject().found([], `No identity matched "${token.value}" for @${token.p}`, 200, 0, 0);
+            return reply.code(r.statusCode).send(r.getResponse());
+          }
+          relFilters.push({ op: token.negated ? 'noneOf' : 'allOf', p: token.p, of: anchors, dir: token.dir });
+        }
+      }
+      const isSearch = queries.length > 0;
 
       const spec = {
         context: ctxSelector,
@@ -1600,10 +1669,13 @@ export default async function workspaceDocumentRoutes(fastify, _options) {
         return reply.code(r.statusCode).send(r.getResponse());
       }
 
+      // Write-through: the relation lands in the SUBJECT document's own
+      // data.relations (for dir:'in' the subject is the far side), and synapsd
+      // derives the edge from the row — so an L3 rebuild reconstructs it.
       const incoming = request.body.dir === 'in';
       for (const target of targets) {
-        if (incoming) await workspace.relate(target, request.body.p, documentId);
-        else await workspace.relate(documentId, request.body.p, target);
+        if (incoming) await workspace.assertRelation(target, request.body.p, documentId);
+        else await workspace.assertRelation(documentId, request.body.p, target);
       }
 
       const r = new ResponseObject().success({ documentId, p: request.body.p, to: targets, dir: incoming ? 'in' : 'out' }, 'Relations created');
@@ -1636,14 +1708,15 @@ export default async function workspaceDocumentRoutes(fastify, _options) {
         targets = parseDocumentIdArray(request.body.to, 'Relation target document ID');
       } catch (e) { const r = new ResponseObject().badRequest(e.message); return reply.code(r.statusCode).send(r.getResponse()); }
 
-      // No existence check on the far side here: unlinking an edge whose target
-      // was deleted is exactly the case that has to keep working.
+      // No existence check on the far side here: retracting a relation whose
+      // TARGET was deleted must keep working (the subject row still declares
+      // it). A deleted SUBJECT returns false — its edges died with it.
       const incoming = request.body.dir === 'in';
       let removed = 0;
       for (const target of targets) {
         const ok = incoming
-          ? await workspace.unrelate(target, request.body.p, documentId)
-          : await workspace.unrelate(documentId, request.body.p, target);
+          ? await workspace.retractRelation(target, request.body.p, documentId)
+          : await workspace.retractRelation(documentId, request.body.p, target);
         if (ok) removed += 1;
       }
 

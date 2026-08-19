@@ -1536,28 +1536,30 @@ class Workspace extends EventEmitter {
     // ─────────────────────────────────────────────────────────────────────────
 
     /**
-     * Create `from --predicate--> to`. Idempotent (dupSort dedups the pair).
-     *
-     * No meta is passed: a relation a user drew in the UI is ASSERTED, and the
-     * asserted convention is the ABSENCE of a meta row. It deliberately does not
-     * go through `data.relations` — that would rewrite the document's data and
-     * regenerate its checksums (dedup churn + a content re-embed) for what is a
-     * pure graph write. `#syncDocumentRelations` only ever removes edges that
-     * were in a document's PREVIOUS `data.relations`, so an edge written here
-     * cannot be dropped by a later document update.
+     * Assert `from --predicate--> to` by writing it through the subject
+     * document's own `data.relations`; synapsd derives the edge from the row.
+     * The row is the source of truth — a rebuilt edge plane (`rebuildL3`)
+     * reconstructs every user-drawn relation, which a bare edge-plane write
+     * could not promise. (Relations are structural, not content: checksums,
+     * FTS and embeddings all strip them, so this causes no dedup churn or
+     * re-embed.) Idempotent: asserting a declared relation is a no-op.
      */
-    async relate(fromId, predicate, toId, options = {}) {
-        return await this.#getActiveDb().relate(
+    async assertRelation(fromId, predicate, toId) {
+        return await this.#getActiveDb().assertRelation(
             parseDocumentId(fromId, 'Relation source document ID'),
             predicate,
             parseDocumentId(toId, 'Relation target document ID'),
-            options,
         );
     }
 
-    /** Remove `from --predicate--> to` (both adjacency mirrors + meta). */
-    async unrelate(fromId, predicate, toId) {
-        return await this.#getActiveDb().unrelate(
+    /**
+     * Retract an asserted relation: remove it from the subject row's
+     * `data.relations` and drop the derived edge. Derived (extractor/agent)
+     * edges between the same pair survive — they are not the row's to delete.
+     * Returns false when the row does not declare it (or no longer exists).
+     */
+    async retractRelation(fromId, predicate, toId) {
+        return await this.#getActiveDb().retractRelation(
             parseDocumentId(fromId, 'Relation source document ID'),
             predicate,
             parseDocumentId(toId, 'Relation target document ID'),

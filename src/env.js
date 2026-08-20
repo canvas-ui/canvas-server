@@ -105,7 +105,11 @@ export const env = {
         // workspace). Disabled → workspaces run store-only: existing vectors stay
         // searchable, no new embeddings, dense search degrades to FTS.
         enabled: process.env.CANVAS_INFERD_ENABLED !== 'false',
+        // Base URLs for the two built-in OpenAI-compatible presets (`ollama`,
+        // `vllm`). Both default to their daemon's loopback port inside inferd;
+        // set these when the daemon runs on another box.
         ollamaHost: process.env.OLLAMA_HOST || null,
+        vllmBaseUrl: process.env.VLLM_BASE_URL || null,
         // One shared fastembed model store for all workspaces (not per-workspace).
         cacheDir: process.env.CANVAS_INFERD_CACHE_DIR || path.join(SERVER_HOME, 'inferd', 'models'),
         // Max embedding batches in flight across ALL workspace queues. 1 keeps the

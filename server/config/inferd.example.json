@@ -1,5 +1,7 @@
 {
-  "_comment": "Copy to inferd.json (or point CANVAS_INFERD_CONFIG at it) to set the server-wide default inference backends. Users can override any space from the web UI; resolution is built-in default <- this file <- per-user config. Absent = CPU-local ONNX text + CLIP images. `providers` contains connection details, `spaces` selects the provider and model for each modality, and `rules` routes content into spaces. `match.contentType` accepts an exact string, a `type/*` prefix, or an explicit `/regex/flags`. Changing a space's model or dimensions creates a separate Lance table and ledger, so the previous model remains available until explicitly removed.",
+  "_comment": "Copy to inferd.json (or point CANVAS_INFERD_CONFIG at it) to set the server-wide default inference backends. Users can override any space from the web UI; resolution is built-in default <- this file <- per-user config. Absent = CPU-local ONNX text (bge-small-en-v1.5) + CLIP images (Xenova/clip-vit-base-patch32). `providers` contains connection details, `spaces` selects the provider and model for each modality, and `rules` routes content into spaces. Provider TYPES are onnx/clip/blip (local, in-process) and openai (every remote backend - Ollama, vLLM, TEI, infinity and OpenAI all speak the same embeddings dialect). Built-in provider IDS you can reference without declaring: onnx, clip, blip, ollama (http://127.0.0.1:11434/v1) and vllm (http://127.0.0.1:8000/v1). `match.contentType` accepts an exact string, a `type/*` prefix, or an explicit `/regex/flags`. Changing a space's model or dimensions creates a separate Lance table and ledger, so the previous model remains available until explicitly removed.",
+
+  "_providers_comment": "Only needed for a backend that is not one of the built-in ids. To use a local Ollama or vLLM, skip this block entirely and point a space at \"provider\": \"ollama\" or \"vllm\". A legacy \"type\": \"ollama\" with a \"host\" still loads: it is rewritten to the openai provider against that host.",
 
   "providers": {
     "gpu-text": {
@@ -38,12 +40,12 @@
     { "space": "image", "match": { "contentType": "image/*" } }
   ],
 
-  "_summarize_comment": "Optional. Image captions default to local transformers.js captioner (disabled). Enable and POST /workspaces/:id/inferd/summarize/images.",
+  "_summarize_comment": "Optional. Image captions default to SmolVLM-500M-Instruct in the local transformers.js worker, disabled until enabled here or in the UI. Enable and POST /workspaces/:id/inferd/summarize/images. `task` (caption|instruct|florence2) is inferred from the model id; `prompt` only applies to an instruct model.",
   "summarize": {
     "image": {
       "enabled": false,
       "provider": "blip",
-      "model": "Xenova/vit-gpt2-image-captioning"
+      "model": "HuggingFaceTB/SmolVLM-500M-Instruct"
     }
   }
 }

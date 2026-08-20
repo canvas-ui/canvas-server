@@ -236,6 +236,7 @@ class Server extends EventEmitter {
             this.#inferd = new Inferd({
                 onnxCacheDir: env.inferd.cacheDir,
                 ollamaHost: env.inferd.ollamaHost,
+                vllmBaseUrl: env.inferd.vllmBaseUrl,
                 concurrency: env.inferd.concurrency,
                 providers: env.inferd.providers,
                 spaces: env.inferd.spaces,

@@ -2,10 +2,14 @@
 
 import path from 'path';
 import {
-    applyBodyToDoc, docEntries, docName, fileDocumentFromBlob, fileEntry, httpError,
-    inferDocFromFile, norm, renamedRecord, resolveDocContent,
+    applyBodyToDoc, collectDocuments, docEntries, docName, fileDocumentFromBlob, fileEntry,
+    findDocumentByName, httpError, inferDocFromFile, LIST_BUDGET, norm, renamedRecord,
+    resolveDocContent,
 } from './vfs-shared.js';
 import Workspace from '../../core/workspace/Workspace.js';
+import { createLogger } from '../../utils/log.js';
+
+const logger = createLogger('webdav');
 
 /**
  * Virtual filesystem adapter for a workspace tree (context OR directory type).
@@ -51,20 +55,23 @@ export default class TreeFS {
         if (n !== '/' && !this.#tree.pathExists(n)) { return null; }
 
         const used = new Set();
-        const dirs = (await this.#tree.listDirectories(n))
-            // The trash is a real path in this tree, but it has its own root in
-            // the DAV layout — showing it here too would offer two doors into
-            // the same folder, one of which ignores the trash semantics.
-            .filter((name) => !this.#isTrashPath(path.posix.join(n, name)))
-            .map((name) => {
-                used.add(name);
-                return { name, isDir: true, size: 0 };
-            });
+        const dirs = (await this.#dirNames(n)).map((name) => {
+            used.add(name);
+            return { name, isDir: true, size: 0 };
+        });
         const files = docEntries(await this.#list(n), used);
         return [...dirs, ...files];
     }
 
+    /**
+     * `options.doc` is the document the caller already resolved. Worth passing:
+     * resolving a name in a flat view means walking the view, and a GET that
+     * stats and then reads would otherwise walk it twice for one file.
+     */
     async getContent(vPath, options = {}) {
+        if (options.doc) {
+            return resolveDocContent(this.#ws, options.doc, path.posix.basename(norm(vPath)), options);
+        }
         const info = await this.stat(vPath);
         if (!info || info.isDir) { return null; }
         return resolveDocContent(this.#ws, info.doc, info.name, options);
@@ -230,15 +237,31 @@ export default class TreeFS {
     }
 
 
-    async #list(treePath) {
-        try {
-            const docs = await this.#tree.list({ path: treePath, parse: true, limit: 1000 });
-            return Array.isArray(docs) ? docs : [];
-        } catch { return []; }
+    // Child folder names at `treePath`. The trash is a real path in this tree,
+    // but it has its own root in the DAV layout — showing it here too would
+    // offer two doors into the same folder, one of which ignores the trash
+    // semantics.
+    async #dirNames(treePath) {
+        return (await this.#tree.listDirectories(treePath))
+            .filter((name) => !this.#isTrashPath(path.posix.join(treePath, name)));
     }
 
+    #page(treePath) {
+        return (offset, limit) => this.#tree.list({ path: treePath, parse: true, limit, offset });
+    }
+
+    async #list(treePath) {
+        return collectDocuments(this.#page(treePath), (count) => {
+            logger.warn({ tree: this.#tree.name, path: treePath, shown: count, budget: LIST_BUDGET },
+                'Listing truncated: this view holds more documents than one listing carries');
+        });
+    }
+
+    // Resolved page by page, stopping at the match — a view can hold far more
+    // documents than one page, and a name that only the tenth page carries has
+    // to open like any other.
     async #findDoc(treePath, filename) {
-        return (await this.#list(treePath)).find((d) => docName(d) === filename) || null;
+        return findDocumentByName(this.#page(treePath), filename, await this.#dirNames(treePath));
     }
 
     // Write target selector: context trees tick layer bitmaps, directory trees

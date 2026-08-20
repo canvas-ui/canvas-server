@@ -323,6 +323,72 @@ export function mimeFor(filePath) {
     return EXT_MIME[path.extname(filePath).toLowerCase()] || 'application/octet-stream';
 }
 
+// ── Paged listing ───────────────────────────────────────────────────────────
+
+/**
+ * How much of a view one call fetches, and how much of it a request will walk.
+ *
+ * The flat views show every document filed anywhere — a context, a backends
+ * tree, the root of a context tree — so a single 1000-document window is not a
+ * view of a workspace, it is a view of its oldest thousand documents. Reading
+ * only that window left everything past it invisible to readdir AND unfindable
+ * by stat, which is how a file could PUT with a 201 and then 404 on the way
+ * back out, or show once from a cached listing and vanish on the next look.
+ *
+ * The budget is what keeps that honest without promising the impossible: a
+ * lookup stops as soon as it has its answer, and a listing that hits the
+ * ceiling says so instead of quietly presenting a truncated folder as whole.
+ */
+export const LIST_PAGE = 1000;
+export const LIST_BUDGET = 25000;
+
+/**
+ * Walk a view page by page. `fetchPage(offset, limit)` returns one page of
+ * documents; iteration ends at the first short page or at the budget.
+ */
+export async function* documentPages(fetchPage, budget = LIST_BUDGET) {
+    for (let offset = 0; offset < budget; offset += LIST_PAGE) {
+        const limit = Math.min(LIST_PAGE, budget - offset);
+        let page;
+        try { page = await fetchPage(offset, limit); }
+        catch { return; }
+        if (!Array.isArray(page) || page.length === 0) { return; }
+        yield page;
+        if (page.length < limit) { return; }
+    }
+}
+
+/**
+ * Every document in a view, up to the budget. `onTruncated` is called when the
+ * ceiling cut the listing short — the caller decides how to say so.
+ */
+export async function collectDocuments(fetchPage, onTruncated = null) {
+    const docs = [];
+    for await (const page of documentPages(fetchPage)) { docs.push(...page); }
+    if (docs.length >= LIST_BUDGET && onTruncated) { onTruncated(docs.length); }
+    return docs;
+}
+
+/**
+ * The document a filename addresses, resolved page by page and stopping at the
+ * first match.
+ *
+ * Names are resolved exactly as readdir resolves them — `reserved` seeds the
+ * same collision set (subdirectory names) and docEntries applies the same
+ * `_<id>` suffix — because a name the listing showed has to be a name that
+ * opens. Matching bare docName() meant every deduplicated file was listed and
+ * then 404'd.
+ */
+export async function findDocumentByName(fetchPage, filename, reserved = []) {
+    const used = new Set(reserved);
+    for await (const page of documentPages(fetchPage)) {
+        for (const entry of docEntries(page, used)) {
+            if (entry.name === filename) { return entry.doc; }
+        }
+    }
+    return null;
+}
+
 // ── Document → file mapping (shared by all virtual FS impls) ────────────────
 
 /**

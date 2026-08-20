@@ -1,7 +1,7 @@
 'use strict';
 
 import path from 'path';
-import { docEntries, docName, fileEntry, httpError, norm, resolveDocContent } from './vfs-shared.js';
+import { docEntries, fileEntry, findDocumentByName, httpError, norm, resolveDocContent } from './vfs-shared.js';
 
 /**
  * The workspace trash as a flat folder.
@@ -28,8 +28,11 @@ export default class TrashFS {
         return documents || [];
     }
 
+    // Resolved the same way readdir names things, dedup suffix included — the
+    // trash is flat, so two deleted files that shared a name meet here.
     async #findDoc(filename) {
-        return (await this.#docs()).find((doc) => docName(doc) === filename) || null;
+        const docs = await this.#docs();
+        return findDocumentByName((offset) => (offset === 0 ? docs : []), filename);
     }
 
     async stat(vPath) {
@@ -48,7 +51,11 @@ export default class TrashFS {
         return docEntries(await this.#docs());
     }
 
+    // `options.doc` short-circuits the name walk; see TreeFS.getContent.
     async getContent(vPath, options = {}) {
+        if (options.doc) {
+            return resolveDocContent(this.#ws, options.doc, path.posix.basename(norm(vPath)), options);
+        }
         const info = await this.stat(vPath);
         if (!info || info.isDir) { return null; }
         return resolveDocContent(this.#ws, info.doc, info.name, options);

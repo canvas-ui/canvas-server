@@ -608,7 +608,11 @@ export class WebDAVHandler {
       return res.end();
     }
 
-    const content = await vfs.getContent(vRel, wanted ? { range: { start: wanted.start, end: wanted.end } } : {});
+    // `doc` is what stat() already resolved — see TreeFS.getContent.
+    const content = await vfs.getContent(vRel, {
+        ...(info.doc ? { doc: info.doc } : {}),
+        ...(wanted ? { range: { start: wanted.start, end: wanted.end } } : {}),
+    });
     if (!content) return send(res, 404, 'Not Found');
 
     if (content.stream) {

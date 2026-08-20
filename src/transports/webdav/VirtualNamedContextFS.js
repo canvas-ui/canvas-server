@@ -2,9 +2,13 @@
 
 import schemaRegistry from 'canvas-synapsd/src/schemas/SchemaRegistry.js';
 import {
-    applyBodyToDoc, docEntries, docName, fileDocumentFromBlob, fileEntry, httpError,
-    inferDocFromFile, norm, renamedRecord, resolveDocContent,
+    applyBodyToDoc, collectDocuments, docEntries, docName, fileDocumentFromBlob, fileEntry,
+    findDocumentByName, httpError, inferDocFromFile, LIST_BUDGET, norm, renamedRecord,
+    resolveDocContent,
 } from './vfs-shared.js';
+import { createLogger } from '../../utils/log.js';
+
+const logger = createLogger('webdav');
 
 /**
  * A named context as a folder.
@@ -89,7 +93,7 @@ export default class VirtualNamedContextFS {
             if (parts.length === 1) {
                 const folders = [];
                 for (const [folder, schema] of FOLDER_MAP) {
-                    if ((await this.#listDocs(schema, 1)).length > 0) {
+                    if (await this.#hasDocs(schema)) {
                         folders.push({ name: folder, isDir: true, size: 0 });
                     }
                 }
@@ -103,7 +107,11 @@ export default class VirtualNamedContextFS {
         return null;
     }
 
+    // `options.doc` short-circuits the name walk; see TreeFS.getContent.
     async getContent(vPath, options = {}) {
+        if (options.doc) {
+            return resolveDocContent(this.#ctx.workspace, options.doc, split(vPath).pop() || '', options);
+        }
         const info = await this.stat(vPath);
         if (!info || info.isDir) { return null; }
         return resolveDocContent(this.#ctx.workspace, info.doc, info.name, options);
@@ -191,18 +199,37 @@ export default class VirtualNamedContextFS {
         return parts[0];
     }
 
+    // A context is the flattest view there is — every document it holds is one
+    // of its files — so it outgrows a single page sooner than anything else.
+    // Both the listing and the lookup page through it; see findDocumentByName.
     async #findDoc(filename, schema = null) {
-        return (await this.#listDocs(schema)).find((doc) => docName(doc) === filename) || null;
+        return findDocumentByName(this.#page(schema), filename, [BY_SCHEMA]);
     }
 
-    async #listDocs(schema = null, limit = 1000) {
+    #page(schema = null) {
+        return (offset, limit) => this.#ctx.list(this.#ctx.userId, {
+            ...(schema ? { attributes: { allOf: [schema] } } : {}),
+            options: { limit, offset, parse: true },
+        });
+    }
+
+    async #listDocs(schema = null) {
+        return collectDocuments(this.#page(schema), (count) => {
+            logger.warn({ context: this.#ctx.id, schema, shown: count, budget: LIST_BUDGET },
+                'Listing truncated: this context holds more documents than one listing carries');
+        });
+    }
+
+    // "Does this schema have anything at all" — one document is the whole
+    // answer, so it never pages.
+    async #hasDocs(schema) {
         try {
             const docs = await this.#ctx.list(this.#ctx.userId, {
-                ...(schema ? { attributes: { allOf: [schema] } } : {}),
-                options: { limit, parse: true },
+                attributes: { allOf: [schema] },
+                options: { limit: 1, parse: false },
             });
-            return Array.isArray(docs) ? docs : [];
-        } catch { return []; }
+            return Array.isArray(docs) && docs.length > 0;
+        } catch { return false; }
     }
 }
 

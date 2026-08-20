@@ -471,6 +471,26 @@ export default async function agentRoutes(fastify, _options) {
     });
 
     /**
+     * Resolved tool definitions (runtime-injected; read-only view).
+     */
+    fastify.get('/:agentIdentifier/tools', { onRequest: [fastify.authenticate] }, async (request, reply) => {
+        if (!requireUser(request, reply)) return;
+        try {
+            const result = await fastify.agents.getToolDefinitions(
+                request.user.id, request.params.agentIdentifier, request.user.id
+            );
+            const r = new ResponseObject().found(result, 'Agent tool definitions retrieved');
+            return reply.code(r.statusCode).send(r.getResponse());
+        } catch (err) {
+            fastify.log.error(err);
+            const r = err.message?.startsWith('Agent not found')
+                ? new ResponseObject().notFound(err.message)
+                : new ResponseObject().serverError(err.message || 'Failed to get tool definitions');
+            return reply.code(r.statusCode).send(r.getResponse());
+        }
+    });
+
+    /**
      * Access binding — lock the agent to a workspace / workspace path / context, or grant global (cross-workspace) scope
      * and mint its canvas-agent-* token. The token value is returned exactly
      * once (only the hash is stored server-side).

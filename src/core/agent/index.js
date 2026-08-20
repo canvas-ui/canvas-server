@@ -9,6 +9,8 @@ import { DefaultPackageManager, SettingsManager } from '@mariozechner/pi-coding-
 import { generateUUID } from '../../utils/id.js';
 import { createLogger } from '../../utils/log.js';
 import Agent, { AGENT_STATUS_CODES, LOCAL_PROVIDER_DEFAULTS, sanitizeAgentData, AGENT_SESSION_MODES } from './Agent.js';
+import { createCanvasTools } from './tools/index.js';
+import { createCodingTools } from '@mariozechner/pi-coding-agent';
 import { loadAgentRuntimeConfig, materializeAgentRuntimeFiles, parseSkillMarkdown, sanitizeSkillName } from './files.js';
 import { validateAgentProvider } from './validation.js';
 import { mintAgentToken, hashToken, normalizeAgentPermissions, verifyAgentTokenValue } from './lib/AgentTokens.js';
@@ -494,6 +496,38 @@ class Agents extends EventEmitter {
     async getAccess(userId, agentIdentifier, requestingUserId) {
         const { entry } = await this.#requireOwnedAgent(userId, agentIdentifier, requestingUserId);
         return entry.access || null;
+    }
+
+    /**
+     * Resolved tool definitions the runtime injects at start — the source of
+     * truth for "what can this agent call", independent of whether it is
+     * running. Token material is never included; parameters are the JSON
+     * schemas the model sees.
+     */
+    async getToolDefinitions(userId, agentIdentifier, requestingUserId) {
+        const { entry } = await this.#requireOwnedAgent(userId, agentIdentifier, requestingUserId);
+        const project = (tool, source) => ({
+            name: tool.name,
+            label: tool.label,
+            description: tool.description,
+            parameters: tool.parameters,
+            source,
+        });
+
+        const config = await this.#loadConfig(entry.configPath);
+        let canvasTools = [];
+        if (config?.tools?.canvas?.enabled !== false) {
+            const canvasEnv = await this.#resolveCanvasEnvForStart(entry);
+            if (canvasEnv) canvasTools = createCanvasTools(canvasEnv);
+        }
+        const codingTools = createCodingTools(path.join(entry.rootPath, 'home'));
+        return {
+            tools: [
+                ...codingTools.map((tool) => project(tool, 'coding')),
+                ...canvasTools.map((tool) => project(tool, 'canvas')),
+            ],
+            config: config?.tools || {},
+        };
     }
 
     async rotateAgentToken(userId, agentIdentifier, requestingUserId) {

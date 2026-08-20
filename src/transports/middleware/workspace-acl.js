@@ -57,7 +57,11 @@ export function createWorkspaceACLMiddleware(requiredPermission = 'read', { allo
       // owner) — enforce the binding here and stop.
       if (request.resourceToken?.type === 'agent') {
         const binding = request.resourceToken;
-        const matchesBinding = workspaceId === binding.workspaceId
+        // Global bindings ('*') may address any workspace the owner can
+        // access; bound agents are locked to their bound workspace.
+        const isGlobal = binding.workspaceId === '*';
+        const matchesBinding = isGlobal
+          || workspaceId === binding.workspaceId
           || workspaceId === binding.workspaceName
           || request.server.workspaceManager?.resolveWorkspaceId(request.user?.id, workspaceId) === binding.workspaceId;
 
@@ -70,7 +74,10 @@ export function createWorkspaceACLMiddleware(requiredPermission = 'read', { allo
           return reply.code(response.statusCode).send(response.getResponse());
         }
 
-        const workspace = await request.server.workspaceManager.getWorkspace(binding.workspaceId, request.user.id);
+        const targetWorkspaceId = isGlobal
+          ? (request.server.workspaceManager?.resolveWorkspaceId(request.user?.id, workspaceId) || workspaceId)
+          : binding.workspaceId;
+        const workspace = await request.server.workspaceManager.getWorkspace(targetWorkspaceId, request.user.id);
         if (!workspace) {
           const response = new ResponseObject().notFound(`Workspace not found: ${workspaceId}`);
           return reply.code(response.statusCode).send(response.getResponse());

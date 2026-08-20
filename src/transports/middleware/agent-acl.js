@@ -84,11 +84,14 @@ export async function enforceAgentBinding(request, reply) {
     const binding = request.resourceToken;
     if (binding?.type !== 'agent') return;
 
-    // 1. Workspace lock
-    const addressedWorkspaceId = resolveAddressedWorkspaceId(request);
-    if (request.params?.id && addressedWorkspaceId !== binding.workspaceId) {
-        logger.debug(`Agent ${binding.agentId} denied: workspace ${request.params.id} outside binding`);
-        return forbidden(reply, 'Agent token is not bound to this workspace');
+    // 1. Workspace lock — global bindings ('*') may address any workspace
+    // the owner can access; owner ACLs downstream are the backstop.
+    if (binding.workspaceId !== '*' && request.params?.id) {
+        const addressedWorkspaceId = resolveAddressedWorkspaceId(request);
+        if (addressedWorkspaceId !== binding.workspaceId) {
+            logger.debug(`Agent ${binding.agentId} denied: workspace ${request.params.id} outside binding`);
+            return forbidden(reply, 'Agent token is not bound to this workspace');
+        }
     }
 
     // 2. Method → permission

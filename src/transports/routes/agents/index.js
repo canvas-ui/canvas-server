@@ -471,7 +471,7 @@ export default async function agentRoutes(fastify, _options) {
     });
 
     /**
-     * Access binding — lock the agent to a workspace / workspace path / context
+     * Access binding — lock the agent to a workspace / workspace path / context, or grant global (cross-workspace) scope
      * and mint its canvas-agent-* token. The token value is returned exactly
      * once (only the hash is stored server-side).
      */
@@ -503,7 +503,7 @@ export default async function agentRoutes(fastify, _options) {
                         type: 'object',
                         required: ['type'],
                         properties: {
-                            type: { type: 'string', enum: ['workspace', 'path', 'context'] },
+                            type: { type: 'string', enum: ['workspace', 'path', 'context', 'global'] },
                             workspace: { type: 'string' },
                             path: { type: 'string' },
                             context: { type: 'string' },

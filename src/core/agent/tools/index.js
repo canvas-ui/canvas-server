@@ -50,8 +50,21 @@ function projectDocument(doc) {
 export function createCanvasTools(env) {
     const client = new CanvasApiClient(env);
     const workspaceId = env.CANVAS_WORKSPACE;
+    const isGlobal = workspaceId === '*';
     const basePath = env.CANVAS_BASE_PATH || '/';
-    const documentsBase = `/workspaces/${workspaceId}/documents`;
+    const documentsBase = (workspace) => `/workspaces/${workspace}/documents`;
+
+    // Global bindings (CANVAS_WORKSPACE '*') address workspaces explicitly;
+    // bound agents keep the implicit workspace and no extra parameter.
+    const workspaceParams = isGlobal
+        ? { workspace: Type.String({ description: 'Workspace id or name (required in global mode; list with canvas_workspaces)' }) }
+        : {};
+    const resolveWorkspace = (params) => {
+        if (!isGlobal) return workspaceId;
+        const workspace = String(params?.workspace || '').trim();
+        if (!workspace) throw new Error('workspace is required in global mode (list with canvas_workspaces)');
+        return workspace;
+    };
 
     const canvasFind = defineTool({
         name: 'canvas_find',
@@ -68,10 +81,11 @@ export function createCanvasTools(env) {
             path: Type.Optional(Type.String({ description: 'Context path relative to your scope (default: whole scope)' })),
             limit: Type.Optional(Type.Number({ description: 'Max results (default 20)' })),
             offset: Type.Optional(Type.Number({ description: 'Pagination offset' })),
+            ...workspaceParams,
         }),
         async execute(toolCallId, params, signal) {
             try {
-                const result = await client.get(documentsBase, {
+                const result = await client.get(documentsBase(resolveWorkspace(params)), {
                     signal,
                     query: {
                         context: scopedPath(basePath, params.path),
@@ -99,10 +113,11 @@ export function createCanvasTools(env) {
         description: 'Fetch a single canvas document by its numeric id (full data, no projection).',
         parameters: Type.Object({
             docId: Type.Number({ description: 'Document id (from canvas_find results)' }),
+            ...workspaceParams,
         }),
         async execute(toolCallId, params, signal) {
             try {
-                const result = await client.get(`${documentsBase}/by-id/${params.docId}`, { signal });
+                const result = await client.get(`${documentsBase(resolveWorkspace(params))}/by-id/${params.docId}`, { signal });
                 return toolResult(result.payload ?? null);
             } catch (error) {
                 return toolError(error);
@@ -126,10 +141,11 @@ export function createCanvasTools(env) {
                 { description: 'Document to insert' },
             ),
             path: Type.Optional(Type.String({ description: 'Context path relative to your scope' })),
+            ...workspaceParams,
         }),
         async execute(toolCallId, params, signal) {
             try {
-                const result = await client.post(documentsBase, {
+                const result = await client.post(documentsBase(resolveWorkspace(params)), {
                     signal,
                     body: {
                         documents: [params.document],
@@ -147,11 +163,11 @@ export function createCanvasTools(env) {
         name: 'canvas_tree',
         label: 'Canvas Tree',
         description: 'Show the workspace context tree under your bound scope (folder structure of the workspace).',
-        parameters: Type.Object({}),
+        parameters: Type.Object({ ...workspaceParams }),
         async execute(toolCallId, params, signal) {
             try {
-                const result = await client.get(`/workspaces/${workspaceId}/tree`, { signal });
-                return toolResult(extractSubtree(result.payload, basePath));
+                const result = await client.get(`/workspaces/${resolveWorkspace(params)}/tree`, { signal });
+                return toolResult(extractSubtree(result.payload, isGlobal ? '/' : basePath));
             } catch (error) {
                 return toolError(error);
             }
@@ -185,7 +201,29 @@ export function createCanvasTools(env) {
         },
     });
 
-    return [canvasFind, canvasGet, canvasInsert, canvasTree, canvasNotify];
+    const canvasWorkspaces = defineTool({
+        name: 'canvas_workspaces',
+        label: 'Canvas Workspaces',
+        description: 'List the workspaces you can access (global mode only). Use the returned id or name as the workspace parameter of the other canvas tools.',
+        parameters: Type.Object({}),
+        async execute(toolCallId, params, signal) {
+            try {
+                const result = await client.get('/workspaces', { signal });
+                const workspaces = Array.isArray(result.payload) ? result.payload : [];
+                return toolResult(workspaces.map((workspace) => ({
+                    id: workspace.id,
+                    name: workspace.name,
+                    label: workspace.label,
+                    description: workspace.description,
+                    status: workspace.status,
+                })));
+            } catch (error) {
+                return toolError(error);
+            }
+        },
+    });
+
+    return [canvasFind, canvasGet, canvasInsert, canvasTree, canvasNotify, ...(isGlobal ? [canvasWorkspaces] : [])];
 }
 
 // Present only the subtree under basePath; '/' returns the whole tree.

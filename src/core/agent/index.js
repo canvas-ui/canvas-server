@@ -49,7 +49,7 @@ const DEFAULT_AGENT_CONFIG = {
     },
 };
 
-const AGENT_BINDING_TYPES = ['workspace', 'path', 'context'];
+const AGENT_BINDING_TYPES = ['workspace', 'path', 'context', 'global'];
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -1003,6 +1003,13 @@ class Agents extends EventEmitter {
             return { type, context: context.id };
         }
 
+        if (type === 'global') {
+            // Cross-workspace scope: no workspace lock, no path clamp. The
+            // enforced scope resolves to workspaceId '*'; agent-acl skips the
+            // workspace/path checks and the owner's own ACLs are the backstop.
+            return { type };
+        }
+
         if (!this.#workspaceManager) throw new Error('Workspace manager not available');
         if (!bindingSpec.workspace) throw new Error('binding.workspace is required');
 
@@ -1027,6 +1034,10 @@ class Agents extends EventEmitter {
     async #resolveBindingScope(owner, binding) {
         try {
             if (!binding?.type) return null;
+
+            if (binding.type === 'global') {
+                return { workspaceId: '*', workspaceName: '*', basePath: '/' };
+            }
 
             if (binding.type === 'context') {
                 if (!this.#contextManager) return null;

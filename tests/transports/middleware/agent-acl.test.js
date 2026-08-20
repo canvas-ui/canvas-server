@@ -137,6 +137,30 @@ describe('enforceAgentBinding', () => {
         assert.equal(reply.statusCode, 403);
     });
 
+    test('global binding (workspaceId *) skips workspace lock and path clamp', async () => {
+        const request = makeRequest({
+            params: { id: 'ws-other' },
+            query: { context: '/anything', scope: 'workspace' },
+            server: { workspaceManager: { resolveWorkspaceId: () => 'ws-other' } },
+        });
+        request.resourceToken.workspaceId = '*';
+        request.resourceToken.basePath = '/';
+        const reply = makeReply();
+        await enforceAgentBinding(request, reply);
+        assert.equal(reply.statusCode, null);
+        assert.equal(request.query.context, '/anything');
+    });
+
+    test('global binding still enforces method permission', async () => {
+        const request = makeRequest({ method: 'POST', body: { documents: [{}] } });
+        request.resourceToken.workspaceId = '*';
+        request.resourceToken.basePath = '/';
+        request.resourceToken.permissions = ['read'];
+        const reply = makeReply();
+        await enforceAgentBinding(request, reply);
+        assert.equal(reply.statusCode, 403);
+    });
+
     test('workspace-wide binding (basePath /) skips path clamp', async () => {
         const request = makeRequest({ query: { context: '/anything' } });
         request.resourceToken.basePath = '/';

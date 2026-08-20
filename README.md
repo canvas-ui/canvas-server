@@ -10,6 +10,18 @@
 ## Canvas Server
 Server runtime for the Canvas project.
 
+
+## Project screenshots
+
+- https://demo.cnvs.ai/pub/c/aks6zaf8
+
+
+## Demo instance
+
+- https://demo.cnvs.ai/
+- demo@canvas.local
+
+
 ## Search and live sessions
 
 Workspace reads have two stages:

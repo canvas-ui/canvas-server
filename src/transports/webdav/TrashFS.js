@@ -1,7 +1,7 @@
 'use strict';
 
 import path from 'path';
-import { docEntries, docName, docSize, httpError, norm, resolveDocContent } from './vfs-shared.js';
+import { docEntries, docName, fileEntry, httpError, norm, resolveDocContent } from './vfs-shared.js';
 
 /**
  * The workspace trash as a flat folder.
@@ -40,7 +40,7 @@ export default class TrashFS {
         if (parts.length !== 1) { return null; } // flat by design
 
         const doc = await this.#findDoc(parts[0]);
-        return doc ? { isDir: false, name: parts[0], size: docSize(doc), doc } : null;
+        return doc ? fileEntry(doc, parts[0]) : null;
     }
 
     async readdir(vPath) {

@@ -2,7 +2,7 @@
 
 import path from 'path';
 import {
-    applyBodyToDoc, docEntries, docName, docSize, fileDocumentFromBlob, httpError,
+    applyBodyToDoc, docEntries, docName, fileDocumentFromBlob, fileEntry, httpError,
     inferDocFromFile, norm, renamedRecord, resolveDocContent,
 } from './vfs-shared.js';
 import Workspace from '../../core/workspace/Workspace.js';
@@ -41,7 +41,7 @@ export default class TreeFS {
         const fname = path.posix.basename(n);
         if (parent === '/' || this.#tree.pathExists(parent)) {
             const doc = await this.#findDoc(parent, fname);
-            if (doc) { return { isDir: false, name: fname, size: docSize(doc), doc }; }
+            if (doc) { return fileEntry(doc, fname); }
         }
         return null;
     }

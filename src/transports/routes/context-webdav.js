@@ -1,8 +1,8 @@
 'use strict';
 
 import path from 'path';
-import { pipeline } from 'stream/promises';
 import VirtualNamedContextFS from '../webdav/VirtualNamedContextFS.js';
+import { entryIdentity, isClientAbort, matchesEtag, parseRange, streamTo } from '../webdav/dav-http.js';
 import ResponseObject from '../ResponseObject.js';
 import { createLogger } from '../../utils/log.js';
 import { throttleKey, isThrottled, recordFailure, clearFailures } from '../lib/basic-auth-throttle.js';
@@ -162,13 +162,14 @@ async function handleDav(res, { method, url, headers, body, context, contextPara
             case 'PROPFIND':
                 return await propfind(res, vfs, prefix, rel, headers, body);
             case 'GET':
-                return await get(res, vfs, rel);
+                return await get(res, vfs, rel, headers);
             case 'HEAD':
                 return await head(res, vfs, rel);
             default:
                 return send(res, 405, 'Method Not Allowed');
         }
     } catch (err) {
+        if (isClientAbort(err)) return;
         logger.error({ err, method, path: rel }, 'Context WebDAV request failed');
         if (!res.headersSent) send(res, 500);
     }
@@ -200,7 +201,7 @@ async function propfind(res, vfs, prefix, rel, headers, body) {
 
 // ── GET ─────────────────────────────────────────────────────────────────────
 
-async function get(res, vfs, rel) {
+async function get(res, vfs, rel, headers = {}) {
     const info = await vfs.stat(rel);
     if (!info) return send(res, 404, 'Not Found');
 
@@ -215,14 +216,43 @@ async function get(res, vfs, rel) {
         return sendBody(res, 200, html, 'text/html; charset=utf-8');
     }
 
-    const content = await vfs.getContent(rel);
+    // The identity PROPFIND reported, on the body itself: a client validating
+    // what it reads against what it was told has to get one answer, or it takes
+    // the file for changed mid-read and abandons the transfer.
+    const identity = entryIdentity(info);
+    if (identity.ETag && matchesEtag(headers['if-none-match'], identity.ETag)) {
+        res.writeHead(304, identity);
+        return res.end();
+    }
+
+    // Seeking works here for the same reason it works on the workspace mount:
+    // `stored` serves a byte window, and `ranged` says whether it really did.
+    const wanted = parseRange(headers['range'], info.size);
+    if (wanted?.unsatisfiable) {
+        res.writeHead(416, { ...identity, 'Accept-Ranges': 'bytes', 'Content-Range': `bytes */${info.size}` });
+        return res.end();
+    }
+
+    const content = await vfs.getContent(rel, wanted ? { range: { start: wanted.start, end: wanted.end } } : {});
     if (!content) return send(res, 404, 'Not Found');
 
     if (content.stream) {
-        res.writeHead(200, { 'Content-Type': content.contentType, 'Content-Length': content.size });
-        await pipeline(content.stream, res);
+        const bodyHeaders = { ...identity, 'Content-Type': content.contentType, 'Accept-Ranges': 'bytes' };
+        if (wanted && content.ranged) {
+            res.writeHead(206, {
+                ...bodyHeaders,
+                'Content-Length': wanted.end - wanted.start + 1,
+                'Content-Range': `bytes ${wanted.start}-${wanted.end}/${info.size}`,
+            });
+            return await streamTo(res, content.stream);
+        }
+        // Only when the size is actually known — `Content-Length: undefined`
+        // is not a length, and the response has to fall back to chunked.
+        if (Number.isFinite(content.size)) bodyHeaders['Content-Length'] = content.size;
+        res.writeHead(200, bodyHeaders);
+        await streamTo(res, content.stream);
     } else if (content.buffer) {
-        res.writeHead(200, { 'Content-Type': content.contentType, 'Content-Length': content.buffer.length });
+        res.writeHead(200, { ...identity, 'Content-Type': content.contentType, 'Content-Length': content.buffer.length });
         res.end(content.buffer);
     } else {
         send(res, 500);
@@ -237,8 +267,10 @@ async function head(res, vfs, rel) {
 
     const contentType = info.isDir ? 'httpd/unix-directory' : (info.contentType || 'application/octet-stream');
     res.writeHead(200, {
+        ...entryIdentity(info),
         'Content-Type': contentType,
         'Content-Length': info.isDir ? 0 : (info.size || 0),
+        ...(info.isDir ? {} : { 'Accept-Ranges': 'bytes' }),
     });
     res.end();
 }
@@ -265,21 +297,28 @@ function sendXml(res, code, xml) {
 
 // ── PROPFIND XML ────────────────────────────────────────────────────────────
 
+/**
+ * A file's identity has to be STABLE — the entry carries the document's own
+ * mtime and ETag. A fresh stamp per PROPFIND tells the client the file changed
+ * under it, which is how opening an image drew it once and then failed. A
+ * collection has no body to drop and a stale listing is the worse failure, so
+ * it keeps the volatile stamp and carries no ETag (RFC 4918 asks for one only
+ * where there is an entity to compare).
+ */
 function propEntry(entry, prefix, rel) {
     const isDir = entry.isDir;
     const href = esc(encSegments(prefix + rel) + (isDir && !rel.endsWith('/') ? '/' : ''));
     const name = esc(entry.name || path.basename(rel) || 'root');
-    const now = new Date();
+    const stamp = entry.mtime ? new Date(entry.mtime) : new Date();
     const contentType = entry.contentType || 'application/octet-stream';
-    const epoch = now.getTime();
     const props = [
         `<D:displayname>${name}</D:displayname>`,
         `<D:resourcetype>${isDir ? '<D:collection/>' : ''}</D:resourcetype>`,
-        `<D:getlastmodified>${httpDate(now)}</D:getlastmodified>`,
-        `<D:creationdate>${isoDate(now)}</D:creationdate>`,
-        `<D:getetag>"v-${esc(name)}-${epoch}"</D:getetag>`,
+        `<D:getlastmodified>${httpDate(stamp)}</D:getlastmodified>`,
+        `<D:creationdate>${isoDate(stamp)}</D:creationdate>`,
     ];
     if (!isDir) {
+        props.push(`<D:getetag>${esc(entry.etag || `"v-${name}-${entry.size || 0}"`)}</D:getetag>`);
         props.push(`<D:getcontentlength>${entry.size || 0}</D:getcontentlength>`);
         props.push(`<D:getcontenttype>${esc(contentType)}</D:getcontenttype>`);
     }

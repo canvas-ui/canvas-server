@@ -2,7 +2,7 @@
 
 import schemaRegistry from 'canvas-synapsd/src/schemas/SchemaRegistry.js';
 import {
-    applyBodyToDoc, docEntries, docName, docSize, fileDocumentFromBlob, httpError,
+    applyBodyToDoc, docEntries, docName, fileDocumentFromBlob, fileEntry, httpError,
     inferDocFromFile, norm, renamedRecord, resolveDocContent,
 } from './vfs-shared.js';
 
@@ -65,14 +65,14 @@ export default class VirtualNamedContextFS {
             if (parts.length === 2) { return { isDir: true, name: parts[1], size: 0 }; }
             if (parts.length === 3) {
                 const doc = await this.#findDoc(parts[2], FOLDER_MAP.get(parts[1]));
-                return doc ? { isDir: false, name: parts[2], size: docSize(doc), doc } : null;
+                return doc ? fileEntry(doc, parts[2]) : null;
             }
             return null;
         }
 
         if (parts.length !== 1) { return null; } // flat by design
         const doc = await this.#findDoc(parts[0]);
-        return doc ? { isDir: false, name: parts[0], size: docSize(doc), doc } : null;
+        return doc ? fileEntry(doc, parts[0]) : null;
     }
 
     async readdir(vPath) {

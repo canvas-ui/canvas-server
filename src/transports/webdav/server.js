@@ -7,6 +7,7 @@ import crypto from 'crypto';
 import { createLogger } from '../../utils/log.js';
 import { internalPathMatcher } from '../../core/workspace/lib/internal-paths.js';
 import TreeFS from './TreeFS.js';
+import { entryIdentity, isClientAbort, matchesEtag, parseRange, streamTo } from './dav-http.js';
 import { isClientDropping, norm } from './vfs-shared.js';
 import VirtualContextsFS from './VirtualContextsFS.js';
 import TrashFS from './TrashFS.js';
@@ -23,6 +24,7 @@ const MIME = {
   '.webp': 'image/webp', '.pdf': 'application/pdf', '.zip': 'application/zip',
   '.gz': 'application/gzip', '.tar': 'application/x-tar',
   '.mp3': 'audio/mpeg', '.mp4': 'video/mp4', '.wav': 'audio/wav',
+  '.eml': 'message/rfc822',
 };
 const mime = (p) => MIME[path.extname(p).toLowerCase()] || 'application/octet-stream';
 
@@ -34,45 +36,6 @@ const isoDate = (d) => new Date(d).toISOString();
 const encSeg = (s) => { try { return encodeURIComponent(s); } catch { return encodeURIComponent(s.replace(/[\uD800-\uDFFF]/g, '\uFFFD')); } };
 const encSegments = (p) => p.split('/').map(s => s ? encSeg(s) : '').join('/');
 const etag = (s) => `"${s.ino}-${s.size}-${Math.floor(s.mtimeMs)}"`;
-
-/**
- * Parse a `Range` header against a known size.
- *
- * Returns null when there is no range to honour (absent header, a form we do
- * not serve), or `{ start, end }` inclusive, or `{ unsatisfiable: true }` for a
- * range that lies outside the file — which is a 416, not a silent full body.
- *
- * Only single ranges are honoured: multipart/byteranges buys nothing for the
- * clients that matter here (players seeking, editors reading a header), and
- * answering 200 with the whole body is a legal response to a multi-range
- * request.
- */
-function parseRange(header, size) {
-  if (!header || size == null) return null;
-  const match = /^bytes=(\d*)-(\d*)$/.exec(String(header).trim());
-  if (!match) return null;
-
-  const [, rawStart, rawEnd] = match;
-  if (rawStart === '' && rawEnd === '') return null;
-
-  let start;
-  let end;
-  if (rawStart === '') {
-    // Suffix form: the LAST n bytes.
-    const suffix = Number(rawEnd);
-    if (!Number.isFinite(suffix) || suffix <= 0) return { unsatisfiable: true };
-    start = Math.max(0, size - suffix);
-    end = size - 1;
-  } else {
-    start = Number(rawStart);
-    end = rawEnd === '' ? size - 1 : Number(rawEnd);
-    if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
-    end = Math.min(end, size - 1);
-  }
-
-  if (start > end || start >= size) return { unsatisfiable: true };
-  return { start, end };
-}
 
 // ── In-memory lock store (Class 2 WebDAV) ───────────────────────────────────
 
@@ -151,6 +114,7 @@ export class WebDAVHandler {
 
       return send(res, 404, 'Not Found');
     } catch (err) {
+      if (isClientAbort(err)) return;
       logger.error({ err, method, path: rel }, 'WebDAV request failed');
       if (!res.headersSent) {
         const code = err.statusCode || (err.code === 'ENOENT' ? 404 : err.code === 'EACCES' ? 403 : 500);
@@ -366,11 +330,11 @@ export class WebDAVHandler {
         'Content-Length': length,
         'Content-Range': `bytes ${range.start}-${range.end}/${stat.size}`,
       });
-      return await pipeline(createReadStream(abs, { start: range.start, end: range.end }), res);
+      return await streamTo(res, createReadStream(abs, { start: range.start, end: range.end }));
     }
 
     res.writeHead(200, { ...baseHeaders, 'Content-Length': stat.size });
-    await pipeline(createReadStream(abs), res);
+    await streamTo(res, createReadStream(abs));
   }
 
   async _head({ res, abs }) {
@@ -579,6 +543,7 @@ export class WebDAVHandler {
         default:         return send(res, 405, 'Method Not Allowed');
       }
     } catch (err) {
+      if (isClientAbort(err)) return;
       logger.error({ err, method, path: vRel, treeType }, 'Virtual WebDAV request failed');
       if (!res.headersSent) {
         const code = err.statusCode || 500;
@@ -625,12 +590,21 @@ export class WebDAVHandler {
       return sendBody(res, 200, html, 'text/html; charset=utf-8');
     }
 
+    // The same identity PROPFIND reported, on the body itself — a client that
+    // validates what it is reading against what it was told has to see one
+    // answer, or it treats the file as changed mid-read and abandons the GET.
+    const identity = entryIdentity(info);
+    if (identity.ETag && matchesEtag(headers['if-none-match'], identity.ETag)) {
+      res.writeHead(304, identity);
+      return res.end();
+    }
+
     // Blob-backed documents can be served by the byte window `stored` already
     // supports, so seeking in a video filed in a canvas works like seeking in a
     // file. `ranged` reports whether the backend really honoured it.
     const wanted = parseRange(headers?.['range'], info.size);
     if (wanted?.unsatisfiable) {
-      res.writeHead(416, { 'Accept-Ranges': 'bytes', 'Content-Range': `bytes */${info.size}` });
+      res.writeHead(416, { ...identity, 'Accept-Ranges': 'bytes', 'Content-Range': `bytes */${info.size}` });
       return res.end();
     }
 
@@ -638,21 +612,21 @@ export class WebDAVHandler {
     if (!content) return send(res, 404, 'Not Found');
 
     if (content.stream) {
-      const headers = { 'Content-Type': content.contentType, 'Accept-Ranges': 'bytes' };
+      const bodyHeaders = { ...identity, 'Content-Type': content.contentType, 'Accept-Ranges': 'bytes' };
       if (wanted && content.ranged) {
         const length = wanted.end - wanted.start + 1;
         res.writeHead(206, {
-          ...headers,
+          ...bodyHeaders,
           'Content-Length': length,
           'Content-Range': `bytes ${wanted.start}-${wanted.end}/${info.size}`,
         });
-        return await pipeline(content.stream, res);
+        return await streamTo(res, content.stream);
       }
-      if (Number.isFinite(content.size)) headers['Content-Length'] = content.size;
-      res.writeHead(200, headers);
-      await pipeline(content.stream, res);
+      if (Number.isFinite(content.size)) bodyHeaders['Content-Length'] = content.size;
+      res.writeHead(200, bodyHeaders);
+      await streamTo(res, content.stream);
     } else if (content.buffer) {
-      res.writeHead(200, { 'Content-Type': content.contentType, 'Content-Length': content.buffer.length });
+      res.writeHead(200, { ...identity, 'Content-Type': content.contentType, 'Content-Length': content.buffer.length });
       res.end(content.buffer);
     } else {
       send(res, 500);
@@ -663,9 +637,13 @@ export class WebDAVHandler {
     const info = await vfs.stat(vRel);
     if (!info) return send(res, 404);
 
+    // Everything a HEAD promises must be what the GET then delivers, identity
+    // included — clients that HEAD before they GET compare the two.
     res.writeHead(200, {
+      ...entryIdentity(info),
       'Content-Type': info.isDir ? 'httpd/unix-directory' : mime(vRel),
       'Content-Length': info.isDir ? 0 : (info.size || 0),
+      ...(info.isDir ? {} : { 'Accept-Ranges': 'bytes' }),
     });
     res.end();
   }
@@ -893,20 +871,32 @@ function sendXml(res, code, xml, extraHeaders = {}) {
 
 // ── PROPFIND XML generation ─────────────────────────────────────────────────
 
+/**
+ * A virtual entry as WebDAV properties.
+ *
+ * A FILE's identity has to be stable: the entry carries the document's own
+ * mtime and ETag (see docMtime/docEtag), because a mount that answers every
+ * PROPFIND with a fresh stamp is telling the client the file changed under it —
+ * and a caching client reacts by dropping the GET it has in flight, which is
+ * how opening an image drew it once and then failed.
+ *
+ * A COLLECTION has no body to drop, and a stale listing would be the worse
+ * failure, so it keeps the volatile stamp and carries no ETag at all (RFC 4918
+ * only asks for one where there is an entity to compare).
+ */
 function virtualPropEntry(entry, prefix, rel) {
   const isDir = entry.isDir;
   const href = esc(encSegments(prefix + rel) + (isDir && !rel.endsWith('/') ? '/' : ''));
   const name = esc(entry.name || path.basename(rel) || 'root');
-  const now = new Date();
-  const epoch = now.getTime();
+  const stamp = entry.mtime ? new Date(entry.mtime) : new Date();
   const props = [
     `<D:displayname>${name}</D:displayname>`,
     `<D:resourcetype>${isDir ? '<D:collection/>' : ''}</D:resourcetype>`,
-    `<D:getlastmodified>${httpDate(now)}</D:getlastmodified>`,
-    `<D:creationdate>${isoDate(now)}</D:creationdate>`,
-    `<D:getetag>"v-${esc(name)}-${epoch}"</D:getetag>`,
+    `<D:getlastmodified>${httpDate(stamp)}</D:getlastmodified>`,
+    `<D:creationdate>${isoDate(stamp)}</D:creationdate>`,
   ];
   if (!isDir) {
+    props.push(`<D:getetag>${esc(entry.etag || `"v-${name}-${entry.size || 0}"`)}</D:getetag>`);
     props.push(`<D:getcontentlength>${entry.size || 0}</D:getcontentlength>`);
     props.push(`<D:getcontenttype>${mime(rel)}</D:getcontenttype>`);
   }

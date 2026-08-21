@@ -10,8 +10,13 @@
 # container. Re-running it is safe: it offers to keep the existing .env, and
 # nothing outside .env and the directories you name is touched.
 #
+# The questions and the .env are shared with scripts/install-local.sh (same
+# server, run from this checkout instead of a container) and with
+# scripts/build-image.sh (the image on its own).
+#
 # Flags:
 #   -y, --yes         accept every default, ask nothing
+#   -e, --env-file    read/write this .env instead of <repo>/.env
 #       --no-build    write .env only (build later with: npm run docker:build)
 #       --no-start    build, but do not start the container
 #   -h, --help
@@ -28,22 +33,26 @@ DO_START=true
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        -y|--yes)    ASSUME_YES=true ;;
-        --no-build)  DO_BUILD=false; DO_START=false ;;
-        --no-start)  DO_START=false ;;
-        -h|--help)   sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -y|--yes)      ASSUME_YES=true ;;
+        -e|--env-file) ENV_FILE="$2"; shift ;;
+        --no-build)    DO_BUILD=false; DO_START=false ;;
+        --no-start)    DO_START=false ;;
+        -h|--help)     awk 'NR>1 && /^#/ { sub(/^# ?/, ""); print; next } NR>1 { exit }' "$0"; exit 0 ;;
         *) echo "Unknown option: $1 (try --help)" >&2; exit 2 ;;
     esac
     shift
 done
 
-# Non-interactive shells (CI, piped input) must not block on a prompt.
-if [ ! -t 0 ]; then ASSUME_YES=true; fi
+if [ -d "$ENV_FILE" ]; then ENV_FILE="$ENV_FILE/.env"; fi
+ENV_DIR="$(dirname "$ENV_FILE")"
+if [ -d "$ENV_DIR" ]; then
+    ENV_FILE="$(cd "$ENV_DIR" && pwd)/$(basename "$ENV_FILE")"
+else
+    echo "Error: no such directory: $ENV_DIR (from --env-file)" >&2; exit 1
+fi
 
-bold() { printf '\033[1m%s\033[0m\n' "$1"; }
-info() { printf '  %s\n' "$1"; }
-warn() { printf '\033[33m  %s\033[0m\n' "$1"; }
-fail() { printf '\033[31mError: %s\033[0m\n' "$1" >&2; exit 1; }
+# shellcheck source=lib/install-common.sh
+. "$REPO_ROOT/scripts/lib/install-common.sh"
 
 # ── Prerequisites ───────────────────────────────────────────────────────────
 
@@ -52,52 +61,9 @@ docker compose version >/dev/null 2>&1 || fail "the docker compose plugin is mis
 docker info >/dev/null 2>&1 || fail "cannot talk to the docker daemon — is it running, and is your user in the 'docker' group?"
 [ -f "$ENV_EXAMPLE" ] || fail "missing $ENV_EXAMPLE — run this from a cloned canvas-server repo"
 
-# ── Prompt helpers ──────────────────────────────────────────────────────────
-
-# ask <variable> <question> <default>
-ask() {
-    local __var=$1 question=$2 default=$3 answer
-    if $ASSUME_YES; then
-        printf -v "$__var" '%s' "$default"
-        return
-    fi
-    read -r -p "  $question [$default]: " answer </dev/tty || answer=''
-    printf -v "$__var" '%s' "${answer:-$default}"
-}
-
-# confirm <question> <default y|n>
-confirm() {
-    local question=$1 default=$2 answer prompt='[y/N]'
-    [ "$default" = "y" ] && prompt='[Y/n]'
-    if $ASSUME_YES; then [ "$default" = "y" ]; return; fi
-    read -r -p "  $question $prompt: " answer </dev/tty || answer=''
-    answer=${answer:-$default}
-    case "$answer" in [yY]*) return 0 ;; *) return 1 ;; esac
-}
-
-# Password, read twice without echo. Empty is a valid answer: the server then
-# generates one and prints it to the log on first start.
-#
-# The policy checked here is the server's default (server/config/auth.json):
-# a password it would reject is not silently downgraded — the server falls back
-# to a generated one — but you would only find that out from the log.
-ask_password() {
-    local first second
-    if $ASSUME_YES; then ADMIN_PASSWORD=''; return; fi
-    while true; do
-        read -r -s -p "  Admin password (empty = generate one for me): " first </dev/tty || first=''
-        echo
-        [ -z "$first" ] && { ADMIN_PASSWORD=''; return; }
-        if [ ${#first} -lt 8 ] || [[ ! "$first" =~ [0-9] ]] || [[ ! "$first" =~ [^A-Za-z0-9] ]]; then
-            warn "at least 8 characters, including a number and a special character"
-            continue
-        fi
-        read -r -s -p "  Repeat password: " second </dev/tty || second=''
-        echo
-        [ "$first" = "$second" ] && { ADMIN_PASSWORD="$first"; return; }
-        warn "passwords did not match, try again"
-    done
-}
+# compose only reads a .env sitting next to the compose file; anywhere else has
+# to be passed explicitly on every call.
+COMPOSE=(docker compose --env-file "$ENV_FILE")
 
 # ── Existing .env ───────────────────────────────────────────────────────────
 
@@ -105,117 +71,13 @@ echo
 bold "Canvas Server — container install"
 echo
 
-if [ -f "$ENV_FILE" ]; then
-    info "Found an existing $ENV_FILE"
-    if confirm "Keep it and skip the questions?" y; then
-        KEEP_ENV=true
-    else
-        KEEP_ENV=false
-        cp "$ENV_FILE" "$ENV_FILE.bak"
-        info "Previous config saved to .env.bak"
-    fi
-else
-    KEEP_ENV=false
-fi
+handle_existing_env
 
 # ── Questions ───────────────────────────────────────────────────────────────
 
 if [ "${KEEP_ENV:-false}" != "true" ]; then
-    bold "Admin account"
-    info "Created on first start. The API token is printed to the log."
-    ask ADMIN_EMAIL "Admin email" "admin@canvas.local"
-    ask ADMIN_NAME  "Admin username (letters, digits, - and _)" "${ADMIN_EMAIL%%@*}"
-    ask_password
-    echo
-
-    bold "Network"
-    ask HOST_PORT "Port to publish on the host" "8001"
-    echo
-
-    bold "Storage"
-    info "Server state: config, index db, caches. Nothing you edit by hand, and"
-    info "the directory worth backing up."
-    ask HOST_SERVER_HOME "Server home" "$HOME/.canvas/server"
-    echo
-
-    bold "Your data"
-    info "Workspaces, roles and agents live under their owner — one user is one"
-    info "subtree, which is what a per-user dataset or quota needs. A personal"
-    info "instance mounts one folder as your home and that is the whole story;"
-    info "a shared one mounts the users tree and the server fills in <email>/."
-    if confirm "Personal instance (one folder for your data)?" y; then
-        # The mount TARGET is this user's home, so the folder holds
-        # Workspaces/Roles/Agents plus a hidden .canvas/ for tokens and config.
-        ask HOST_USER_HOME "Your folder" "$HOME/Canvas"
-        USER_MOUNT=""
-    else
-        ask HOST_USER_HOME "Users root" "/srv/canvas/users"
-        USER_MOUNT="/opt/canvas-server/data/users"
-    fi
-    echo
-
-    bold "Workspace layout"
-    info "home — a workspace IS a plain folder; everything it needs to run hides"
-    info "       in .workspace/. Existing folders can be turned into workspaces,"
-    info "       and a workspace can be synced (Dropbox/OneDrive) or roamed."
-    info "full — the classic layout: db/, cache/, home/ … as visible children."
-    if confirm "Use the 'home' layout for new workspaces?" y; then
-        WORKSPACE_LAYOUT=home
-    else
-        WORKSPACE_LAYOUT=full
-    fi
-    echo
-
-    # ── Write .env ──────────────────────────────────────────────────────────
-
-    # Replace a key in place (keeping .env.example's comments and ordering), or
-    # append it if the example does not carry it. awk via ENVIRON so no value
-    # can be mangled by quoting or shell expansion.
-    write_env() {
-        local key=$1 value=$2
-        # compose interpolates .env values, so a literal $ has to be doubled —
-        # otherwise a password like 'a$b' silently becomes 'a' plus an unset var.
-        value=${value//\$/\$\$}
-        WRITE_KEY="$key" WRITE_VALUE="$value" awk '
-            BEGIN { k = ENVIRON["WRITE_KEY"]; v = ENVIRON["WRITE_VALUE"] }
-            $0 ~ "^" k "=" { print k "=" v; found = 1; next }
-            { print }
-            END { if (!found) print k "=" v }
-        ' "$ENV_FILE" > "$ENV_FILE.tmp"
-        mv "$ENV_FILE.tmp" "$ENV_FILE"
-        chmod 600 "$ENV_FILE"
-    }
-
-    cp "$ENV_EXAMPLE" "$ENV_FILE"
-    chmod 600 "$ENV_FILE"
-
-    write_env CANVAS_UID "$(id -u)"
-    write_env CANVAS_GID "$(id -g)"
-    write_env CANVAS_HOST_PORT "$HOST_PORT"
-    write_env CANVAS_ADMIN_EMAIL "$ADMIN_EMAIL"
-    write_env CANVAS_ADMIN_NAME "$ADMIN_NAME"
-    write_env CANVAS_ADMIN_PASSWORD "$ADMIN_PASSWORD"
-    write_env CANVAS_HOST_SERVER_HOME "$HOST_SERVER_HOME"
-    write_env CANVAS_HOST_USER_HOME "$HOST_USER_HOME"
-    write_env CANVAS_USER_MOUNT "$USER_MOUNT"
-    write_env CANVAS_WORKSPACE_LAYOUT "$WORKSPACE_LAYOUT"
-
-    # The source of both mounts, created as you rather than by docker as root.
-    # What goes inside them is the server's job (module dirs on first start).
-    mkdir -p "$HOST_SERVER_HOME" "$HOST_USER_HOME"
-
-    bold "Wrote $ENV_FILE"
-    info "admin       $ADMIN_NAME <$ADMIN_EMAIL>"
-    info "url         http://localhost:$HOST_PORT"
-    info "server      $HOST_SERVER_HOME"
-    if [ -n "$USER_MOUNT" ]; then
-        info "users       $HOST_USER_HOME  (one <email>/ subtree per user)"
-    else
-        info "your data   $HOST_USER_HOME  →  ${ADMIN_EMAIL}'s home in the container"
-        info "            Workspaces/ Roles/ Agents/ + a hidden .canvas/"
-    fi
-    info "layout      $WORKSPACE_LAYOUT"
-    echo
+    ask_all container
+    write_answers
 fi
 
 # ── Build & start ───────────────────────────────────────────────────────────
@@ -226,23 +88,24 @@ if $DO_BUILD; then
     bold "Building the image"
     info "First build downloads a few hundred MB of prebuilt native binaries"
     info "(onnxruntime, lmdb) and takes a while; later builds reuse the cache."
-    docker compose build
+    # The image cannot read .git (it is out of the build context), so the
+    # revision behind the AGPL §13 source offer is passed in here.
+    CANVAS_SOURCE_COMMIT="$(env_get CANVAS_SOURCE_COMMIT "$(git_head)")" "${COMPOSE[@]}" build
     echo
 fi
 
 if $DO_START; then
     bold "Starting"
-    docker compose up -d
+    "${COMPOSE[@]}" up -d
     echo
 
-    port=$(grep -E '^CANVAS_HOST_PORT=' "$ENV_FILE" | cut -d= -f2-)
-    port=${port:-8001}
+    port=$(env_get CANVAS_HOST_PORT 8001)
     printf '  waiting for the server to answer'
     for _ in $(seq 1 60); do
         if curl -fsS "http://localhost:${port}/rest/v2/ping" >/dev/null 2>&1; then
             printf ' ok\n\n'
             bold "Canvas Server is running at http://localhost:${port}"
-            if [ -z "$(grep -E '^CANVAS_ADMIN_PASSWORD=' "$ENV_FILE" | cut -d= -f2-)" ]; then
+            if [ -z "$(env_get CANVAS_ADMIN_PASSWORD "")" ]; then
                 info "The generated admin password and API token are in the log:"
                 info "  npm run docker:logs"
             fi

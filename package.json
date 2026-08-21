@@ -1,7 +1,7 @@
 {
   "name": "canvas-server",
   "productName": "Canvas Server",
-  "version": "2.5.57",
+  "version": "2.5.58",
   "description": "Context layer on top of your unstructured universe",
   "main": "./src/init.js",
   "type": "module",
@@ -17,6 +17,8 @@
     "start": "node ./src/init.js",
     "dev": "cross-env NODE_ENV=development LOG_LEVEL=debug node ./src/init.js",
     "docker:install": "bash ./scripts/install-docker.sh",
+    "docker:image": "bash ./scripts/build-image.sh",
+    "local:install": "bash ./scripts/install-local.sh",
     "docker:env": "node ./scripts/docker-env.js",
     "docker:build": "docker compose build",
     "docker:up": "docker compose up -d",

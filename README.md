@@ -82,6 +82,21 @@ npm install                    # synapsd/stored arrive as pinned git deps, the w
 npm start                      # or: npm run dev  (debug logging, NODE_ENV=development)
 ```
 
+Guided instead, if you would rather be asked than set variables:
+
+```bash
+./scripts/install-local.sh     # or: npm run local:install
+```
+
+Same questions and the same `.env` as the container installer below — admin
+account, port, where your data lives — but it runs the server from this
+checkout: `npm install`, then `node ./src/init.js` in the foreground, as you.
+`--no-install` skips the dependency step, `--dev` turns on debug logging,
+`--env-file PATH` points it at an `.env` elsewhere, `--yes` accepts every
+default. A personal instance's folder is symlinked in as that user's home, so
+the layout matches the container's and the same `.env` can be handed to
+`install-docker.sh` later without moving data.
+
 The server listens on **http://localhost:8001** — API, web UI and WebDAV share
 the port. On the **first** start it creates the admin user and prints its
 credentials once:
@@ -207,7 +222,8 @@ cd /path/to/canvas-server
 That asks for the admin account, the port and which folders to mount, writes
 `.env`, builds the image (Debian-based; the first build pulls a few hundred MB of
 prebuilt native binaries) and starts the container. `--yes` accepts every default,
-`--no-build` writes `.env` only. Re-running it offers to keep your existing config.
+`--no-build` writes `.env` only, `--env-file PATH` keeps the config somewhere other
+than the repo. Re-running it offers to keep your existing config.
 
 The individual steps, if you would rather drive them yourself:
 
@@ -218,8 +234,26 @@ npm run docker:up       # http://localhost:8001
 npm run docker:logs     # admin password + API token, printed on first run
 ```
 
+To build the image and nothing else — for a registry, or for a host that runs
+the container some other way:
+
+```bash
+./scripts/build-image.sh                       # or: npm run docker:image
+./scripts/build-image.sh --tag registry.example.com/canvas-server:edge
+./scripts/build-image.sh --env-file /etc/canvas/prod.env --no-cache
+```
+
+It asks the same questions (or keeps your existing `.env`) and tags
+`canvas-server:<version>` plus `:latest`. Only the build-time values are read
+from `.env` — the node version and the AGPL §13 source identity; admin, ports
+and paths stay runtime configuration, so one image serves every instance.
+
 Either way `.env` is the whole configuration — the admin account and where each
-mount points:
+mount points. The same file drives all three installers (`install-docker.sh`,
+`build-image.sh`, `install-local.sh`), so a config written by one is understood
+by the others — `CANVAS_USER_MOUNT` picks personal vs. shared either way, and
+only the keys that describe the container itself (`CANVAS_UID`/`GID`,
+`CANVAS_CONTAINER_NAME`) mean nothing to the local runner:
 
 ```bash
 CANVAS_ADMIN_EMAIL=you@example.com
@@ -565,6 +599,10 @@ git pull origin main
 npm install
 npm start
 ```
+
+If you installed with `./scripts/install-local.sh`, that same command after a
+`git pull` re-installs the dependencies and starts the server again — it offers
+to keep the existing `.env`, so there is nothing to answer twice.
 
 Containerized instances update the same way, minus the npm steps:
 

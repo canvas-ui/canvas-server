@@ -21,6 +21,7 @@ import { WorkspaceTokens } from './lib/WorkspaceTokens.js';
 import { classifyDocument } from './lib/classifier.js';
 import { extract as extractBlobMetadata } from 'canvas-stored/src/extractors/index.js';
 import { detectMountSync } from 'canvas-stored/src/utils/mount.js';
+import GdriveBackend from 'canvas-stored/src/backends/gdrive/index.js';
 import { pickGeo } from './lib/geo.js';
 import { WorkspaceStoredIndex } from './lib/WorkspaceStoredIndex.js';
 import { WorkspaceMailIndex } from './services/imap/index.js';
@@ -2630,9 +2631,9 @@ class Workspace extends EventEmitter {
         const supported = config.supported !== false;
         return {
             sync: Boolean(config.resync) && supported,
-            test: false,
+            test: driver === 'gdrive' && supported,
             containers: false,
-            mutableContainers: driver === 'file' && config.readOnly !== true && supported,
+            mutableContainers: (driver === 'file' || driver === 'gdrive') && config.readOnly !== true && supported,
             deleteObject: config.readOnly !== true && supported,
         };
     }
@@ -2680,6 +2681,16 @@ class Workspace extends EventEmitter {
                 remote: status.remote === true,
                 transport: status.transport || null,
                 resync: Boolean(status.resync),
+                // Remote (gdrive) extras. Secrets never leave the server:
+                // `credentialsConfigured` is the only trace of them.
+                ...(driver === 'gdrive' ? {
+                    account: status.account || null,
+                    folderId: status.folderId || 'root',
+                    clientId: status.clientId || null,
+                    credentialsConfigured: Boolean(status.clientId && status.clientSecret && status.refreshToken),
+                    pollInterval: status.pollInterval ?? 60000,
+                    permanentDelete: status.permanentDelete === true,
+                } : {}),
                 exclude: Array.isArray(status.exclude) ? status.exclude : [],
                 effectiveExclusions: Array.isArray(status.effectiveExclusions) ? status.effectiveExclusions : undefined,
             },
@@ -2779,10 +2790,28 @@ class Workspace extends EventEmitter {
         if (isConnectorDriver(driver)) return (await this.#connectors()).saveBackend(driver, config);
         if (driver === 'fs') driver = 'file'; // UX alias for the local-folder driver
         if (driver === 'file') return this.#addFileBackend(config);
+        if (driver === 'gdrive') return this.#addGdriveBackend(config);
         const name = config.name || config.address;
         if (!name) throw new Error('Storage backend name is required');
         await this.setDataBackendConfig(name, config);
         return this.getBackend(driver, name);
+    }
+
+    // Case- and unicode-preserving slug for a user-added backend: "Fotky" must
+    // show as "Fotky" in the tree, not "fotky" (tree layer names keep case, like
+    // the home mirror's real folder names). Whitespace/separators collapse to
+    // '-'; the slug is the immutable backend address, the raw label stays the
+    // display name. Throws on an (case-insensitive) address collision.
+    #newBackendSlug(label) {
+        const name = String(label).normalize('NFC')
+            .replace(/[\s\\/]+/g, '-')
+            .replace(/[^\p{L}\p{N}._@-]+/gu, '-')
+            .replace(/-+/g, '-')
+            .replace(/^-+|-+$/g, '');
+        if (!name) throw new Error(`Backend name "${label}" has no usable characters`);
+        const collision = Object.keys(this.dataBackends).find((existing) => existing.toLowerCase() === name.toLowerCase());
+        if (collision) throw new Error(`Backend "${collision}" already exists`);
+        return name;
     }
 
     /**
@@ -2796,18 +2825,7 @@ class Workspace extends EventEmitter {
     async #addFileBackend(config = {}) {
         const label = String(config.label || config.name || config.address || '').trim();
         if (!label) throw new Error('Backend name is required (e.g. "Financial Reports")');
-        // Case- and unicode-preserving slug: "Fotky" must show as "Fotky" in the
-        // tree, not "fotky" (tree layer names keep case, like the home mirror's
-        // real folder names). Whitespace/separators collapse to '-'; the slug is
-        // the immutable backend address, the raw label stays the display name.
-        const name = label.normalize('NFC')
-            .replace(/[\s\\/]+/g, '-')
-            .replace(/[^\p{L}\p{N}._@-]+/gu, '-')
-            .replace(/-+/g, '-')
-            .replace(/^-+|-+$/g, '');
-        if (!name) throw new Error(`Backend name "${label}" has no usable characters`);
-        const collision = Object.keys(this.dataBackends).find((existing) => existing.toLowerCase() === name.toLowerCase());
-        if (collision) throw new Error(`Backend "${collision}" already exists`);
+        const name = this.#newBackendSlug(label);
 
         const rawRoot = String(config.root || config.path || '').trim();
         if (!rawRoot) throw new Error('Backend root path is required');
@@ -2870,6 +2888,75 @@ class Workspace extends EventEmitter {
             device: { id: device.deviceId, name: device.name },
         });
         return this.getBackend('file', name);
+    }
+
+    static #GDRIVE_SECRETS = ['clientSecret', 'refreshToken'];
+
+    // Normalize a gdrive config patch: required creds, folder id, poll interval.
+    // `previous` supplies stored secrets when the patch carries the redacted
+    // marker (`true`) or omits them — the same write-only contract connectors use.
+    #gdriveConfigPatch(input = {}, previous = {}) {
+        const patch = {};
+        for (const key of ['clientId', 'folderId', 'label', 'account']) {
+            if (key in input) patch[key] = String(input[key] ?? '').trim();
+        }
+        for (const key of Workspace.#GDRIVE_SECRETS) {
+            if (!(key in input) || input[key] === true || input[key] === '' || input[key] == null) continue;
+            patch[key] = String(input[key]).trim();
+        }
+        if ('watch' in input) patch.watch = input.watch === true;
+        if ('readOnly' in input) patch.readOnly = input.readOnly === true;
+        if ('permanentDelete' in input) patch.permanentDelete = input.permanentDelete === true;
+        if ('pollInterval' in input) {
+            const ms = Number(input.pollInterval);
+            if (!Number.isFinite(ms) || ms < 5000) throw new Error('pollInterval must be at least 5000 ms');
+            patch.pollInterval = ms;
+        }
+        const merged = { ...previous, ...patch };
+        if (!merged.clientId || !merged.clientSecret || !merged.refreshToken) {
+            throw new Error('Google Drive backend requires clientId, clientSecret and refreshToken');
+        }
+        if (!merged.folderId) patch.folderId = 'root';
+        return patch;
+    }
+
+    // Probe creds + root folder with a throwaway driver instance before anything
+    // is persisted — a backend that can't even list its root is a config error.
+    async #probeGdrive(config) {
+        const probe = new GdriveBackend('gdrive:probe', { driver: 'gdrive', ...config });
+        const live = await probe.verifyRoot();
+        if (!live.ok) throw new Error(`Google Drive check failed (${live.reason}): ${live.error || 'unknown error'}`);
+        return { ok: true, folderId: probe.rootFolderId };
+    }
+
+    /**
+     * Add a Google Drive folder as a remote storage backend. The label is the
+     * human handle (slug → backend address → /gdrive/<address> in the backends
+     * tree); `folderId` scopes the subtree (default `root` = whole My Drive).
+     * Credentials are validated against the API before the config is written.
+     */
+    async #addGdriveBackend(config = {}) {
+        const label = String(config.label || config.name || config.address || '').trim();
+        if (!label) throw new Error('Backend name is required (e.g. "Work Drive")');
+        const name = this.#newBackendSlug(label);
+        const patch = this.#gdriveConfigPatch(config, {});
+        await this.#probeGdrive(patch);
+        await this.setDataBackendConfig(name, {
+            enabled: true,
+            supported: true,
+            driver: 'gdrive',
+            label,
+            account: patch.account || label,
+            remote: true,
+            transport: 'gdrive',
+            resync: true,
+            watch: config.watch === true,
+            readOnly: config.readOnly === true,
+            ...patch,
+        });
+        // applyBackendConfig registers the live driver and kicks the initial
+        // scan in the background (resync:true) — nothing more to do here.
+        return this.getBackend('gdrive', name);
     }
 
     /**
@@ -3070,6 +3157,15 @@ class Workspace extends EventEmitter {
             for (const m of targets) await this.saveImapMailbox({ ...patch, id: m.id });
             return this.getBackend('imap', address);
         }
+        if (driver === 'gdrive') {
+            const previous = this.dataBackends[address];
+            if (!previous || previous.driver !== 'gdrive') throw new Error(`Backend not found: gdrive/${address}`);
+            const credKeys = ['clientId', 'clientSecret', 'refreshToken', 'folderId'];
+            const touchesCreds = credKeys.some((k) => k in patch && patch[k] !== true && patch[k] !== '' && patch[k] != null);
+            const normalized = this.#gdriveConfigPatch(patch, previous);
+            if (touchesCreds) await this.#probeGdrive({ ...previous, ...normalized });
+            patch = { ...normalized, ...('enabled' in patch ? { enabled: patch.enabled === true } : {}) };
+        }
         if ('exclude' in patch) {
             if (!Array.isArray(patch.exclude) || patch.exclude.some((p) => typeof p !== 'string')) {
                 throw new Error('exclude must be an array of glob pattern strings');
@@ -3138,6 +3234,11 @@ class Workspace extends EventEmitter {
 
     async testBackend(driver, address) {
         if (isConnectorDriver(driver)) return (await this.#connectors()).testBackend(driver, address);
+        if (driver === 'gdrive') {
+            const config = this.dataBackends[address];
+            if (!config || config.driver !== 'gdrive') throw new Error(`Backend not found: gdrive/${address}`);
+            return this.#probeGdrive(config);
+        }
         if (driver !== 'imap') throw new Error(`Backend "${driver}/${address}" does not support test`);
         const target = (await this.listImapMailboxes())
             .find((m) => normalizeSegment(m.account || m.user || '') === normalizeSegment(address));

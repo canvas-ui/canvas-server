@@ -378,6 +378,96 @@ messages/streams runs (deferred): `services.messages` gets its OWN config home (
 in `config/stored.json` = stored's config — that coupling is the very thing SRP removes; move it out
 when the messages service is extracted); `services.streams` shape defined with the LLM-agents feed work.
 
+### Workspace secrets + per-workspace encryption (design agreed 2026-08-21)
+
+Driver: on shared canvas-server instances every service credential — IMAP passwords, connector
+tokens (github/slack/gcal/teams/caldav), Google Drive refresh tokens, inferd provider API keys —
+sits in plaintext in `workspace.json` (`services.stored.backends.*`). Reads are already redacted,
+but the file itself, its backups and every `tar | scp` carry the secrets. Workspaces must stay
+movable between instances and runnable standalone (canvas-edge), so the key must travel with the
+workspace, not live on a server.
+
+**Principle — a running workspace is a statement the user made.** Starting a workspace is a
+user act and is the only place a passphrase is supplied. Nothing automated (agents, schedulers,
+connector pollers, the server after an update) may start a stopped workspace. If a workspace is
+stopped, for whatever reason, callers get a truthful status and the user decides. No "locked"
+third state: **stopped = locked**; keys exist only in the memory of a running workspace and are
+zeroed on stop. A workspace a user started and left running for months is the normal case.
+
+**Integrations are not critical to a running workspace.** An unreachable IMAP server or Google
+Drive means no new mail / no access to those bytes — non-blocking, reported as per-backend status
+(`backend:state`, `lastError`), exactly like an unmounted NAS today. The ONLY thing that blocks a
+start is a passphrase that cannot open the keyslot (wrong passphrase, corrupt keyslot file) —
+and that is a refusal with a clear reason, never a silent plaintext fallback.
+
+Consequences:
+- After a server restart/update, protected workspaces come up **stopped** with
+  `lastStopReason: 'server-restart'` and wait for their owner. Unprotected workspaces (no
+  passphrase configured) keep today's auto-resume. Admin view shows "N workspaces waiting for
+  their owners" so an update is not misread as an outage.
+- Control-plane calls (REST, agentd tools, MCP later) against a stopped workspace return a
+  structured, non-retryable error — `423 Locked`,
+  `{ code: 'WORKSPACE_STOPPED', reason, stoppedAt, hint: 'Ask the owner to start workspace X' }`.
+  Agents surface it verbatim and tell the user; there is **no start-workspace tool** for agents.
+- Shared workspaces: whoever starts it holds the passphrase; members use it through ACL while it
+  runs. Per-member keyslots ("any member may start it") are an additive later feature.
+
+**Module: `WorkspaceCrypto`** (one per workspace, owned by the Workspace, travels in the folder):
+```
+.workspace/keyslots.json   (0600)            .workspace/secrets.json   (0600)
+{ version: 1,                                 { "stored.backends.gdrive:Work-Drive.refreshToken":
+  kdf: { alg: 'scrypt'|'argon2id', params },      { iv, ct, tag },
+  slots: [                                      "stored.backends.imap:me@x.password": { … } }
+    { type: 'passphrase', salt, wrapped },     workspace.json keeps only references:
+    { type: 'recovery',   salt, wrapped } ] }     "refreshToken": "secret://stored.backends.gdrive:Work-Drive.refreshToken"
+```
+- Random 256-bit DEK per workspace; slots wrap the DEK (LUKS-style); `passphrase` mandatory,
+  `recovery` (printable key shown once at creation) strongly recommended — without it a forgotten
+  passphrase = every connector re-authorised and every encrypted payload gone.
+- HKDF sub-keys from the DEK by purpose — `k_secrets`, `k_blobs`, `k_fields`, `k_dotfiles` — so
+  rotation and blast radius are scoped and the secrets file never shares a key with data.
+- AES-256-GCM `seal/open` (Node `crypto`, no new dependency). Keys live in `Buffer`s that are
+  `fill(0)`'d on stop, never in strings, never in env/argv/logs, main thread only (the stored
+  SyncQueue worker only ever sees cache paths). When workspaces become their own processes the
+  DEK is handed over once via IPC on start, not at spawn.
+- Passphrase source is a per-workspace choice with no architectural weight: separate passphrase
+  by default; UI may offer "use my login password" as convenience (then a password change must
+  re-wrap the slot; token/SSO logins can't unlock — they reach an already-running workspace).
+- Secrets are keyed by **config path**, not by backend, so inferd API keys, webhook secrets, ACL
+  tokens etc. slot into the same store without a second mechanism.
+
+**Same module for data (step 2, same keys, honest limits):**
+- YES: managed blob stores (`workspace:data` cacache, stored cache, thumbnails) — stored identity
+  stays `sha256(plaintext)`, bytes at rest are ciphertext; nobody reads those dirs directly.
+- YES: selected document payload fields (`private` schemas, `data.note`, credential-bearing
+  docs) — per-field nonce, marked `encrypted: true`, and **excluded from FTS/embeddings** (that
+  exclusion is the point and must be explicit).
+- YES: `.workspace/*` dotfiles the workspace alone reads.
+- NO: whole-db encryption of synapsd — LMDB is mmap'd and the indexes (bitmaps, FTS, timelines,
+  checksum index) are plaintext derivatives; encrypted payload + plaintext index is encryption in
+  name only. At-rest DB protection on shared hosts is a volume/fscrypt concern — document it.
+- NO: user-facing file mounts (`workspace:home`, device mounts exported via Samba) — defeats them.
+- LATER, own project: client-side encryption before upload to Drive/S3 ("zero-knowledge
+  remote") — breaks the gdrive key model (Drive hashes ciphertext; plaintext sha256 must ride
+  along in `appProperties` and the watcher reconcile both).
+
+Tasks:
+- [ ] `WorkspaceCrypto`: DEK, keyslot file, `passphrase` + `recovery` slots, HKDF sub-keys,
+      `seal/open`, `start(passphrase)` → keys in memory, `stop()` → zeroed.
+- [ ] `secret://` refs in `workspace.json` + sealed `secrets.json`; lazy migration on the first
+      protected start; the secret-key lists already exist (`connectors/index.js` `#redactConfig`,
+      `Workspace.#GDRIVE_SECRETS`, imap `passwordConfigured`) — resolve refs at driver/connector
+      construction, which is where config is read today.
+- [ ] Start paths: UI passphrase prompt, CLI flag, REST body (TLS) — one unlock path.
+- [ ] Error contract: `423 WORKSPACE_STOPPED` on every control-plane route + agentd tool results;
+      `lastStopReason` on the workspace record; no auto-resume for protected workspaces after a
+      server restart; admin "waiting for owner" summary.
+- [ ] Protection is per-workspace opt-in ("Protect secrets with a passphrase"), server policy may
+      default it on for shared instances.
+- [ ] Step 2: `k_blobs` for managed stores, `k_fields` for marked payload fields (+ FTS
+      exclusion), `k_dotfiles`.
+- [ ] Later: per-member slots, KMS/Vault as an optional slot source, audit log of secret reads.
+
 ### Extend workspaces API (partly blocked by synapsd)
 
 - [] Add a workspaces/:workspace_id/db endpoint

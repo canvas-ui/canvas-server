@@ -31,9 +31,17 @@ const HOME_STORED_BACKEND = 'workspace:home';
 // The default local content-addressable blob store. Connectors persist blobs
 // here (persistBlob) and address them by stored://workspace:data/<key>.
 const DATA_BLOB_BACKEND = 'workspace:data';
-// Local drivers whose bytes are written in-process (no remote SyncQueue): they
-// are registered eagerly and toggled live by config.
+// Drivers this index registers into Stored and toggles live by config. Local
+// ones write bytes in-process; remote ones (gdrive) go cache → SyncQueue and
+// are registered the same way — the driver, not this index, owns the transport.
+const STORED_DRIVERS = new Set(['file', 'cacache', 'gdrive']);
+// Subset with on-disk roots this server can walk (disk usage, fs liveness).
 const LOCAL_DRIVERS = new Set(['file', 'cacache']);
+// Drivers with a real hierarchical namespace — folder create/rename/delete.
+const CONTAINER_DRIVERS = new Set(['file', 'gdrive']);
+// Remote-driver config keys the live instance reads at construction: a patch
+// touching one re-registers the backend (credentials/root/poll cadence).
+const REMOTE_RESTART_KEYS = ['clientId', 'clientSecret', 'refreshToken', 'folderId', 'pollInterval', 'permanentDelete'];
 const CHECKSUM_PRIORITY = ['sha256', 'sha1', 'md5'];
 // Orphan lifecycle: a doc whose last resolvable location vanished keeps its
 // row, checksums and curated placements, gains this feature bitmap (plus
@@ -322,7 +330,7 @@ export class WorkspaceStoredIndex {
     #mutableFileBackend(backendName) {
         const config = this.#dataBackends[backendName];
         if (!config) throw new Error(`Unknown data backend: ${backendName}`);
-        if (config.driver !== 'file') throw new Error(`Backend "${backendName}" has no mutable folders`);
+        if (!CONTAINER_DRIVERS.has(config.driver)) throw new Error(`Backend "${backendName}" has no mutable folders`);
         if (config.readOnly === true) throw new Error(`Backend "${backendName}" is read-only`);
         if (!this.#stored) throw new Error('WorkspaceStoredIndex is not running');
         const backend = this.#stored.getBackend(backendName);
@@ -610,7 +618,7 @@ export class WorkspaceStoredIndex {
         if (!this.#stored) return;
         this.#dataBackends = { ...this.#dataBackends, [name]: fullConfig };
 
-        const isLocal = LOCAL_DRIVERS.has(fullConfig.driver) && fullConfig.supported !== false;
+        const isLocal = STORED_DRIVERS.has(fullConfig.driver) && fullConfig.supported !== false;
 
         if ('enabled' in patch) {
             const live = this.#stored.getBackend(name);
@@ -630,6 +638,17 @@ export class WorkspaceStoredIndex {
                 await this.#stored.removeBackend?.(name);
                 this.#backendStatus.delete(name);
                 await this.#applyBackendNodeLock(name, false);
+            }
+        }
+
+        // Remote drivers: credentials/root live on the instance — swap it out
+        // when they change (stop → remove → add, watcher restored from config).
+        if (!LOCAL_DRIVERS.has(fullConfig.driver) && REMOTE_RESTART_KEYS.some((k) => k in patch) && !('enabled' in patch)) {
+            const live = this.#stored.getBackend(name);
+            if (live && fullConfig.enabled && fullConfig.supported !== false) {
+                await live.stop?.().catch(() => {});
+                await this.#stored.removeBackend?.(name);
+                this.#stored.addBackend(name, this.#backendRegistrationConfig(name, fullConfig));
             }
         }
 
@@ -667,7 +686,7 @@ export class WorkspaceStoredIndex {
 
     async #registerConfiguredBackends() {
         for (const [backendName, config] of Object.entries(this.#dataBackends || {})) {
-            if (!config?.enabled || config.supported === false || !LOCAL_DRIVERS.has(config.driver)) continue;
+            if (!config?.enabled || config.supported === false || !STORED_DRIVERS.has(config.driver)) continue;
 
             this.#stored.addBackend(backendName, this.#backendRegistrationConfig(backendName, config));
             this.#backendStatus.set(backendName, { lastScanAt: null, lastError: null });
@@ -678,6 +697,7 @@ export class WorkspaceStoredIndex {
     // Shared registration config: resolved root + effective exclusions (defaults
     // ∪ per-backend user patterns) wired into the driver's shared ignore matcher.
     #backendRegistrationConfig(backendName, config = {}) {
+        if (!LOCAL_DRIVERS.has(config.driver)) return this.#remoteRegistrationConfig(backendName, config);
         const root = this.#resolveBackendRoot(backendName, config);
         return {
             ...config,
@@ -690,6 +710,20 @@ export class WorkspaceStoredIndex {
             provider: config.provider || 'fs',
             account: config.account || 'workspace',
             container: config.container || (backendName === HOME_STORED_BACKEND ? 'home' : 'data'),
+        };
+    }
+
+    // Remote drivers have no on-disk root and no exclusion matcher: the config
+    // goes to the driver as-is (credentials included — the driver is the only
+    // consumer), plus the source descriptor stored stamps on every location.
+    #remoteRegistrationConfig(backendName, config = {}) {
+        const { root: _root, exclude: _exclude, ...rest } = config;
+        return {
+            ...rest,
+            provider: config.provider || config.driver,
+            account: config.account || backendName,
+            container: config.container || config.folderId || 'root',
+            algorithms: ['sha256'],
         };
     }
 
@@ -729,7 +763,7 @@ export class WorkspaceStoredIndex {
 
     #isConfiguredLocalBackend(backendName) {
         const config = this.#dataBackends[backendName];
-        return !!config && config.supported !== false && LOCAL_DRIVERS.has(config.driver);
+        return !!config && config.supported !== false && STORED_DRIVERS.has(config.driver);
     }
 
     /**
@@ -1782,7 +1816,9 @@ export class WorkspaceStoredIndex {
         if (config.managed === true) return null;
         const driver = String(config.driver || 'file').toLowerCase();
         const live = this.#stored?.getBackend(backendName);
-        const canEnumerate = live ? live.capabilities?.canEnumerate === true : driver === 'file';
+        // Offline/disabled backends fall back to the driver's static answer so
+        // the disable-then-destroy flow still resolves the mirror subtree.
+        const canEnumerate = live ? live.capabilities?.canEnumerate === true : CONTAINER_DRIVERS.has(driver);
         if (!canEnumerate) return null;
         // Case/unicode-preserving: the mount slug is user-facing ("Fotky" must
         // not become "fotky" in the tree). Only path-hostile chars are squashed.

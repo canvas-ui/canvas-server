@@ -149,6 +149,7 @@ class Agent extends EventEmitter {
     #rootPath;
     #config;        // plain object from agent.json
     #session = null;
+    #canvasEnvResolver = null;   // () => Promise<env|null>, installed by the Agents service
     #status = AGENT_STATUS_CODES.INACTIVE;
 
     /**
@@ -269,13 +270,20 @@ class Agent extends EventEmitter {
                 );
             }
 
-            // Canvas tools only for bound agents with an explicit runtime env;
-            // gated off via config.tools.canvas.enabled = false.
+            // Canvas tools only for bound agents with a runtime env (explicit
+            // option, else the resolver the Agents service installs so that
+            // restarts keep the binding); gated off via config.tools.canvas.enabled.
             const canvasToolsEnabled = this.agentConfig?.tools?.canvas?.enabled !== false;
-            const canvasTools = options.canvasEnv && canvasToolsEnabled
-                ? createCanvasTools(options.canvasEnv)
-                : [];
+            let canvasEnv = options.canvasEnv;
+            if (canvasEnv === undefined && this.#canvasEnvResolver) {
+                canvasEnv = await this.#canvasEnvResolver();
+            }
+            const canvasTools = canvasEnv && canvasToolsEnabled ? createCanvasTools(canvasEnv) : [];
+            const codingTools = createCodingTools(this.#homePath());
 
+            // pi's `tools` option is an allow/activate list of tool NAMES (built-in
+            // ones resolve by name); tool objects go in `customTools`. Passing
+            // objects in `tools` silently activates nothing.
             const sessionOptions = {
                 cwd: this.#homePath(),
                 agentDir: runtimePath,
@@ -283,8 +291,12 @@ class Agent extends EventEmitter {
                 authStorage,
                 modelRegistry,
                 sessionManager: this.#sessionManager(),
-                tools: [...createCodingTools(this.#homePath()), ...canvasTools],
+                tools: [...codingTools, ...canvasTools].map((tool) => tool.name),
+                customTools: canvasTools,
             };
+            if (canvasTools.length) {
+                logger.debug(`Agent ${this.id}: canvas tools enabled (${canvasTools.map((tool) => tool.name).join(', ')})`);
+            }
 
             const { session } = await createAgentSession(sessionOptions);
             this.#session = session;
@@ -363,6 +375,14 @@ class Agent extends EventEmitter {
     async restart() {
         await this.stop();
         return this.start();
+    }
+
+    /**
+     * Install a resolver that yields the canvas runtime env for each start.
+     * @param {() => Promise<Object|null>} resolver
+     */
+    setCanvasEnvResolver(resolver) {
+        this.#canvasEnvResolver = typeof resolver === 'function' ? resolver : null;
     }
 
     /**

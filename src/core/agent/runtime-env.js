@@ -14,6 +14,10 @@ import * as fsPromises from 'fs/promises';
  *   CANVAS_AGENT_ID   - agent uuid
  *   CANVAS_WORKSPACE  - bound workspace id
  *   CANVAS_BASE_PATH  - path prefix the agent is clamped to ('/' = whole workspace)
+ *   CANVAS_BINDING_TYPE   - context | workspace | global (informational)
+ *   CANVAS_WORKSPACE_NAME - human name of the bound workspace (informational)
+ *   CANVAS_CONTEXT_ID     - bound context id (context bindings only)
+ *   CANVAS_CONTEXT_URL    - bound context url at env-build time (context bindings only)
  *
  * In-process MVP the map feeds the canvas tool factory; under canvas-edge the
  * same map becomes literal container env. The token plaintext is persisted
@@ -54,8 +58,12 @@ function parseEnv(content) {
  * @param {string} params.workspaceId
  * @param {string} params.basePath
  * @param {string} params.apiBaseUrl  - e.g. http://127.0.0.1:8001/rest/v2
+ * @param {string} [params.bindingType]   - context | workspace | global
+ * @param {string} [params.workspaceName]
+ * @param {string} [params.contextId]
+ * @param {string} [params.contextUrl]
  */
-export function buildAgentRuntimeEnv({ agentId, tokenValue, workspaceId, basePath, apiBaseUrl }) {
+export function buildAgentRuntimeEnv({ agentId, tokenValue, workspaceId, basePath, apiBaseUrl, bindingType, workspaceName, contextId, contextUrl }) {
     if (!agentId || !tokenValue || !workspaceId || !apiBaseUrl) return null;
     return {
         CANVAS_URL: apiBaseUrl,
@@ -63,6 +71,10 @@ export function buildAgentRuntimeEnv({ agentId, tokenValue, workspaceId, basePat
         CANVAS_AGENT_ID: agentId,
         CANVAS_WORKSPACE: workspaceId,
         CANVAS_BASE_PATH: basePath || '/',
+        ...(bindingType ? { CANVAS_BINDING_TYPE: bindingType } : {}),
+        ...(workspaceName ? { CANVAS_WORKSPACE_NAME: workspaceName } : {}),
+        ...(contextId ? { CANVAS_CONTEXT_ID: contextId } : {}),
+        ...(contextUrl ? { CANVAS_CONTEXT_URL: contextUrl } : {}),
     };
 }
 

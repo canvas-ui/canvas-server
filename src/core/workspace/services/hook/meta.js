@@ -42,6 +42,10 @@ export const HOOK_EVENTS = Object.freeze([
     { name: 'tree.document.inserted', document: false, description: 'Document linked into a specific tree', payload: '{ documentId, treeId }' },
     { name: 'tree.document.removed', document: false, description: 'Document removed from a specific tree', payload: '{ documentId, treeId }' },
 
+    // Manual runs (POST /hooks/run from the webui "Run" button). Hooks bound
+    // to any event can be run by hand; the envelope is { workspaceId, manual: true }.
+    { name: 'manual', document: false, description: "Synthesized when a hook is run by hand from the webui (Run button / POST /hooks/run). Structural hooks (tree sync, housekeeping) bind to 'started' and accept this too — check ctx.eventName if you need to tell them apart.", payload: '{ workspaceId, manual: true }' },
+
     // Workspace lifecycle & config
     { name: 'started', document: false, description: 'Workspace became active', payload: '{ workspaceId }' },
     { name: 'stopped', document: false, description: 'Workspace stopped', payload: '{ workspaceId }' },
@@ -191,6 +195,7 @@ export const HOOK_CONTEXT_API = Object.freeze([
     { name: 'get', signature: 'await ctx.get(id)', description: 'Fetch one document by id (parsed).' },
     { name: 'list', signature: 'await ctx.list(spec)', description: 'List documents ({ context, features, limit, order… }).' },
     { name: 'find', signature: "await ctx.find({ query, … })", description: 'Full-text / hybrid search.' },
+    { name: 'backendShape', signature: "await ctx.backendShape('workspace:home')", description: "Directory skeleton of a storage backend: { ok, dirs, files } — dirs are backend-relative folder keys ('Fotky/2019', honoring the backend's exclusions), files the file count. readdir only, so it is cheap even on a large mount. Pair with ctx.tree.insertPath() to mirror a mount's folders into the context tree (see the backend-tree-sync example); ctx.workspace.getBackendTreeRoot(name) gives the backend's mirror root in the backends tree." },
     { name: 'link', signature: "await ctx.link(id, ['/path', …])", description: 'Link a document into one or more context paths (loop-safe: rules use emitEvent:false internally).' },
     { name: 'emit', signature: "await ctx.emit(name, payload)", description: "Emit a custom workspace event, stamped source:'hook' so it never re-triggers hooks." },
     { name: 'event', signature: 'ctx.event', description: '{ name, workspaceId, payload, timestamp } envelope. The payload additionally carries provenance: eventId (unique per emit), origin (user|hook|rule|agent|…), causedBy (parent eventId) and depth (automation cascade depth).' },

@@ -10,6 +10,9 @@ import { resolveRuleFiles, loadRuleFile, explainRule } from '../../../core/works
 import { resolveHookFiles } from '../../../core/workspace/services/hook/files.js';
 import { classifyDocument, normalizeSchemaId } from '../../../core/workspace/lib/classifier.js';
 
+// Hard ceiling on one backfill request; the webui's "Batch size" knob goes up to this.
+const BACKFILL_MAX_LIMIT = 10000;
+
 function normalizePathSegments(inputPath = '') {
   return String(inputPath || '')
     .replace(/\\/g, '/')
@@ -428,7 +431,67 @@ export default async function workspaceHooksRoutes(fastify) {
 
   // Backfill: run ONE rule or JS hook against existing documents, as if each
   // had just been inserted. dryRun evaluates matchers only (per-doc breakdown).
-  // Synthesized envelopes carry origin:'backfill' — downstream writes are
+  // Run one JS hook by hand with a synthesized, document-less envelope —
+  // the trigger for structural hooks (backend folder sync, housekeeping)
+  // that bind to `started` and otherwise only fire when the workspace
+  // (re)starts. Document-shaped hooks want /backfill instead (real
+  // documents, one run each); this endpoint is deliberately single-shot.
+  // Writes the hook makes carry origin:'manual' and are cascade-guarded.
+  fastify.post('/run', {
+    onRequest: [fastify.authenticate, requireWorkspaceWrite()],
+    schema: {
+      body: {
+        type: 'object',
+        required: ['hookFile'],
+        properties: {
+          hookFile: { type: 'string', minLength: 1 },
+          // Event name the hook sees (ctx.eventName). Defaults to the event
+          // the file is bound to by its location ({event}.js / {event}/x.js).
+          event: { type: 'string' },
+          payload: { type: 'object' },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    try {
+      const { hookFile, event, payload = {} } = request.body || {};
+      const hookService = fastify.workspaceManager?.hookService;
+      if (!hookService) {
+        const response = new ResponseObject().serverError('Hook service unavailable');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+      const boundEvent = hookFile.includes('/') ? hookFile.split('/')[0] : hookFile.replace(/\.js$/, '');
+      const eventName = event || boundEvent || 'manual';
+      const envelope = {
+        ...payload,
+        workspaceId: request.workspace.id,
+        manual: true,
+        eventId: crypto.randomUUID(),
+        origin: 'manual',
+        depth: 0,
+      };
+      const t0 = Date.now();
+      const outcome = await hookService.runTargeted(
+        request.workspace, { hookFile }, eventName, envelope, { trigger: 'manual' },
+      );
+      // runTargeted swallows hook errors into the run log; surface the latest
+      // record so the caller gets ok/error without a second round trip.
+      const runs = await hookService.runLogFor(request.workspace)?.query({ limit: 1, handler: hookFile }).catch(() => []);
+      const run = Array.isArray(runs) && runs[0] && new Date(runs[0].ts).getTime() >= t0 - 1000 ? runs[0] : null;
+      const response = new ResponseObject().success({
+        target: { hookFile }, event: eventName, ...outcome,
+        ...(run ? { status: run.status, error: run.error, durationMs: run.durationMs, runId: run.runId } : {}),
+      }, 'Hook executed');
+      return reply.code(response.statusCode).send(response.getResponse());
+    } catch (error) {
+      const notFound = /not found|escapes/i.test(error.message);
+      const response = notFound
+        ? new ResponseObject().notFound(error.message)
+        : new ResponseObject().serverError(`Run failed: ${error.message}`);
+      return reply.code(response.statusCode).send(response.getResponse());
+    }
+  });
+
   // cascade-guarded like any automation. Each envelope carries the document's
   // LIVE tree placements (payload.treePaths), so `when.path` matchers — incl.
   // tree-qualified ones like 'backends:/github/x' — evaluate against where
@@ -443,7 +506,9 @@ export default async function workspaceHooksRoutes(fastify) {
           hookFile: { type: 'string' },
           event: { type: 'string', default: 'document.inserted' },
           schema: { type: 'string' },
-          limit: { type: 'integer', minimum: 1, maximum: 500, default: 100 },
+          // Batch size. 100 keeps an accidental click cheap; the webui exposes
+          // the knob (Batch size) for deliberate bulk runs over a big index.
+          limit: { type: 'integer', minimum: 1, maximum: BACKFILL_MAX_LIMIT, default: 100 },
           dryRun: { type: 'boolean', default: false },
         },
       },

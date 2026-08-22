@@ -349,6 +349,9 @@ class Agents extends EventEmitter {
                 config,
                 eventEmitterOptions: { wildcard: true, delimiter: '.', newListener: false, maxListeners: 50 },
             });
+            // Every (re)start re-resolves the live binding → canvas tools survive
+            // restarts triggered by access/config changes.
+            agent.setCanvasEnvResolver(() => this.#resolveCanvasEnvForStart(this.#indexStore.get(indexKey)));
             this.#agents.set(agentId, agent);
             this.#updateIndex(indexKey, { lastAccessed: new Date().toISOString() });
             return agent;
@@ -382,8 +385,7 @@ class Agents extends EventEmitter {
                 model: agent.model,
                 config: agent.agentConfig,
             });
-            const canvasEnv = await this.#resolveCanvasEnvForStart(this.#indexStore.get(indexKey));
-            await agent.start({ canvasEnv });
+            await agent.start();  // canvas env comes from the resolver set at open()
             this.#updateIndex(indexKey, { status: AGENT_STATUS_CODES.ACTIVE, lastAccessed: new Date().toISOString() });
             this.emit('agent.started', { agentId, userId: owner, agent: agent.toJSON() });
             return agent;
@@ -986,6 +988,7 @@ class Agents extends EventEmitter {
                 config,
                 eventEmitterOptions: { wildcard: true, delimiter: '.', newListener: false, maxListeners: 50 },
             });
+            agent.setCanvasEnvResolver(() => this.#resolveCanvasEnvForStart(this.#indexStore.get(foundKey)));
             this.#agents.set(agentId, agent);
             this.#updateIndex(foundKey, { lastAccessed: new Date().toISOString() });
             return agent;
@@ -1070,7 +1073,7 @@ class Agents extends EventEmitter {
             if (!binding?.type) return null;
 
             if (binding.type === 'global') {
-                return { workspaceId: '*', workspaceName: '*', basePath: '/' };
+                return { workspaceId: '*', workspaceName: '*', basePath: '/', bindingType: 'global' };
             }
 
             if (binding.type === 'context') {
@@ -1081,15 +1084,25 @@ class Agents extends EventEmitter {
                     workspaceId: context.workspaceId,
                     workspaceName: context.workspaceName,
                     basePath: normalizeBindingPath(context.path),
+                    bindingType: 'context',
+                    contextId: context.id,
+                    contextUrl: context.url,
                 };
             }
 
             if (!this.#workspaceManager) return null;
             if (!(await this.#workspaceManager.hasWorkspace(binding.workspace, owner))) return null;
+            let workspaceName = binding.workspaceName;
+            if (!workspaceName || workspaceName === binding.workspace) {
+                // Display name for the agent's orientation tool; enforcement uses the id.
+                const workspace = await this.#workspaceManager.getWorkspace(binding.workspace, owner).catch(() => null);
+                workspaceName = workspace?.name || binding.workspace;
+            }
             return {
                 workspaceId: binding.workspace,
-                workspaceName: binding.workspaceName || binding.workspace,
+                workspaceName,
                 basePath: normalizeBindingPath(binding.path),
+                bindingType: binding.type === 'path' ? 'path' : 'workspace',
             };
         } catch (err) {
             logger.debug(`Binding scope resolution failed: ${err.message}`);
@@ -1127,10 +1140,9 @@ class Agents extends EventEmitter {
         if (!scope) throw new Error(`Cannot resolve binding scope for agent ${entry.id}`);
 
         const env = buildAgentRuntimeEnv({
+            ...scope,
             agentId: entry.id,
             tokenValue,
-            workspaceId: scope.workspaceId,
-            basePath: scope.basePath,
             apiBaseUrl: this.#apiBaseUrl,
         });
         if (env) await persistAgentRuntimeEnv(entry.rootPath, env);
@@ -1151,10 +1163,9 @@ class Agents extends EventEmitter {
         if (!scope) return null;
 
         const env = buildAgentRuntimeEnv({
+            ...scope,
             agentId: entry.id,
             tokenValue: stored.CANVAS_TOKEN,
-            workspaceId: scope.workspaceId,
-            basePath: scope.basePath,
             apiBaseUrl: this.#apiBaseUrl,
         });
         if (env) await persistAgentRuntimeEnv(entry.rootPath, env);

@@ -3223,6 +3223,26 @@ class Workspace extends EventEmitter {
         return this.#resyncDataBackend(address, { background });
     }
 
+    /**
+     * Directory skeleton of a storage backend: `{ ok, dirs, files }` where
+     * `dirs` are backend-relative folder keys ('Fotky/2019') honoring the
+     * backend's exclusions and `files` is the file count. readdir only — no
+     * stat, no hashing — so it is cheap even on a large mount. Backing for
+     * hooks that mirror a mount's folder structure into the workspace tree
+     * (ctx.backendShape). `{ ok:false, reason }` for unknown/unsupported.
+     */
+    async getBackendShape(backendName) {
+        if (!this.dataBackends[backendName]) throw new Error(`Unknown data backend: ${backendName}`);
+        if (!this.#storedIndex?.isRunning) await this.#startStoredIndex();
+        return this.#storedIndex.stored.shape(backendName);
+    }
+
+    // Mirror root of a storage backend in the backends tree (/<driver>/<address>),
+    // null when the backend is not mirrored (managed blob store, unsupported).
+    getBackendTreeRoot(backendName) {
+        return this.#storedIndex?.isRunning ? this.#storedIndex.getBackendTreeRoot(backendName) : null;
+    }
+
     // Cancel an in-flight storage resync. The walk stops at the next file;
     // nothing is orphaned from the partial snapshot and a later sync resumes
     // via the checksum cache (see WorkspaceStoredIndex.cancelResync).

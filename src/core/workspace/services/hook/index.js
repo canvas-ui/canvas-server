@@ -870,6 +870,9 @@ class HookService extends EventEmitter {
                 return res;
             },
             get: async (id, options = { parse: true }) => workspace.get(id, options),
+            // Folder skeleton of a storage backend ({ ok, dirs, files }) — the
+            // building block for mirroring a mount's structure into the tree.
+            backendShape: async (backendName) => workspace.getBackendShape(backendName),
             list: async (spec = {}) => workspace.list(spec),
             find: async (spec = {}) => workspace.search(spec),
             // Hook-fired agent prompts get a standard envelope (event, doc

@@ -205,8 +205,20 @@ Shipped examples (all disabled): `youtube-downloader`,
 `pinterest-downloader` + `image-categorizer` (pair — stage 2 exports
 `cascade = true` to see stage 1's inserts), `email-linker`,
 `to-sort-categorizer`, `ticket-notify`, `arxiv-summarizer`,
-`image-url-downloader`, `batch-tab-sorter` (`document.inserted.batch`), plus
-`example-rules.json` (rename to `rules.json` to activate).
+`image-url-downloader`, `batch-tab-sorter` (`document.inserted.batch`),
+`backend-tree-sync` (`started/` full sync + `tree.path.inserted/` incremental —
+mirrors a storage backend's folders, default `workspace:home`, into the
+context tree; config in `lib/backend-tree-sync.js`), plus `example-rules.json`
+(rename to `rules.json` to activate).
+
+## Running by hand
+
+The webui's **Run** button (Hooks section) runs a hook outside of its event:
+`document.*` hooks get a backfill over existing documents (up to the
+**Batch size** set in the toolbar, default 100), anything else — `started`,
+`tree.*` — gets one run with a synthesized `{ manual: true }` envelope
+(`POST /hooks/run`). Writes made from such runs carry `origin:'manual'` /
+`'backfill'` and are cascade-guarded like any automation.
 
 ## Editing & git access
 

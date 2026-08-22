@@ -229,7 +229,7 @@ test('registerWorkspacePath without adopt rejects a foreign owner', async (t) =>
   await assert.rejects(() => manager.registerWorkspacePath(user.id, foreignDir, { adopt: false }), /owned by someoneelse/);
 });
 
-test('remote index entries resolve to a NOT_IMPLEMENTED error', async (t) => {
+test('remote index entries without stored credentials resolve to WORKSPACE_NOT_READY', async (t) => {
   const { tmp, user, jim, manager } = await makeEnv();
   t.after(() => rmSync(tmp, { recursive: true, force: true }));
 
@@ -242,11 +242,14 @@ test('remote index entries resolve to a NOT_IMPLEMENTED error', async (t) => {
     owner: user.id,
     host: 'other.server.tld',
     origin: 'remote',
-    remote: { endpoint: null, authRef: null },
+    remote: { url: 'http://127.0.0.1:65530', workspaceId: 'remote-ws-1', workspaceName: 'faraway', permissions: ['read'] },
   });
 
+  // The share token lives in the per-user remote-workspaces store; an entry
+  // without one (hand-edited index, partial restore) is reported as not
+  // ready — retryable after the user re-adds it — never as a local workspace.
   await assert.rejects(
     () => manager.getWorkspaceOrThrow('remote-ws-1', user.id),
-    (err) => err.code === 'NOT_IMPLEMENTED' && err.statusCode === 501
+    (err) => err.code === 'WORKSPACE_NOT_READY' && err.statusCode === 503 && /re-add/.test(err.message)
   );
 });

@@ -30,7 +30,10 @@ import { WORKSPACE_DIRECTORIES } from '../../lib/constants.js';
  * format trivially composable for a UI rule builder.
  *
  * Actions: link, unlink, tag, store, unstore, delete, destroy, agent, notify,
- * script, emit. `store`/`unstore` are the storage-layer pair — they move/copy a
+ * script, emit. `link`/`unlink` take `recursive: true` to append the
+ * document's sub-path below the matched `when.path` prefix to every target
+ * (mirror a folder subtree: `backends:/workspace/home/foo` → `dir:/bar`);
+ * templates see the same via {{match.rel}}. `store`/`unstore` are the storage-layer pair — they move/copy a
  * document's BYTES between backends (with template renaming) and delete them
  * from named backends; everything else operates on the index.
  */
@@ -398,13 +401,32 @@ export function expandKeyTemplate(template, { doc, sourceKey } = {}) {
     ));
 }
 
+// Target paths for link/unlink. With `recursive: true` the remainder of the
+// document's placement below the rule's matched `when.path` prefix is
+// appended to every target, so a rule on `backends:/workspace/home/foo` with
+// target `dir:/bar` files `.../foo/a/b` into `dir:/bar/a/b` — one placement
+// per matched path. Without a matched prefix (no `path` condition, or the
+// document sits exactly at the prefix) the targets are used as written.
+function resolveTargetPaths(action, scope) {
+    const raw = asArray(action.paths || action.path || []).filter(Boolean).map((p) => interpolate(String(p), scope));
+    if (action.recursive !== true) { return raw; }
+    const rels = [...new Set((scope.match?.all || []).map((m) => m.rel).filter(Boolean))];
+    if (!rels.length) { return raw; }
+    const out = [];
+    for (const base of raw) {
+        const trimmed = String(base).replace(/\/+$/, '');
+        for (const rel of rels) { out.push(`${trimmed}/${rel}`); }
+    }
+    return [...new Set(out)];
+}
+
 const ACTIONS = {
     // Link the document to tree paths, optionally with feature tags. Paths
     // default to the context tree; 'dir:/path' targets the directory tree.
     // emitEvent:false so the resulting membership change can't re-trigger rules.
-    async link(action, { workspace, doc, logger, provenance }) {
+    async link(action, { workspace, doc, scope, logger, provenance }) {
         if (!doc?.id) { return; }
-        for (const rawPath of asArray(action.paths || action.path || []).filter(Boolean)) {
+        for (const rawPath of resolveTargetPaths(action, scope)) {
             const target = parseLinkTarget(rawPath);
             const selector = target.tree !== 'context'
                 ? { directory: directorySelector(target) }
@@ -541,9 +563,9 @@ const ACTIONS = {
 
     // Remove the document from tree path(s) — the inverse of `link`. The doc
     // stays in the index and on its other paths.
-    async unlink(action, { workspace, doc, logger, provenance }) {
+    async unlink(action, { workspace, doc, scope, logger, provenance }) {
         if (!doc?.id) { return; }
-        for (const rawPath of asArray(action.paths || action.path || []).filter(Boolean)) {
+        for (const rawPath of resolveTargetPaths(action, scope)) {
             const target = parseLinkTarget(rawPath);
             const selector = target.tree !== 'context'
                 ? { directory: directorySelector(target) }
@@ -712,6 +734,27 @@ const ACTIONS = {
     },
 };
 
+// Where the document matched the rule's `path` condition: `{ prefix, tree,
+// path, rel, all }` for the first prefix with a placement under it (`all`
+// lists every placement, `rel` is the first one's remainder), or null when
+// the rule has no `path` condition. Exposed to templates as
+// {{match.rel}} / {{match.path}} / {{match.prefix}} and consumed by
+// `recursive: true` on link/unlink.
+function matchedPath(rule, context) {
+    const prefixes = asArray(rule?.when?.path || []).filter(Boolean);
+    if (!prefixes.length || typeof context?.classify !== 'function') { return null; }
+    let c;
+    try { c = context.classify(); } catch { return null; }
+    if (!c || typeof c.pathMatches !== 'function') { return null; }
+    for (const prefix of prefixes) {
+        const all = c.pathMatches(prefix);
+        if (all.length) {
+            return { prefix: String(prefix), tree: all[0].tree, path: all[0].path, rel: all[0].rel, all };
+        }
+    }
+    return null;
+}
+
 /**
  * Execute a matched rule's `then` actions sequentially. Action errors are
  * logged (warn) and swallowed so one broken action never blocks the rest of
@@ -731,6 +774,7 @@ export async function executeRuleActions(rule, context, logger) {
         event: eventName,
         workspace: { id: workspace.id, name: workspace.name },
         rule: { id: rule.id, description: rule.description },
+        match: matchedPath(rule, context),
     };
     // Writes this rule makes are automation caused by the triggering event.
     // Actions routed through the hook context (agent output, script output,

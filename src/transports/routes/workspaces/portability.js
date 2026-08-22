@@ -314,17 +314,19 @@ export default async function portabilityRoutes(fastify) {
    * Remote workspace references — "open" a workspace that stays on another
    * canvas-server, as opposed to /import which pulls a full copy locally.
    *
-   * Today this validates the credentials and records the reference so the UI
-   * can list it; actually serving reads/writes from the remote is canvas-edge's
-   * job, so a reference is explicitly marked as a placeholder.
+   * A reference is a regular entry in the caller's workspace list, addressed
+   * as `<name>@<host>`; every /workspaces/<name>@<host>/* call is forwarded to
+   * the remote (see transports/middleware/remote-proxy.js). The token is
+   * validated against the remote before anything is stored and never leaves
+   * the credential store afterwards.
    */
+  const presentRemote = (entry) => ({ ...entry, address: entry.name, openable: true });
+
   fastify.get('/remotes', {
     onRequest: [fastify.authenticate],
   }, async (request, reply) => {
     try {
-      const items = (await fastify.workspaceManager.listRemoteWorkspaces(request.user.id))
-        // the token is write-only: it is a credential, not display data
-        .map(({ token: _token, ...rest }) => ({ ...rest, openable: false }));
+      const items = (await fastify.workspaceManager.listRemoteWorkspaces(request.user.id)).map(presentRemote);
       const response = new ResponseObject().found(items, 'Remote workspaces retrieved', 200, items.length);
       return reply.code(response.statusCode).send(response.getResponse());
     } catch (err) {
@@ -362,8 +364,7 @@ export default async function portabilityRoutes(fastify) {
         permissions: info.permissions || [],
         label,
       });
-      const { token: _token, ...safe } = entry;
-      const response = new ResponseObject().created({ ...safe, openable: false }, 'Remote workspace added');
+      const response = new ResponseObject().created(presentRemote(entry), 'Remote workspace added');
       return reply.code(response.statusCode).send(response.getResponse());
     } catch (err) {
       return sendError(reply, err);

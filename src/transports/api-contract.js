@@ -70,12 +70,15 @@ export function assertContract(app, names, label) {
  * Mount the workspaces REST API on any fastify instance satisfying
  * WORKSPACES_CONTRACT — the full server or a bare canvas-edge runtime.
  */
-function mountRoutes(app, routes, prefix, preHandlers) {
-  if (!preHandlers.length) {
+function mountRoutes(app, routes, prefix, preHandlers, onRequest = []) {
+  if (!preHandlers.length && !onRequest.length) {
     app.register(routes, { prefix });
     return;
   }
   app.register(async (instance) => {
+    // Scope-level onRequest hooks run before the routes' own onRequest chain
+    // (auth, ACL) and before body parsing — where a forwarder has to sit.
+    for (const handler of onRequest) instance.addHook('onRequest', handler);
     for (const handler of preHandlers) instance.addHook('preHandler', handler);
     await instance.register(routes);
   }, { prefix });
@@ -87,9 +90,9 @@ function mountRoutes(app, routes, prefix, preHandlers) {
  * `preHandlers` lets the caller apply instance policy (e.g. agent-token
  * rejection) without the route group knowing about it.
  */
-export function mountWorkspacesApi(app, { prefix = '/rest/v2/workspaces', preHandlers = [] } = {}) {
+export function mountWorkspacesApi(app, { prefix = '/rest/v2/workspaces', preHandlers = [], onRequest = [] } = {}) {
   assertContract(app, WORKSPACES_CONTRACT, 'workspaces api');
-  mountRoutes(app, workspaceRoutes, prefix, preHandlers);
+  mountRoutes(app, workspaceRoutes, prefix, preHandlers, onRequest);
 }
 
 /** Mount the contexts REST API; same contract idea as mountWorkspacesApi. */

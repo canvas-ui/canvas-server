@@ -145,7 +145,16 @@ to `PATH`/`HOME`/`LANG` plus `CANVAS_EVENT`, `CANVAS_EVENT_ID`,
 also the cwd — cleaned after a successful captured run, swept after 24h
 otherwise); the full JSON event envelope arrives on stdin; `timeout` (ms,
 captured mode, default 60000, max 600000) is configurable per action. Link/unlink paths target the context tree by default;
-`dir:/a/b` targets the directory tree. `agent` and `script` take an optional
+`dir:/a/b` targets the directory tree. Add `"recursive": true` to a
+link/unlink to keep the sub-folders below the rule's `path` prefix: with
+`"path": "backends:/workspace/home/foo"` and `"paths": ["dir:/bar"]`, a file
+mirrored at `/workspace/home/foo/a/b` is filed into `dir:/bar/a/b` (one
+placement per matched path; `dir:/` mirrors the whole subtree 1:1). Templates
+see the same remainder as `{{match.rel}}` (plus `{{match.path}}`,
+`{{match.prefix}}`). Mirroring is one-way, backend → tree: folders that hold no
+documents only appear through the `backend-tree-sync` hook, and a rename on
+the backend leaves the old tree path in place (prune it by hand, or enable
+`prune` in the hook). `agent` and `script` take an optional
 `output` consuming the agent reply / script stdout (60s timeout, 256 KiB cap):
 `{ note: { path, title? }, file: { path, backend?: 'home'|'data', append?,
 insert? }, notify: true }` — save as note, write to a file under `home/`
@@ -219,6 +228,15 @@ The webui's **Run** button (Hooks section) runs a hook outside of its event:
 `tree.*` — gets one run with a synthesized `{ manual: true }` envelope
 (`POST /hooks/run`). Writes made from such runs carry `origin:'manual'` /
 `'backfill'` and are cascade-guarded like any automation.
+
+The `backend-tree-sync` hook reads its config from a manual envelope, so one
+run can target a subtree: `POST /hooks/run { hookFile:
+"started/example-backend-tree-sync.js", payload: { backend: "workspace:home",
+subdir: "foo", target: "dir:/foo" } }` mirrors the folders below
+`workspace:home/foo` into the directory tree at `/foo` (empty folders
+included). The Backends tree's context menu does exactly this ("Sync folders
+into Directory"); its "Add rule: file into Directory…" item opens the rule
+builder with the matching recursive `link` rule for the documents.
 
 ## Editing & git access
 

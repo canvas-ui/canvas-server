@@ -141,38 +141,58 @@ Tasks:
 
 ## Remote workspaces
 
-### Remote workspaces as local entries + pull-through cache (design agreed 2026-08-07)
+### Phase 1 LANDED 2026-08-22 (server 2.5.64, web 2.7.58) — see README → "Remote workspaces"
+
+A remote workspace is a LOCAL index entry named `<name>@<host>` (origin `remote`, the
+remote's original id kept unless a local entry already owns it; share token in the
+per-user `remote-workspaces.json` credential store, never in the entry). Resolving it
+yields a `RemoteWorkspace` facade (`src/core/workspace/lib/RemoteWorkspace.js`: status
+mirrors the remote via a TTL'd probe, `offline` when unreachable). Every
+`/rest/v2/workspaces/<name@host>/*` request is streamed to the remote by the scope-level
+onRequest forwarder (`transports/middleware/remote-proxy.js`) with the share token —
+the remote's routes answer, nothing is re-implemented. Content + thumbnail bytes go
+through ONE shared pull-through cacache (`<serverHome>/cache/remote-workspaces`,
+ETag/If-None-Match revalidation, stale serve when the remote is down, content-deduped
+across hosts by cacache's integrity store). `DELETE`/`PATCH /:id` stay local (unlink /
+presentation overrides).
+
+Deliberately NOT done in phase 1 (next steps, in order):
+- [ ] Live updates: the remote's `workspace:<id>` socket events are not relayed — the
+      web shows the remote's state on navigation/refresh only. Relay = one socket.io
+      client per RemoteWorkspace subscribing `workspace:<remoteId>`, re-broadcast on
+      `workspace:<local id>`.
+- [ ] In-process consumers (contexts spanning a remote workspace, agentd tools, WebDAV
+      `/dav/<ws>`) still only see the facade's identity — `RemoteWorkspace` needs the
+      read subset of the Workspace surface (`get`, `list`, `getTree`, `search`,
+      `resolveDocument` via the cache) built on `RemoteWorkspace.api()`.
+- [ ] Offline reads beyond bytes: cache `GET /documents*` + `/tree` responses
+      (metadata is mutable — serve stale only when the remote is unreachable and mark it).
+- [ ] Write-through queue (stored SyncQueue pattern) for writes while offline.
+- [ ] Token storage form: the credential store is plaintext JSON today — fold into the
+      `WorkspaceCrypto`/`secret://` work (secrets design below).
+- [ ] Forwarded `PATCH /:id` for remote-side config (description, acl, …): today PATCH
+      edits the local presentation only; a "push to remote" needs its own route.
+- [ ] Web: the list card shows `Remote · host`; settings pages for a remote entry are
+      the remote's own (forwarded) — token/share management there acts on the remote.
+- [ ] Phase 3 (canvas-edge): process-per-workspace runtime; "remote" becomes a runtime
+      flag — the forwarder already takes `edges.proxyRequest` OR a direct URL, so an
+      edge-exported workspace and a URL remote share the same path.
+
+### Original design notes (2026-08-07)
 
 Driver: run canvas-server locally (systemd --user daemon or docker) while also using workspaces
 hosted on another instance. A remote workspace is represented as a LOCAL index entry
 (`workspace@remote.domain.tld`), not a separate client-side concept.
 
-Load-bearing facts already in place:
-- `WORKSPACE_ORIGINS.REMOTE` exists; entries carry `host` (`isRemote` at index.js:110) and an
-  index-only `remote: null` slot; resolution currently throws NOT_IMPLEMENTED (index.js:553).
-  Implementing = registering `origin: remote` + `remote: {url, token}` and replacing that throw.
+Load-bearing facts:
 - stored is content-addressed and blobs are immutable per checksum, so a pull-through BLOB cache
   needs no invalidation story at all. Mutable metadata (documents/tree/bitmaps) is the part that
   must NOT be cached naively.
-- Share tokens are single-workspace-clamped principals; the edge-proxy middleware exists.
+- Share tokens are single-workspace-clamped principals.
 
-Agreed shape, in phases:
-1. **In-process `RemoteWorkspace`** (same public surface as `Workspace`, registered by the
-   manager - deliberately NOT gated on canvas-edge; building it forces the Workspace interface
-   to become the contract canvas-edge needs anyway):
-   - queries / tree / document metadata: live proxy to the remote REST API, uncached
-     (unreachable remote = workspace shows offline, same as a stopped local one)
-   - blob/content reads: pull-through cacache keyed by checksum, ONE shared cache across all
-     remote workspaces (content addressing dedupes across hosts for free)
-   - writes: read-only first (matches read-permission share tokens)
-   - index entry keeps the remote's ORIGINAL workspace id (enables a later
-     detach-into-local-copy and dedupe against a prior import)
-2. Write-through via the stored SyncQueue pattern + offline reads served from cache.
-3. canvas-edge process-per-workspace runtime for ALL workspaces; "remote" becomes a runtime
-   flag (the same workspace runtime in pull-through cache mode).
-
-Open questions: token storage form in the index entry (raw vs wrapped - entries surface through
-admin/debug); live updates from the remote (socket subscription vs poll - deferred).
+Phases: 1. in-process entry + forwarder + blob cache (DONE) → 2. write-through via the stored
+SyncQueue pattern + offline reads served from cache → 3. canvas-edge process-per-workspace
+runtime for ALL workspaces; "remote" becomes a runtime flag.
 
 ## Workspace sync (design notes, non-MVP — parked 2026-08-02)
 

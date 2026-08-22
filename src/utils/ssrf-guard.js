@@ -72,4 +72,5 @@ function guardedLookup(hostname, options, callback) {
   });
 }
 
+export { guardedLookup };
 export const guardedDispatcher = new Agent({ connect: { lookup: guardedLookup } });

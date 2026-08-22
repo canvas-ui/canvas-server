@@ -1,7 +1,7 @@
 {
   "name": "canvas-server",
   "productName": "Canvas Server",
-  "version": "2.5.62",
+  "version": "2.5.64",
   "description": "Context layer on top of your unstructured universe",
   "main": "./src/init.js",
   "type": "module",
@@ -72,6 +72,7 @@
     "@napi-rs/canvas": "^1.0.6",
     "@slack/web-api": "^7.15.0",
     "bcryptjs": "^3.0.3",
+    "cacache": "^20.0.4",
     "canvas-inferd": "github:canvas-ui/canvas-inferd#main",
     "canvas-stored": "github:canvas-ui/canvas-stored#main",
     "canvas-synapsd": "github:canvas-ui/canvas-synapsd#main",

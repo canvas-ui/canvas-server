@@ -252,6 +252,7 @@ class Server extends EventEmitter {
             indexFactory: jim, // per-user index files under db/users/<id>/
             users: this.#users,
             inferd: this.#inferd,
+            allowInsecureRemotes: env.workspace.allowInsecureRemoteImport === true,
             logger: createLogger('workspace-manager'),
         });
 

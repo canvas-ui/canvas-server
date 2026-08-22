@@ -16,7 +16,8 @@ import { compareByUserOrder } from '../../utils/list-order.js';
 
 // Includes
 import Workspace from './Workspace.js';
-import { WorkspaceErrorCode, accessDenied, workspaceNotFound, workspaceNotReady, notImplemented } from './lib/errors.js';
+import RemoteWorkspace from './lib/RemoteWorkspace.js';
+import { WorkspaceErrorCode, accessDenied, workspaceNotFound, workspaceNotReady } from './lib/errors.js';
 import { discoverWorkspaceCandidates, validateWorkspaceConfig, findWorkspaceConfigPath, workspaceConfigPathFor } from './lib/scanner.js';
 import DotfileManager from './services/dotfile/index.js';
 import { USER_MODULE_DIRS } from '../user/lib/paths.js';
@@ -136,6 +137,7 @@ class WorkspaceManager extends EventEmitter {
     #initialized = false;
     #defaultRootPath;
     #defaultLayout;
+    #allowInsecureRemotes = false;
 
     // Lookup Indexes (in-memory)
     #nameIndex = new Map();         // Key: userId@host:workspaceName -> workspaceId
@@ -170,6 +172,9 @@ class WorkspaceManager extends EventEmitter {
         this.#users = options.users;
         this.#roles = options.roles;
         this.#inferd = options.inferd || null;
+        // Lets remote workspace references point at http / private-network
+        // servers (self-hosted LAN instances). See env.workspace.allowInsecureRemoteImport.
+        this.#allowInsecureRemotes = options.allowInsecureRemotes === true;
         this.#logger = options.logger || createLogger('workspace-manager');
     }
 
@@ -374,12 +379,31 @@ class WorkspaceManager extends EventEmitter {
             }
         }
 
+        // Remote references are listed through their facade so the status
+        // mirrors the remote; probes run in parallel after the loop (bounded
+        // by the probe timeout, cached for PROBE_TTL) instead of one by one.
+        const remotePending = [];
+
         for (const [, entry] of this.#allEntries()) {
             const isOwner = !userId || entry.owner === userId;
             const sharedVia = userEmail ? (entry.acl?.users?.[userEmail] || null) : null;
             const hasSharedAccess = !!sharedVia;
 
             if (userId && !isOwner && !hasSharedAccess) continue;
+
+            if (entry.origin === WORKSPACE_ORIGINS.REMOTE) {
+                // A reference is personal: only its owner sees it.
+                if (userId && !isOwner) continue;
+                const ws = await this.getWorkspace(entry.id, entry.owner);
+                const slot = results.length;
+                if (!ws) {
+                    results.push({ ...WorkspaceManager.#publicRemoteEntry(entry), status: WORKSPACE_STATUS_CODES.ERROR, statusMessage: 'Stored credentials missing — remove and re-add this remote workspace' });
+                } else {
+                    results.push(null);
+                    remotePending.push({ ws, slot });
+                }
+                continue;
+            }
 
             // If workspace is loaded, return runtime status
             if (this.#workspaces.has(entry.id)) {
@@ -423,6 +447,17 @@ class WorkspaceManager extends EventEmitter {
                     } catch { /* intentionally ignored */ }
                 }
                 results.push(item);
+            }
+        }
+        if (remotePending.length) {
+            await Promise.all(remotePending.map(({ ws }) => ws.probe().catch(() => null)));
+            for (const { ws, slot } of remotePending) {
+                const item = ws.toJSON();
+                try {
+                    const ownerUser = await this.#users.get(ws.owner);
+                    if (ownerUser?.email) item.ownerEmail = ownerUser.email;
+                } catch { /* intentionally ignored */ }
+                results[slot] = item;
             }
         }
         // User-defined order at the source so every consumer (web lists,
@@ -549,7 +584,22 @@ class WorkspaceManager extends EventEmitter {
             throw accessDenied(`Access denied to workspace ${workspaceId}`);
         }
         if (entry.origin === WORKSPACE_ORIGINS.REMOTE) {
-            throw notImplemented(`Workspace ${workspaceId} is remote (${entry.host}) — remote workspaces are not yet supported`);
+            // Credentials live in the per-user remote-workspaces store, keyed
+            // by the entry id, so the share token never rides along with the
+            // index entry into listings / admin views.
+            const credentials = this.#getUserRemoteIndex(entry.owner).get(entry.id);
+            if (!credentials?.token) {
+                throw workspaceNotReady(`Remote workspace ${entry.name} has no stored credentials — remove and re-add it`);
+            }
+            const remote = new RemoteWorkspace({
+                entry,
+                credentials,
+                allowInsecure: this.#allowInsecureRemotes,
+                logger: this.#logger,
+            });
+            this.#workspaces.set(workspaceId, remote);
+            this.#registerWorkspaceInstance(remote);
+            return remote;
         }
 
         // 3. Instantiate
@@ -719,6 +769,20 @@ class WorkspaceManager extends EventEmitter {
             updatedAt: new Date().toISOString()
         };
 
+        // A remote reference has no workspace.json here: label/color/order/
+        // description are how THIS user sees the reference (local overrides
+        // layered over the remote's own presentation), the index is their home.
+        if (existing.origin === WORKSPACE_ORIGINS.REMOTE) {
+            const { remote: _remote, origin: _origin, ...presentation } = updates;
+            userIndex.set(workspaceId, { ...existing, ...presentation, updatedAt: newEntry.updatedAt });
+            const cached = this.#workspaces.get(workspaceId);
+            if (cached?.isRemote) {
+                this.#unregisterWorkspaceInstance(workspaceId);
+                this.#workspaces.delete(workspaceId);
+            }
+            return true;
+        }
+
         try {
             const conf = new Conf({
                 configName: path.basename(existing.configPath, '.json'),
@@ -869,13 +933,17 @@ class WorkspaceManager extends EventEmitter {
         if (!entry) return false;
 
         const ws = await this.getWorkspace(entry.id, userId);
-        if (ws) {
+        // Removing a remote reference must not stop the workspace on ITS server.
+        if (ws && !ws.isRemote) {
             await ws.stop();
         }
         this.#unregisterWorkspaceInstance(entry.id);
         this.#workspaces.delete(entry.id);
 
         this.#getUserIndex(entry.owner).delete(entry.id);
+        if (entry.origin === WORKSPACE_ORIGINS.REMOTE) {
+            this.#getUserRemoteIndex(entry.owner).delete(entry.id);
+        }
         this.#removeFromIndexes(entry.owner, entry.id, entry.name, entry.host || WORKSPACE_DEFAULT_HOST, entry.reference);
 
         // Remote entries are index-only on this server — nothing to destroy.
@@ -1037,54 +1105,140 @@ class WorkspaceManager extends EventEmitter {
     }
 
     /**
-     * Remote workspace references
+     * Remote workspaces
      *
-     * A reference to a workspace that stays on ANOTHER canvas-server: we store
-     * the credentials needed to reach it, not its data. This is deliberately
-     * NOT a workspace in the index — it has no rootPath, cannot be started and
-     * must never be mistaken for local data by anything that walks workspaces.
-     * Opening one for real (proxying reads/writes through to its server) is
-     * canvas-edge's job; until then these are placeholders the UI can list.
+     * A workspace that stays on ANOTHER canvas-server, registered in this
+     * user's main index as `<name>@<host>` with origin `remote`. The entry
+     * carries the remote descriptor (url, the remote's workspace id, name,
+     * permissions) but never the share token — credentials live in the
+     * per-user remote-workspaces store keyed by the entry id. Resolving the
+     * entry yields a RemoteWorkspace facade; REST calls addressed to it are
+     * streamed to the remote by transports/middleware/remote-proxy.js.
      */
 
-    async listRemoteWorkspaces(userId) {
-        const store = this.#getUserRemoteIndex(userId).store || {};
-        return Object.values(store).sort((a, b) => String(a.addedAt).localeCompare(String(b.addedAt)));
+    /** Entry as safe to surface: the credentials-free remote descriptor only. */
+    static #publicRemoteEntry(entry) {
+        const { remote, ...rest } = entry;
+        const { url, workspaceId, workspaceName, permissions = [], addedAt = null } = remote || {};
+        return { ...rest, remote: { url, workspaceId, workspaceName, permissions, addedAt } };
     }
 
+    /**
+     * Host label for a remote url: hostname, plus `-<port>` when a port is
+     * given (two dev instances on one machine must not collide). Kept free of
+     * `:` so `user@host:slug` references still parse.
+     */
+    static remoteHostLabel(url) {
+        const parsed = new URL(url);
+        return parsed.port ? `${parsed.hostname}-${parsed.port}` : parsed.hostname;
+    }
+
+    async listRemoteWorkspaces(userId) {
+        const out = [];
+        for (const [, entry] of this.#allEntries()) {
+            if (entry.origin !== WORKSPACE_ORIGINS.REMOTE || entry.owner !== userId) continue;
+            out.push(WorkspaceManager.#publicRemoteEntry(entry));
+        }
+        return out.sort((a, b) => String(a.remote?.addedAt || '').localeCompare(String(b.remote?.addedAt || '')));
+    }
+
+    /**
+     * Register (or refresh) a remote workspace reference. The caller has
+     * already resolved the token against the remote (workspaceId/name/
+     * permissions come from its /token-info), so nothing here touches the
+     * network. Re-adding the same (url, workspaceId) refreshes the token and
+     * permissions in place instead of stacking duplicates.
+     */
     async addRemoteWorkspace(userId, { url, token, workspaceId, workspaceName, label = null, permissions = [] }) {
         if (!url || !token) throw new Error('A remote workspace needs a url and a token');
         if (!workspaceId) throw new Error('A remote workspace needs the resolved workspaceId');
 
-        const index = this.#getUserRemoteIndex(userId);
         const normalizedUrl = String(url).replace(/\/+$/, '');
-        // One reference per (server, workspace): re-adding refreshes the token
-        // rather than stacking duplicates a user then has to clean up.
-        const existing = Object.values(index.store || {})
-            .find((entry) => entry.url === normalizedUrl && entry.workspaceId === workspaceId);
+        const host = WorkspaceManager.remoteHostLabel(normalizedUrl);
+        const baseName = this.#sanitizeWorkspaceName(workspaceName || '') || 'workspace';
+        const userIndex = this.#getUserIndex(userId);
+        const now = new Date().toISOString();
 
-        const entry = {
-            id: existing?.id || uuidv4(),
-            type: 'remote-workspace',
-            status: 'remote',
-            url: normalizedUrl,
-            token,
-            workspaceId,
-            workspaceName: workspaceName || null,
-            label: label || workspaceName || workspaceId,
-            permissions,
-            addedAt: existing?.addedAt || new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-        };
-        index.set(entry.id, entry);
-        return entry;
+        let existing = null;
+        for (const entry of Object.values(userIndex.store || {})) {
+            if (entry?.origin === WORKSPACE_ORIGINS.REMOTE && entry.remote?.url === normalizedUrl && entry.remote?.workspaceId === workspaceId) {
+                existing = entry;
+                break;
+            }
+        }
+
+        let entry;
+        if (existing) {
+            entry = {
+                ...existing,
+                label: label || existing.label,
+                updatedAt: now,
+                remote: { ...existing.remote, workspaceName: workspaceName || existing.remote.workspaceName, permissions },
+            };
+        } else {
+            // Keep the remote's id (lets a later detach-into-local-copy dedupe
+            // against a prior import) unless something local already owns it.
+            const id = this.#idIndex.has(workspaceId) ? uuidv4() : workspaceId;
+            // `<name>@<host>`; a second workspace with the same name on the same
+            // host label (different url) gets a numeric suffix.
+            let name = `${baseName}@${host}`;
+            for (let i = 2; this.#nameIndex.has(WorkspaceManager.#nameKey(userId, name, host)); i += 1) {
+                name = `${baseName}-${i}@${host}`;
+            }
+            entry = {
+                id,
+                name,
+                label: label || workspaceName || workspaceId,
+                type: 'workspace',
+                owner: userId,
+                host,
+                origin: WORKSPACE_ORIGINS.REMOTE,
+                status: WORKSPACE_STATUS_CODES.OFFLINE,
+                rootPath: null,
+                configPath: null,
+                createdAt: now,
+                updatedAt: now,
+                importedFrom: null,
+                lastScannedAt: null,
+                remote: { url: normalizedUrl, workspaceId, workspaceName: workspaceName || null, permissions, addedAt: now },
+            };
+        }
+
+        userIndex.set(entry.id, entry);
+        this.#getUserRemoteIndex(userId).set(entry.id, { id: entry.id, url: normalizedUrl, workspaceId, token, updatedAt: now });
+        this.#addToIndexes(userId, entry.id, entry.name, host, null);
+
+        // A cached facade holds the old token — drop it so the next resolve
+        // picks up the refreshed credentials.
+        if (existing && this.#workspaces.has(entry.id)) {
+            this.#unregisterWorkspaceInstance(entry.id);
+            this.#workspaces.delete(entry.id);
+        }
+
+        this.#logger.debug({ workspaceId: entry.id, userId, host, refreshed: !!existing }, 'Registered remote workspace');
+        return WorkspaceManager.#publicRemoteEntry(entry);
     }
 
     async removeRemoteWorkspace(userId, id) {
-        const index = this.#getUserRemoteIndex(userId);
-        if (!index.get(id)) return false;
-        index.delete(id);
-        return true;
+        const entry = this.getWorkspaceIndexEntry(id, userId);
+        if (!entry || entry.origin !== WORKSPACE_ORIGINS.REMOTE) return false;
+        return this.removeWorkspace(entry.id, userId, false);
+    }
+
+    /**
+     * Cheap, auth-free lookup used by the REST forwarder on EVERY workspace
+     * request: does this identifier (id or `name@host`) name a remote entry?
+     * Ownership is checked by the caller once the principal is known.
+     */
+    peekRemoteWorkspaceEntry(identifier) {
+        if (!identifier || typeof identifier !== 'string') return null;
+        const byId = this.#findInIndex(identifier);
+        if (byId) return byId.origin === WORKSPACE_ORIGINS.REMOTE ? byId : null;
+        if (!identifier.includes('@')) return null;
+        for (const [, entry] of this.#allEntries()) {
+            if (entry.origin === WORKSPACE_ORIGINS.REMOTE && entry.name === identifier) return entry;
+        }
+        return null;
     }
 
     /**
@@ -1092,7 +1246,14 @@ class WorkspaceManager extends EventEmitter {
      */
 
     resolveWorkspaceId(userId, workspaceName, host = WORKSPACE_DEFAULT_HOST) {
-        const sanitizedName = this.#sanitizeWorkspaceName(workspaceName || '');
+        let name = workspaceName || '';
+        // `<name>@<host>` addresses a remote reference (see addRemoteWorkspace).
+        const at = name.lastIndexOf('@');
+        if (at > 0) {
+            host = name.slice(at + 1);
+            name = name.slice(0, at);
+        }
+        const sanitizedName = this.#sanitizeWorkspaceName(name);
         const nameKey = `${userId}@${host}:${sanitizedName}`;
         return this.#nameIndex.get(nameKey) || null;
     }
@@ -1472,8 +1633,17 @@ class WorkspaceManager extends EventEmitter {
         this.#logger.debug({ names: this.#nameIndex.size, references: this.#referenceIndex.size, ids: this.#idIndex.size }, 'Rebuilt indexes');
     }
 
+    // Remote references are named `<name>@<host>`; the name index keys on the
+    // bare name under the remote host, so `resolveWorkspaceId(user, 'a@b')`
+    // and `resolveWorkspaceId(user, 'a', 'b')` meet at the same key.
+    static #nameKey(userId, name, host) {
+        const at = typeof name === 'string' ? name.lastIndexOf('@') : -1;
+        if (at > 0) return `${userId}@${name.slice(at + 1)}:${name.slice(0, at)}`;
+        return `${userId}@${host}:${name}`;
+    }
+
     #addToIndexes(userId, workspaceId, name, host, reference) {
-        const nameKey = `${userId}@${host}:${name}`;
+        const nameKey = WorkspaceManager.#nameKey(userId, name, host);
         this.#nameIndex.set(nameKey, workspaceId);
         this.#idIndex.set(workspaceId, userId);
 
@@ -1483,7 +1653,7 @@ class WorkspaceManager extends EventEmitter {
     }
 
     #removeFromIndexes(userId, workspaceId, name, host, reference) {
-        const nameKey = `${userId}@${host}:${name}`;
+        const nameKey = WorkspaceManager.#nameKey(userId, name, host);
         this.#nameIndex.delete(nameKey);
         this.#idIndex.delete(workspaceId);
         if (reference) {
@@ -1522,7 +1692,8 @@ class WorkspaceManager extends EventEmitter {
 
         workspace.on('**', listener);
         this.#workspaceListeners.set(workspace.id, { workspace, listener });
-        this.hookService?.trackWorkspace(workspace);
+        // Hooks run inside the workspace that owns the data — the remote's.
+        if (!workspace.isRemote) this.hookService?.trackWorkspace(workspace);
     }
 
     #unregisterWorkspaceInstance(workspaceId) {

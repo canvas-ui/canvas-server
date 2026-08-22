@@ -271,18 +271,39 @@ class Classification {
      * 'backends:/github/x'. Unqualified prefixes match any tree.
      */
     inPath(prefix) {
-        if (!prefix) { return false; }
+        return this.pathMatches(prefix).length > 0;
+    }
+
+    /**
+     * Every placement of the document under `prefix` (same qualifier rules as
+     * inPath), with the remainder below the prefix — what a recursive
+     * link/unlink appends to its target so `backends:/workspace/home/foo/a/b`
+     * lands in `dir:/bar/a/b` rather than flat in `dir:/bar`.
+     * @returns {Array<{ tree: string, path: string, rel: string }>}
+     */
+    pathMatches(prefix) {
+        if (!prefix) { return []; }
         let raw = String(prefix);
-        let pool = this.paths;
         const qualifier = raw.match(/^([A-Za-z][\w-]*):(?=\/|$)/);
+        let trees = Object.keys(this.treePaths);
         if (qualifier) {
-            const tree = ({ ctx: 'context', dir: 'directory' })[qualifier[1]] || qualifier[1];
-            pool = this.treePaths[tree] || [];
+            trees = [({ ctx: 'context', dir: 'directory' })[qualifier[1]] || qualifier[1]];
             raw = raw.slice(qualifier[0].length);
         }
         const target = raw.replace(/\/+$/, '') || '/';
-        if (target === '/') { return pool.length > 0; }
-        return pool.some((p) => p === target || p.startsWith(`${target}/`));
+        const out = [];
+        for (const tree of trees) {
+            for (const p of this.treePaths[tree] || []) {
+                if (target === '/') {
+                    out.push({ tree, path: p, rel: p.replace(/^\/+/, '') });
+                } else if (p === target) {
+                    out.push({ tree, path: p, rel: '' });
+                } else if (p.startsWith(`${target}/`)) {
+                    out.push({ tree, path: p, rel: p.slice(target.length + 1) });
+                }
+            }
+        }
+        return out;
     }
 
     // ── Embedding ───────────────────────────────────────────────────────────

@@ -187,6 +187,41 @@ Known edge: importing from the same server as the same user fails — the remote
 archive and the local download resolve to the same Exports file and the
 best-effort remote cleanup removes it before import.
 
+### Remote workspaces (`name@host`)
+
+A workspace that lives on another canvas-server can be used from this one as if it were
+local. Create a **share token** on the remote (Workspace → Settings → Shares; read or
+read+write), then on this server: Workspaces → *Open remote…* → server URL + token, or
+
+```bash
+curl -X POST http://127.0.0.1:8001/rest/v2/workspaces/remotes \
+  -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"url":"https://canvas.example.tld","token":"canvas-workspace-…"}'
+```
+
+The token is validated against the remote first (`/workspaces/token-info`), then the
+workspace appears in your list as **`<name>@<host>`** (`work@canvas.example.tld`; a port
+becomes `-port`, e.g. `work@127.0.0.1-8002`) with a `Remote · host` badge and the remote's
+own status (`active`/`inactive`, or `offline` when the server cannot be reached).
+
+- **Every call is forwarded.** `/rest/v2/workspaces/<name@host>/*` — documents, tree,
+  search, uploads, backends, settings — is streamed to the remote with the share token;
+  the remote's routes answer and its token permissions apply (a read token gives a read-only
+  workspace, a stop/start needs `admin`). Nothing is copied.
+- **Content is cached.** Document content and thumbnails go through one shared pull-through
+  cache (`<serverHome>/cache/remote-workspaces`, `CANVAS_REMOTE_WORKSPACE_CACHE` to move it)
+  keyed per remote and revalidated with `ETag`/`If-None-Match`; identical bytes reached
+  through two remotes are stored once. With the remote down, cached bytes are still served
+  (`X-Canvas-Remote-Cache: stale`) — metadata and listings are not cached and fail honestly.
+- **Local-only:** *Delete* removes the reference and its stored token, never the remote
+  workspace; *Edit* (label, color, order) changes how the entry looks in your list.
+- The token lives in `db/users/<id>/remote-workspaces.json`, never in the workspace index or
+  any listing. Remotes on plain http / private networks need
+  `CANVAS_ALLOW_INSECURE_REMOTE_IMPORT=true` (same switch as *Import remote…*).
+- Not yet: the remote's live socket events are not relayed (refresh to see changes made
+  elsewhere), and in-process consumers (contexts, agents, WebDAV) do not see remote
+  workspaces — see `TODO.md → Remote workspaces`.
+
 ### Running it as a service
 
 ```bash

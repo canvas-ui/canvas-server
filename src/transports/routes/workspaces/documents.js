@@ -1409,8 +1409,22 @@ export default async function workspaceDocumentRoutes(fastify, _options) {
         return reply.code(416).send();
       }
 
+      // Content-addressed ETag for whole-document bytes (same reasoning as the
+      // thumbnail route: ids are recycled, so no-cache + revalidate). Remote
+      // workspace forwarders and browsers both revalidate against it.
+      const checksum = !attachment && Array.isArray(doc.checksumArray) ? doc.checksumArray[0] : null;
+      const etag = checksum ? `"${checksum}"` : null;
+      if (etag && !parsed && request.headers['if-none-match'] === etag) {
+        reply.header('ETag', etag);
+        return reply.code(304).send();
+      }
+
       const resolved = await workspace.resolveDocument(doc, { stream: true, url: request.query.url, range: parsed || undefined });
       if (!resolved) { const r = new ResponseObject().notFound('No reachable location'); return reply.code(r.statusCode).send(r.getResponse()); }
+      if (etag) {
+        reply.header('ETag', etag);
+        reply.header('Cache-Control', 'private, no-cache');
+      }
 
       const filename = attachment?.filename || locationFilename(resolved.url) || `document-${documentId}`;
       const mime = resolveContentType(attachment ? attachment.contentType : doc.metadata?.contentType, filename);

@@ -275,6 +275,7 @@ const WORKSPACE_STATUS_CODES = {
     ACTIVE: 'active', // Workspace is loaded and started (db connected)
     INACTIVE: 'inactive', // Workspace is loaded but not started
     REMOVED: 'removed', // Marked for removal, ignored on scan
+    OFFLINE: 'offline', // Remote workspace whose server cannot be reached
     DESTROYED: 'destroyed', // Workspace dir deleted by user
 };
 

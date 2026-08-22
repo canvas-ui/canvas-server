@@ -99,6 +99,9 @@ export const env = {
         // only — do NOT set it on a multi-tenant public instance, where it lets
         // any authenticated user probe your internal network.
         allowInsecureRemoteImport: process.env.CANVAS_ALLOW_INSECURE_REMOTE_IMPORT === 'true',
+        // Shared pull-through cache for bytes read through remote workspace
+        // references (content/thumbnails, keyed per remote, deduped by content).
+        remoteCacheRoot: process.env.CANVAS_REMOTE_WORKSPACE_CACHE || null,
     },
     inferd: {
         // Server-managed embedding service (shared model runtimes, one queue per

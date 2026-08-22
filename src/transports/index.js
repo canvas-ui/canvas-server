@@ -44,6 +44,7 @@ import voiceRoutes from './routes/voice/index.js';
 import { rejectAgentTokens } from './middleware/agent-acl.js';
 import { enforceWorkspaceTokenScope } from './middleware/workspace-acl.js';
 import { proxyRemoteWorkspaces } from './middleware/edge-proxy.js';
+import { createRemoteWorkspaceForwarder, RemoteBlobCache, defaultRemoteCacheRoot } from './middleware/remote-proxy.js';
 
 // WebSocket handlers
 import setupWebSocketHandlers from './websocket/index.js';
@@ -380,7 +381,15 @@ export async function createServer(options = {}) {
   server.register(authRoutes, { prefix: '/rest/v2/auth' });
   server.register(menuRoutes, { prefix: '/rest/v2', onRequest: [server.authenticate] });
   server.register(withoutAgentTokens(userRoutes), { prefix: '/rest/v2/users' });
-  mountWorkspacesApi(server, { preHandlers: [proxyRemoteWorkspaces] });
+  // Remote workspace references (name@host entries): every /workspaces/:id/*
+  // call is streamed to the owning server; content/thumbnail bytes are kept in
+  // one shared pull-through cache across all remotes.
+  const remoteBlobCache = new RemoteBlobCache(env.workspace.remoteCacheRoot || defaultRemoteCacheRoot(env.server.home));
+  server.decorate('remoteBlobCache', remoteBlobCache);
+  mountWorkspacesApi(server, {
+    onRequest: [createRemoteWorkspaceForwarder(server, { cache: remoteBlobCache })],
+    preHandlers: [proxyRemoteWorkspaces],
+  });
   mountContextsApi(server, { preHandlers: [rejectAgentTokens] });
   server.register(agentRoutes, { prefix: '/rest/v2/agents' });
   server.register(pubRoutes, { prefix: '/rest/v2/pub' });

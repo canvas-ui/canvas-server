@@ -3514,6 +3514,10 @@ class Workspace extends EventEmitter {
             logger: this.#logger,
             put: (record, options = {}) => this.put(record, { ...options, allowBackendsWrite: true }),
             putMany: (records, options = {}) => this.putMany(records, { ...options, allowBackendsWrite: true }),
+            // Attachment File docs: link an already-indexed blob into a mailbox
+            // folder, and draw the `includes` edge from its Email.
+            link: (id, options = {}) => this.link(id, { ...options, allowBackendsWrite: true }),
+            assertRelation: (fromId, predicate, toId) => this.assertRelation(fromId, predicate, toId),
             getBackendsTreeSelector: this.getBackendsTreeSelector.bind(this),
             getDb: () => this.#db,
             // Persist email/attachment blobs into the local content-addressable
@@ -3621,6 +3625,13 @@ class Workspace extends EventEmitter {
     async listImapMailboxFolders(id) { return (await this.#mail()).listMailboxFolders(id); }
     async discoverImapFolders(input) { return (await this.#mail()).discoverFolders(input); }
     async subscribeImapFolders(id, folders) { return (await this.#mail()).subscribeFolders(id, folders); }
+
+    // Ingest one raw RFC822 message as an Email document (+ its attachments as
+    // File docs with `includes` edges). The mail service's own backends push
+    // whole fetch batches internally; this is the entry point for everything
+    // else that holds a raw message — a future SMTP send filing its own copy
+    // into Sent, an import, a test.
+    async ingestEmailMessage(payload) { return (await this.#mail()).ingestMessage(payload); }
 
     // Service-level enable/disable for 'imap'.
     async enableImap() { await this.#startStoredIndex(); return this.getImapStatus(); }

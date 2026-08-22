@@ -39,6 +39,10 @@ const IMAP_DEFAULT_INITIAL_SYNC_DAYS = 180;
 // Parallel simpleParser + blob writes per fetch batch. Unbounded concurrency
 // starved the event loop during large initial syncs (server "unavailable").
 const IMAP_INGEST_CONCURRENCY = 4;
+// Attachment File docs are filed one level below their mailbox folder, so a
+// folder listing stays a list of MESSAGES. Collides only with a real IMAP
+// folder literally named 'attachments' (harmless: both are just tree nodes).
+const IMAP_ATTACHMENTS_SEGMENT = 'attachments';
 
 export class WorkspaceMailIndex extends EventEmitter {
     #rootPath;
@@ -48,7 +52,10 @@ export class WorkspaceMailIndex extends EventEmitter {
     // Injected dependencies
     #put;
     #putMany;
+    #link;
+    #assertRelation;
     #getBackendsTreeSelector;
+    #getDb;
     #persistBlob;
     // Optional backend-node enable-lock hooks (lock /imap/<account> in the
     // backends tree while a mailbox on that account is enabled).
@@ -59,7 +66,7 @@ export class WorkspaceMailIndex extends EventEmitter {
     #backends = new Map(); // name -> ImapBackend
     #backendStatus = new Map();
 
-    constructor({ rootPath, workspaceId, logger, put, putMany = null, getBackendsTreeSelector, getDb, persistBlob, lockBackendNode = null, unlockBackendNode = null }) {
+    constructor({ rootPath, workspaceId, logger, put, putMany = null, link = null, assertRelation = null, getBackendsTreeSelector, getDb, persistBlob, lockBackendNode = null, unlockBackendNode = null }) {
         super({ wildcard: true, delimiter: '.', maxListeners: 100 });
         if (!rootPath) throw new Error('rootPath is required');
         if (!put || !getBackendsTreeSelector || !getDb || !persistBlob) {
@@ -70,7 +77,10 @@ export class WorkspaceMailIndex extends EventEmitter {
         this.#logger = logger || console;
         this.#put = put;
         this.#putMany = putMany;
+        this.#link = link;
+        this.#assertRelation = assertRelation;
         this.#getBackendsTreeSelector = getBackendsTreeSelector;
+        this.#getDb = getDb;
         this.#persistBlob = persistBlob;
         this.#lockBackendNode = lockBackendNode;
         this.#unlockBackendNode = unlockBackendNode;
@@ -179,7 +189,7 @@ export class WorkspaceMailIndex extends EventEmitter {
         if (!Buffer.isBuffer(raw)) return null;
 
         const parsed = await simpleParser(raw);
-        const emailDoc = await this.#buildEmailDocument(parsed, raw, {
+        const { emailDoc, attachmentDocs } = await this.#buildEmailDocument(parsed, raw, {
             uid, seqno, flags,
             provider: 'imap',
             accountId: account,
@@ -191,7 +201,7 @@ export class WorkspaceMailIndex extends EventEmitter {
         // Canonical source-backend tag (observability/selection, not a purge driver).
         // data/backend/imap/<account> is DERIVED by synapsd from the message's
         // imap:// location (scheme + authority), not asserted here.
-        return { payload, emailDoc, features };
+        return { payload, emailDoc, attachmentDocs, features };
     }
 
     // Ingested email is filed ONLY under the backends tree's
@@ -201,6 +211,13 @@ export class WorkspaceMailIndex extends EventEmitter {
     #directoryFor(account, folder) {
         const backendContext = getBackendEmailContext('imap', account, folder || 'inbox');
         return this.#getBackendsTreeSelector(backendContext);
+    }
+
+    // /imap/<account>/<folder>/attachments — where the File docs for a mailbox
+    // folder's attachments are filed.
+    #attachmentsDirectoryFor(account, folder) {
+        const backendContext = getBackendEmailContext('imap', account, folder || 'inbox');
+        return this.#getBackendsTreeSelector(`${backendContext}/${IMAP_ATTACHMENTS_SEGMENT}`);
     }
 
 
@@ -219,6 +236,7 @@ export class WorkspaceMailIndex extends EventEmitter {
         });
         item.emailDoc.id = docId;
         this.emit('object:add', { kind: 'message', docId, source: account, payload: { folder, account, uid } });
+        await this.#ingestAttachments(docId, item.attachmentDocs, { account, folder });
         return docId;
     }
 
@@ -261,14 +279,21 @@ export class WorkspaceMailIndex extends EventEmitter {
             // ids align with input unless putMany's in-batch checksum dedup
             // collapsed identical raw messages — then skip per-uid attribution.
             const aligned = ids.length === items.length;
-            items.forEach((item, idx) => {
+            for (const [idx, item] of items.entries()) {
                 const docId = aligned ? ids[idx] : undefined;
                 if (docId != null) item.emailDoc.id = docId;
                 this.emit('object:add', {
                     kind: 'message', docId, source: account,
                     payload: { folder, account, uid: item.payload.uid },
                 });
-            });
+                // Attachments ride the same per-uid attribution as the event: a
+                // batch whose in-batch dedup collapsed identical raw messages
+                // has no id to hang the edge on, and the surviving document
+                // gets its attachments on the next non-collapsed ingest.
+                if (docId != null) {
+                    await this.#ingestAttachments(docId, item.attachmentDocs, { account, folder });
+                }
+            }
         }
         return docIds;
     }
@@ -314,19 +339,30 @@ export class WorkspaceMailIndex extends EventEmitter {
         const rawChecksum = raw.checksum || this.#createChecksum(rawBuffer);
 
         const attachments = [];
+        const attachmentDocs = [];
         for (const attachment of parsed.attachments || []) {
             const content = Buffer.isBuffer(attachment.content) ? attachment.content : Buffer.from(attachment.content || '');
             const blob = await this.#persistBlob(content);
             const checksum = blob.checksum || this.#createChecksum(content);
+            const filename = attachment.filename || this.#safeFileName(attachment.filename, `${checksum}.bin`);
+            const size = Number.isFinite(attachment.size) ? attachment.size : content.length;
+            // The per-message view of the attachment stays on the Email: name,
+            // contentId and INLINE-ness are facts about this message's use of
+            // the blob, not about the blob (the same signature logo is an inline
+            // part in one mail and a plain attachment in another), so they have
+            // no home on the shared File document or on its edge.
             attachments.push({
-                filename: attachment.filename || this.#safeFileName(attachment.filename, `${checksum}.bin`),
+                filename,
                 contentType: attachment.contentType,
-                size: attachment.size,
+                size,
                 contentId: attachment.contentId,
                 isInline: attachment.contentDisposition === 'inline',
                 checksum: `sha256/${checksum}`,
                 url: blob.url,
             });
+            attachmentDocs.push(this.#buildAttachmentDocument({
+                filename, contentType: attachment.contentType, size, checksum, url: blob.url,
+            }));
         }
 
         const emailDoc = Email.fromIMAP(parsed, imapMetadata);
@@ -349,7 +385,91 @@ export class WorkspaceMailIndex extends EventEmitter {
             source: 'imap',
             workspaceId: this.#workspaceId,
         };
-        return emailDoc;
+        return { emailDoc, attachmentDocs };
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Attachments as File documents + `includes` edges
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // One attachment blob as a File document.
+    //
+    // NO imap:// location, deliberately: an attachment's provenance is the
+    // `includes` edge from its Email, and an imap:// location here would route
+    // a destroy of the ATTACHMENT into destroyImapLocation(), EXPUNGEing the
+    // whole message server-side. The stored:// blob is the only thing this
+    // document owns.
+    //
+    // The name goes in the LOCATION metadata, not metadata.filename: a blob is
+    // named differently at every copy (see File.js), and metadata.filename is
+    // reserved for an explicit rename, which must outrank whatever the last
+    // message that carried these bytes called them.
+    #buildAttachmentDocument({ filename, contentType, size, checksum, url }) {
+        return {
+            schema: 'data/schema/file',
+            checksumArray: [`sha256/${checksum}`],
+            data: {},
+            locations: [{ url, metadata: { filename, size, synced: true } }],
+            metadata: {
+                contentType: contentType || 'application/octet-stream',
+                size,
+                source: 'imap',
+                workspaceId: this.#workspaceId,
+            },
+        };
+    }
+
+    // File an email's attachments and draw `email --includes--> file` for each.
+    //
+    // Runs AFTER the Email lands: both ids must exist before the edge can be
+    // drawn, and asserting (rather than writing data.relations at build time)
+    // keeps a re-sync of the same message from clobbering relations a user or
+    // an extractor added to that email. assertRelation is idempotent, so a
+    // refetch is a no-op.
+    //
+    // Sequential by design: two messages in one batch carrying the same blob
+    // would otherwise both miss the checksum lookup and allocate two documents
+    // for one attachment.
+    async #ingestAttachments(emailDocId, attachmentDocs = [], { account, folder } = {}) {
+        if (!emailDocId || !attachmentDocs?.length || !this.#assertRelation) { return []; }
+
+        const directory = this.#attachmentsDirectoryFor(account, folder);
+        const db = this.#getDb();
+        const docIds = [];
+
+        for (const doc of attachmentDocs) {
+            try {
+                const url = doc.locations[0].url;
+                const existing = await db.getByChecksumString(doc.checksumArray[0]).catch(() => null);
+                let docId;
+
+                if (existing?.id) {
+                    // These bytes are already a document (another message, or a
+                    // copy the file indexer picked up on disk). LINK it into this
+                    // mailbox instead of re-putting: a put would replace the
+                    // locations it already has with just ours.
+                    docId = existing.id;
+                    if (this.#link) { await this.#link(docId, { context: null, directory, emitEvent: false }); }
+                    const locations = Array.isArray(existing.locations) ? existing.locations : [];
+                    if (!locations.some((location) => location?.url === url)) {
+                        await this.#put({ id: docId, locations: [...locations, doc.locations[0]] }, { context: null });
+                    }
+                } else {
+                    docId = await this.#put(doc, { context: null, directory, emitEvent: true });
+                    this.emit('object:add', { kind: 'file', docId, source: account, payload: { folder, account } });
+                }
+
+                await this.#assertRelation(emailDocId, 'includes', docId);
+                docIds.push(docId);
+            } catch (error) {
+                this.#logger.warn(
+                    { workspaceId: this.#workspaceId, emailDocId, error: error.message },
+                    'Failed to index email attachment',
+                );
+            }
+        }
+
+        return docIds;
     }
 
     // ─────────────────────────────────────────────────────────────────────────

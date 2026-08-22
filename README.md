@@ -347,6 +347,25 @@ Index:        SynapsD (LMDB + roaring bitmaps, context/directory trees)
 
 Each workspace owns a StoreD instance, configured in the workspace's `workspace.json` under `services.stored` — `{ root, cache, sync, backends }`. The home directory is just a file backend (`backends['workspace:home'] = { driver: 'file', root: '{WORKSPACE_ROOT}/home', watch: true }`); `cache` is StoreD's internal working store (thumbnails, pull-through), not a backend. Future backends (S3, SMB) sync via background worker threads. See [API.md → Backends](docs/API.md#backends-unified-storage--connector-facade) for the REST surface.
 
+## Mail (IMAP)
+
+Each workspace can subscribe to IMAP mailboxes (configured under
+`services.stored` alongside the storage backends, managed through the same
+[Backends facade](docs/API.md#backends-unified-storage--connector-facade)).
+Messages sync incrementally per folder and land as Email documents filed in the
+backends tree under `/imap/<account>/<folder>` — never in the context root.
+
+**Attachments are documents, not payload.** Every attachment becomes an ordinary
+File document filed under `/imap/<account>/<folder>/attachments`, joined to its
+message by an `includes` relation — so an attachment is searchable, embeddable,
+previewable, and linkable like any other file, and the object card's Synapses
+tab shows what a message carried. Content addressing does the deduping: one blob
+is one document however many messages carried it, and the reverse axis of the
+edge answers "which messages carried this PDF". See
+[data-representation.md §2c](docs/data-representation.md) for the rules that fall
+out of that (naming, provenance, why the File document carries no `imap://`
+location).
+
 ## Workspace hooks & per-workspace git
 
 Every workspace ships a user-owned automation layer: JS hooks and declarative

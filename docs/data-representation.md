@@ -159,6 +159,44 @@ Implementation: `displayFilename()` / `renamedRecord()` in
 `lib/document-display.ts`; `core/File.js` indexes `metadata.filename` for FTS
 (additive — documents without it index exactly as before, no reindex needed).
 
+## 2c. Email attachments are File documents — **LANDED 2026-08-22**
+
+An attachment's bytes were always persisted (content-addressed, into
+`stored://workspace:data`), but only the Email row pointed at them: nothing was
+a *document*, so an attachment could not be searched, filed, embedded, previewed
+or shown in the object card's Synapses tab. It is now a File document like any
+other, and the mail service draws `email --includes--> file` (the synapsd edge
+predicate that exists for exactly this composition).
+
+- **Filed under `/imap/<account>/<folder>/attachments`** in the backends tree,
+  one level below its mailbox folder — a folder listing stays a list of
+  *messages*.
+- **Content addressing does the deduping.** One blob is one document however
+  many messages carried it; the second message *links* the existing document
+  into its own mailbox folder and adds an edge rather than re-putting it (a
+  re-put would replace the locations that document already has — including a
+  copy the file indexer found on disk). So "which messages carried this PDF" is
+  the incoming axis of one document, and the same PDF received twice does not
+  become two.
+- **No `imap://` location on the File doc.** Provenance is the edge. An
+  `imap://` location would route a destroy of the *attachment* into
+  `destroyImapLocation()` and EXPUNGE the whole message server-side.
+- **The name follows §2b**: it is a per-copy fact, so it lands in the location's
+  `metadata.filename`, never in the document's — which stays reserved for an
+  explicit rename that must outrank whatever the last message called the bytes.
+- **The per-message view stays on the Email.** `data.attachments[]` keeps
+  `filename`, `contentId` and `isInline`: those describe *this message's use* of
+  the blob (the same signature logo is inline in one mail and a plain attachment
+  in another), so they belong to neither the shared document nor its edge.
+- **Idempotent.** Relations are asserted after the message lands rather than
+  written into the Email's `data.relations` at build time, so a refetch (a
+  UIDVALIDITY reset, a resync) adds nothing and clobbers no relation a user or
+  an extractor drew on that message.
+
+Implementation: `core/workspace/services/imap/index.js`
+(`#buildAttachmentDocument` / `#ingestAttachments`), reachable for any other
+holder of a raw message via `Workspace.ingestEmailMessage()`.
+
 ## 3. Verb table
 
 | FS action | `Home/` | `Contexts/**` | `Trees/**` | `Trash/` |

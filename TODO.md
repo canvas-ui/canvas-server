@@ -36,11 +36,6 @@ Eval `/workspace/ingest/<driver>/<format>` ?stream?
 https://canvas.idnc.sk/home/pinned
 
 
-We need to refactor the unfortunate way we handle workspaces on the server, specifically:
-- Refactor users + workspaces + contexts index
-- Allow removing of the default context
-- Allow removing of the users default "universe" workspace
-
 Workspaces are movable, one should easily move them between canvas-server instances - even by copyting them into users Workspaces directory (server should scan for valid accessible workspaces - we need this feature to support a more standard import/export feature)
 
 We also need to support foreign-local or remote workspaces besides "transplanting" a workspace into a users Workspaces director, hence why the updated design should account for that
@@ -58,13 +53,14 @@ Server
 ## Scheduled tasks
 
 ## IMAP / email
-- [ ] Attachments as File docs + rel/ relations (rel/* bitmaps exist, nothing populates them; Synapses tab empty by design gap).
 - [ ] SMTP reply: per-mailbox smtp{} config, nodemailer send route, Reply button in EmailRenderer.
   - Sent-folder: postfix/dovecot does NOT copy sent mail into Sent — that's the client's job
     via IMAP APPEND (Gmail-style auto-append is a provider exception). So reply needs send +
     APPEND (ImapBackend is write:false today), or the MVP shortcut: ingest the sent message
     directly at send time (persistBlob + Email doc filed under the account's Sent path) and
-    APPEND best-effort so other mail clients see it.
+    APPEND best-effort so other mail clients see it. `Workspace.ingestEmailMessage(payload)`
+    is that entry point — hand it the raw RFC822 bytes and it files the Email + its
+    attachments.
 - [ ] UIDVALIDITY guard (small; do with/before SMTP reply — protects multi-mailbox MVP use):
   persist `uidValidity` per mailbox next to `lastUid`; on mismatch reset `lastUid=0` (refetch
   is idempotent — raw-.eml checksum dedup re-binds to existing docs) and refuse UID-based

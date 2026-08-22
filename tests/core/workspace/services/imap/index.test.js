@@ -23,12 +23,18 @@ describe('WorkspaceMailIndex', () => {
     let puts;
     let blobs;
     let lockCalls;
+    let links;
+    let relations;
+    let docsByChecksum;
 
     beforeEach(async () => {
         rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'workspace-mail-'));
         puts = [];
         blobs = [];
         lockCalls = [];
+        links = [];
+        relations = [];
+        docsByChecksum = new Map();
     });
 
     afterEach(async () => {
@@ -43,12 +49,20 @@ describe('WorkspaceMailIndex', () => {
             workspaceId: 'test-workspace',
             logger: { warn() {}, debug() {} },
             getBackendsTreeSelector: (spec) => spec,
-            getDb: () => ({}),
+            // Checksum index over whatever `put` has already written — the one
+            // db read the attachment path makes (dedup by content address).
+            getDb: () => ({
+                getByChecksumString: async (checksum) => docsByChecksum.get(checksum) || null,
+            }),
+            link: async (id, options) => { links.push({ id, options }); return true; },
+            assertRelation: async (fromId, p, toId) => { relations.push({ fromId, p, toId }); return true; },
             lockBackendNode: (nodePath, holder) => { lockCalls.push({ nodePath, holder, locked: true }); },
             unlockBackendNode: (nodePath, holder) => { lockCalls.push({ nodePath, holder, locked: false }); },
             put: async (record, options) => {
                 const id = record.id || `doc-${puts.length + 1}`;
-                puts.push({ record: { ...record, id }, options });
+                const stored = { ...record, id };
+                puts.push({ record: stored, options });
+                if (stored.checksumArray?.[0]) { docsByChecksum.set(stored.checksumArray[0], stored); }
                 return id;
             },
             // Stand-in for the blob indexer's persistBlob (content-addressable).
@@ -167,7 +181,7 @@ describe('WorkspaceMailIndex', () => {
         assert.ok(lockCalls.some((c) => !c.locked && c.nodePath === '/imap/dave@example.com' && c.holder === 'imap:acct'));
     });
 
-    test('ingestBatch groups by feature signature into putMany calls (single put untouched)', async () => {
+    test('ingestBatch groups by feature signature into putMany calls', async () => {
         const putManyCalls = [];
         mail = createMail({
             putMany: async (records, options) => {
@@ -186,8 +200,11 @@ describe('WorkspaceMailIndex', () => {
             { kind: 'message', raw: rawEmail({ id: 'm3', attachment: true }), account: 'alice@example.com', folder: 'INBOX', uid: 3 },
         ]);
 
-        // no per-message puts; two putMany groups (plain vs +attachment feature)
-        assert.equal(puts.length, 0);
+        // no per-message puts; two putMany groups (plain vs +attachment feature).
+        // The single `put` is m3's attachment File doc, which is written per
+        // document (checksum dedup must see its own predecessors).
+        assert.equal(puts.length, 1);
+        assert.equal(puts[0].record.schema, 'data/schema/file');
         assert.equal(putManyCalls.length, 2);
         assert.equal(docIds.length, 3);
         const sizes = putManyCalls.map((c) => c.records.length).sort();
@@ -202,8 +219,9 @@ describe('WorkspaceMailIndex', () => {
         }
         const attachmentGroup = putManyCalls.find((c) => c.records.length === 1);
         assert.ok(attachmentGroup.options.features.some((f) => f.includes('attachment')), `expected attachment feature, got ${attachmentGroup.options.features}`);
-        assert.equal(emitted.length, 3);
-        assert.ok(emitted.every((e) => e.kind === 'message' && e.docId));
+        assert.equal(emitted.filter((e) => e.kind === 'message').length, 3);
+        assert.equal(emitted.filter((e) => e.kind === 'file').length, 1);
+        assert.ok(emitted.every((e) => e.docId));
     });
 
     test('ingestBatch falls back to sequential single puts without a putMany seam', async () => {
@@ -251,6 +269,105 @@ describe('WorkspaceMailIndex', () => {
         // already reflects it.
         assert.equal(saved.runtime.syncing, true);
         assert.equal(saved.runtime.status, 'syncing');
+    });
+
+    test('attachments become File docs under <folder>/attachments, linked by an includes edge', async () => {
+        mail = createMail();
+        await mail.start();
+
+        const emitted = [];
+        mail.on('object:add', (p) => emitted.push(p));
+
+        const docId = await mail.ingestMessage({
+            raw: rawEmail({ id: 'a1', attachment: true }),
+            account: 'alice@example.com', folder: 'INBOX', uid: 7,
+        });
+
+        // raw .eml + one attachment blob
+        assert.equal(blobs.length, 2);
+        assert.equal(puts.length, 2);
+
+        const file = puts.find((p) => p.record.schema === 'data/schema/file');
+        assert.ok(file, 'expected a File document for the attachment');
+        assert.equal(file.options.context, null);
+        assert.equal(String(file.options.directory), '/imap/alice@example.com/inbox/attachments');
+        // the per-copy name lives on the location, not in metadata.filename
+        assert.equal(file.record.locations[0].metadata.filename, 'a.bin');
+        assert.equal(file.record.metadata.filename, undefined);
+        // no imap:// location — destroying an attachment must never EXPUNGE the message
+        assert.ok(file.record.locations.every((l) => !l.url.startsWith('imap://')), 'File doc must carry no imap:// location');
+        assert.equal(file.record.locations.length, 1);
+        assert.ok(file.record.checksumArray[0].startsWith('sha256/'));
+
+        // email --includes--> file
+        assert.deepEqual(relations, [{ fromId: docId, p: 'includes', toId: file.record.id }]);
+
+        // the message keeps its own per-message view of the attachment
+        const email = puts.find((p) => p.record.schema === 'data/schema/message/email');
+        assert.equal(email.record.data.attachments.length, 1);
+        assert.equal(email.record.data.attachments[0].filename, 'a.bin');
+        assert.equal(email.record.data.attachments[0].isInline, false);
+
+        assert.ok(emitted.some((e) => e.kind === 'file' && e.docId === file.record.id));
+    });
+
+    test('an attachment already indexed is linked, not re-put, and keeps its other locations', async () => {
+        mail = createMail();
+        await mail.start();
+
+        // Same bytes already known to the workspace under a different backend
+        // (e.g. the file indexer picked the PDF up in home/).
+        const payload = Buffer.from('payload-a2');
+        const checksum = crypto.createHash('sha256').update(payload).digest('hex');
+        const homeUrl = 'stored://workspace:home/reports/a.bin';
+        docsByChecksum.set(`sha256/${checksum}`, {
+            id: 'existing-file', schema: 'data/schema/file',
+            checksumArray: [`sha256/${checksum}`], locations: [{ url: homeUrl }],
+        });
+
+        const docId = await mail.ingestMessage({
+            raw: rawEmail({ id: 'a2', attachment: true }),
+            account: 'alice@example.com', folder: 'INBOX', uid: 8,
+        });
+
+        // one put for the email, one location patch — never a fresh File doc
+        assert.ok(!puts.some((p) => p.record.schema === 'data/schema/file' && p.record.id !== 'existing-file'));
+        assert.deepEqual(links.map((l) => l.id), ['existing-file']);
+        assert.equal(String(links[0].options.directory), '/imap/alice@example.com/inbox/attachments');
+
+        const patch = puts.find((p) => p.record.id === 'existing-file');
+        assert.ok(patch, 'expected a locations patch on the existing File doc');
+        const urls = patch.record.locations.map((l) => l.url);
+        assert.ok(urls.includes(homeUrl), `the pre-existing location must survive, got ${urls}`);
+        assert.ok(urls.some((u) => u.startsWith('stored://workspace:data/')));
+
+        assert.deepEqual(relations, [{ fromId: docId, p: 'includes', toId: 'existing-file' }]);
+    });
+
+    test('batch ingest draws an includes edge per message', async () => {
+        mail = createMail({
+            putMany: async (records, options) => {
+                const ids = records.map((record, i) => {
+                    const id = `batch-${i}`;
+                    if (record.checksumArray?.[0]) { docsByChecksum.set(record.checksumArray[0], { ...record, id }); }
+                    return id;
+                });
+                puts.push({ records, options });
+                return ids;
+            },
+        });
+        await mail.start();
+
+        await mail.ingestBatch([
+            { kind: 'message', raw: rawEmail({ id: 'b1', attachment: true }), account: 'alice@example.com', folder: 'INBOX', uid: 1 },
+            { kind: 'message', raw: rawEmail({ id: 'b2', attachment: true }), account: 'alice@example.com', folder: 'INBOX', uid: 2 },
+        ]);
+
+        assert.equal(relations.length, 2);
+        assert.ok(relations.every((r) => r.p === 'includes'));
+        // distinct payloads → distinct File docs, one edge each
+        assert.equal(new Set(relations.map((r) => r.toId)).size, 2);
+        assert.equal(new Set(relations.map((r) => r.fromId)).size, 2);
     });
 
     test('stored.json read/write roundtrip + empty getImapStatus', async () => {

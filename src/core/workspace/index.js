@@ -143,6 +143,11 @@ class WorkspaceManager extends EventEmitter {
     #nameIndex = new Map();         // Key: userId@host:workspaceName -> workspaceId
     #referenceIndex = new Map();    // Key: fullReference -> workspaceId
     #idIndex = new Map();           // Key: workspaceId -> owner userId
+    // Remote references only, keyed by BOTH entry id and `name@host` address.
+    // The REST forwarder consults this on EVERY /workspaces/:id/* request, so
+    // it must answer without touching the Conf-backed indexes (whose .store
+    // getter re-reads the file from disk on each access).
+    #remoteRefIndex = new Map();    // Key: entryId | name@host -> { owner, id }
 
     // Services
     dotfileService = null;
@@ -399,7 +404,7 @@ class WorkspaceManager extends EventEmitter {
                 if (!ws) {
                     results.push({ ...WorkspaceManager.#publicRemoteEntry(entry), status: WORKSPACE_STATUS_CODES.ERROR, statusMessage: 'Stored credentials missing — remove and re-add this remote workspace' });
                 } else {
-                    results.push(null);
+                    results.push(ws.toJSON());
                     remotePending.push({ ws, slot });
                 }
                 continue;
@@ -450,14 +455,17 @@ class WorkspaceManager extends EventEmitter {
             }
         }
         if (remotePending.length) {
-            await Promise.all(remotePending.map(({ ws }) => ws.probe().catch(() => null)));
+            // Listings must not wait on the network: report the last-known
+            // status (the live socket keeps it current; a stale probe is
+            // refreshed in the background and lands in the NEXT listing).
+            // A blackholed remote would otherwise stall every listing for the
+            // probe timeout — ECONNREFUSED fails fast, ETIMEDOUT does not.
             for (const { ws, slot } of remotePending) {
-                const item = ws.toJSON();
+                ws.probe().catch(() => null);
                 try {
                     const ownerUser = await this.#users.get(ws.owner);
-                    if (ownerUser?.email) item.ownerEmail = ownerUser.email;
+                    if (ownerUser?.email) results[slot].ownerEmail = ownerUser.email;
                 } catch { /* intentionally ignored */ }
-                results[slot] = item;
             }
         }
         // User-defined order at the source so every consumer (web lists,
@@ -1209,6 +1217,7 @@ class WorkspaceManager extends EventEmitter {
         userIndex.set(entry.id, entry);
         this.#getUserRemoteIndex(userId).set(entry.id, { id: entry.id, url: normalizedUrl, workspaceId, token, updatedAt: now });
         this.#addToIndexes(userId, entry.id, entry.name, host, null);
+        this.#addRemoteRef(entry);
 
         // A cached facade holds the old token — drop it so the next resolve
         // picks up the refreshed credentials.
@@ -1246,13 +1255,18 @@ class WorkspaceManager extends EventEmitter {
      */
     peekRemoteWorkspaceEntry(identifier) {
         if (!identifier || typeof identifier !== 'string') return null;
-        const byId = this.#findInIndex(identifier);
-        if (byId) return byId.origin === WORKSPACE_ORIGINS.REMOTE ? byId : null;
-        if (!identifier.includes('@')) return null;
-        for (const [, entry] of this.#allEntries()) {
-            if (entry.origin === WORKSPACE_ORIGINS.REMOTE && entry.name === identifier) return entry;
-        }
-        return null;
+        // Pure in-memory lookup — the miss path (every local workspace request)
+        // costs one Map.get and must never scan or read index files.
+        const ref = this.#remoteRefIndex.get(identifier);
+        if (!ref) return null;
+        const entry = this.#getUserIndex(ref.owner).get(ref.id);
+        return entry?.origin === WORKSPACE_ORIGINS.REMOTE ? entry : null;
+    }
+
+    #addRemoteRef(entry) {
+        const ref = { owner: entry.owner, id: entry.id };
+        this.#remoteRefIndex.set(entry.id, ref);
+        if (entry.name) this.#remoteRefIndex.set(entry.name, ref);
     }
 
     /**
@@ -1632,8 +1646,10 @@ class WorkspaceManager extends EventEmitter {
         this.#nameIndex.clear();
         this.#referenceIndex.clear();
         this.#idIndex.clear();
+        this.#remoteRefIndex.clear();
 
         for (const [userId, entry] of this.#allEntries()) {
+            if (entry.origin === WORKSPACE_ORIGINS.REMOTE) this.#addRemoteRef(entry);
             if (entry.owner && entry.name) {
                 this.#addToIndexes(
                     userId,
@@ -1670,6 +1686,8 @@ class WorkspaceManager extends EventEmitter {
         const nameKey = WorkspaceManager.#nameKey(userId, name, host);
         this.#nameIndex.delete(nameKey);
         this.#idIndex.delete(workspaceId);
+        this.#remoteRefIndex.delete(workspaceId);
+        if (name) this.#remoteRefIndex.delete(name);
         if (reference) {
             this.#referenceIndex.delete(reference);
         }

@@ -493,6 +493,8 @@ class Server extends EventEmitter {
         if (this.#apiServer) {
             await this.#closeRealtimeConnections();
             await this.#apiServer.close();
+            // Remote workspace facades hold live sockets to other servers.
+            try { this.#workspaceManager?.disposeRemoteWorkspaces(); } catch (err) { logger.warn({ err }, 'remote workspace dispose failed'); }
             this.#apiServer = null;
         }
         if (this.#inferd) {

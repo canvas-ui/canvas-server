@@ -779,6 +779,7 @@ class WorkspaceManager extends EventEmitter {
             if (cached?.isRemote) {
                 this.#unregisterWorkspaceInstance(workspaceId);
                 this.#workspaces.delete(workspaceId);
+                cached.dispose();
             }
             return true;
         }
@@ -943,6 +944,7 @@ class WorkspaceManager extends EventEmitter {
         this.#getUserIndex(entry.owner).delete(entry.id);
         if (entry.origin === WORKSPACE_ORIGINS.REMOTE) {
             this.#getUserRemoteIndex(entry.owner).delete(entry.id);
+            if (ws?.isRemote) ws.dispose();
         }
         this.#removeFromIndexes(entry.owner, entry.id, entry.name, entry.host || WORKSPACE_DEFAULT_HOST, entry.reference);
 
@@ -1211,12 +1213,24 @@ class WorkspaceManager extends EventEmitter {
         // A cached facade holds the old token — drop it so the next resolve
         // picks up the refreshed credentials.
         if (existing && this.#workspaces.has(entry.id)) {
+            const cached = this.#workspaces.get(entry.id);
             this.#unregisterWorkspaceInstance(entry.id);
             this.#workspaces.delete(entry.id);
+            if (cached?.isRemote) cached.dispose();
         }
 
         this.#logger.debug({ workspaceId: entry.id, userId, host, refreshed: !!existing }, 'Registered remote workspace');
         return WorkspaceManager.#publicRemoteEntry(entry);
+    }
+
+    /** Drop every cached remote facade (live sockets, tree caches). Server shutdown + tests. */
+    disposeRemoteWorkspaces() {
+        for (const [id, ws] of this.#workspaces) {
+            if (!ws?.isRemote) continue;
+            this.#unregisterWorkspaceInstance(id);
+            this.#workspaces.delete(id);
+            ws.dispose();
+        }
     }
 
     async removeRemoteWorkspace(userId, id) {

@@ -64,7 +64,7 @@ test('remote reference lands in the main index as name@host, credentials stay se
     const listed = await manager.listRemoteWorkspaces(user.id);
     assert.equal(listed.length, 1);
     assert.equal(JSON.stringify(listed).includes('canvas-workspace-secret'), false);
-  } finally { rmSync(tmp, { recursive: true, force: true }); }
+  } finally { manager.disposeRemoteWorkspaces(); rmSync(tmp, { recursive: true, force: true }); }
 });
 
 test('name@host resolves through resolveWorkspaceId and peekRemoteWorkspaceEntry', async () => {
@@ -77,7 +77,7 @@ test('name@host resolves through resolveWorkspaceId and peekRemoteWorkspaceEntry
     assert.equal(manager.peekRemoteWorkspaceEntry('shared@127.0.0.1-65530')?.id, entry.id);
     assert.equal(manager.peekRemoteWorkspaceEntry(entry.id)?.id, entry.id);
     assert.equal(manager.peekRemoteWorkspaceEntry('nope@127.0.0.1-65530'), null);
-  } finally { rmSync(tmp, { recursive: true, force: true }); }
+  } finally { manager.disposeRemoteWorkspaces(); rmSync(tmp, { recursive: true, force: true }); }
 });
 
 test('resolving a remote entry yields a RemoteWorkspace facade; listing mirrors reachability', async () => {
@@ -102,7 +102,7 @@ test('resolving a remote entry yields a RemoteWorkspace facade; listing mirrors 
     assert.equal(item.remote.url, DEAD_REMOTE);
     assert.equal(item.ownerEmail, user.email);
     assert.equal(JSON.stringify(list).includes('canvas-workspace-secret'), false);
-  } finally { rmSync(tmp, { recursive: true, force: true }); }
+  } finally { manager.disposeRemoteWorkspaces(); rmSync(tmp, { recursive: true, force: true }); }
 });
 
 test('re-adding the same remote refreshes credentials in place; a foreign id collision gets a fresh id', async () => {
@@ -125,7 +125,7 @@ test('re-adding the same remote refreshes credentials in place; a foreign id col
     assert.notEqual(other.id, local.id);
     assert.equal(other.remote.workspaceId, local.id);
     assert.equal(other.name, 'mine@127.0.0.1-65531');
-  } finally { rmSync(tmp, { recursive: true, force: true }); }
+  } finally { manager.disposeRemoteWorkspaces(); rmSync(tmp, { recursive: true, force: true }); }
 });
 
 test('PATCH-style config updates stay local; removing the reference drops credentials and never stops the remote', async () => {
@@ -146,5 +146,5 @@ test('PATCH-style config updates stay local; removing the reference drops creden
     assert.equal(manager.peekRemoteWorkspaceEntry('shared@127.0.0.1-65530'), null);
     const creds = JSON.parse(readFileSync(path.join(tmp, 'db', 'users', user.id, 'remote-workspaces.json'), 'utf8'));
     assert.equal(creds[entry.id], undefined);
-  } finally { rmSync(tmp, { recursive: true, force: true }); }
+  } finally { manager.disposeRemoteWorkspaces(); rmSync(tmp, { recursive: true, force: true }); }
 });

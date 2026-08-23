@@ -141,7 +141,7 @@ Tasks:
 
 ## Remote workspaces
 
-### Phase 1 LANDED 2026-08-22 (server 2.5.64, web 2.7.58) — see README → "Remote workspaces"
+### Phase 1 LANDED 2026-08-22 (server 2.5.64, web 2.7.58), 1b 2026-08-23 (2.5.65) — see README → "Remote workspaces"
 
 A remote workspace is a LOCAL index entry named `<name>@<host>` (origin `remote`, the
 remote's original id kept unless a local entry already owns it; share token in the
@@ -156,15 +156,19 @@ ETag/If-None-Match revalidation, stale serve when the remote is down, content-de
 across hosts by cacache's integrity store). `DELETE`/`PATCH /:id` stay local (unlink /
 presentation overrides).
 
-Deliberately NOT done in phase 1 (next steps, in order):
-- [ ] Live updates: the remote's `workspace:<id>` socket events are not relayed — the
-      web shows the remote's state on navigation/refresh only. Relay = one socket.io
-      client per RemoteWorkspace subscribing `workspace:<remoteId>`, re-broadcast on
-      `workspace:<local id>`.
-- [ ] In-process consumers (contexts spanning a remote workspace, agentd tools, WebDAV
-      `/dav/<ws>`) still only see the facade's identity — `RemoteWorkspace` needs the
-      read subset of the Workspace surface (`get`, `list`, `getTree`, `search`,
-      `resolveDocument` via the cache) built on `RemoteWorkspace.api()`.
+Phase 1b LANDED 2026-08-23 (server 2.5.65): live events + contexts on remote workspaces.
+`RemoteWorkspace` now implements the in-process surface contexts use (list/search/has/get/
+put*/link*/unlink*/deleteMany/*ByChecksumString, getTree/getContextTree/… via `RemoteTree`
+= cached `GET /trees/:id` JSON, insertPath/lockPath over the tree routes) and keeps one
+socket.io client per remote (`workspace:<remoteId>` with the share token) that re-emits
+every event with the LOCAL workspace id — manager → websocket fan-out → context
+forwarding all unchanged. `Url.js` accepts `name@host://path`. Decision (user, 2026-08-23):
+contexts stay workspace-local — a context binds one workspace + tree and pre-fills the
+query; no cross-workspace fan-out/union ("leaks workflows between workspaces — the reason
+for separate workspaces"). Later, not MVP: a universe-level "remote mount" place.
+
+Deliberately NOT done (next steps, in order):
+- [ ] Event replay after a socket gap: today `workspace.resynced` asks consumers to refetch.
 - [ ] Offline reads beyond bytes: cache `GET /documents*` + `/tree` responses
       (metadata is mutable — serve stale only when the remote is unreachable and mark it).
 - [ ] Write-through queue (stored SyncQueue pattern) for writes while offline.
@@ -172,8 +176,10 @@ Deliberately NOT done in phase 1 (next steps, in order):
       `WorkspaceCrypto`/`secret://` work (secrets design below).
 - [ ] Forwarded `PATCH /:id` for remote-side config (description, acl, …): today PATCH
       edits the local presentation only; a "push to remote" needs its own route.
-- [ ] Web: the list card shows `Remote · host`; settings pages for a remote entry are
-      the remote's own (forwarded) — token/share management there acts on the remote.
+- [ ] agentd tools / WebDAV reaching a remote workspace in-process use the same facade
+      surface — verify each call site (resolveDocument/content via the blob cache is missing).
+- [ ] Context address forms `context@remote.tld/workspace` / `contextId@remote.tld:ws`
+      (CLI convention) — today the context URL carries the workspace as `name@host://path`.
 - [ ] Phase 3 (canvas-edge): process-per-workspace runtime; "remote" becomes a runtime
       flag — the forwarder already takes `edges.proxyRequest` OR a direct URL, so an
       edge-exported workspace and a URL remote share the same path.
@@ -230,14 +236,84 @@ without canvas-server; `remotes[]` travels with the workspace). canvas-server co
 transport (tunnel) + auth (share tokens). Edge-case to fix on the way: anything absolute in the
 db becomes workspace-relative at write time (import/relocation already proves the folder moves).
 
-## Workspace runtime
+## Target runtime shape — control plane + registered runtimes (direction stated 2026-08-23)
 
-Future non-MVP direction: bundle a workspace (synapsd, stored, inferd) into one Bun binary runnable from a folder, with minimal REST and WebSocket endpoints, token auth, and an optional Tauri tray UI.
-- Prerequisites: `canvas-edge` for the minimal API + autoregistration to a remote canvas-server
+**canvas-server becomes a slim control plane / aggregator.** Workspaces, agents and roles run
+as separate processes (optionally containers) — `canvas-workspaced`, `canvas-agentd`, roles —
+and (auto-)register to one or more server instances: unix socket / IPC when local, the edge
+tunnel when remote. The server holds identity, routing, ACL, the per-user indexes, contexts
+and caches; it holds no workspace bytes and runs no workspace engine.
 
-## Related with the workspace runtime, canvas-agent runtime
+Why this shape (deployments it unlocks):
+- **Enterprise / NFS**: one `canvas-workspaced` per domain-joined user on top of a NetApp
+  NFS store — the daemon runs as that user, the store's own ACLs apply, rollout is a
+  service unit per user, the control plane is one shared instance.
+- **Personal fleet**: a workspace or agentd runtime on a beefy workstation (local
+  inference), another on the NAS, another in the cloud — one always-reachable cloud control
+  plane fronting all of them.
+- **Self-contained units** (the original idea): a workspace or an agent you start from a
+  folder (bun/tauri, tray UI, voice button, mcpui/agui canvas — `~/Agents/Lucy`), fully
+  usable without a server, registers when one is reachable, runs in a container/sandbox.
 
-Non-MVP, `ag` or `hi`, minimal bun or tauri runtime you can start from a folder directly(I'm included to tauri, you rename `hi` to `lucy`, put it into `~/Agents/Lucy` folder, double-click and you get a nice miminal toolbox-like UI with a button for voice-input and a dynamic mcpui/agui canvas), agent already includes / runs its own workspace so synapsd and all the rag goodies are built-in, `canvas-edge` will help it to (auto-)register if needed, great for local inference, the original idea of the whole project was small self-contained "workspaces", we can run both in a docker container/sandbox
+What already exists toward it (remote workspaces phase 1/1b, above):
+- the data path: `transports/middleware/remote-proxy.js` streams `/workspaces/<addr>/*` to
+  whoever hosts the workspace (direct URL today, `edges.proxyRequest` for tunnels);
+- the in-process contract: `RemoteWorkspace` (+ `RemoteTree`) is the ~20-method surface
+  contexts need — in the split world EVERY workspace is this facade; today's `Workspace`
+  class is what the daemon runs, not what the server runs;
+- the event path: one socket per remote workspace re-emitting with the local id;
+- the mountable API: `api-contract.js` mounts the workspaces routes on any fastify instance
+  satisfying the contract — a bare daemon included;
+- the handshake: `src/edge/EdgeClient.js` announce/req/res/event frames.
+
+Steps, in order (each usable on its own):
+- [ ] **`workspace` server mode** — canvas-server itself running ONE workspace: share/
+      instance-token auth only, routes via `api-contract.js`, no users/contexts/admin. The
+      cheapest daemon is today's server with a mode flag; a separate bun binary comes after
+      the split settles (one codebase while both shapes coexist).
+- [ ] **Daemon-initiated registration** — today's `addRemoteWorkspace` is the user-initiated
+      form; the daemon form is the edge-announce handshake carrying `{workspaceId, name,
+      owner, url | tunnel}` + an instance token minted by the control plane. Re-announce is
+      idempotent full state (as EdgeClient already does).
+- [ ] **Addressing by instance id** — `name@host` must key on the daemon's stable instance
+      id, the URL/tunnel being routing detail that may change (IP, port, NAT path). Decide
+      before persistent contexts point at `name@127.0.0.1-8002`-style hosts.
+- [ ] **Transports** — unix socket / IPC (undici `socketPath` dispatcher, no protocol
+      change), direct URL, edge tunnel; one `RemoteTransport` behind the forwarder and the
+      facade. Multiplex events per daemon connection and subscribe on demand (one socket per
+      workspace only scales to a dozen).
+- [ ] **Move the runtime-owned pieces into the daemon**: hooks (run where the data is),
+      backends/ingest workers (IMAP, Graph, connectors), inferd per runtime, the secrets
+      design (the daemon holds the passphrase → "stopped = locked" gets simpler), storage
+      policies.
+- [ ] **Control-plane-only pieces stay**: users/auth, per-user indexes, contexts (workspace-
+      local, ride on whichever runtime hosts the workspace), pins, shares/public canvases,
+      pull-through blob cache, admin.
+- [ ] **In-process call sites that still assume a local `Workspace`**: agentd tools, WebDAV,
+      public shares, hooks service — each goes through the facade or moves to the daemon.
+- [ ] Runtime API root-relative (`/health`, `/info`, `/documents`, `/services/...`, `/events`);
+      external path prefixing belongs to the control plane.
+
+**WebDAV** may not survive this: a mount that re-shapes itself on context switches is a
+poor fit for a protocol built around static file trees (workarounds exist, none good). Keep
+it working until the runtime split lands, do not invest in it; canvas-fuse and the `/home`
+API cover the file-level needs.
+
+**Refactor debt that blocks the split** (grew organically, became a problem organically):
+- [ ] `src/core/workspace/Workspace.js` (~3.8 kLOC) — split along the runtime boundary:
+      document store facade / trees / backends+stored index / lifecycle+config / services.
+      The `RemoteWorkspace` surface is the list of what the outside world actually needs.
+- [ ] canvas-synapsd `src/index.js` (~6.1 kLOC) — same treatment on the engine side
+      (documents, bitmaps/indexes, trees/views, timelines, search, lifecycle).
+Do both before the daemon binary, not after — the split is the refactor's forcing function.
+
+## canvas-edge
+
+Transport + registration layer for the shape above: a thin tunnel for containerized roles,
+agents and workspaces behind NAT (announce, req/res/event frames — `src/edge/`), plus the
+local IPC transport. Its "minimal API + autoregistration" is what turns a remote-workspace
+reference into a registered runtime. Design still open: frame-level streaming for uploads,
+multiplexed event subscriptions, instance-token lifecycle.
 
 ## Server
 
@@ -264,49 +340,7 @@ A future
   keep: fetch-url.sh + stored. Proxy = preview without commitment; ingest = preview with
   retention.
 
-## canvas-edge
-
-Lets design a `canvas-edge` service module with the following functionality
-
-- The main purpose it to be used as a thin transport layer for containerized roles, agents and workspaces
-- Works behind NAT ()
-- <tbd>
-
-------------
-
 ## Workspaces
-
-### (descoped for now) Isolate workspaces as separate local processes
-
-#### Goals
-
-- Unify Roles / Agents / Workspaces under one management module
-- Common API / control plane / contract for Agents, Workspaces and Roles
-- Runtime may run as:
-  - local process (pm2 managed?)
-  - Docker container
-- Runtime owns:
-  - workspace/agent local state
-  - storage access
-  - background workers
-  - service-specific logic
-  - local API
-- Runtime API should be root-relative:
-  - `/health`
-  - `/info`
-  - `/documents`
-  - `/services/...`
-  - `/events` or `/stream`
-- external path prefixing belongs to proxy/control-plane
-
-#### UX
-
-- user should be able to:
-  - download workspace
-  - run local workspace runtime as a simple background service/app
-  - talk to it via CLI + REST API
-- local runtime should not need `canvas-server` for basic operation
-- local runtime should optionally register behind `canvas-server` when connected
 
 ### Move ingestion services (IMAP, Graph) to separate workers
 

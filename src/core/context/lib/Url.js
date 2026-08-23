@@ -124,8 +124,13 @@ class Url {
             let workspacePart = cleaned.substring(0, colonSlashIndex);
             let pathPart = cleaned.substring(colonSlashIndex + 3);
 
-            // Clean workspace part - only allow alphanumeric, underscores, and hyphens
-            workspacePart = workspacePart.replace(/[^a-zA-Z0-9_-]/g, '').toLowerCase();
+            // Clean workspace part - only allow alphanumeric, underscores, and
+            // hyphens; a remote reference keeps its `name@host` shape (the host
+            // label may carry dots and `-port`, see WorkspaceManager.remoteHostLabel).
+            const at = workspacePart.lastIndexOf('@');
+            workspacePart = at > 0
+                ? `${workspacePart.slice(0, at).replace(/[^a-zA-Z0-9_-]/g, '')}@${workspacePart.slice(at + 1).replace(/[^a-zA-Z0-9._-]/g, '')}`.toLowerCase()
+                : workspacePart.replace(/[^a-zA-Z0-9_-]/g, '').toLowerCase();
 
             // Reject if workspace name becomes empty after cleaning
             if (!workspacePart) {
@@ -190,7 +195,8 @@ class Url {
     // Parse the workspace portion of the url if present
     parseWorkspace(url) {
         // Check for workspace format with protocol
-        const workspaceRegex = /^([a-zA-Z0-9_-]+):\/\/(.*)$/;
+        // Workspace part: a local name, or a remote reference `name@host` (host may carry `.` and `-port`).
+        const workspaceRegex = /^([a-zA-Z0-9_.@-]+):\/\/(.*)$/;
         const workspaceMatch = url.match(workspaceRegex);
 
         if (workspaceMatch && workspaceMatch.length >= 2) {
@@ -204,7 +210,8 @@ class Url {
     // Parse the path portion of the url
     parsePath(url) {
         // Handle workspace format: workspace://path
-        const workspaceRegex = /^([a-zA-Z0-9_-]+):\/\/(.*)$/;
+        // Workspace part: a local name, or a remote reference `name@host` (host may carry `.` and `-port`).
+        const workspaceRegex = /^([a-zA-Z0-9_.@-]+):\/\/(.*)$/;
         const workspaceMatch = url.match(workspaceRegex);
 
         if (workspaceMatch && workspaceMatch.length >= 3) {

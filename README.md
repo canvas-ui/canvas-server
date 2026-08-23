@@ -218,9 +218,17 @@ own status (`active`/`inactive`, or `offline` when the server cannot be reached)
 - The token lives in `db/users/<id>/remote-workspaces.json`, never in the workspace index or
   any listing. Remotes on plain http / private networks need
   `CANVAS_ALLOW_INSECURE_REMOTE_IMPORT=true` (same switch as *Import remote…*).
-- Not yet: the remote's live socket events are not relayed (refresh to see changes made
-  elsewhere), and in-process consumers (contexts, agents, WebDAV) do not see remote
-  workspaces — see `TODO.md → Remote workspaces`.
+- **Live.** The server keeps one socket to each remote (share-token authenticated) and
+  re-broadcasts its `document.*` / `tree.*` / status events on the local `workspace:<name@host>`
+  channel, so the web updates in real time; a dropped link shows as `offline` and emits
+  `workspace.resynced` when it returns (refetch — events during the gap are not replayed).
+- **Contexts ride on it.** A context binds to a remote workspace like to a local one:
+  `shared@canvas.example.tld://work/customer-foo`. Its tree path is created on the remote
+  (a read-only token can bind to existing paths only; locks are advisory and skipped when the
+  token cannot place them), queries and inserts go through the remote's `/documents`, and
+  `context.updated` fires live. No cross-workspace union: contexts stay workspace-local.
+- Not yet: offline reads beyond cached bytes, write-through queue, `secret://` token storage;
+  agents/WebDAV addressing a remote by in-process calls — see `TODO.md → Remote workspaces`.
 
 ### Running it as a service
 

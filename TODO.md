@@ -460,7 +460,7 @@ Consequences:
   `{ code: 'WORKSPACE_STOPPED', reason, stoppedAt, hint: 'Ask the owner to start workspace X' }`.
   Agents surface it verbatim and tell the user; there is **no start-workspace tool** for agents.
 - Shared workspaces: whoever starts it holds the passphrase; members use it through ACL while it
-  runs. Per-member keyslots ("any member may start it") are an additive later feature.
+  runs. Per-member keyslots ("any me12mber may start it") are an additive later feature.
 
 **Module: `WorkspaceCrypto`** (one per workspace, owned by the Workspace, travels in the folder):
 ```

@@ -267,6 +267,14 @@ async function forward({ ws, request, reply, idSegment, suffix, query, cache, me
   reply.code(res.status).headers(responseHeaders);
   if (!res.body) return reply.send();
 
+  // Small non-cacheable payloads (JSON answers — the bulk of forwarded
+  // traffic) are buffered: the web-stream → node-stream bridge adds
+  // milliseconds of scheduling latency that a Buffer send does not.
+  const contentLength = Number(res.headers.get('content-length') ?? NaN);
+  if (!cacheable && Number.isFinite(contentLength) && contentLength <= 262_144) {
+    return reply.send(Buffer.from(await res.arrayBuffer()));
+  }
+
   const body = Readable.fromWeb(res.body);
   const etag = res.headers.get('etag');
   if (cacheable && res.status === 200 && etag) {

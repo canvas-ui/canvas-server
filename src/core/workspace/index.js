@@ -148,6 +148,9 @@ class WorkspaceManager extends EventEmitter {
     // it must answer without touching the Conf-backed indexes (whose .store
     // getter re-reads the file from disk on each access).
     #remoteRefIndex = new Map();    // Key: entryId | name@host -> { owner, id }
+    // Share-token hash -> resolved binding, TTL-bounded (see resolveWorkspaceShareToken).
+    static #SHARE_TOKEN_CACHE_TTL_MS = 10_000;
+    #shareTokenCache = new Map();
 
     // Services
     dotfileService = null;
@@ -501,6 +504,17 @@ class WorkspaceManager extends EventEmitter {
         if (!tokenValue || typeof tokenValue !== 'string') return null;
 
         const hashKey = `sha256:${crypto.createHash('sha256').update(tokenValue).digest('hex')}`;
+        // Positive resolutions are cached briefly: the scan below reads every
+        // user index (and workspace.json for unloaded workspaces) per call,
+        // and share-token principals present the token on EVERY request.
+        // Expiry is still enforced per hit; revocation takes effect within
+        // the TTL. Negatives are not cached (a just-created token must work).
+        const cached = this.#shareTokenCache.get(hashKey);
+        if (cached && Date.now() - cached.at < WorkspaceManager.#SHARE_TOKEN_CACHE_TTL_MS) {
+            const { tokenData } = cached.resolved;
+            if (tokenData?.expiresAt && new Date(tokenData.expiresAt) < new Date()) return null;
+            return cached.resolved;
+        }
         for (const [, entry] of this.#allEntries()) {
             // workspace.json is the source of truth for the ACL — the index
             // copy is a registration-time snapshot. Prefer the loaded
@@ -514,13 +528,15 @@ class WorkspaceManager extends EventEmitter {
             const tokenData = acl?.tokens?.[hashKey];
             if (!tokenData) continue;
             if (tokenData.expiresAt && new Date(tokenData.expiresAt) < new Date()) return null;
-            return {
+            const resolved = {
                 workspaceId: entry.id,
                 workspaceName: entry.name,
                 owner: entry.owner,
                 permissions: tokenData.permissions || ['read'],
                 tokenData,
             };
+            this.#shareTokenCache.set(hashKey, { resolved, at: Date.now() });
+            return resolved;
         }
         return null;
     }

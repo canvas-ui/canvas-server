@@ -1711,12 +1711,13 @@ export class WorkspaceStoredIndex {
             : null;
         if (prevChecksum) metadata.derivedFrom = prevChecksum;
 
-        // Inline-extracted metadata (EXIF/GPS/dimensions/media) lives on the stored
-        // index entry's `custom` (surfaced via stat → meta). Merge the known keys
-        // onto the doc (metadata is .catchall(z.any()) so nested objects are fine).
+        // Inline-extracted metadata (EXIF/GPS/dimensions/media, and the searchable
+        // head of a text blob) lives on the stored index entry's `custom`
+        // (surfaced via stat → meta). Merge the known keys onto the doc (metadata
+        // is .catchall(z.any()) so nested objects are fine).
         const extracted = meta?.custom && typeof meta.custom === 'object' ? meta.custom : null;
         if (extracted) {
-            for (const k of ['exif', 'dimensions', 'media']) {
+            for (const k of ['exif', 'dimensions', 'media', 'text']) {
                 if (extracted[k] && typeof extracted[k] === 'object') { metadata[k] = extracted[k]; }
             }
         }

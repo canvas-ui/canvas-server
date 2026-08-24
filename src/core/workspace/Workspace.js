@@ -1292,7 +1292,9 @@ class Workspace extends EventEmitter {
                     .catch((e) => { this.#logger.warn({ workspaceId: this.id, docId: doc.id, error: e.message }, 'embed: image metadata enrichment failed'); return null; });
                 return { modality, schema, updatedAt: enrichedAt || updatedAt, bytes: resolved.buffer, contentType, comment, summary };
             }
-            return { modality, schema, updatedAt, text: resolved.buffer.toString('utf8'), contentType, chunkOpts, comment, summary };
+            const textAt = await this.#enrichTextDocMetadata(doc, resolved.buffer, contentType)
+                .catch((e) => { this.#logger.warn({ workspaceId: this.id, docId: doc.id, error: e.message }, 'embed: text metadata enrichment failed'); return null; });
+            return { modality, schema, updatedAt: textAt || updatedAt, text: resolved.buffer.toString('utf8'), contentType, chunkOpts, comment, summary };
         }
 
         // JSON abstraction (note, etc.) → the text the doc exposes for embedding.
@@ -1341,6 +1343,32 @@ class Workspace extends EventEmitter {
         // emitEvent:false — this runs inside the embed pipeline; a
         // document.updated event here would re-enqueue the doc and CLIP-embed
         // every photo a second time.
+        await this.#getActiveDb().put(update, { emitEvent: false });
+        return update.updatedAt;
+    }
+
+    /**
+     * The searchable head of a text blob, at embed time.
+     *
+     * Same seam as image EXIF, for the same reason: stored-backend ingest
+     * extracts this inline, and blobs that never passed through it (`ws add`
+     * via file://, anything ingested before extraction existed) hit this instead
+     * — the embed pipeline is the one place every file's bytes already flow.
+     *
+     * Without it a File is FTS-indexed by its name alone, so a markdown file, a
+     * config or a source file matched nothing you could remember about what it
+     * says. Vectors already covered this case; keyword search did not.
+     * Returns the post-update updatedAt, or null when nothing was written.
+     */
+    async #enrichTextDocMetadata(doc, buffer, contentType) {
+        if (doc.metadata?.text?.content) { return null; }
+        const extracted = await extractBlobMetadata({ data: buffer }, { mimeType: contentType, key: `doc:${doc.id}` });
+        if (!extracted.text?.content) { return null; }
+
+        // emitEvent:false — this runs inside the embed pipeline; a
+        // document.updated event here would re-enqueue the doc and embed it a
+        // second time.
+        const update = { id: doc.id, metadata: { text: extracted.text }, updatedAt: new Date().toISOString() };
         await this.#getActiveDb().put(update, { emitEvent: false });
         return update.updatedAt;
     }

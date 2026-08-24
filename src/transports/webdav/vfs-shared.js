@@ -9,6 +9,9 @@ const TODO_SCHEMA = 'data/schema/task';
 const TAB_SCHEMA  = 'data/schema/tab';
 const FILE_SCHEMA = 'data/schema/file';
 const EMAIL_SCHEMA = 'data/schema/message/email';
+// A link is one address you can open, the same as a tab — it just names its
+// target `uri` and itself `label`, where a tab uses `url`/`title`.
+const LINK_SCHEMA = 'data/schema/link';
 
 /**
  * Which schema a NEW file implies, or null when it is just a file.
@@ -93,6 +96,11 @@ export function applyBodyToDoc(existing, filename, body) {
         const url = extractUrlFromShortcut(text);
         if (!url) throw new Error('Empty or invalid .url shortcut body');
         return { ...existing, data: { ...(existing.data || {}), url } };
+    }
+    if (existing.schema === LINK_SCHEMA) {
+        const uri = extractUrlFromShortcut(text);
+        if (!uri) throw new Error('Empty or invalid .url shortcut body');
+        return { ...existing, data: { ...(existing.data || {}), uri } };
     }
     return null;
 }
@@ -180,6 +188,7 @@ export function docName(doc) {
     if (doc.schema === NOTE_SCHEMA) return `${sanitize(doc.data?.title || `note-${doc.id}`)}.md`;
     if (doc.schema === TODO_SCHEMA) return `${sanitize(doc.data?.title || `todo-${doc.id}`)}.todo.json`;
     if (doc.schema === TAB_SCHEMA)  return `${sanitize(doc.data?.title || doc.data?.url || `tab-${doc.id}`)}.url`;
+    if (doc.schema === LINK_SCHEMA) return `${sanitize(doc.data?.label || doc.data?.title || doc.data?.uri || `link-${doc.id}`)}.url`;
     const schema = (doc.schema || 'doc').split('/').pop();
     return `${schema}_${doc.id}.json`;
 }
@@ -500,6 +509,7 @@ export function docEntries(docs, used = new Set()) {
 export function renderDoc(doc) {
     if (doc.schema === NOTE_SCHEMA) { return { buffer: Buffer.from(String(doc.data?.content ?? ''), 'utf-8'), contentType: 'text/markdown; charset=utf-8' }; }
     if (doc.schema === TAB_SCHEMA)  { return { buffer: Buffer.from(`[InternetShortcut]\nURL=${doc.data?.url ?? ''}\n`, 'utf-8'), contentType: 'application/internet-shortcut' }; }
+    if (doc.schema === LINK_SCHEMA) { return { buffer: Buffer.from(`[InternetShortcut]\nURL=${doc.data?.uri ?? doc.data?.url ?? ''}\n`, 'utf-8'), contentType: 'application/internet-shortcut' }; }
     if (doc.schema === TODO_SCHEMA) { return { buffer: Buffer.from(JSON.stringify(doc.data ?? {}, null, 2), 'utf-8'), contentType: 'application/json' }; }
     if (doc.schema === EMAIL_SCHEMA) { return { buffer: renderEmail(doc), contentType: 'message/rfc822' }; }
     return { buffer: Buffer.from(JSON.stringify(doc, null, 2), 'utf-8'), contentType: 'application/json' };
@@ -547,9 +557,12 @@ function renderEmail(doc) {
 // Resolve a doc's downloadable content. File-backed docs stream their real
 // bytes through the workspace resolver (stored:// etc.); everything else
 // renders the abstraction (note/tab/todo → text body, else JSON).
-export async function resolveDocContent(workspace, doc, filename, { range = null } = {}) {
+//
+// `resolver` is anything with `resolveDocument(doc, options)` — a Workspace, or
+// a context's own byte side, which applies the context's ACL first.
+export async function resolveDocContent(resolver, doc, filename, { range = null } = {}) {
     if (doc?.locations?.length) {
-        const resolved = await workspace
+        const resolved = await resolver
             .resolveDocument(doc, { stream: true, ...(range ? { range } : {}) })
             .catch(() => null);
         if (resolved?.stream) {

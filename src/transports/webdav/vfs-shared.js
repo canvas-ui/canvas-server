@@ -9,6 +9,21 @@ const TODO_SCHEMA = 'data/schema/task';
 const TAB_SCHEMA  = 'data/schema/tab';
 const FILE_SCHEMA = 'data/schema/file';
 const EMAIL_SCHEMA = 'data/schema/message/email';
+
+/**
+ * What a note is called.
+ *
+ * Markdown is a general format, so a plain `.md` is a FILE — which left notes
+ * and markdown files sharing an extension and no way to tell them apart, and
+ * made "what does a new .md mean here" unanswerable. A compound suffix settles
+ * it the same way `.todo.json` does: `.note.md` only ever comes from this
+ * renderer, so it can carry a canvas meaning without claiming markdown itself.
+ *
+ * It still ENDS in `.md` deliberately. The consumer of a flat context mount is
+ * a notes app pointed at it, and Obsidian only treats `.md` as a note —
+ * anything else is an attachment it will not render, edit or link.
+ */
+const NOTE_EXT = '.note.md';
 // A link is one address you can open, the same as a tab — it just names its
 // target `uri` and itself `label`, where a tab uses `url`/`title`.
 const LINK_SCHEMA = 'data/schema/link';
@@ -16,11 +31,11 @@ const LINK_SCHEMA = 'data/schema/link';
 /**
  * Which schema a NEW file implies, or null when it is just a file.
  *
- * `.todo.json` and `.url` keep a canvas meaning because they are not general
- * formats: a browser emits `.url` when you drag a link out of the address bar,
- * and `.todo.json` only ever comes from our own renderer. **`.md` does not** —
- * markdown is a general document format, so a new `.md` is a FILE. Rendering
- * markdown as a note is a UI decision, not a storage one.
+ * `.note.md`, `.todo.json` and `.url` keep a canvas meaning because they are not
+ * general formats: a browser emits `.url` when you drag a link out of the
+ * address bar, and the other two only ever come from our own renderer. **A bare
+ * `.md` does not** — markdown is a general document format, so a plain new `.md`
+ * is a FILE. Rendering markdown as a note is a UI decision, not a storage one.
  *
  * Throws on malformed JSON / url bodies.
  */
@@ -33,6 +48,11 @@ export function inferDocFromFile(filename, body) {
         const title = name.slice(0, -('.todo.json'.length));
         const parsed = text.trim() ? JSON.parse(text) : {};
         return { schema: TODO_SCHEMA, data: { title, ...parsed } };
+    }
+
+    if (lower.endsWith(NOTE_EXT)) {
+        const title = name.slice(0, -NOTE_EXT.length);
+        return { schema: NOTE_SCHEMA, data: { title, content: text } };
     }
 
     if (lower.endsWith('.url')) {
@@ -185,7 +205,7 @@ export function docName(doc) {
     const resolved = displayFilename(doc);
     if (resolved) return resolved;
     if (doc.schema === EMAIL_SCHEMA) return emailName(doc);
-    if (doc.schema === NOTE_SCHEMA) return `${sanitize(doc.data?.title || `note-${doc.id}`)}.md`;
+    if (doc.schema === NOTE_SCHEMA) return `${sanitize(doc.data?.title || `note-${doc.id}`)}${NOTE_EXT}`;
     if (doc.schema === TODO_SCHEMA) return `${sanitize(doc.data?.title || `todo-${doc.id}`)}.todo.json`;
     if (doc.schema === TAB_SCHEMA)  return `${sanitize(doc.data?.title || doc.data?.url || `tab-${doc.id}`)}.url`;
     if (doc.schema === LINK_SCHEMA) return `${sanitize(doc.data?.label || doc.data?.title || doc.data?.uri || `link-${doc.id}`)}.url`;

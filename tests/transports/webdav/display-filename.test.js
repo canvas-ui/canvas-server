@@ -1,7 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { displayFilename, docName, renamedRecord } from '../../../src/transports/webdav/vfs-shared.js';
+import { displayFilename, docName, renamedRecord, inferDocFromFile } from '../../../src/transports/webdav/vfs-shared.js';
 
 /**
  * A file's bytes may be called something different at every location, so a
@@ -67,7 +67,9 @@ describe('display filename resolution', () => {
     });
 
     test('docName still derives a name for JSON abstractions that have none', () => {
-        assert.equal(docName({ schema: 'data/schema/note', id: 3, data: { title: 'Ideas' } }), 'Ideas.md');
+        // `.note.md`, not `.md`: a note has to be tellable from a markdown FILE,
+        // and the suffix still ends in .md so a notes app reads it as one.
+        assert.equal(docName({ schema: 'data/schema/note', id: 3, data: { title: 'Ideas' } }), 'Ideas.note.md');
         assert.equal(docName({ schema: 'data/schema/file', id: 9, locations: [] }), 'file_9.json');
     });
 
@@ -80,5 +82,28 @@ describe('display filename resolution', () => {
         const renamedNote = renamedRecord({ schema: 'data/schema/note', data: { title: 'x' } }, 'y.md');
         assert.equal(renamedNote.data.filename, 'y.md');
         assert.equal(renamedNote.metadata, undefined);
+    });
+});
+
+describe('what a new file means', () => {
+    test('a compound suffix carries a canvas meaning; a general format does not', () => {
+        // Only our own renderer emits these two, so they can mean something.
+        assert.equal(inferDocFromFile('Ideas.note.md', '# Ideas\n\nbody\n').schema, 'data/schema/note');
+        assert.equal(inferDocFromFile('Ideas.note.md', 'body').data.title, 'Ideas');
+        assert.equal(inferDocFromFile('ship.todo.json', '{"completed":true}').schema, 'data/schema/task');
+
+        // A browser writes these when you drag a link out of the address bar.
+        assert.equal(inferDocFromFile('reddit.url', 'URL=https://reddit.com').schema, 'data/schema/tab');
+
+        // Markdown is a general document format: a plain .md is a file, and so
+        // is everything else. null = "the caller stores the bytes".
+        assert.equal(inferDocFromFile('notes.md', '# hi'), null);
+        assert.equal(inferDocFromFile('photo.jpg', 'bytes'), null);
+    });
+
+    test('a note round-trips through its own name', () => {
+        const doc = { schema: 'data/schema/note', id: 3, data: { title: 'Ideas' } };
+        const name = docName(doc);
+        assert.equal(inferDocFromFile(name, 'body').data.title, 'Ideas');
     });
 });

@@ -134,7 +134,7 @@ export default async function workspaceTreeRoutes(fastify) {
     return { finalPath: targetPath };
   }
 
-  async function moveTreePath(tree, fromPath, targetPath, recursive = false) {
+  async function moveTreePath(tree, fromPath, targetPath, recursive = false, options = {}) {
     if (tree.type !== 'context') {
       const resolved = resolveDirectoryTargetPath(tree, fromPath, targetPath);
       if (resolved.error) { return { data: null, count: 0, error: resolved.error }; }
@@ -149,7 +149,7 @@ export default async function workspaceTreeRoutes(fastify) {
     const existingTarget = pathNodeView(tree, targetPath);
     if (existingTarget && existingTarget.id !== source.id) {
       // Existing target means "move under this parent" for drag/drop callers.
-      return await tree.movePath(fromPath, targetPath, recursive);
+      return await tree.movePath(fromPath, targetPath, recursive, options);
     }
 
     const targetName = leafNameOf(targetPath);
@@ -160,7 +160,7 @@ export default async function workspaceTreeRoutes(fastify) {
 
     const sourceParentPath = parentPathOf(fromPath);
     if (targetParentPath !== sourceParentPath) {
-      const moved = await tree.movePath(fromPath, targetParentPath, recursive);
+      const moved = await tree.movePath(fromPath, targetParentPath, recursive, options);
       if (moved?.error) { return moved; }
     }
 
@@ -407,6 +407,9 @@ export default async function workspaceTreeRoutes(fastify) {
           targetTreeNameOrTreeId: { type: 'string' },
           name: { type: 'string' },
           recursive: { type: 'boolean', default: false },
+          // Context trees only: OR the moved layer into its new ancestors so
+          // the destination path reads its documents (ContextTree.mergeDown).
+          mergeDown: { type: 'boolean', default: false },
           label: { type: 'string' },
           description: { type: 'string' },
           color: { anyOf: [{ type: 'string' }, { type: 'null' }] },
@@ -427,7 +430,7 @@ export default async function workspaceTreeRoutes(fastify) {
         const targetPath = body.to || `${path.split('/').slice(0, -1).join('/') || '/'}/${body.name}`;
         const targetTree = resolveTargetTree(resolved.workspace, resolved.tree, body.targetTreeNameOrTreeId);
         const result = targetTree.id === resolved.tree.id
-          ? await moveTreePath(resolved.tree, path, targetPath, body.recursive)
+          ? await moveTreePath(resolved.tree, path, targetPath, body.recursive, { mergeDown: body.mergeDown })
           : await copyAcrossTrees(resolved.workspace, resolved.tree, targetTree, path, targetPath, body.recursive, true);
         const responseObject = result?.error
           ? new ResponseObject().badRequest(result.error)
@@ -602,6 +605,12 @@ export default async function workspaceTreeRoutes(fastify) {
     }
   });
 
+  // A single layer's OWN bitmap (no path AND). Same paging / text search /
+  // feature+filter / sort surface as GET /documents so the layer view in the
+  // web can page, search and sort like the path view does.
+  const layerDocsArrayOfStrings = {
+    anyOf: [{ type: 'array', items: { type: 'string' } }, { type: 'string' }],
+  };
   fastify.get('/layers/:layerId/documents', {
     onRequest: [fastify.authenticate],
     schema: {
@@ -611,6 +620,15 @@ export default async function workspaceTreeRoutes(fastify) {
           limit: { type: 'integer', default: 200 },
           offset: { type: 'integer' },
           page: { type: 'integer' },
+          q: layerDocsArrayOfStrings,
+          allOf: layerDocsArrayOfStrings,
+          anyOf: layerDocsArrayOfStrings,
+          noneOf: layerDocsArrayOfStrings,
+          filters: layerDocsArrayOfStrings,
+          ids: { anyOf: [{ type: 'array', items: { type: 'integer' } }, { type: 'integer' }] },
+          order: { type: 'string', enum: ['asc', 'desc'], default: 'desc' },
+          sortBy: { type: 'string' },
+          mode: { type: 'string' },
         },
       },
     },
@@ -624,13 +642,37 @@ export default async function workspaceTreeRoutes(fastify) {
         const responseObject = new ResponseObject().notFound(`Layer not found: ${request.params.layerId}`);
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());
       }
+      const asList = (v) => (Array.isArray(v) ? v : (v == null ? [] : [v])).filter((x) => x !== '' && x != null);
       const bitmapKey = `context/${tree.id}/${layer.id}`;
-      const documents = await workspace.list({
-        attributes: { allOf: [bitmapKey] },
+      const attributes = { allOf: [bitmapKey, ...asList(request.query.allOf)] };
+      const anyOf = asList(request.query.anyOf);
+      const noneOf = asList(request.query.noneOf);
+      if (anyOf.length) attributes.anyOf = anyOf;
+      if (noneOf.length) attributes.noneOf = noneOf;
+      const ids = asList(request.query.ids);
+      const queries = asList(request.query.q).filter((x) => typeof x === 'string' && x.trim());
+      const spec = {
+        // Explicitly NOT scoped to a path: the layer bitmap is the whole scope.
+        context: null,
+        directory: null,
+        attributes,
+        filters: asList(request.query.filters),
+        ...(ids.length ? { ids } : {}),
         limit: request.query.limit,
         offset: request.query.offset,
         page: request.query.page,
-      });
+        order: request.query.order,
+        sortBy: request.query.sortBy,
+        applyCanvasQuerySpec: false,
+      };
+      let documents;
+      if (queries.length > 1) {
+        documents = await workspace.searchRefined(queries, spec, { limit: request.query.limit, offset: request.query.offset, mode: request.query.mode });
+      } else if (queries.length === 1) {
+        documents = await workspace.search({ query: queries[0], mode: request.query.mode, ...spec });
+      } else {
+        documents = await workspace.list(spec);
+      }
       if (documents.error) {
         const responseObject = new ResponseObject().serverError('Failed to list layer documents');
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());
@@ -743,6 +785,41 @@ export default async function workspaceTreeRoutes(fastify) {
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
     }
   });
+
+  // Path-scoped bitmap ops. Source = leaf layer of `path`, targets = its
+  // ancestors on that path — derived server-side so a caller cannot swap them
+  // (the classic accident: OR-ing /Home into every descendant).
+  const pathBitmapOp = (method, verb) => async (request, reply) => {
+    try {
+      const resolved = await getTreeInstance(request, reply, 'context');
+      if (!resolved) return;
+      if (typeof resolved.tree[method] !== 'function') {
+        const responseObject = new ResponseObject().badRequest(`${verb} is only available on context trees`);
+        return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+      }
+      const result = await resolved.tree[method](request.body.path);
+      const responseObject = result.error
+        ? new ResponseObject().badRequest(result.error)
+        : new ResponseObject().success(result, `${verb} completed`);
+      return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+    } catch (error) {
+      fastify.log.error(`${verb} error for workspace ${request.params.id}: ${error.message}`);
+      const responseObject = new ResponseObject().serverError(error.message || `Failed to ${verb.toLowerCase()}`);
+      return reply.code(responseObject.statusCode).send(responseObject.getResponse());
+    }
+  };
+  const pathBitmapOpOpts = {
+    onRequest: [fastify.authenticate],
+    schema: {
+      body: {
+        type: 'object',
+        required: ['path'],
+        properties: { path: { type: 'string' } },
+      },
+    },
+  };
+  fastify.post('/paths/merge-down', pathBitmapOpOpts, pathBitmapOp('mergeDown', 'Merge down'));
+  fastify.post('/paths/subtract-down', pathBitmapOpOpts, pathBitmapOp('subtractDown', 'Subtract down'));
 
   fastify.post('/layers/merge', {
     onRequest: [fastify.authenticate],

@@ -305,7 +305,8 @@ export default async function treeRoutes(fastify) {
         properties: {
           from: { type: 'string' },
           to: { type: 'string' },
-          recursive: { type: 'boolean' }
+          recursive: { type: 'boolean' },
+          mergeDown: { type: 'boolean' }
         }
       }
     }
@@ -332,7 +333,8 @@ export default async function treeRoutes(fastify) {
       const success = await tree.movePath(
         request.body.from,
         request.body.to,
-        request.body.recursive || false
+        request.body.recursive || false,
+        { mergeDown: Boolean(request.body.mergeDown) }
       );
       if (!success) {
         const response = new ResponseObject().error('Failed to move tree path in workspace.');
@@ -410,6 +412,57 @@ export default async function treeRoutes(fastify) {
   });
 
   // Merge layer into target layers
+  // Path-scoped bitmap ops (see workspaces/tree.js): source = leaf of `path`,
+  // targets = its ancestors — derived server-side, no source/target mix-ups.
+  const pathBitmapOp = (method, verb) => async (request, reply) => {
+    const contextId = request.params.id;
+    try {
+      const context = await fastify.contextManager.getContext(request.user.id, contextId);
+      if (!context) {
+        const response = new ResponseObject().notFound(`Context with ID ${contextId} not found`);
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+      const workspace = context.workspace;
+      if (!workspace) {
+        const response = new ResponseObject().error(`Workspace for context ${contextId} is not available.`);
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+      if (!ensureContextWrite(context, request, reply)) { return reply; }
+      const tree = workspace.getTree(context.treeId);
+      if (typeof tree?.[method] !== 'function') {
+        const response = new ResponseObject().badRequest(`${verb} is only available on context trees`);
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+      const result = await tree[method](request.body.path);
+      if (result.error) {
+        const response = new ResponseObject().badRequest(result.error);
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+      const response = new ResponseObject().success(result, `${verb} completed`);
+      return reply.code(response.statusCode).send(response.getResponse());
+    } catch (error) {
+      fastify.log.error(`${verb} error for context ${contextId}: ${error.message}`);
+      if (ResponseObject.isWorkspaceNotActiveError(error)) {
+        const response = new ResponseObject().workspaceNotActive();
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+      const response = new ResponseObject().error(`Failed to ${verb.toLowerCase()}`);
+      return reply.code(response.statusCode).send(response.getResponse());
+    }
+  };
+  const pathBitmapOpOpts = {
+    onRequest: [fastify.authenticate],
+    schema: {
+      body: {
+        type: 'object',
+        required: ['path'],
+        properties: { path: { type: 'string' } }
+      }
+    }
+  };
+  fastify.post('/paths/merge-down', pathBitmapOpOpts, pathBitmapOp('mergeDown', 'Merge down'));
+  fastify.post('/paths/subtract-down', pathBitmapOpOpts, pathBitmapOp('subtractDown', 'Subtract down'));
+
   fastify.post('/layers/merge', {
     onRequest: [fastify.authenticate],
     schema: {

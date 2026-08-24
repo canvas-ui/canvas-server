@@ -1071,6 +1071,47 @@ class Context extends EventEmitter {
         return result;
     }
 
+    /**
+     * Blob API
+     *
+     * A context's documents can be byte blobs, so a context has to be able to
+     * take bytes in and hand bytes back. Without these, every caller reached
+     * through to `context.workspace` for the byte half of the job — which works,
+     * and skips the permission check that guards the document half. A user with
+     * documentRead on a shared context could persist bytes into the owner's
+     * workspace store.
+     *
+     * The bytes land in the backing workspace either way: a context is a view,
+     * not a place things live.
+     */
+
+    /**
+     * Store raw bytes in this context's workspace, returning the
+     * `stored://workspace:data/<key>` location a File document can reference.
+     * Content-addressed, so the same bytes stored twice cost one copy.
+     * @param {Buffer|import('stream').Readable} blob
+     */
+    async persistBlob(accessingUserId, blob) {
+        if (!this.checkPermission(accessingUserId, 'documentWrite')) {
+            throw accessDenied('Access denied: User requires documentWrite permission.');
+        }
+        if (!blob) { throw new Error('Blob is required'); }
+        return await this.#requireWorkspace().persistBlob(blob);
+    }
+
+    /**
+     * The bytes behind a document, from the first location that answers.
+     * @param {object} document document with `locations[]`
+     * @param {{stream?: boolean, url?: string, range?: object}} [options]
+     */
+    async resolveDocument(accessingUserId, document, options = {}) {
+        if (!this.checkPermission(accessingUserId, 'documentRead')) {
+            throw accessDenied('Access denied: User requires documentRead permission.');
+        }
+        if (!document) { throw new Error('Document is required'); }
+        return await this.#requireWorkspace().resolveDocument(document, options);
+    }
+
     async getByChecksumString(accessingUserId, checksumString) {
         if (!this.checkPermission(accessingUserId, 'documentRead')) {
             throw accessDenied('Access denied: User requires documentRead permission.');

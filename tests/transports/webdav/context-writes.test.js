@@ -41,6 +41,15 @@ function stubContext(ws, contextPath = '/webdav-test') {
             this.calls.push(['unlink', documentId]);
             return ws.unlink(documentId, { context: selector() });
         },
+        // A context owns its byte side too — the VFS never reaches through to
+        // the workspace, so bytes answer to the same ACL documents do.
+        async persistBlob(_userId, body) {
+            this.calls.push(['persistBlob', body?.length ?? 0]);
+            return ws.persistBlob(body);
+        },
+        async resolveDocument(_userId, document, options) {
+            return ws.resolveDocument(document, options);
+        },
     };
 }
 

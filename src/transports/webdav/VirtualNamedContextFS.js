@@ -56,6 +56,19 @@ export default class VirtualNamedContextFS {
 
     constructor(context) { this.#ctx = context; }
 
+    /**
+     * The context's byte side, shaped the way resolveDocContent wants it.
+     *
+     * Going through the context rather than reaching into `context.workspace`
+     * keeps bytes under the same permission check as documents — see
+     * Context.persistBlob / Context.resolveDocument.
+     */
+    get #blobs() {
+        return {
+            resolveDocument: (doc, options) => this.#ctx.resolveDocument(this.#ctx.userId, doc, options),
+        };
+    }
+
     // ── Read ─────────────────────────────────────────────────────────────────
 
     async stat(vPath) {
@@ -110,11 +123,11 @@ export default class VirtualNamedContextFS {
     // `options.doc` short-circuits the name walk; see TreeFS.getContent.
     async getContent(vPath, options = {}) {
         if (options.doc) {
-            return resolveDocContent(this.#ctx.workspace, options.doc, split(vPath).pop() || '', options);
+            return resolveDocContent(this.#blobs, options.doc, split(vPath).pop() || '', options);
         }
         const info = await this.stat(vPath);
         if (!info || info.isDir) { return null; }
-        return resolveDocContent(this.#ctx.workspace, info.doc, info.name, options);
+        return resolveDocContent(this.#blobs, info.doc, info.name, options);
     }
 
     // ── Write ────────────────────────────────────────────────────────────────
@@ -132,7 +145,7 @@ export default class VirtualNamedContextFS {
                 await this.#ctx.put(this.#ctx.userId, { ...updated, data: { ...updated.data, filename } });
                 return { created: false };
             }
-            const blob = await this.#ctx.workspace.persistBlob(body);
+            const blob = await this.#ctx.persistBlob(this.#ctx.userId, body);
             await this.#ctx.put(this.#ctx.userId, fileDocumentFromBlob(blob, filename, existing));
             return { created: false };
         }
@@ -145,7 +158,7 @@ export default class VirtualNamedContextFS {
             return { created: true };
         }
 
-        const blob = await this.#ctx.workspace.persistBlob(body);
+        const blob = await this.#ctx.persistBlob(this.#ctx.userId, body);
         await this.#ctx.put(this.#ctx.userId, fileDocumentFromBlob(blob, filename));
         return { created: true };
     }

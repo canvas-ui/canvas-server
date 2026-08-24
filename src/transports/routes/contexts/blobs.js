@@ -2,11 +2,14 @@
 
 import ResponseObject from '../../ResponseObject.js';
 
-// Raw-bytes upload scoped to a context: resolves the context's backing workspace
-// and persists into its blob store (workspace:data), returning a
-// stored://workspace:data/<key> location. Symmetric to /workspaces/:id/blobs —
-// "uploading to a context" = store bytes in its workspace, then link the File doc
-// into the context path via the normal documents POST.
+// Raw-bytes upload scoped to a context: persists into the backing workspace's
+// blob store (workspace:data), returning a stored://workspace:data/<key>
+// location. Symmetric to /workspaces/:id/blobs — "uploading to a context" =
+// store bytes in its workspace, then link the File doc into the context path
+// via the normal documents POST.
+//
+// Goes through Context.persistBlob, not the workspace directly: writing bytes
+// is a write, and it answers to the same ACL the documents route does.
 
 const BLOB_BODY_LIMIT = 21474836480; // 20 GiB — streamed to disk, never buffered
 
@@ -27,18 +30,6 @@ export default async function contextBlobRoutes(fastify) {
       const r = new ResponseObject().notFound(`Context with ID ${request.params.id} not found`);
       return reply.code(r.statusCode).send(r.getResponse());
     }
-    const workspace = await fastify.workspaceManager.getWorkspace(context.workspaceId, request.user.id);
-    // Missing and stopped are different answers: the caller can do something
-    // about the second one.
-    if (!workspace) {
-      const r = new ResponseObject().notFound('Backing workspace not found');
-      return reply.code(r.statusCode).send(r.getResponse());
-    }
-    if (!workspace.isActive) {
-      const r = new ResponseObject().workspaceNotActive();
-      return reply.code(r.statusCode).send(r.getResponse());
-    }
-
     const body = request.body;
     if (!body) {
       const r = new ResponseObject().badRequest('Empty body. Send bytes as application/octet-stream.');
@@ -46,10 +37,20 @@ export default async function contextBlobRoutes(fastify) {
     }
 
     try {
-      const result = await workspace.persistBlob(body);
+      const result = await context.persistBlob(request.user.id, body);
       const r = new ResponseObject().created(result, 'Blob stored');
       return reply.code(r.statusCode).send(r.getResponse());
     } catch (error) {
+      // Missing permission and a stopped workspace are different answers — the
+      // caller can do something about the second one.
+      if (error.code === 'ACCESS_DENIED') {
+        const r = new ResponseObject().forbidden(error.message);
+        return reply.code(r.statusCode).send(r.getResponse());
+      }
+      if (error.code === 'WORKSPACE_NOT_READY') {
+        const r = new ResponseObject().workspaceNotActive();
+        return reply.code(r.statusCode).send(r.getResponse());
+      }
       fastify.log.error(error);
       const r = new ResponseObject().serverError(error.message || 'Failed to store blob');
       return reply.code(r.statusCode).send(r.getResponse());

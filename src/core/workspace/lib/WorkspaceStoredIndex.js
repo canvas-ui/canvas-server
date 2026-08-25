@@ -44,11 +44,12 @@ const CONTAINER_DRIVERS = new Set(['file', 'gdrive']);
 const REMOTE_RESTART_KEYS = ['clientId', 'clientSecret', 'refreshToken', 'folderId', 'pollInterval', 'permanentDelete'];
 const CHECKSUM_PRIORITY = ['sha256', 'sha1', 'md5'];
 // Orphan lifecycle: a doc whose last resolvable location vanished keeps its
-// row, checksums and curated placements, gains this feature bitmap (plus
-// orphanedAt on the doc), and is only purged by retention GC or explicit user
-// action. If its bytes reappear anywhere, the checksum index re-binds the new
-// location to the same doc and curation survives the round trip.
-const NO_LOCATION_FEATURE = 'data/no-location';
+// row, checksums and curated placements, and gains empty locations[] + orphanedAt.
+// That pair is what the engine ticks feature/orphaned from, so stamping
+// orphanedAt here IS what makes the doc listable below. Purged only by retention
+// GC or explicit user action. If its bytes reappear anywhere, the checksum index
+// re-binds the new location to the same doc and curation survives the round trip.
+const ORPHANED_FEATURE = 'feature/orphaned';
 
 export class WorkspaceStoredIndex {
     static HOME_STORED_BACKEND = HOME_STORED_BACKEND;
@@ -504,7 +505,7 @@ export class WorkspaceStoredIndex {
             }, { quiet: true });
 
             // Retention GC: purge orphans past the window. Default retention is
-            // -1 (keep forever) — explicit cleanup goes through the data/no-location
+            // -1 (keep forever) — explicit cleanup goes through the feature/orphaned
             // filter or gcOrphanedDocuments().
             const retentionDays = typeof this.#getOrphanRetentionDays === 'function' ? this.#getOrphanRetentionDays() : -1;
             if (Number.isFinite(retentionDays) && retentionDays >= 0) {
@@ -1016,7 +1017,7 @@ export class WorkspaceStoredIndex {
      * untouched. A backend that is merely DISABLED keeps its config, so
      * #isConfiguredLocalBackend stays true and its paths are preserved — only a
      * fully-removed backend (config gone) is treated as dead. If a doc loses its
-     * last location, #reconcileRemovedLocations orphans it (data/no-location).
+     * last location, #reconcileRemovedLocations orphans it (feature/orphaned).
      */
     async #purgeDeadBackendLocations() {
         const db = this.#getDb();
@@ -1133,7 +1134,7 @@ export class WorkspaceStoredIndex {
         const locations = this.#buildDocumentLocations(Array.isArray(payload.locations) ? payload.locations : []);
         if (locations.length === 0) {
             // Nothing left to point at — hand over to the orphan path so the
-            // no-location marker and retention semantics stay in one place.
+            // orphanedAt stamp and retention semantics stay in one place.
             return this.#reconcileRemovedLocations(doc, (doc.locations || []).map((l) => l.url));
         }
         await this.#put({ id: doc.id, locations }, { context: null });
@@ -1172,10 +1173,11 @@ export class WorkspaceStoredIndex {
      * the doc keeps its survivors and unticks only the backends-tree path(s) the
      * dead locations backed. When NO locations survive the doc is ORPHANED,
      * never deleted: it keeps its row, checksums and curated placements, gains
-     * the data/no-location feature + orphanedAt, and is purged only by
-     * retention GC or explicit user action (destroy). Orphaning is what makes a
-     * resync bug survivable — promotions are user intent and outrank backend
-     * liveness, and an orphan-with-checksum re-binds if the bytes reappear.
+     * empty locations + orphanedAt (which is what the engine ticks
+     * feature/orphaned from), and is
+     * purged only by retention GC or explicit user action (destroy). Orphaning is
+     * what makes a resync bug survivable — promotions are user intent and outrank
+     * backend liveness, and an orphan-with-checksum re-binds if the bytes reappear.
      */
     async #reconcileRemovedLocations(doc, removedUrls = []) {
         const db = this.#getDb();
@@ -1184,16 +1186,10 @@ export class WorkspaceStoredIndex {
         const currentBackendPaths = await db.listDocumentTreePaths(doc.id, BACKENDS_TREE_NAME).catch(() => []);
 
         if (remaining.length === 0) {
-            // v3: asserted features live at the document ROOT, not under metadata.
-            const features = Array.from(new Set([
-                ...(Array.isArray(doc.features) ? doc.features : []),
-                NO_LOCATION_FEATURE,
-            ]));
             await this.#put({
                 id: doc.id,
                 locations: [],
                 orphanedAt: doc.orphanedAt || new Date().toISOString(),
-                features,
                 metadata: { ...(doc.metadata || {}) },
             }, { context: null });
             // Backend-mirror paths untick (the file is no longer there); curated
@@ -1214,10 +1210,10 @@ export class WorkspaceStoredIndex {
     }
 
     /**
-     * Purge orphaned documents (data/no-location) whose orphanedAt exceeds the
+     * Purge orphaned documents (feature/orphaned) whose orphanedAt exceeds the
      * retention window. retentionDays 0 purges all current orphans; negative
      * retention never purges (the default). Explicit user cleanup can also just
-     * bulk-delete via the data/no-location filter.
+     * bulk-delete via the feature/orphaned filter.
      */
     async gcOrphanedDocuments({ retentionDays } = {}) {
         const db = this.#getDb();
@@ -1227,7 +1223,7 @@ export class WorkspaceStoredIndex {
         if (!Number.isFinite(days) || days < 0) return { purged: 0 };
 
         const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
-        const orphans = await db.list({ features: { allOf: [NO_LOCATION_FEATURE] } }).catch(() => []);
+        const orphans = await db.list({ features: { allOf: [ORPHANED_FEATURE] } }).catch(() => []);
         let purged = 0;
         for (const doc of orphans) {
             const orphanedAt = doc.orphanedAt ? Date.parse(doc.orphanedAt) : NaN;
@@ -1239,7 +1235,7 @@ export class WorkspaceStoredIndex {
             purged += 1;
         }
         if (purged > 0) {
-            this.#logger.info({ workspaceId: this.#workspaceId, purged, retentionDays: days }, 'Orphan GC: purged expired no-location documents');
+            this.#logger.info({ workspaceId: this.#workspaceId, purged, retentionDays: days }, 'Orphan GC: purged expired orphaned documents');
         }
         return { purged };
     }
@@ -1624,11 +1620,10 @@ export class WorkspaceStoredIndex {
 
         if (kept.length === 0 && doc?.id != null) {
             if (options.keepDocument === true) {
-                // Caller chose to keep the index entry with no retrievable bytes
-                // (locations: []) — metadata/checksums stay searchable. Marked
-                // as orphaned so it's filterable and subject to retention GC.
+        // Caller chose to keep the index entry with no retrievable bytes
+        // (locations: []) — metadata/checksums stay searchable. orphanedAt
+        // is the GC lifecycle and what ticks feature/orphaned.
                 doc.orphanedAt = doc.orphanedAt || new Date().toISOString();
-                doc.features = Array.from(new Set([...(doc.features || []), NO_LOCATION_FEATURE]));
                 await this.#put(doc, { context: null });
             } else {
                 await db.delete(doc.id);
@@ -1736,12 +1731,7 @@ export class WorkspaceStoredIndex {
             metadata,
             // Locations exist by construction here — clear any orphan marker.
             orphanedAt: null,
-            // Re-bind: this upsert carries locations, so a previously orphaned doc
-            // loses its no-location marker (the feature drop unticks the bitmap).
-            // v3: asserted features live at the document ROOT, so the marker is
-            // dropped here rather than out of metadata.features.
-            features: (Array.isArray(existingDocument?.features) ? existingDocument.features : [])
-                .filter((feature) => feature !== NO_LOCATION_FEATURE),
+            features: Array.isArray(existingDocument?.features) ? existingDocument.features : [],
         };
 
         // Content-derived date (EXIF capture time) → the default 'content' timeline

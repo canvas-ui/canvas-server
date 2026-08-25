@@ -3,31 +3,15 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import {
-    buildDeviceFeatureTags,
-    stripDeviceFeatureTags,
-    normalizeDeviceOs,
-} from '../../src/utils/device-features.js';
+import { stripDeviceFeatureTags } from '../../src/utils/device-features.js';
 
 describe('device feature tags', () => {
 
-    it('normalizes OS aliases the way synapsd does', () => {
-        // MUST stay in sync with synapsd src/utils/device-facets.js — a divergence
-        // puts the same machine's Device-doc tag and its derived tag in different
-        // bitmaps.
-        assert.equal(normalizeDeviceOs('win32'), 'windows');
-        assert.equal(normalizeDeviceOs('darwin'), 'mac');
-        assert.equal(normalizeDeviceOs('osx'), 'mac');
-        assert.equal(normalizeDeviceOs('linux'), 'linux');
-        assert.equal(normalizeDeviceOs(''), null);
-    });
-
-    it('buildDeviceFeatureTags emits the full set for a Device DOCUMENT', () => {
-        // Its one caller is core/device/Registry.js, tagging a Device document
-        // with its own identity — self-referential, so os/type belong.
-        const tags = buildDeviceFeatureTags({ deviceId: 'foo', deviceOs: 'win32', deviceType: 'laptop' });
-        assert.deepEqual(tags, ['device/id/foo', 'device/os/windows', 'device/type/laptop']);
-    });
+    // This module used to also BUILD device tags, duplicating synapsd's
+    // normalization so the two could disagree about the same machine. It no
+    // longer does: a Device document's own keys are derived by the engine from
+    // the row (Device.getFeatureBitmapArray), so there is one implementation and
+    // nothing here to keep in sync. What remains is the write-path policy.
 
     it('strips engine-owned device/* from a client-supplied array', () => {
         // device/* is DERIVED by synapsd from locations. A client-asserted value

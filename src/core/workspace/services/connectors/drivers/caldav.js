@@ -315,10 +315,9 @@ export default class CaldavDriver {
         const absHref = new URL(href, this.#origin()).toString();
 
         return {
-            schema: 'data/schema/event',
+            schema: 'data/schema/event/calendar',
             data: {
                 title: this.#unescapeIcs(event.SUMMARY) || '(untitled)',
-                type: 'calendar',
                 description: this.#unescapeIcs(event.DESCRIPTION) || undefined,
                 start,
                 end: this.#fromIcsDate(event.DTEND) ?? undefined,

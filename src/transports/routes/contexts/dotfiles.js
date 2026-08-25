@@ -127,9 +127,9 @@ export default async function contextDotfileRoutes(fastify, _options) {
 
       const dotfilesInput = request.body.dotfiles;
       const dotfileArray = Array.isArray(dotfilesInput) ? dotfilesInput : [dotfilesInput];
-      const documentArray = dotfileArray.map(df => ({
-        schema: 'data/schema/dotfile',
-        data: df
+      const documentArray = dotfileArray.map(({ type, ...data }) => ({
+        schema: `data/schema/dotfile/${type === 'folder' ? 'folder' : 'file'}`,
+        data,
       }));
 
       const result = await context.putMany(request.user.id, documentArray, ['data/schema/dotfile', ...stripDeviceFeatureTags(request.body.features || [])]);

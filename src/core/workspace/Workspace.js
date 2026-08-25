@@ -626,9 +626,9 @@ class Workspace extends EventEmitter {
     }
 
     // Database maintenance settings (Workspaces > Settings > Database).
-    // orphanRetentionDays: window before GC purges data/no-location docs;
+    // orphanRetentionDays: window before GC purges feature/orphaned docs;
     // -1 (default) keeps orphans forever — explicit cleanup goes through the
-    // data/no-location filter or gcOrphanedDocuments().
+    // feature/orphaned filter or gcOrphanedDocuments().
     get databaseSettings() {
         return { orphanRetentionDays: -1, ...(this.#configStore.get('database') || {}) };
     }
@@ -640,7 +640,7 @@ class Workspace extends EventEmitter {
         return next;
     }
 
-    /** Purge orphaned (data/no-location) documents past the retention window. */
+    /** Purge orphaned (feature/orphaned) documents past the retention window. */
     async gcOrphanedDocuments(options = {}) {
         if (!this.#storedIndex?.isRunning) await this.#startStoredIndex();
         return this.#storedIndex.gcOrphanedDocuments(options);

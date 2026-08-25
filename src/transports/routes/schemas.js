@@ -43,9 +43,8 @@ export default async function schemaRoutes(fastify, _options) {
       const splat = request.params['*'] || '';
       const wantsJson = splat.endsWith('.json');
       const tail = wantsJson ? splat.slice(0, -'.json'.length) : splat;
-      // A derived subtype bitmap key (data/schema/application/flatpak) is not a
-      // registered id — answer with its nearest registered ancestor rather than
-      // a 404, so bitmap-derived links stay resolvable.
+      // Closed-enum children (application/flatpak) are registered. An unknown
+      // extra segment still resolves to its nearest ancestor rather than 404.
       const requestedId = `data/schema/${tail}`;
       const schemaId = schemaRegistry.hasSchema(requestedId)
         ? requestedId

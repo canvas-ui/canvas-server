@@ -93,7 +93,6 @@
     "lmdb": "3.5.6",
     "mailparser": "^3.9.9",
     "nanoid": "^5.1.7",
-    "node-machine-id": "^1.1.12",
     "nodemailer": "^9.0.3",
     "onnxruntime-node": "1.21.0",
     "pdfjs-dist": "^6.2.108",

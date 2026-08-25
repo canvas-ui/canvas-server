@@ -41,7 +41,7 @@ const CANVAS_SKILL = {
         '- `data/schema/tab` — browser tabs (data.url, data.title)',
         '- `data/schema/file` — indexed files',
         '- `data/schema/task` — todo items',
-        '- `data/schema/event` — calendar entries, alerts and activity logs (data.title, data.type, data.start, data.end)',
+        '- `data/schema/event` — calendar / alert / activity (data.title, data.start, data.end; leaf is the schema id)',
         '',
         '## Examples',
         '- "Any new emails?" → `canvas_find { "schema": "data/schema/message/email", "limit": 10 }` (results are newest-first)',

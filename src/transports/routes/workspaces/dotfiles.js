@@ -123,7 +123,10 @@ export default async function workspaceDotfilesRoutes(fastify, _options) {
       const contextSelector = getContextTreeSelector(workspace, request.body, '/');
       const dotfilesInput = request.body.dotfiles;
       const dotfileArray = Array.isArray(dotfilesInput) ? dotfilesInput : [dotfilesInput];
-      const documentArray = dotfileArray.map(df => ({ schema: 'data/schema/dotfile', data: df }));
+      const documentArray = dotfileArray.map(({ type, ...data }) => ({
+        schema: `data/schema/dotfile/${type === 'folder' ? 'folder' : 'file'}`,
+        data,
+      }));
 
       const inserted = await workspace.putMany(documentArray, {
         context: contextSelector,

@@ -15,7 +15,7 @@ Two forms:
 - `DeviceRegistry` (Registry.js): stores `username`, `hostname`, `fqdn`, `alias`; derives `alias` from `username@hostname` if not supplied; added `getDeviceByAlias(userId, alias)`
 - `Device` schema (abstractions/Device.js): `username`, `hostname`, `fqdn`, `alias` in data schema and FTS fields
 - `path-helpers.js`: `deviceFileUrl(deviceId, localPath)` builds `file://deviceId/path`
-- CLI `dot.js`: `getDeviceId()` now uses `machineIdSync(true).substr(0, 11)` matching `GenericDevice.id` on the server
+- CLI `modules/dot/lib/device.js`: mints a `randomUUID()` into `~/.canvas/device.json`, pinned to the machine's own home rather than CANVAS_HOME (which may live on portable media). `GenericDevice` and its 11-char machine-id were deleted 2026-08-25 as dead code; machine-ids are gone from device identity entirely, since they do not survive an OS reinstall and the registration prompt recovers that case by binding to the existing record.
 
 **Resolution flow:** Parse `file://alias/path` → registry lookup alias → canonical `file://uuid/path` used in index.
 

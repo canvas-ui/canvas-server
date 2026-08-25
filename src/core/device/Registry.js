@@ -3,7 +3,6 @@
 import path from 'path';
 import fs from 'fs/promises';
 import { createLogger } from '../../utils/log.js';
-import { buildDeviceFeatureTags } from '../../utils/device-features.js';
 import { userStatePath } from '../user/lib/paths.js';
 
 const DEVICE_SCHEMA = 'data/schema/device';
@@ -88,11 +87,10 @@ class DeviceRegistry {
     async ensureWorkspaceBinding(workspace, device = {}) {
         const deviceId = this.#requireDeviceId(device.deviceId);
         const now = new Date().toISOString();
-        const featureArray = [DEVICE_SCHEMA, ...buildDeviceFeatureTags({
-            deviceId,
-            deviceOs: device.platform || device.os,
-            deviceType: device.type,
-        })];
+        // No device/* asserted here: synapsd derives a Device document's own
+        // id/os/arch/type keys from this row (Device.getFeatureBitmapArray), which
+        // is what makes them survive a rebuild and untick on an OS upgrade.
+        const featureArray = [DEVICE_SCHEMA];
         const context = workspace.getContextTreeSelector('/');
         const docs = await workspace.list({
             context,
@@ -110,6 +108,8 @@ class DeviceRegistry {
             name: device.name || existing?.data?.name || hostname || deviceId,
             description: device.description ?? existing?.data?.description,
             platform: device.platform ?? existing?.data?.platform,
+            osDistro: device.osDistro ?? existing?.data?.osDistro,
+            osVersion: device.osVersion ?? existing?.data?.osVersion,
             arch: device.arch ?? existing?.data?.arch,
             type: device.type ?? existing?.data?.type,
             username,

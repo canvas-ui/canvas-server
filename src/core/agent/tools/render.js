@@ -34,7 +34,7 @@ export const SCHEMA_ALIASES = {
     todo: 'data/schema/task',
     event: 'data/schema/event',
     events: 'data/schema/event',
-    calendar: 'data/schema/event',
+    calendar: 'data/schema/event/calendar',
     identity: 'data/schema/identity',
     identities: 'data/schema/identity',
     contact: 'data/schema/identity',
@@ -46,6 +46,10 @@ export const SCHEMA_ALIASES = {
 };
 
 export const SCHEMA_HELP = 'email, message, note, tab, link, file, task, event, identity/contact (or any full data/schema/... id)';
+
+const under = (schema, parent) => schema === parent || (typeof schema === 'string' && schema.startsWith(`${parent}/`));
+const schemaLeaf = (schema, parent) =>
+    (typeof schema === 'string' && schema.startsWith(`${parent}/`)) ? schema.slice(parent.length + 1) : '';
 
 /**
  * Resolve a user/model supplied schema name to a full schema id.
@@ -267,12 +271,12 @@ export function summarizeDocument(doc) {
         const bits = [data.status, data.dueDate ? `due ${formatDate(data.dueDate)}` : null, data.priority ? `p${data.priority}` : null].filter(Boolean);
         return `${head}  ${oneLine(data.title, 100)}${bits.length ? `  [${bits.join(', ')}]` : ''}`;
     }
-    if (schema === SCHEMA_ALIASES.event) {
+    if (under(schema, SCHEMA_ALIASES.event)) {
         const when = data.end ? `${formatDate(data.start)} → ${formatDate(data.end)}` : formatDate(data.start);
         return `${head}  ${oneLine(data.title, 100)}  ${when}${data.location ? `  @ ${oneLine(data.location, 60)}` : ''}`;
     }
     if (schema.startsWith(SCHEMA_ALIASES.identity)) {
-        const bits = [data.type, data.primaryEmail].filter(Boolean);
+        const bits = [schemaLeaf(schema, SCHEMA_ALIASES.identity), data.primaryEmail].filter(Boolean);
         return `${head}  ${oneLine(data.displayName, 80)}${bits.length ? `  (${bits.join(', ')})` : ''}`;
     }
     return `${head}  ${oneLine(JSON.stringify(data), 140)}`;
@@ -377,7 +381,7 @@ export function renderDocument(doc, { maxChars = 12000 } = {}) {
         return lines.join('\n');
     }
 
-    if (schema === SCHEMA_ALIASES.event) {
+    if (under(schema, SCHEMA_ALIASES.event)) {
         lines.push(`Title: ${data.title || ''}`);
         lines.push(`Start: ${data.start || ''}${data.allDay ? ' (all day)' : ''}`);
         if (data.end) lines.push(`End: ${data.end}`);
@@ -389,7 +393,8 @@ export function renderDocument(doc, { maxChars = 12000 } = {}) {
 
     if (schema.startsWith(SCHEMA_ALIASES.identity)) {
         lines.push(`Name: ${data.displayName || ''}`);
-        if (data.type) lines.push(`Type: ${data.type}`);
+        const type = schemaLeaf(schema, SCHEMA_ALIASES.identity);
+        if (type) lines.push(`Type: ${type}`);
         if (data.primaryEmail) lines.push(`Email: ${data.primaryEmail}`);
         for (const identifier of data.identifiers || []) {
             lines.push(`- ${identifier.type}${identifier.provider ? `/${identifier.provider}` : ''}: ${identifier.identifier}${identifier.label ? ` (${identifier.label})` : ''}`);

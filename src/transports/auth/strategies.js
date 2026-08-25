@@ -6,7 +6,9 @@ import ldapAuthStrategy from './ldap-strategy.js';
 import createError from '@fastify/error';
 import { authService as _authService } from './service.js';
 import _ResponseObject from '../ResponseObject.js';
-import { normalizeDeviceOs, normalizeDeviceType } from '../../utils/device-features.js';
+// From synapsd directly: it owns the device vocabulary, and a local copy is how
+// the same machine ends up spelled two ways.
+import { normalizeDeviceOs, normalizeDeviceType } from 'canvas-synapsd/src/utils/device-facets.js';
 import { createLogger } from '../../utils/log.js';
 
 // Export the auth service and strategies

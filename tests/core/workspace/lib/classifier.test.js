@@ -103,8 +103,8 @@ describe('classifier', () => {
 
     test('event schema is classifiable', () => {
         const ev = classifyDocument({
-            schema: 'data/schema/event',
-            data: { title: 'Standup', type: 'calendar', start: '2026-08-03T09:00:00.000Z' },
+            schema: 'data/schema/event/calendar',
+            data: { title: 'Standup', start: '2026-08-03T09:00:00.000Z' },
         });
         assert.equal(ev.isEvent(), true);
         assert.equal(ev.isSchema(SCHEMAS.event), true);

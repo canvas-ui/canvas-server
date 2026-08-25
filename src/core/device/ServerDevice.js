@@ -37,6 +37,37 @@ function detectType() {
     return 'generic';
 }
 
+/**
+ * Distro and version, for the `device/os/linux/ubuntu/24.04` facet chain — the
+ * axis a fleet actually differs along, since 22.04 and 24.04 are not
+ * interchangeable targets for anything you might install.
+ *
+ * Linux only. /etc/os-release is the one cross-distro contract for this and is
+ * present on non-systemd distros too. macOS and Windows would each need their
+ * own version heuristic (Darwin kernel and NT build number respectively map to
+ * the marketing version only by table) and no caller needs it yet; the key shape
+ * already accommodates them, so that stays a client-side change.
+ *
+ * NB: canvas/apps/cli/src/modules/dot/lib/device.js carries the same probe.
+ * Separate packages with no shared dependency, and the file format is frozen by
+ * spec — cheaper duplicated than coupled.
+ */
+function detectOsRelease() {
+    if (os.platform() !== 'linux') { return {}; }
+    try {
+        const fields = Object.fromEntries(
+            fs.readFileSync('/etc/os-release', 'utf8')
+                .split('\n')
+                .map((line) => line.match(/^([A-Z_]+)=(.*)$/))
+                .filter(Boolean)
+                .map(([, key, value]) => [key, value.replace(/^"|"$/g, '').trim()]),
+        );
+        return { osDistro: fields.ID || undefined, osVersion: fields.VERSION_ID || undefined };
+    } catch {
+        return {};
+    }
+}
+
 function currentUsername() {
     try {
         return os.userInfo().username;
@@ -77,7 +108,11 @@ export function getServerDevice() {
         hostname,
         fqdn: hostname.includes('.') ? hostname : saved?.fqdn,
         platform: os.platform(),
-        arch: os.arch(),
+        ...detectOsRelease(),
+        // os.machine() (x86_64/aarch64), not os.arch() (x64/arm64): the former is
+        // the vocabulary flatpak, snap and appimage publish against, so a device
+        // facet and a package's capability compare without a translation table.
+        arch: os.machine ? os.machine() : os.arch(),
         release: os.release(),
         type: saved?.type || detectType(),
         username: currentUsername(),

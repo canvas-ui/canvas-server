@@ -110,7 +110,8 @@ Notes:
 - `index/` holds cross-entity listings for a remote (a client can list roles
   without walking dirs or hitting the network). It is cache, never config.
 - Per-client config is namespaced under `config/clients/`. Anything shared
-  across clients (`remotes.json`, `device.json`) sits directly in `config/`.
+  across clients (`remotes.json`) sits directly in `config/`.
+- `device.json` is the exception: it does **not** live in this tree. See §4.
 
 ---
 
@@ -122,7 +123,7 @@ clobbering:
 | File                  | Readers      | Writer (authoritative)        |
 |-----------------------|--------------|-------------------------------|
 | `config/remotes.json` | all clients  | **canvas-cli** (or local daemon) |
-| `config/device.json`  | all clients  | first client to register the device; thereafter read-only |
+| `~/.canvas/device.json` | all clients | first client to register the device; rewritten only when the device binds to another identity |
 | `config/clients/*.json` | owning client | owning client only          |
 
 Rules:
@@ -131,10 +132,22 @@ Rules:
   rewrite it wholesale. If a non-cli client needs to add a remote, it does so
   via the cli or a future local daemon, or appends under an advisory file lock
   (`flock` on `remotes.json`). Concurrent wholesale writes are forbidden.
-- `device.json` carries the device's stable local identity (a generated
-  `deviceId` and friendly name). Per-remote **device tokens** are not here —
-  they live in `remotes.json` under each remote's `device` block (a device is
-  registered, and tokened, per remote).
+- `device.json` carries the machine's stable identity (a generated uuid
+  `deviceId` and friendly name) and is the one file that is **not** under
+  `CANVAS_HOME`. That root is routinely portable — one config following a user
+  between machines on a USB stick — and identity must not follow it, or the next
+  host adopts the previous host's id and every `file://<deviceId>/…` location it
+  writes names the wrong machine. Path is `~/.canvas/device.json`
+  (`%USERPROFILE%\Canvas\device.json` on Windows), overridable with
+  `CANVAS_DEVICE_FILE` / `CANVAS_DEVICE_ID`.
+- An OS reinstall loses the file, and that is fine: the client lists the
+  remote's devices and the user binds to the existing record ("work laptop"),
+  which restores the uuid and relights every location already indexed under it.
+  No hardware fingerprinting.
+- Per-remote **device tokens** are not in `device.json` — they live in
+  `remotes.json` under each remote's `device` block (a device is registered, and
+  tokened, per remote). A token whose `deviceId` does not match this host's is
+  ignored, since it arrived with a travelling config.
 - `remotes.json` is the existing canvas-cli format; this spec does not change
   it, only formalizes that its keys are the `<remote-key>` used in §5.
 
@@ -232,8 +245,5 @@ All four clients sharing one remote read the identical
 
 - Does a **local daemon** become the single writer for `remotes.json` and the
   socket owner, or stays cli? (Affects §4, §6.)
-- `device.json` identity: one device id shared across remotes, or per-remote?
-  (Leaning shared — one physical device — with per-remote tokens in
-  `remotes.json`.)
 - Should `cache/` carry its own TTL/eviction policy, or is wipe-only enough for
   MVP? (Blobs under `cache/.../blobs` can grow.)

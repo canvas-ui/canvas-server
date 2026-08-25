@@ -748,7 +748,7 @@ The public read combines the saved canvas `querySpec` with request filters. Resp
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | GET | `/schemas` | — | List all schema ids |
-| GET | `/schemas/data/schema/<id>` | — | Registration descriptor (id, tier, subtypeField, indexOptions, jsonSchema); `<id>` may span segments (`message/email`), derived subtype keys resolve to their parent |
+| GET | `/schemas/data/schema/<id>` | — | Registration descriptor (id, tier, indexOptions, jsonSchema); `<id>` may span segments (`message/email`, `application/flatpak`); unknown extra segments resolve to their parent |
 | GET | `/schemas/data/schema/<id>.json` | — | JSON Schema (draft-07) for the id |
 
 ---

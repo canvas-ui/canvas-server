@@ -468,7 +468,7 @@ export class WorkspaceConnectorIndex extends EventEmitter {
      * Mirror source-side deletions: drop the locations of indexed documents
      * whose remote object no longer exists, using the stored index's
      * orphan-not-delete semantics (doc keeps curated placements, gains
-     * data/no-location + orphanedAt, purged later by retention GC).
+     * orphanedAt + feature/orphaned, purged later by retention GC).
      *
      * Guard rails:
      * - Only drivers that can FULLY traverse the source (listIdentities);

@@ -13,8 +13,8 @@ under the anchor-first grammar:
 ```
 /github/<address>/<owner>/<repo>       issues  → data/schema/task
 /slack/<address>/<channel>             msgs    → data/schema/message  (data.platform: 'slack')
-/gcal/<address>/<calendar>             events  → data/schema/event    (data.type: 'calendar')
-/caldav/<address>/<calendar>           events  → data/schema/event    (data.type: 'calendar')
+/gcal/<address>/<calendar>             events  → data/schema/event/calendar
+/caldav/<address>/<calendar>           events  → data/schema/event/calendar
 /teams/<address>/<team>/<channel>      msgs    → data/schema/message  (data.platform: 'teams')
 ```
 
@@ -108,7 +108,8 @@ After each clean container sync, drivers that can FULLY traverse the source
 compare that listing against the indexed mirror. Docs whose remote object is
 gone are handed to the stored index's orphan-not-delete machinery
 (`reconcileRemovedLocations`): locations dropped, backends-mirror paths
-unticked, `data/no-location` + `orphanedAt` stamped — curated placements
+unticked, empty locations + `orphanedAt` stamped (which is what ticks
+`feature/orphaned`) — curated placements
 survive, and the doc is purged later by orphan retention GC (Settings >
 Database). Guard rails: any traversal error skips the prune (a partial
 listing must never masquerade as complete); only docs whose identity checksum
@@ -121,7 +122,7 @@ against a non-empty mirror is refused.
   (`state_reason: not_planned` → `cancelled`), open+assignees → `in-progress`,
   else `pending`; `milestone.due_on` → `dueDate`; `closed_at` → `completedAt`;
   labels/repo/number/author/htmlUrl pass through in `data`. PRs are skipped.
-- **GCal event → Event**: `type: 'calendar'`; `start.dateTime|date` → `start`
+- **GCal event → Event**: schema `data/schema/event/calendar`; `start.dateTime|date` → `start`
   (all-day dates become `T00:00:00Z` + `allDay: true`); first `RRULE:` line →
   `data.recurrence` (envelope model — synapsd never expands series);
   `status: cancelled` instances are skipped.

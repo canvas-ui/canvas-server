@@ -54,7 +54,9 @@ describe('WorkspaceStoredIndex', () => {
             async list({ directory, features } = {}) {
                 if (features?.allOf) {
                     return [...documents.values()].filter((doc) =>
-                        features.allOf.every((f) => (doc.features || []).includes(f)));
+                        features.allOf.every((f) => f === 'feature/orphaned'
+                            ? Boolean(doc.orphanedAt) && (doc.locations || []).length === 0
+                            : (doc.features || []).includes(f)));
                 }
                 return [...documents.values()].filter((doc) => (documentPaths.get(doc.id) || []).some((p) => p.startsWith(directory)));
             },
@@ -149,12 +151,12 @@ describe('WorkspaceStoredIndex', () => {
         await index.resync('workspace:home');
 
         // Orphan lifecycle: row + checksums survive, backend-mirror path is
-        // unticked, doc is flagged data/no-location with an orphanedAt stamp.
+        // unticked, doc is flagged feature/orphaned with an orphanedAt stamp.
         assert.equal(documents.size, 1);
         const orphan = [...documents.values()][0];
         assert.deepEqual(orphan.locations, []);
         assert.ok(orphan.orphanedAt);
-        assert.ok(orphan.features.includes('data/no-location'));
+        assert.ok(!(orphan.features || []).includes('feature/orphaned'));
         assert.deepEqual(documentPaths.get(doc.id), []);
     });
 
@@ -177,7 +179,7 @@ describe('WorkspaceStoredIndex', () => {
         const rebound = [...documents.values()][0];
         assert.equal(rebound.id, doc.id);
         assert.equal(rebound.orphanedAt, null);
-        assert.ok(!(rebound.features || []).includes('data/no-location'));
+        assert.ok(!(rebound.features || []).includes('feature/orphaned'));
         assert.deepEqual(rebound.locations, [{ url: 'stored://workspace:home/nested/restored.txt' }]);
     });
 
@@ -199,7 +201,7 @@ describe('WorkspaceStoredIndex', () => {
         assert.equal(documents.size, 1);
         const after = [...documents.values()][0];
         assert.deepEqual(after.locations, before.locations);
-        assert.ok(!(after.features || []).includes('data/no-location'));
+        assert.ok(!(after.features || []).includes('feature/orphaned'));
     });
 
     test('in-place edit migrates curated placements to the successor doc', async () => {
@@ -216,8 +218,8 @@ describe('WorkspaceStoredIndex', () => {
         assert.ok(successor, 'successor doc for the edited bytes exists');
         // Predecessor orphaned quietly (placements survive), successor carries
         // the derivedFrom breadcrumb and received the migrated placements.
-        assert.deepEqual(orphan.locations, []);
-        assert.ok(orphan.features.includes('data/no-location'));
+        assert.ok(orphan.orphanedAt);
+        assert.ok(!(orphan.features || []).includes('feature/orphaned'));
         assert.equal(successor.metadata.derivedFrom, oldDoc.checksumArray[0]);
         assert.deepEqual(migrations, [{
             fromId: oldDoc.id,

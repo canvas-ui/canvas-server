@@ -139,10 +139,9 @@ export default class GcalDriver {
         const rrule = (event.recurrence || []).find((r) => /^RRULE:/i.test(r));
 
         return {
-            schema: 'data/schema/event',
+            schema: 'data/schema/event/calendar',
             data: {
                 title: event.summary || '(untitled)',
-                type: 'calendar',
                 description: event.description || undefined,
                 start,
                 end: this.#when(event.end) ?? undefined,

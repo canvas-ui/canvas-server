@@ -503,6 +503,8 @@ export default async function authRoutes(fastify, _options) {
           fqdn: { type: 'string' },
           description: { type: 'string' },
           platform: { type: 'string' },
+          osDistro: { type: 'string' },
+          osVersion: { type: 'string' },
           arch: { type: 'string' },
           type: { type: 'string' }
         }
@@ -527,6 +529,8 @@ export default async function authRoutes(fastify, _options) {
         name,
         description,
         platform: input.platform,
+        osDistro: input.osDistro,
+        osVersion: input.osVersion,
         arch: input.arch,
         type: input.type,
       });

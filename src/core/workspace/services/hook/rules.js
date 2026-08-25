@@ -35,7 +35,10 @@ import { WORKSPACE_DIRECTORIES } from '../../lib/constants.js';
  * (mirror a folder subtree: `backends:/workspace/home/foo` → `dir:/bar`);
  * templates see the same via {{match.rel}}. `store`/`unstore` are the storage-layer pair — they move/copy a
  * document's BYTES between backends (with template renaming) and delete them
- * from named backends; everything else operates on the index.
+ * from named backends; everything else operates on the index. `store` takes
+ * `folder` (destination directory on the target backend), `recursive: true`
+ * (append the sub-path below the matched `when.path`, like link) and `key`
+ * (file-name template) — composed as folder/{{match.rel}}/key.
  */
 
 // ── Loading ──────────────────────────────────────────────────────────────────
@@ -362,6 +365,42 @@ function documentDate(doc) {
     return new Date();
 }
 
+// One path segment, safe for any filesystem backend: no separators, control
+// characters or reserved punctuation; never `.`/`..`; bounded length.
+function sanitizeSegment(value, fallback = '') {
+    const cleaned = String(value ?? '')
+        // eslint-disable-next-line no-control-regex
+        .replace(/[\\/:*?"<>|\x00-\x1f]+/g, '-')
+        .replace(/\s+/g, ' ')
+        .replace(/^[\s.-]+|[\s.-]+$/g, '')
+        .slice(0, 120)
+        .trim();
+    return cleaned || fallback;
+}
+
+/**
+ * Join key parts into one backend-relative key. Each part may itself contain
+ * slashes (`Projects/Canvas/UI`, `{{match.rel}}` expansions); empty parts,
+ * `.` and `..` segments and repeated/leading slashes are dropped so a rule can
+ * never escape the backend root or produce `Fotky///x`.
+ */
+export function joinKey(...parts) {
+    const segments = [];
+    for (const part of parts) {
+        if (part == null || part === '') { continue; }
+        for (const seg of String(part).split(/[\\/]+/)) {
+            if (!seg || seg === '.' || seg === '..') { continue; }
+            segments.push(seg);
+        }
+    }
+    return segments.join('/');
+}
+
+function titleOf(doc) {
+    const raw = doc?.data?.title ?? doc?.metadata?.title ?? doc?.data?.name ?? doc?.data?.subject ?? '';
+    return String(raw).trim();
+}
+
 function filenameOf(doc, sourceKey) {
     const own = String(doc?.metadata?.filename || doc?.data?.filename || '').trim();
     if (own) { return own; }
@@ -372,8 +411,9 @@ function filenameOf(doc, sourceKey) {
  * Expand `{{YYYY}}`-style tokens in a storage key template.
  *
  * Date: YYYY, YY, MM, DD, HH, mm, ss. File: ext (with the dot, lowercased),
- * basename (filename without extension), filename. Everything else is left for
- * the generic {{doc.*}} interpolation, which runs first.
+ * basename (filename without extension), filename, title (document title made
+ * filesystem-safe, falls back to basename), id. Everything else is left for
+ * the generic {{doc.*}} interpolation, which runs after this.
  */
 export function expandKeyTemplate(template, { doc, sourceKey } = {}) {
     const date = documentDate(doc);
@@ -394,7 +434,9 @@ export function expandKeyTemplate(template, { doc, sourceKey } = {}) {
         ext,
         basename: ext && filename.toLowerCase().endsWith(ext) ? filename.slice(0, -ext.length) : filename,
         filename,
+        id: doc?.id != null ? String(doc.id) : '',
     };
+    tokens.title = sanitizeSegment(titleOf(doc), tokens.basename);
 
     return String(template).replace(/\{\{\s*([A-Za-z]+)\s*\}\}/g, (match, token) => (
         Object.prototype.hasOwnProperty.call(tokens, token) ? tokens[token] : match
@@ -453,6 +495,19 @@ const ACTIONS = {
      *   { "action": "store", "to": "workspace:home", "from": "workspace:data",
      *     "key": "Fotky/{{YYYY}}/{{MM}}/{{YYYY}}{{MM}}{{DD}}_{{HH}}{{mm}}{{ss}}{{ext}}" }
      *
+     * The friendlier spelling splits WHERE from WHAT: `folder` is the
+     * directory on the target backend, `recursive: true` keeps the sub-folder
+     * structure below the matched `when.path` (exactly like link's), and `key`
+     * is just the file name template (default `{{basename}}{{ext}}` — the
+     * original name, with an extension derived from the mime type when the
+     * blob-store key has none):
+     *
+     *   { "action": "store", "to": "workspace:home", "folder": "Projects/Canvas/UI",
+     *     "recursive": true }
+     *
+     * filed under /projects/canvas/UI/mobile → home:Projects/Canvas/UI/mobile/<name>.
+     * The three parts are joined with `..`/leading-slash segments dropped.
+     *
      * `from` (backend name or array) is the guard that makes this idempotent:
      * once the bytes have moved, no source matches and re-runs are no-ops, so
      * the rule can safely fire on both document.inserted and document.linked.
@@ -483,9 +538,19 @@ const ACTIONS = {
         // {{…}}, and interpolate() resolves any unknown word to an empty string
         // — running it first would silently eat {{YYYY}} and file everything
         // under `Fotky///`.
-        const key = action.key
-            ? interpolate(expandKeyTemplate(String(action.key), { doc, sourceKey: source.key }), scope)
-            : undefined;
+        const render = (template) => interpolate(expandKeyTemplate(String(template), { doc, sourceKey: source.key }), scope);
+        const folder = action.folder != null && String(action.folder).trim() !== '' ? render(action.folder) : '';
+        const recursive = action.recursive === true;
+        let key;
+        if (action.key || folder || recursive) {
+            const name = action.key ? render(action.key) : render('{{basename}}{{ext}}');
+            const rel = recursive ? String(scope.match?.rel || '') : '';
+            key = joinKey(folder, rel, name);
+            if (!key) {
+                logger.warn(`rule store: ${doc.id} destination key rendered empty (folder="${action.folder ?? ''}", key="${action.key ?? ''}"), skipping`);
+                return;
+            }
+        }
 
         const res = await workspace.transferDocumentBytes(doc, {
             to,

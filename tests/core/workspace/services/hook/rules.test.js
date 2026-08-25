@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { resolveRuleFiles, loadRuleFile, matchRule, explainRule, executeRuleActions, interpolate } from '../../../../../src/core/workspace/services/hook/rules.js';
+import { resolveRuleFiles, loadRuleFile, matchRule, explainRule, executeRuleActions, interpolate, expandKeyTemplate, joinKey } from '../../../../../src/core/workspace/services/hook/rules.js';
 import { classifyDocument } from '../../../../../src/core/workspace/lib/classifier.js';
 
 const noopLogger = { debug: () => {}, warn: () => {} };
@@ -541,5 +541,85 @@ echo "{\\"cwd\\":\\"$PWD\\",\\"event\\":\\"$CANVAS_EVENT\\",\\"eventId\\":\\"$CA
         const disabled = explainRule({ id: 'off', enabled: false, when: { event: 'document.inserted' }, then: [] }, 'document.inserted', c);
         assert.equal(disabled.matched, false);
         assert.equal(disabled.enabled, false);
+    });
+});
+
+describe('store action', () => {
+    function filePayload(contextPaths, extra = {}) {
+        return {
+            document: {
+                id: 301,
+                schema: 'data/schema/file',
+                data: { title: 'Pinterest: UI / mood board?' },
+                metadata: { contentType: 'image/png', ...extra },
+                locations: [{ url: 'stored://workspace:data/sha256-abc' }],
+            },
+            context: { paths: contextPaths },
+        };
+    }
+
+    function storeContext(payload, eventName = 'document.linked') {
+        const transfers = [];
+        const workspace = {
+            id: 'ws-1', name: 'test',
+            documentByteEndpoints: async () => [{ backend: 'workspace:data', key: 'sha256-abc' }],
+            transferDocumentBytes: async (doc, opts) => { transfers.push({ id: doc.id, ...opts }); return { ok: true, to: { url: `stored://${opts.to}/${opts.key}` } }; },
+        };
+        const context = { workspace, payload, eventName, classify: () => classify(payload) };
+        return { context, transfers };
+    }
+
+    test('folder + recursive mirrors the sub-path below the matched prefix, name from mime', async () => {
+        const payload = filePayload(['/projects/canvas/UI/mobile']);
+        const { context, transfers } = storeContext(payload);
+        await executeRuleActions({
+            id: 'r', when: { path: '/projects/canvas/UI' },
+            then: [{ action: 'store', to: 'workspace:home', folder: '/Projects/Canvas/UI/', recursive: true }],
+        }, context, noopLogger);
+        assert.equal(transfers.length, 1);
+        assert.equal(transfers[0].to, 'workspace:home');
+        assert.equal(transfers[0].mode, 'move');
+        assert.equal(transfers[0].key, 'Projects/Canvas/UI/mobile/sha256-abc.png');
+    });
+
+    test('folder without recursive files flat; key template names the file', async () => {
+        const payload = filePayload(['/projects/canvas/UI/mobile'], { filename: 'hero.PNG' });
+        const { context, transfers } = storeContext(payload);
+        await executeRuleActions({
+            id: 'r', when: { path: '/projects/canvas/UI' },
+            then: [{ action: 'store', to: 'workspace:home', folder: 'Projects/Canvas/UI', key: '{{title}}{{ext}}', mode: 'copy' }],
+        }, context, noopLogger);
+        assert.equal(transfers[0].mode, 'copy');
+        assert.equal(transfers[0].key, 'Projects/Canvas/UI/Pinterest- UI - mood board.png');
+    });
+
+    test('legacy key-only rules keep their exact key; no key keeps the source key', async () => {
+        const payload = filePayload(['/x']);
+        const { context, transfers } = storeContext(payload);
+        await executeRuleActions({
+            id: 'r', when: {},
+            then: [
+                { action: 'store', to: 'workspace:home', key: 'Fotky/{{YYYY}}/{{basename}}{{ext}}' },
+                { action: 'store', to: 'nas' },
+            ],
+        }, context, noopLogger);
+        assert.match(transfers[0].key, /^Fotky\/\d{4}\/sha256-abc\.png$/);
+        assert.equal(transfers[1].key, undefined);
+    });
+
+    test('skips when the bytes are not on the `from` backend', async () => {
+        const payload = filePayload(['/x']);
+        const { context, transfers } = storeContext(payload);
+        await executeRuleActions({
+            id: 'r', when: {}, then: [{ action: 'store', to: 'workspace:home', from: 'nas', folder: 'a' }],
+        }, context, noopLogger);
+        assert.equal(transfers.length, 0);
+    });
+
+    test('joinKey / expandKeyTemplate never escape the root', () => {
+        assert.equal(joinKey('/a//b/', '../../etc', './c', 'x.txt'), 'a/b/etc/c/x.txt');
+        assert.equal(joinKey('', null, undefined), '');
+        const key = expandKeyTemplate('{{title}}{{ext}}', { doc: { id: 1, data: { title: '../../evil' }, metadata: { contentType: 'image/jpeg' } }, sourceKey: 'k' });
+        assert.equal(key, 'evil.jpg');
     });
 });

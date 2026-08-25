@@ -43,13 +43,30 @@ document keeps its id, its tags and every folder it is filed in. Only
 }
 ```
 
+The friendlier spelling separates *where* from *what* — this is what the web
+rule builder writes. "Every image filed under `/projects/canvas/UI` lands in
+`workspace:home/Projects/Canvas/UI`, sub-folders kept":
+
+```json
+{
+  "id": "canvas-ui-images",
+  "when": { "event": ["document.inserted", "document.linked"], "schema": "file", "mime": "image/*", "path": "/projects/canvas/UI" },
+  "then": [ { "action": "store", "to": "workspace:home", "folder": "Projects/Canvas/UI", "recursive": true } ]
+}
+```
+
 | Field | Meaning |
 |-------|---------|
 | `to` | Target backend address (required) |
-| `from` | Only act when the bytes are on this backend (name or array). This is what makes the rule idempotent — after the move nothing matches, so re-runs are no-ops |
+| `from` | Only act when the bytes are on this backend (name or array). This is what makes the rule idempotent — after the move nothing matches, so re-runs are no-ops. Omitted: any backend other than `to` |
 | `mode` | `move` (default) or `copy` |
-| `key` | Destination key template; omit to keep the current key |
+| `folder` | Directory on the target backend (template tokens allowed) |
+| `recursive` | `true`: append the document's sub-path below the matched `when.path` prefix — `/projects/canvas/UI/mobile/x` → `Projects/Canvas/UI/mobile/…` (same semantics as `link`'s `recursive`) |
+| `key` | File-name template. With `folder`/`recursive` it defaults to `{{basename}}{{ext}}` (original name; extension derived from the mime type when the blob key has none). Alone, it is the full destination key (legacy form); omit everything to keep the current key |
 | `onConflict` | `rename` (default: `name-1.ext`), `error`, `overwrite` |
+
+The destination is `folder / {{match.rel}} / key` joined with empty, `.`, `..`
+and leading-slash segments dropped, so a rule can never escape the backend root.
 
 **Key tokens.** `{{YYYY}} {{YY}} {{MM}} {{DD}} {{HH}} {{mm}} {{ss}}` come from the
 content's own date: **EXIF capture time first**, then the content timeline, then
@@ -57,7 +74,8 @@ the document's created stamp. A photo imported years after it was taken files
 under the year it was *taken*. EXIF carries no timezone, so the timestamp is
 read back as the wall clock the camera showed. `{{ext}}` (with the dot,
 lowercased — from the filename, else the mime type), `{{basename}}`,
-`{{filename}}`. `{{doc.*}}` interpolation still works alongside them.
+`{{filename}}`, `{{title}}` (document title made filesystem-safe, falls back to
+`{{basename}}`), `{{id}}`. `{{doc.*}}` interpolation still works alongside them.
 
 **`path` matches prefixes**, so `/Fotky` covers `/Fotky/2019/07` and every other
 subfolder. Bind the rule to both `document.inserted` (uploaded straight into the

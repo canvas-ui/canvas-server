@@ -640,16 +640,19 @@ const ACTIONS = {
     // the maxDepth ceiling) — a rule matching its own output no longer loops.
     async agent(action, { context, scope, workspace, logger }) {
         if (!action.slug || !action.prompt) { return; }
-        const reply = await context.agent(action.slug, interpolate(action.prompt, scope), action.options || {});
+        // The membership-only document.updated form carries no document:
+        // prompting an agent about nothing is never what the rule meant.
+        if (!scope.doc) { return { status: 'skipped', error: 'event carries no document (membership-only update)' }; }
+        const reply = await context.agent(action.slug, interpolate(action.prompt, scope), { ...(action.options || {}), throwOnError: true });
         logger.debug(`rule agent(${action.slug}): ${reply ? String(reply).slice(0, 120) : 'no reply'}`);
-        if (!reply) { return; }
+        if (!reply) { return { status: 'skipped', error: `agent "${action.slug}" returned an empty reply` }; }
         await handleActionOutput(String(reply), action.output, { context, scope, workspace, logger, label: `agent(${action.slug})` });
     },
 
     async notify(action, { context, scope }) {
         if (!action.message) { return; }
         const options = action.channel ? { channel: action.channel } : {};
-        await context.notify(interpolate(action.message, scope), options);
+        await context.notify(interpolate(action.message, scope), { ...options, throwOnError: true });
     },
 
     // Script under the workspace git/ tree (same pattern as the youtube seed
@@ -830,8 +833,12 @@ export async function executeRuleActions(rule, context, logger) {
             continue;
         }
         try {
-            await handler(action, { workspace, doc, payload, context, scope, logger, provenance });
-            results.push({ action: action.action, status: 'ok' });
+            // A handler may return { status: 'skipped', error } to say why it
+            // did nothing; anything else is a plain success.
+            const outcome = await handler(action, { workspace, doc, payload, context, scope, logger, provenance });
+            results.push(outcome && typeof outcome === 'object' && outcome.status === 'skipped'
+                ? { action: action.action, status: 'skipped', ...(outcome.error ? { error: String(outcome.error) } : {}) }
+                : { action: action.action, status: 'ok' });
         } catch (err) {
             logger.warn(`rule ${rule.id || '?'} action ${action.action} failed: ${err.message}`);
             results.push({ action: action.action, status: 'error', error: err.message });

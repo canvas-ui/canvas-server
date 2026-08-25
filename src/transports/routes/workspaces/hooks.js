@@ -560,11 +560,42 @@ export default async function workspaceHooksRoutes(fastify) {
         }
       }
 
+      // A `path` condition scopes discovery to the documents actually filed
+      // under those prefixes — without this a rule on `/To Read` walked the
+      // whole index oldest-first and, past the batch limit, never even saw
+      // its own folder ("matches 0 of 2000"). Same qualifier grammar as the
+      // matcher: bare / ctx: = context tree, dir: = directory tree, any other
+      // `name:` = that tree.
+      const rulePaths = rule?.when?.path ? (Array.isArray(rule.when.path) ? rule.when.path : [rule.when.path]) : [];
+      const pathSelectors = rulePaths.map((raw) => {
+        const value = String(raw || '');
+        const qualifier = value.match(/^([A-Za-z][\w-]*):(?=\/|$)/);
+        const tree = qualifier ? (({ ctx: 'context', dir: 'directory' })[qualifier[1]] || qualifier[1]) : 'context';
+        const path = (qualifier ? value.slice(qualifier[0].length) : value) || '/';
+        if (tree === 'context') return { context: path };
+        if (tree === 'directory') return { directory: path };
+        return { directory: { tree, path } };
+      });
+
       // One query per expanded schema, unioned by id — alternative schemas are
       // OR in the rule engine, and a single features array would intersect.
       let docs;
       try {
-        if (schemas.length) {
+        if (pathSelectors.length) {
+          const seen = new Map();
+          const featureSets = schemas.length ? schemas.map((key) => [key]) : [null];
+          for (const selector of pathSelectors) {
+            for (const features of featureSets) {
+              const batch = await request.workspace.list({ ...selector, ...(features ? { features } : {}), limit });
+              for (const doc of (Array.isArray(batch) ? batch : batch?.data || [])) {
+                if (doc?.id != null && !seen.has(doc.id)) seen.set(doc.id, doc);
+              }
+              if (seen.size >= limit) break;
+            }
+            if (seen.size >= limit) break;
+          }
+          docs = [...seen.values()].slice(0, limit);
+        } else if (schemas.length) {
           const seen = new Map();
           for (const key of schemas) {
             const batch = await request.workspace.list({ features: [key], limit });

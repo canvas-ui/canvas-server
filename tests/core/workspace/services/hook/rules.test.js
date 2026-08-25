@@ -258,7 +258,7 @@ describe('rule actions', () => {
         }, context, noopLogger);
 
         assert.deepEqual(calls.agent, [{ slug: 'lucy', prompt: 'Check email 102: prod down' }]);
-        assert.deepEqual(calls.notify, [{ message: 'mail from boss@corp.com missing !', options: {} }]);
+        assert.deepEqual(calls.notify, [{ message: 'mail from boss@corp.com missing !', options: { throwOnError: true } }]);
     });
 
     test('link action routes dir:-prefixed paths to the directory tree', async () => {

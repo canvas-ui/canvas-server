@@ -922,16 +922,22 @@ class HookService extends EventEmitter {
 
     // Pure-function agent call: start the agent if needed, prompt it, return text.
     // Returns null (and logs) instead of throwing so a hook keeps running.
+    // `throwOnError: true` (declarative rules) surfaces the failure instead —
+    // a rule whose agent is missing or stopped must show up as an error in
+    // the run log, not as "ok" with nothing happening.
     #buildAgentHelper(workspace) {
         return async (slugOrId, prompt, options = {}) => {
+            const { throwOnError = false, ...rest } = options || {};
             if (!this.#agents) {
                 logger.debug('Hook agent() called but no agents service is wired');
+                if (throwOnError) { throw new Error('no agents service is configured on this server'); }
                 return null;
             }
             try {
-                return await this.#agents.prompt(workspace.owner, slugOrId, prompt, options);
+                return await this.#agents.prompt(workspace.owner, slugOrId, prompt, rest);
             } catch (err) {
                 logger.debug(`Hook agent(${slugOrId}) failed: ${err.message}`);
+                if (throwOnError) { throw new Error(`agent "${slugOrId}": ${err.message}`, { cause: err }); }
                 return null;
             }
         };
@@ -942,14 +948,17 @@ class HookService extends EventEmitter {
     // keeps running when no channel is configured.
     #buildNotifyHelper(workspace) {
         return async (message, options = {}) => {
+            const { throwOnError = false, ...rest } = options || {};
             if (!this.#messaging) {
                 logger.debug('Hook notify() called but no messaging service is wired');
+                if (throwOnError) { throw new Error('no messaging service is configured on this server'); }
                 return null;
             }
             try {
-                return await this.#messaging.notify(workspace.owner, message, options);
+                return await this.#messaging.notify(workspace.owner, message, rest);
             } catch (err) {
                 logger.debug(`Hook notify() failed: ${err.message}`);
+                if (throwOnError) { throw new Error(`notify: ${err.message}`, { cause: err }); }
                 return null;
             }
         };

@@ -10,7 +10,7 @@ import { classifyDocument } from '../../lib/classifier.js';
 import { resolveRuleFiles, loadRuleFile, matchRule, executeRuleActions } from './rules.js';
 import { buildHookAgentPrompt } from './agent-prompt.js';
 import { resolveHookFiles, statFile } from './files.js';
-import HookRunLog, { buildReplayEnvelope } from './run-log.js';
+import HookRunLog, { buildReplayEnvelope, createRunTrace } from './run-log.js';
 import PendingActionStore, { applyAmendments } from './pending-actions.js';
 
 const logger = createLogger('hook-service');
@@ -277,12 +277,13 @@ class HookService extends EventEmitter {
 
             const context = this.#buildHookContext(workspace, eventName, payload, 'rule');
             const t0 = Date.now();
-            const actions = await executeRuleActions({ ...rule, then: immediate }, context, logger);
+            const trace = createRunTrace(logger);
+                const actions = await executeRuleActions({ ...rule, then: immediate }, context, trace.logger);
             const status = actions.some((a) => a.status === 'error') ? 'error' : 'ok';
             runLog?.append({
                 ...this.#baseRecord(eventName, payload, trigger),
                 handlerType: 'rule', handler: rule.id || '?',
-                durationMs: Date.now() - t0, status, actions,
+                durationMs: Date.now() - t0, status, actions, trace: trace.lines,
                 replayEnvelope: buildReplayEnvelope(eventName, payload),
             });
             return { status, actions };
@@ -481,14 +482,15 @@ class HookService extends EventEmitter {
             amended.handlerType === 'rule' ? 'rule' : 'hook', amended.handler,
         );
         const t0 = Date.now();
-        const actions = await executeRuleActions(syntheticRule, context, logger);
+        const trace = createRunTrace(logger);
+        const actions = await executeRuleActions(syntheticRule, context, trace.logger);
         const status = actions.some((a) => a.status === 'error') ? 'failed' : 'approved';
 
         this.runLogFor(workspace)?.append({
             ...this.#baseRecord(amended.event, basePayload, 'approval'),
             handlerType: amended.handlerType, handler: amended.handler, actionId,
             durationMs: Date.now() - t0,
-            status: status === 'approved' ? 'ok' : 'error', actions,
+            status: status === 'approved' ? 'ok' : 'error', actions, trace: trace.lines,
             replayEnvelope: buildReplayEnvelope(amended.event, basePayload),
         });
 
@@ -686,13 +688,15 @@ class HookService extends EventEmitter {
                 // no document and silently does nothing.
                 context = context || this.#buildHookContext(workspace, eventName, enriched, 'rule');
                 const t0 = Date.now();
-                const actions = await executeRuleActions({ ...rule, then: immediate }, context, logger);
+                const trace = createRunTrace(logger);
+                const actions = await executeRuleActions({ ...rule, then: immediate }, context, trace.logger);
                 runLog?.append({
                     ...this.#baseRecord(eventName, payload),
                     handlerType: 'rule', handler: rule.id || '?',
                     durationMs: Date.now() - t0,
                     status: actions.some((a) => a.status === 'error') ? 'error' : 'ok',
                     actions,
+                    trace: trace.lines,
                     replayEnvelope: buildReplayEnvelope(eventName, payload),
                 });
             }
@@ -793,6 +797,9 @@ class HookService extends EventEmitter {
     async #invokeHook(run, context, hookPath, meta = null) {
         const t0 = Date.now();
         let error = null;
+        // ctx.logger inside the hook records into the run's trace as well.
+        const trace = createRunTrace(context.logger || logger);
+        context.logger = trace.logger;
         try {
             await run(context);
         } catch (err) {
@@ -807,6 +814,7 @@ class HookService extends EventEmitter {
                 durationMs: Date.now() - t0,
                 status: error ? 'error' : 'ok',
                 ...(error ? { error: error.message } : {}),
+                trace: trace.lines,
                 replayEnvelope: buildReplayEnvelope(meta.eventName, meta.payload),
             });
         }

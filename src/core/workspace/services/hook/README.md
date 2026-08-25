@@ -141,3 +141,22 @@ Both guards matter because a rule fires unattended on every matching event: a
 `from` that happens to hold the only copy would otherwise be a silent data
 delete. Locations that are not byte backends (`imap://`, `https://`) count as
 survivors — the bytes are still reachable there.
+
+## Run log & execution traces
+
+Every rule / hook execution appends a record to `var/hooks/runs.jsonl`
+(status, per-action outcomes, replay envelope) **plus an execution trace**:
+every line the handler logged during the run — for rules that includes the
+exact agent prompt and reply, notify delivery (`notify via canvas: …`), where
+a `store`/`download` landed and why an action was skipped. JS hooks get the
+same through `ctx.logger`. Traces are capped (300 lines, 2 KiB per line).
+
+- `GET /workspaces/:id/hooks/runs?handler=<rule id>&failed=true` — the table
+  (trace replaced by `traceLines`)
+- `GET /workspaces/:id/hooks/runs/:runId` — one run in full, with `trace`
+- Web: Settings → Hooks → Runs, the scroll icon on a row; a rule card's
+  "ran N×" opens the log filtered to that rule; deep link
+  `settings/hooks?section=runs&handler=<id>&run=<runId>`.
+
+Agent/notify failures are errors in the run log, never silent: a rule whose
+agent is missing or stopped shows `agent: … not found or not startable`.

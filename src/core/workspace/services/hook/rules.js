@@ -43,6 +43,14 @@ import { download } from './download.js';
  * (file-name template) — composed as folder/{{match.rel}}/key.
  */
 
+// Trace-worthy line (agent exchange, delivery outcome). Loggers handed in by
+// tests or JS hooks may lack info(); fall back to debug rather than fail the
+// action over a log line.
+function traceInfo(logger, message) {
+    if (typeof logger?.info === 'function') { logger.info(message); }
+    else { logger?.debug?.(message); }
+}
+
 // ── Loading ──────────────────────────────────────────────────────────────────
 
 export function resolveRuleFiles(hooksRoot) {
@@ -643,16 +651,20 @@ const ACTIONS = {
         // The membership-only document.updated form carries no document:
         // prompting an agent about nothing is never what the rule meant.
         if (!scope.doc) { return { status: 'skipped', error: 'event carries no document (membership-only update)' }; }
-        const reply = await context.agent(action.slug, interpolate(action.prompt, scope), { ...(action.options || {}), throwOnError: true });
-        logger.debug(`rule agent(${action.slug}): ${reply ? String(reply).slice(0, 120) : 'no reply'}`);
+        const prompt = interpolate(action.prompt, scope);
+        traceInfo(logger, `agent(${action.slug}) prompt: ${prompt}`);
+        const reply = await context.agent(action.slug, prompt, { ...(action.options || {}), throwOnError: true });
+        traceInfo(logger, `agent(${action.slug}) reply: ${reply ? String(reply) : '(empty)'}`);
         if (!reply) { return { status: 'skipped', error: `agent "${action.slug}" returned an empty reply` }; }
         await handleActionOutput(String(reply), action.output, { context, scope, workspace, logger, label: `agent(${action.slug})` });
     },
 
-    async notify(action, { context, scope }) {
+    async notify(action, { context, scope, logger }) {
         if (!action.message) { return; }
         const options = action.channel ? { channel: action.channel } : {};
-        await context.notify(interpolate(action.message, scope), { ...options, throwOnError: true });
+        const message = interpolate(action.message, scope);
+        const res = await context.notify(message, { ...options, throwOnError: true });
+        traceInfo(logger, `notify via ${res?.channel || action.channel || 'default channel'}: ${message}`);
     },
 
     // Script under the workspace git/ tree (same pattern as the youtube seed

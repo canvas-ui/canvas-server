@@ -224,12 +224,40 @@ export default async function workspaceHooksRoutes(fastify) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
       const { limit, handler, event, failed } = request.query || {};
-      const runs = await runLog.query({ limit, handler, event, failed });
+      const runs = (await runLog.query({ limit, handler, event, failed }))
+        // The list is a table; the trace is per-run detail (GET /runs/:runId).
+        .map(({ trace, ...rest }) => ({ ...rest, ...(Array.isArray(trace) ? { traceLines: trace.length } : {}) }));
       const response = new ResponseObject().found(runs, 'Workspace hook runs retrieved successfully', 200, runs.length);
       return reply.code(response.statusCode).send(response.getResponse());
     } catch (error) {
       request.log.error(error);
       const response = new ResponseObject().serverError('Failed to list workspace hook runs');
+      return reply.code(response.statusCode).send(response.getResponse());
+    }
+  });
+
+  // One run in full: the record plus its execution trace (what the agent was
+  // asked and answered, where a store/download landed, why an action skipped).
+  fastify.get('/runs/:runId', {
+    onRequest: [fastify.authenticate, requireWorkspaceRead()],
+    schema: { params: { type: 'object', required: ['runId'], properties: { runId: { type: 'string' } } } },
+  }, async (request, reply) => {
+    try {
+      const runLog = fastify.workspaceManager?.hookService?.runLogFor(request.workspace);
+      if (!runLog) {
+        const response = new ResponseObject().serverError('Hook service unavailable');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+      const run = await runLog.get(request.params.runId);
+      if (!run) {
+        const response = new ResponseObject().notFound(`Run ${request.params.runId} not found`);
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+      const response = new ResponseObject().found(run, 'Workspace hook run retrieved successfully');
+      return reply.code(response.statusCode).send(response.getResponse());
+    } catch (error) {
+      request.log.error(error);
+      const response = new ResponseObject().serverError('Failed to read workspace hook run');
       return reply.code(response.statusCode).send(response.getResponse());
     }
   });

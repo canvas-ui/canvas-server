@@ -8,7 +8,7 @@ import { classifyDocument } from '../../../../../src/core/workspace/lib/classifi
 import { download, resolveKind, arxivPdfUrl } from '../../../../../src/core/workspace/services/hook/download.js';
 import { interpolate as interp, expandKeyTemplate as expandKey } from '../../../../../src/core/workspace/services/hook/rules.js';
 
-const noopLogger = { debug: () => {}, warn: () => {} };
+const noopLogger = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} };
 
 function tabPayload(url, contextPaths = ['/inbox']) {
     return {

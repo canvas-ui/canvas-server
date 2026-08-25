@@ -23,6 +23,7 @@ import { WORKSPACE_DIRECTORIES } from '../../lib/constants.js';
  *     status: 'ok'|'error'|'skipped', error?, skipReason?,
  *     actions?: [{ action, status, error? }],   // rule runs
  *     outputTail?,                              // first 1 KiB of output text
+ *     trace?: [{ t, level, msg }],              // execution log (createRunTrace)
  *     replayEnvelope? }
  *
  * Rotation: when runs.jsonl exceeds maxBytes (5 MiB) it is renamed to
@@ -33,6 +34,40 @@ import { WORKSPACE_DIRECTORIES } from '../../lib/constants.js';
 
 const MAX_BYTES_DEFAULT = 5 * 1024 * 1024;
 const TAIL_CAP = 1024;
+// Per-run trace: enough to read an agent exchange back, small enough that a
+// chatty rule cannot blow the 5 MiB log through in an afternoon.
+const TRACE_MAX_LINES = 300;
+const TRACE_LINE_CAP = 2048;
+
+/**
+ * A logger that both forwards to the real one and records what it was told,
+ * so a run record can carry its own execution trace ("what did the agent get
+ * asked, what came back, where did the file land"). `lines` is what gets
+ * stored; each entry is { t: ms since the trace started, level, msg }.
+ * @param {Object} base - the underlying logger (debug/info/warn/error)
+ * @returns {{ logger: Object, lines: Array<{t:number, level:string, msg:string}> }}
+ */
+export function createRunTrace(base) {
+    const started = Date.now();
+    const lines = [];
+    let dropped = 0;
+    const record = (level, args) => {
+        const msg = args.map((a) => (a instanceof Error ? a.message : typeof a === 'string' ? a : (() => { try { return JSON.stringify(a); } catch { return String(a); } })())).join(' ');
+        if (lines.length >= TRACE_MAX_LINES) { dropped++; return; }
+        lines.push({ t: Date.now() - started, level, msg: msg.length > TRACE_LINE_CAP ? `${msg.slice(0, TRACE_LINE_CAP)}…` : msg });
+    };
+    const logger = {};
+    for (const level of ['debug', 'info', 'warn', 'error']) {
+        logger[level] = (...args) => {
+            record(level, args);
+            try { base?.[level]?.(...args); } catch { /* never let logging break a run */ }
+        };
+    }
+    logger.trace = (...args) => logger.debug(...args);
+    logger.child = () => logger;
+    Object.defineProperty(lines, 'dropped', { get: () => dropped, enumerable: false });
+    return { logger, lines };
+}
 
 const clipTail = (text) => {
     if (text == null) { return undefined; }
@@ -81,6 +116,11 @@ class HookRunLog {
                 ...record,
             };
             if (full.outputTail !== undefined) { full.outputTail = clipTail(full.outputTail); }
+            if (Array.isArray(full.trace)) {
+                const dropped = full.trace.dropped || 0;
+                full.trace = full.trace.slice(0, TRACE_MAX_LINES).map((l) => ({ t: l.t, level: l.level, msg: String(l.msg) }));
+                if (dropped) { full.trace.push({ t: full.trace[full.trace.length - 1]?.t ?? 0, level: 'warn', msg: `… ${dropped} more line(s) not recorded` }); }
+            }
             if (full.error !== undefined && full.error !== null) { full.error = clipTail(full.error); }
 
             fs.mkdirSync(this.#dir, { recursive: true });

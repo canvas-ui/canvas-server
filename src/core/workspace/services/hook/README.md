@@ -81,6 +81,40 @@ lowercased — from the filename, else the mime type), `{{basename}}`,
 subfolder. Bind the rule to both `document.inserted` (uploaded straight into the
 folder) and `document.linked` (filed there later).
 
+## Download — the `download` action
+
+Fetch what a link points at and file the result as a real file: images and
+any direct file link, videos (yt-dlp), arXiv papers (the PDF), a page with its
+requisites, or a whole website (wget mirror). The entry file is indexed as a
+`file` document **exactly where the link is filed** (or at `insert`), so the
+download sits next to the bookmark in every folder and view.
+
+```json
+{
+  "id": "download-links",
+  "when": { "event": ["document.inserted", "document.linked"], "schema": "tab", "path": "/media/to-download" },
+  "then": [ { "action": "download", "to": "workspace:home", "folder": "Downloads", "recursive": true, "kind": "auto" } ]
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `kind` | `auto` (default): arXiv → PDF, YouTube/Vimeo/TikTok/… → video, image/video/PDF links → the file, everything else → the page. Or force `image`, `video`, `arxiv`, `page`, `website` |
+| `to` | Backend the bytes end up on (default `workspace:home`; anything else is downloaded into home first, then moved on) |
+| `folder` / `recursive` | As for `store`: destination directory (+ the sub-path below the matched `when.path`) |
+| `key` | File name for single files (tokens as for `store`; default: the server's / yt-dlp's name) |
+| `insert` | Tree path(s) to file the download at; default: the same paths as the link |
+| `tags` | Feature tags for the new file document |
+| `depth` | `website` only: mirror depth (default 2, max 5) |
+| `format` | `video` only: yt-dlp `-f` selector (default: best video+audio) |
+| `timeout` | Seconds (default 600, max 3600) — the whole process group is killed on expiry |
+| `maxBytes` | Size cap for direct file downloads (default 2 GiB) |
+
+A ledger in `var/download-ledger.json` makes the action idempotent per rule
+and URL while the file still exists, so binding the rule to both
+`document.inserted` and `document.linked` is safe. Requires `yt-dlp` and
+`wget` on the server for the video / page / website kinds.
+
 ## Dedupe — the `unstore` action
 
 The inverse of `store`: delete a document's bytes from named backends while

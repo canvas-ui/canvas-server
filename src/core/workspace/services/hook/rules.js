@@ -6,6 +6,8 @@ import crypto from 'crypto';
 import { spawn } from 'child_process';
 import { isDisabledFile } from './naming.js';
 import { WORKSPACE_DIRECTORIES } from '../../lib/constants.js';
+import { sanitizeSegment, joinKey, MIME_EXTENSIONS } from './key-utils.js';
+import { download } from './download.js';
 
 /**
  * Declarative hook rules (canvas.hook-rules/v1).
@@ -29,8 +31,8 @@ import { WORKSPACE_DIRECTORIES } from '../../lib/constants.js';
  * Every matching rule fires — there is no first-match-wins, which keeps the
  * format trivially composable for a UI rule builder.
  *
- * Actions: link, unlink, tag, store, unstore, delete, destroy, agent, notify,
- * script, emit. `link`/`unlink` take `recursive: true` to append the
+ * Actions: link, unlink, tag, store, unstore, download, delete, destroy, agent,
+ * notify, script, emit. `link`/`unlink` take `recursive: true` to append the
  * document's sub-path below the matched `when.path` prefix to every target
  * (mirror a folder subtree: `backends:/workspace/home/foo` → `dir:/bar`);
  * templates see the same via {{match.rel}}. `store`/`unstore` are the storage-layer pair — they move/copy a
@@ -328,16 +330,7 @@ async function writeOutputFile(text, fileSpec, { context, scope, workspace, logg
 
 // ── Storage-key templating ───────────────────────────────────────────────────
 
-// Extension for a mime type when the source key has none — uploads land in the
-// blob store under a content-hash key, so `image/jpeg` is often all we have.
-const MIME_EXTENSIONS = {
-    'image/jpeg': '.jpg', 'image/png': '.png', 'image/gif': '.gif', 'image/webp': '.webp',
-    'image/heic': '.heic', 'image/heif': '.heif', 'image/avif': '.avif', 'image/tiff': '.tiff',
-    'image/svg+xml': '.svg', 'image/bmp': '.bmp',
-    'video/mp4': '.mp4', 'video/quicktime': '.mov', 'video/webm': '.webm', 'video/x-matroska': '.mkv',
-    'audio/mpeg': '.mp3', 'audio/mp4': '.m4a', 'audio/flac': '.flac', 'audio/ogg': '.ogg', 'audio/wav': '.wav',
-    'application/pdf': '.pdf', 'text/plain': '.txt', 'text/markdown': '.md',
-};
+export { joinKey } from './key-utils.js';
 
 /**
  * The moment a document's content is *about*, best-effort, for date-templated
@@ -363,37 +356,6 @@ function documentDate(doc) {
         if (!Number.isNaN(date.getTime())) { return date; }
     }
     return new Date();
-}
-
-// One path segment, safe for any filesystem backend: no separators, control
-// characters or reserved punctuation; never `.`/`..`; bounded length.
-function sanitizeSegment(value, fallback = '') {
-    const cleaned = String(value ?? '')
-        // eslint-disable-next-line no-control-regex
-        .replace(/[\\/:*?"<>|\x00-\x1f]+/g, '-')
-        .replace(/\s+/g, ' ')
-        .replace(/^[\s.-]+|[\s.-]+$/g, '')
-        .slice(0, 120)
-        .trim();
-    return cleaned || fallback;
-}
-
-/**
- * Join key parts into one backend-relative key. Each part may itself contain
- * slashes (`Projects/Canvas/UI`, `{{match.rel}}` expansions); empty parts,
- * `.` and `..` segments and repeated/leading slashes are dropped so a rule can
- * never escape the backend root or produce `Fotky///x`.
- */
-export function joinKey(...parts) {
-    const segments = [];
-    for (const part of parts) {
-        if (part == null || part === '') { continue; }
-        for (const seg of String(part).split(/[\\/]+/)) {
-            if (!seg || seg === '.' || seg === '..') { continue; }
-            segments.push(seg);
-        }
-    }
-    return segments.join('/');
 }
 
 function titleOf(doc) {
@@ -577,6 +539,15 @@ const ACTIONS = {
      *     "drop the staging copy once it is safely on the NAS", stated in the
      *     order it actually has to happen.
      */
+    /**
+     * Download what a link points at (image, video via yt-dlp, arXiv PDF, a
+     * page or a whole website via wget) into a backend folder and index the
+     * result as a file document next to the link. See download.js.
+     */
+    async download(action, args) {
+        return download(action, { ...args, helpers: { interpolate, expandKeyTemplate, parseLinkTarget, directorySelector } });
+    },
+
     async unstore(action, { workspace, doc, logger }) {
         if (!doc?.id) { logger.debug('rule unstore: event carries no document, skipping'); return; }
         const from = asArray(action.from || action.backends || []).filter(Boolean).map(String);

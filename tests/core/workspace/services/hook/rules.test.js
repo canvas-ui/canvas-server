@@ -5,6 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { resolveRuleFiles, loadRuleFile, matchRule, explainRule, executeRuleActions, interpolate, expandKeyTemplate, joinKey } from '../../../../../src/core/workspace/services/hook/rules.js';
 import { classifyDocument } from '../../../../../src/core/workspace/lib/classifier.js';
+import { download, resolveKind, arxivPdfUrl } from '../../../../../src/core/workspace/services/hook/download.js';
+import { interpolate as interp, expandKeyTemplate as expandKey } from '../../../../../src/core/workspace/services/hook/rules.js';
 
 const noopLogger = { debug: () => {}, warn: () => {} };
 
@@ -621,5 +623,100 @@ describe('store action', () => {
         assert.equal(joinKey('', null, undefined), '');
         const key = expandKeyTemplate('{{title}}{{ext}}', { doc: { id: 1, data: { title: '../../evil' }, metadata: { contentType: 'image/jpeg' } }, sourceKey: 'k' });
         assert.equal(key, 'evil.jpg');
+    });
+});
+
+describe('download action', () => {
+    let root;
+    beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), 'canvas-dl-')); });
+    afterEach(() => { fs.rmSync(root, { recursive: true, force: true }); });
+
+    const helpers = {
+        interpolate: interp,
+        expandKeyTemplate: expandKey,
+        parseLinkTarget: (raw) => { const m = String(raw).match(/^(ctx|dir):(.*)$/); return m ? { tree: m[1] === 'dir' ? 'directory' : 'context', path: m[2] } : { tree: 'context', path: raw }; },
+        directorySelector: (t) => (t.tree === 'directory' ? t.path : { tree: t.tree, path: t.path }),
+    };
+
+    function setup(url, contextPaths = ['/projects/canvas/UI']) {
+        const payload = { document: { id: 401, schema: 'data/schema/tab', data: { url, title: 'A nice: design' } }, context: { paths: contextPaths } };
+        const calls = { insert: [], link: [], transfer: [] };
+        const workspace = {
+            id: 'ws', name: 'ws', rootPath: root, homePath: path.join(root, 'home'),
+            getContextTreeSelector: (p) => ({ type: 'context', path: p }),
+            link: async (id, opts) => calls.link.push({ id, opts }),
+            transferDocumentBytes: async (doc, opts) => { calls.transfer.push(opts); return { ok: true }; },
+        };
+        const context = { workspace, payload, eventName: 'document.linked', classify: () => classify(payload), insert: async (d, o) => { calls.insert.push({ d, o }); return { id: 900 + calls.insert.length }; } };
+        const scope = { doc: payload.document, payload, event: 'document.linked', rule: { id: 'dl' }, match: { rel: 'mobile' } };
+        return { context, workspace, scope, calls, doc: payload.document };
+    }
+
+    const fakeFile = async (url, { workDir }) => { const f = path.join(workDir, 'pic.png'); fs.writeFileSync(f, 'PNG'); return f; };
+
+    test('classifies urls', async () => {
+        assert.equal(arxivPdfUrl('https://arxiv.org/abs/2401.00001'), 'https://arxiv.org/pdf/2401.00001.pdf');
+        assert.equal(await resolveKind('https://arxiv.org/abs/2401.00001'), 'file');
+        assert.equal(await resolveKind('https://youtu.be/abc'), 'video');
+        assert.equal(await resolveKind('https://x.com/a.jpg?x=1'), 'file');
+        assert.equal(await resolveKind('https://x.com/page', 'auto', async () => 'image/png'), 'file');
+        assert.equal(await resolveKind('https://x.com/page', 'auto', async () => 'text/html'), 'page');
+        assert.equal(await resolveKind('https://x.com/page', 'website'), 'website');
+    });
+
+    test('downloads a file into folder/rel, indexes it where the link is filed, records the ledger', async () => {
+        const { context, workspace, scope, calls, doc } = setup('https://example.com/img/pic.png');
+        const res = await download({ action: 'download', folder: 'Downloads', recursive: true, tags: ['custom/dl'] },
+            { workspace, doc, context, scope, logger: noopLogger, provenance: {}, helpers, fetchers: { file: fakeFile } });
+        assert.equal(res.status, 'ok');
+        assert.equal(res.file, 'Downloads/mobile/pic.png');
+        assert.ok(fs.existsSync(path.join(root, 'home/Downloads/mobile/pic.png')));
+        assert.equal(calls.insert.length, 1);
+        assert.deepEqual(calls.insert[0].o, { context: '/projects/canvas/UI' });
+        assert.equal(calls.insert[0].d.metadata.contentType, 'image/png');
+        assert.equal(calls.insert[0].d.metadata.sourceUrl, 'https://example.com/img/pic.png');
+        assert.equal(calls.transfer.length, 0);
+        const ledger = JSON.parse(fs.readFileSync(path.join(root, 'var/download-ledger.json'), 'utf8'));
+        assert.equal(ledger['dl|https://example.com/img/pic.png'].file, 'Downloads/mobile/pic.png');
+
+        // second run: idempotent
+        const again = await download({ action: 'download', folder: 'Downloads' },
+            { workspace, doc, context, scope, logger: noopLogger, provenance: {}, helpers, fetchers: { file: async () => { throw new Error('must not fetch'); } } });
+        assert.equal(again.status, 'skipped');
+    });
+
+    test('explicit insert paths and a foreign backend hand-over', async () => {
+        const { context, workspace, scope, calls, doc } = setup('https://example.com/pic.png');
+        await download({ action: 'download', to: 'nas', folder: 'Saved', insert: ['/media/saved', 'dir:/saved'] },
+            { workspace, doc, context, scope, logger: noopLogger, provenance: {}, helpers, fetchers: { file: fakeFile } });
+        assert.deepEqual(calls.insert[0].o, { context: '/media/saved' });
+        assert.equal(calls.link.length, 1);
+        assert.equal(calls.link[0].opts.directory, '/saved');
+        assert.equal(calls.transfer.length, 1);
+        assert.equal(calls.transfer[0].to, 'nas');
+        assert.equal(calls.transfer[0].key, 'Saved/pic.png');
+    });
+
+    test('website mirror keeps wget layout and indexes the entry page', async () => {
+        const { context, workspace, scope, calls, doc } = setup('https://example.com/docs/');
+        const fakeSite = async (url, { workDir }) => {
+            fs.mkdirSync(path.join(workDir, 'example.com/docs'), { recursive: true });
+            fs.writeFileSync(path.join(workDir, 'example.com/docs/index.html'), '<html/>');
+            fs.writeFileSync(path.join(workDir, 'example.com/docs/a.css'), '');
+            return path.join(workDir, 'example.com/docs/index.html');
+        };
+        const res = await download({ action: 'download', folder: 'Sites', kind: 'website' },
+            { workspace, doc, context, scope, logger: noopLogger, provenance: {}, helpers, fetchers: { site: fakeSite } });
+        assert.equal(res.file, 'Sites/example.com/docs/index.html');
+        assert.ok(fs.existsSync(path.join(root, 'home/Sites/example.com/docs/a.css')));
+        assert.equal(calls.insert[0].d.metadata.contentType, 'text/html');
+    });
+
+    test('runs through executeRuleActions and skips documents without a url', async () => {
+        const payload = { document: { id: 5, schema: 'data/schema/note', data: { title: 'x' } }, context: { paths: ['/a'] } };
+        const context = { workspace: { id: 'w', name: 'w', rootPath: root }, payload, eventName: 'document.inserted', classify: () => classify(payload), insert: async () => ({ id: 1 }) };
+        const results = await executeRuleActions({ id: 'r', when: {}, then: [{ action: 'download' }] }, context, noopLogger);
+        assert.deepEqual(results, [{ action: 'download', status: 'ok' }]);
+        assert.ok(!fs.existsSync(path.join(root, 'var/download-ledger.json')));
     });
 });

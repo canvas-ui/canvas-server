@@ -547,6 +547,11 @@ class Workspace extends EventEmitter {
         return this.#resolveDir('var');
     }
 
+    /** Hook/rule run + pending-action logs (runs.jsonl, pending.jsonl). */
+    get varHooksPath() {
+        return this.#resolveDir('varHooks');
+    }
+
     /**
      * Every absolute path this workspace uses for its own runtime state. The
      * indexed file backends exclude anything in here that falls under their

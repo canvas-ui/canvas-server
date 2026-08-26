@@ -319,27 +319,28 @@ class HookService extends EventEmitter {
         return null;
     }
 
-    // Lazy per-workspace run log (JSONL under {root}/var/hooks). Public so the
+    // Lazy per-workspace run log (JSONL in the workspace's resolved var/hooks
+    // dir — `.workspace/var/hooks` in the `home` layout). Public so the
     // REST layer (runs/replay endpoints) reads through the same instance —
     // sharing the size cache used for rotation.
     runLogFor(workspace) {
-        if (!workspace?.id || !workspace.rootPath) { return null; }
+        if (!workspace?.id || !workspace.varHooksPath) { return null; }
         let log = this.#runLogs.get(workspace.id);
         if (!log) {
-            log = new HookRunLog(workspace.rootPath);
+            log = new HookRunLog(workspace.varHooksPath);
             this.#runLogs.set(workspace.id, log);
         }
         return log;
     }
 
-    // Lazy per-workspace pending-action store (JSONL under {root}/var/hooks).
+    // Lazy per-workspace pending-action store (JSONL alongside the run log).
     // Public for the same reason as runLogFor: the REST layer reads/decides
     // through the same instance.
     pendingFor(workspace) {
-        if (!workspace?.id || !workspace.rootPath) { return null; }
+        if (!workspace?.id || !workspace.varHooksPath) { return null; }
         let store = this.#pendingStores.get(workspace.id);
         if (!store) {
-            store = new PendingActionStore(workspace.rootPath);
+            store = new PendingActionStore(workspace.varHooksPath);
             this.#pendingStores.set(workspace.id, store);
         }
         return store;

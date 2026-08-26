@@ -3,13 +3,12 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
-import { WORKSPACE_DIRECTORIES } from '../../lib/constants.js';
 
 /**
  * Per-workspace hook/rule run log.
  *
  * Every handler execution (JS hook file or declarative rule) appends one JSON
- * line to `{WORKSPACE_ROOT}/var/hooks/runs.jsonl` — the observability surface
+ * line to the workspace's `var/hooks/runs.jsonl` — the observability surface
  * behind `GET /workspaces/:id/hooks/runs`, the UI Runs tab and
  * `canvas ws <name> hooks runs`. Records are also the replay source: they keep
  * the triggering envelope with the document body stripped to `{ id, schema }`
@@ -94,8 +93,12 @@ class HookRunLog {
     #maxBytes;
     #size = null; // cached byte size of the live file
 
-    constructor(workspaceRootPath, { maxBytes = MAX_BYTES_DEFAULT } = {}) {
-        this.#dir = path.join(workspaceRootPath, WORKSPACE_DIRECTORIES.varHooks);
+    // Takes the ALREADY-RESOLVED dir (workspace.varHooksPath), not the
+    // workspace root: joining the `full` layout's constant onto the root put
+    // this log in the user's own drive for a `home`-layout workspace, where
+    // the root IS that drive and the internals belong under `.workspace/`.
+    constructor(varHooksPath, { maxBytes = MAX_BYTES_DEFAULT } = {}) {
+        this.#dir = varHooksPath;
         this.#file = path.join(this.#dir, 'runs.jsonl');
         this.#maxBytes = maxBytes;
     }

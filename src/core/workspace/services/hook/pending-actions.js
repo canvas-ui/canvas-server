@@ -3,7 +3,6 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
-import { WORKSPACE_DIRECTORIES } from '../../lib/constants.js';
 
 /**
  * Per-workspace pending-action (approval) store.
@@ -53,8 +52,12 @@ class PendingActionStore {
     #maxBytes;
     #size = null;
 
-    constructor(workspaceRootPath, { maxBytes = MAX_BYTES_DEFAULT } = {}) {
-        this.#dir = path.join(workspaceRootPath, WORKSPACE_DIRECTORIES.varHooks);
+    // Takes the ALREADY-RESOLVED dir (workspace.varHooksPath), not the
+    // workspace root: joining the `full` layout's constant onto the root put
+    // this log in the user's own drive for a `home`-layout workspace, where
+    // the root IS that drive and the internals belong under `.workspace/`.
+    constructor(varHooksPath, { maxBytes = MAX_BYTES_DEFAULT } = {}) {
+        this.#dir = varHooksPath;
         this.#file = path.join(this.#dir, 'pending.jsonl');
         this.#maxBytes = maxBytes;
     }

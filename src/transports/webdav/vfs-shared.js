@@ -1,6 +1,7 @@
 'use strict';
 
 import path from 'path';
+import { createHash } from 'crypto';
 
 // ── Schema ↔ extension mapping (writable abstractions) ──────────────────────
 
@@ -505,6 +506,36 @@ export function fileEntry(doc, name) {
         etag: docEtag(doc),
         doc,
     };
+}
+
+/**
+ * A collection's identity, derived from its entries — the WebDAV mirror of
+ * canvas-fuse's directory rule (state.rs `touch_dir`): a folder's mtime is when
+ * its ENTRIES last changed, never when a file inside was edited.
+ *
+ * The daemon is stateful and can stamp the moment an entry appeared; a request
+ * here sees only the current listing, so the stamp is the newest entry stamp
+ * (a stable approximation) and the ETag is the true change signal: a hash over
+ * every entry's name and identity, which moves on add, remove AND rename —
+ * the cases a max-of-mtimes cannot see. Both derive from the record, never from
+ * `now`: a folder that answered every PROPFIND with a fresh stamp told every
+ * stamp-comparing client "changed" on every poll, and told none of them when
+ * it actually had. A folder with no stamped entry gets the process baseline —
+ * exactly what the daemon does for a node it materializes (`SystemTime::now()`
+ * at creation): stable for the server's lifetime, one spurious re-list per
+ * restart, and never 1970 in a file manager's "Date modified" column.
+ */
+const BASELINE = Date.now();
+
+export function collectionIdentity(children) {
+    const hash = createHash('sha1');
+    let newest = BASELINE;
+    for (const child of children || []) {
+        hash.update(child.name).update('\0').update(child.isDir ? 'd' : (child.etag || '')).update('\0');
+        const ms = child.mtime ? new Date(child.mtime).getTime() : 0;
+        if (Number.isFinite(ms) && ms > newest) { newest = ms; }
+    }
+    return { mtime: new Date(newest), etag: `"c-${hash.digest('hex').slice(0, 20)}"` };
 }
 
 // Turn a list of docs into deduplicated file entries (see fileEntry).

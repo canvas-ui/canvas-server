@@ -8,7 +8,7 @@ import { createLogger } from '../../utils/log.js';
 import { internalPathMatcher } from '../../core/workspace/lib/internal-paths.js';
 import TreeFS from './TreeFS.js';
 import { entryIdentity, isClientAbort, matchesEtag, parseRange, streamTo } from './dav-http.js';
-import { isClientDropping, norm } from './vfs-shared.js';
+import { collectionIdentity, isClientDropping, norm } from './vfs-shared.js';
 import VirtualContextsFS from './VirtualContextsFS.js';
 import TrashFS from './TrashFS.js';
 
@@ -169,7 +169,15 @@ export class WebDAVHandler {
         return {
           vfs: {
             stat: async (vPath) => vPath === '/' ? { isDir: true, name: 'Trees', size: 0 } : null,
-            readdir: async () => trees.map((tree) => ({ name: tree.name, isDir: true, size: 0 })),
+            // The root lists the trees; a tree's own listing (which the
+            // depth-1 PROPFIND asks for, to stamp each tree) is TreeFS's —
+            // answering it here would give every tree the root's identity.
+            readdir: async (vPath) => {
+              if (vPath === '/') return trees.map((tree) => ({ name: tree.name, isDir: true, size: 0 }));
+              const name = vPath.split('/').filter(Boolean)[0];
+              const tree = trees.find((t) => t.name === name) && workspace.getTree(name);
+              return tree ? new TreeFS(workspace, tree).readdir('/') : null;
+            },
             getContent: async () => null,
           },
           vRel: '/',
@@ -559,15 +567,31 @@ export class WebDAVHandler {
     const info = await vfs.stat(vRel);
     if (!info) return send(res, 404, 'Not Found');
 
+    // A collection's stamp and ETag derive from its listing (see
+    // collectionIdentity), so a directory PROPFIND lists it at any depth; at
+    // depth 1 the child collections are listed too, so that their stamps are
+    // as real as the parent's — a file manager's "Date modified" column, and
+    // a client deciding which subfolder to re-read, both look at those.
+    let children = null;
+    if (info.isDir) {
+      children = await vfs.readdir(vRel);
+      if (children && depth !== '0') {
+        await Promise.all(children.map(async (child) => {
+          if (!child.isDir) return;
+          const childPath = vRel.endsWith('/') ? vRel + child.name : vRel + '/' + child.name;
+          const grand = await vfs.readdir(childPath).catch(() => null);
+          if (grand) Object.assign(child, collectionIdentity(grand));
+        }));
+      }
+      if (children) Object.assign(info, collectionIdentity(children));
+    }
+
     const entries = [virtualPropEntry(info, prefix, rel)];
 
-    if (info.isDir && depth !== '0') {
-      const children = await vfs.readdir(vRel);
-      if (children) {
-        for (const child of children) {
-          const childRel = rel.endsWith('/') ? rel + child.name : rel + '/' + child.name;
-          entries.push(virtualPropEntry(child, prefix, childRel));
-        }
+    if (children && depth !== '0') {
+      for (const child of children) {
+        const childRel = rel.endsWith('/') ? rel + child.name : rel + '/' + child.name;
+        entries.push(virtualPropEntry(child, prefix, childRel));
       }
     }
 
@@ -884,22 +908,27 @@ function sendXml(res, code, xml, extraHeaders = {}) {
  * and a caching client reacts by dropping the GET it has in flight, which is
  * how opening an image drew it once and then failed.
  *
- * A COLLECTION has no body to drop, and a stale listing would be the worse
- * failure, so it keeps the volatile stamp and carries no ETag at all (RFC 4918
- * only asks for one where there is an entity to compare).
+ * A COLLECTION's identity derives from its listing (collectionIdentity): the
+ * stamp moves when its entries change, mirroring the canvas-fuse directory
+ * rule, and the ETag is the change signal that catches what a stamp cannot
+ * (a removal, a rename). A collection that arrives here without one — the
+ * static roots, a listing that failed — keeps the volatile stamp and carries
+ * no ETag, because a stale listing would be the worse failure.
  */
 function virtualPropEntry(entry, prefix, rel) {
   const isDir = entry.isDir;
   const href = esc(encSegments(prefix + rel) + (isDir && !rel.endsWith('/') ? '/' : ''));
   const name = esc(entry.name || path.basename(rel) || 'root');
-  const stamp = entry.mtime ? new Date(entry.mtime) : new Date();
+  const stamp = entry.mtime != null ? new Date(entry.mtime) : new Date();
   const props = [
     `<D:displayname>${name}</D:displayname>`,
     `<D:resourcetype>${isDir ? '<D:collection/>' : ''}</D:resourcetype>`,
     `<D:getlastmodified>${httpDate(stamp)}</D:getlastmodified>`,
     `<D:creationdate>${isoDate(stamp)}</D:creationdate>`,
   ];
-  if (!isDir) {
+  if (isDir) {
+    if (entry.etag) props.push(`<D:getetag>${esc(entry.etag)}</D:getetag>`);
+  } else {
     props.push(`<D:getetag>${esc(entry.etag || `"v-${name}-${entry.size || 0}"`)}</D:getetag>`);
     props.push(`<D:getcontentlength>${entry.size || 0}</D:getcontentlength>`);
     props.push(`<D:getcontenttype>${mime(rel)}</D:getcontenttype>`);

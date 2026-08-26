@@ -1,5 +1,6 @@
 'use strict';
 
+import { parseBasicAuth, looksLikeToken } from '../lib/basic-auth.js';
 import path from 'path';
 import VirtualNamedContextFS from '../webdav/VirtualNamedContextFS.js';
 import { entryIdentity, isClientAbort, matchesEtag, parseRange, streamTo } from '../webdav/dav-http.js';
@@ -48,8 +49,8 @@ export default async function contextWebdavRoutes(fastify) {
             token = authHeader.substring(7);
         } else if (authHeader.startsWith('Basic ')) {
             try {
-                const [username, password] = Buffer.from(authHeader.substring(6), 'base64').toString('utf-8').split(':', 2);
-                if (password?.startsWith('canvas-')) {
+                const { username = '', password = '' } = parseBasicAuth(authHeader) || {};
+                if (looksLikeToken(password)) {
                     token = password;
                 } else {
                     const tkey = throttleKey(request, username);

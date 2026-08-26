@@ -1,5 +1,6 @@
 'use strict';
 
+import { parseBasicAuth, looksLikeToken } from '../lib/basic-auth.js';
 import { promises as fs } from 'fs';
 import { WebDAVHandler } from '../webdav/server.js';
 import ResponseObject from '../ResponseObject.js';
@@ -62,9 +63,9 @@ export default async function webdavRoutes(fastify) {
       token = authHeader.substring(7);
     } else if (authHeader.startsWith('Basic ')) {
       try {
-        const [username, password] = Buffer.from(authHeader.substring(6), 'base64').toString('utf-8').split(':', 2);
+        const { username = '', password = '' } = parseBasicAuth(authHeader) || {};
 
-        if (password?.startsWith('canvas-')) {
+        if (looksLikeToken(password)) {
           token = password;
         } else {
           // Username/password auth — throttled against brute forcing.

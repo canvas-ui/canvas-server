@@ -1,5 +1,6 @@
 'use strict';
 
+import { parseBasicAuth } from '../../lib/basic-auth.js';
 import { requireWorkspaceRead, requireWorkspaceWrite } from '../../middleware/workspace-acl.js';
 
 /**
@@ -20,12 +21,16 @@ async function convertBasicAuthToBearer(request, reply) {
       });
       return;
     }
-    if (authHeader.startsWith('Basic ')) {
-      const credentials = Buffer.from(authHeader.split(' ')[1], 'base64').toString('ascii');
-      const [, password] = credentials.split(':');
-      if (password?.startsWith('canvas-')) {
-        request.headers.authorization = `Bearer ${password}`;
-      }
+    // git sends its credential over Basic; every strategy downstream speaks
+    // Bearer. The password is promoted whatever it looks like: this route has
+    // no password-login path, so a value that is not a token simply fails
+    // authentication one step later, exactly as it did before. Requiring a
+    // `canvas-` prefix here rejected the JWT that `remote login` stores, which
+    // made `canvas dot add/clone/push/pull` fail with "Authentication failed"
+    // unless the user happened to have swapped in an API token.
+    const basic = parseBasicAuth(authHeader);
+    if (basic?.password) {
+      request.headers.authorization = `Bearer ${basic.password}`;
     }
   } catch (error) {
     console.error('Error in convertBasicAuthToBearer middleware:', error);

@@ -149,7 +149,14 @@ export class WorkspaceGitRepo {
     // Dispatch a git smart-HTTP request. `onReceivePack` runs after a successful
     // push so callers can redeploy hooks/scripts.
     async serveHttp(service, request, reply, { onReceivePack } = {}) {
-        if (!existsSync(this.#barePath)) throw new Error('Repository not initialized');
+        if (!existsSync(this.#barePath)) {
+            // Typed so the transport can answer 404 with something actionable:
+            // an uninitialized repo is a normal state (nobody has run init on
+            // this workspace yet), not a server fault.
+            const err = new Error('Repository not initialized');
+            err.code = 'EGITNOREPO';
+            throw err;
+        }
         switch (service) {
             case 'info/refs':
                 return this.#handleInfoRefs(request, reply);

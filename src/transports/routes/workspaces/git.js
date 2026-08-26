@@ -12,14 +12,16 @@ async function convertBasicAuthToBearer(request, reply) {
   try {
     const authHeader = request.headers.authorization;
     if (!authHeader) {
-      reply.code(401).header('WWW-Authenticate', 'Basic realm="Canvas Git"').send({
+      // `return reply` — a bare return here lets the chain continue to
+      // fastify.authenticate, which replies a second time and throws
+      // ERR_HTTP_HEADERS_SENT as an unhandled rejection.
+      return reply.code(401).header('WWW-Authenticate', 'Basic realm="Canvas Git"').send({
         status: 'error',
         statusCode: 401,
         message: 'Authentication required',
         payload: null,
         count: null,
       });
-      return;
     }
     // git sends its credential over Basic; every strategy downstream speaks
     // Bearer. The password is promoted whatever it looks like: this route has
@@ -56,8 +58,15 @@ export default async function workspaceGitRoutes(fastify) {
         userId, workspace, requestingUserId, service, request, reply,
       );
     } catch (error) {
+      if (error?.code === 'EGITNOREPO') {
+        // git reads stderr from the transport, so say what to do about it.
+        return reply.code(404).send(
+          'No git repository in this workspace yet — initialize it first (canvas dot init).',
+        );
+      }
       fastify.log.error(error);
-      reply.code(500).send('Internal server error');
+      if (reply.sent) return reply;
+      return reply.code(500).send('Internal server error');
     }
   };
 

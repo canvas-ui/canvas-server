@@ -3,8 +3,8 @@
 import path from 'path';
 import {
     applyBodyToDoc, collectDocuments, docEntries, docName, fileDocumentFromBlob, fileEntry,
-    findDocumentByName, httpError, inferDocFromFile, LIST_BUDGET, norm, renamedRecord,
-    resolveDocContent,
+    findDocumentByName, httpError, inferDocFromFile, LIST_BUDGET, localDocumentIds, norm,
+    renamedRecord, resolveDocContent,
 } from './vfs-shared.js';
 import Workspace from '../../core/workspace/Workspace.js';
 import { createLogger } from '../../utils/log.js';
@@ -59,7 +59,7 @@ export default class TreeFS {
             used.add(name);
             return { name, isDir: true, size: 0 };
         });
-        const files = docEntries(await this.#list(n), used);
+        const files = docEntries(await this.#list(n), used, await this.#localIds(n));
         return [...dirs, ...files];
     }
 
@@ -261,7 +261,29 @@ export default class TreeFS {
     // documents than one page, and a name that only the tenth page carries has
     // to open like any other.
     async #findDoc(treePath, filename) {
-        return findDocumentByName(this.#page(treePath), filename, await this.#dirNames(treePath));
+        return findDocumentByName(
+            this.#page(treePath),
+            filename,
+            await this.#dirNames(treePath),
+            await this.#localIds(treePath),
+        );
+    }
+
+    // Which of the documents listed here are actually FILED here — the rest are
+    // showing through from paths below (a context path is AND(layers), so a
+    // document at /a/b/c is listed at /a/b and /a too). Decides who keeps the
+    // plain filename when two of them answer to the same name; see docEntries.
+    async #localIds(treePath) {
+        return localDocumentIds(
+            (not) => this.#ws.list({
+                context: { tree: this.#tree.id, path: norm(treePath) },
+                paths: { not },
+                idsOnly: true,
+                limit: LIST_BUDGET,
+            }),
+            this.#tree,
+            treePath,
+        );
     }
 
     // Write target selector: context trees tick layer bitmaps, directory trees

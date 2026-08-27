@@ -22,6 +22,7 @@ class User extends EventEmitter {
     #name;
     #email;
     #userType;
+    #groups = [];
     #authMethod;
     #authMetadata;
     #homePath;
@@ -74,6 +75,9 @@ class User extends EventEmitter {
         this.#pathDefaults = options.pathDefaults && typeof options.pathDefaults === 'object' ? options.pathDefaults : {};
         this.#userType = options.userType || 'user';
         this.#status = options.status || 'inactive';
+        // Team groups for workspace sharing — LDAP memberOf (refreshed on
+        // every login) or admin-assigned for local accounts.
+        this.#groups = Array.isArray(options.groups) ? [...options.groups] : [];
         logger.debug(`User instance created: ${this.#id} (${this.#name} - ${this.#email}) via ${this.#authMethod} with home path: ${this.#homePath}`);
     }
 
@@ -85,6 +89,7 @@ class User extends EventEmitter {
     get name() { return this.#name; }
     get email() { return this.#email; }
     get userType() { return this.#userType; }
+    get groups() { return [...this.#groups]; }
     get authMethod() { return this.#authMethod; }
     get authMetadata() { return this.#authMetadata; }
     get homePath() { return this.#homePath; }
@@ -180,6 +185,7 @@ class User extends EventEmitter {
             userType: this.#userType,
             authMethod: this.#authMethod,
             authMetadata: this.#authMetadata,
+            groups: this.#groups,
             // No homePath: it is <userHome>/<email>, derived by the users
             // service on every read. Persisting it pins the record to whatever
             // absolute path was current when it was written.

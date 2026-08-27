@@ -1,5 +1,12 @@
 # TODO List
 
+Enterprise mode
+- Shared team workspaces
+- contexts addressed as user@context
+- AD/LDAP Auth the default
+-  User workspaces exported via samba, 
+
+
 ## Target topology (monorepo + server + services)
 
 ```

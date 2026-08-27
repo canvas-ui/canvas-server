@@ -159,6 +159,40 @@ Implementation: `displayFilename()` / `renamedRecord()` in
 `lib/document-display.ts`; `core/File.js` indexes `metadata.filename` for FTS
 (additive — documents without it index exactly as before, no reindex needed).
 
+## 2b-i. Which document owns a name in a folder — **LANDED 2026-08-27**
+
+A context path is `AND(layers along the path)`, so a folder lists everything
+filed **at or below** it. Three documents called `CLAUDE.md`, filed at `/`,
+`/dc-migration` and `/dc-migration/tasks/foo`, are therefore all listed at `/` —
+that is what a context tree is for, not a collision to be avoided.
+
+But it means one folder legitimately holds several documents answering to one
+name, and only one of them is filed *there*. **That one keeps the plain name at
+every path**; the rest take the `_<id>` suffix. Walking from `/` to
+`/dc-migration` hands the plain name to a different document, because the path
+is the question being asked.
+
+Position must not decide this either: naming by document id (whichever was
+created first, wins) made `CLAUDE.md` mean a different document at each depth
+and re-shuffled the suffixed copies whenever anything was re-filed.
+
+The arithmetic is the path algebra already in synapsd — the path, minus its
+child paths (`paths: { not: [...] }`, entries carrying their tree). No new query
+shape; `transports/lib/placement.js` runs it as one `idsOnly` listing per folder
+and every view shares the answer:
+
+- WebDAV: `docEntries(docs, used, localIds)` and `findDocumentByName(...)` in
+  `transports/webdav/vfs-shared.js` — a listed name must also open.
+- REST: `linkedHere` on each document of a path-scoped listing
+  (`/workspaces/:ws/documents`, `/contexts/:id/documents`).
+- canvas-fuse: `state::by_placement` orders name assignment by that flag; sticky
+  names are keyed by the context's **URL** as well as its id, so re-aiming a
+  context cannot pin a name won at another path.
+
+Absent placement information (older server, no children below the path), every
+document counts as filed here and id order breaks the tie — the previous
+behaviour, unchanged.
+
 ## 2c. Email attachments are File documents — **LANDED 2026-08-22**
 
 An attachment's bytes were always persisted (content-addressed, into

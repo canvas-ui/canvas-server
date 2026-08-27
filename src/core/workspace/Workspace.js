@@ -18,6 +18,7 @@ import { parseLocationUrl } from 'canvas-synapsd/src/utils/path-helpers.js';
 
 // Sub-modules
 import { WorkspaceTokens } from './lib/WorkspaceTokens.js';
+import { WorkspaceMembers } from './lib/WorkspaceMembers.js';
 import { classifyDocument } from './lib/classifier.js';
 import { extract as extractBlobMetadata } from 'canvas-stored/src/extractors/index.js';
 import { detectMountSync } from 'canvas-stored/src/utils/mount.js';
@@ -87,6 +88,7 @@ class Workspace extends EventEmitter {
     #connectorIndex = null;
     #connectorRuntimeBinding = null;
     #tokens = null;
+    #members = null;
     #status = WORKSPACE_STATUS_CODES.INACTIVE;
     #startPromise = null;
     #runtimeListeners = [];
@@ -120,6 +122,7 @@ class Workspace extends EventEmitter {
         this.#inferd = options.inferd || null;
 
         this.#tokens = new WorkspaceTokens({ configStore: this.#configStore, workspaceId: this.id });
+        this.#members = new WorkspaceMembers({ configStore: this.#configStore });
 
         const persistedStatus = this.#configStore.get('status');
         if (persistedStatus && [WORKSPACE_STATUS_CODES.ACTIVE, WORKSPACE_STATUS_CODES.INACTIVE, WORKSPACE_STATUS_CODES.ERROR].includes(persistedStatus)) {
@@ -2563,6 +2566,20 @@ class Workspace extends EventEmitter {
     listTokens() { return this.#tokens.list(); }
     deleteToken(hash) { return this.#tokens.delete(hash); }
     verifyToken(tokenValue) { return this.#tokens.verify(tokenValue); }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Members — e-mail / group grants (delegated to WorkspaceMembers)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /** The user's private home ("universe") workspace is never shareable. */
+    get isUniverse() { return this.type === 'universe'; }
+    listMembers() { return this.#members.list(); }
+    getMember(type, principal) { return this.#members.get(type, principal); }
+    grantMember(type, principal, options = {}) {
+        if (this.isUniverse) throw new Error('The universe workspace cannot be shared');
+        return this.#members.grant(type, principal, options);
+    }
+    revokeMember(type, principal) { return this.#members.revoke(type, principal); }
 
     toJSON() {
         return {

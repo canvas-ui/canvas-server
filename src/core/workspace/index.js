@@ -18,6 +18,7 @@ import { compareByUserOrder } from '../../utils/list-order.js';
 import Workspace from './Workspace.js';
 import RemoteWorkspace from './lib/RemoteWorkspace.js';
 import { WorkspaceErrorCode, accessDenied, workspaceNotFound, workspaceNotReady } from './lib/errors.js';
+import { resolveAclAccess, OWNER_PERMISSIONS } from './lib/access.js';
 import { discoverWorkspaceCandidates, validateWorkspaceConfig, findWorkspaceConfigPath, workspaceConfigPathFor } from './lib/scanner.js';
 import DotfileManager from './services/dotfile/index.js';
 import { USER_MODULE_DIRS } from '../user/lib/paths.js';
@@ -376,16 +377,9 @@ class WorkspaceManager extends EventEmitter {
         if (!this.#initialized) throw new Error('Not initialized');
 
         const results = [];
-        let userEmail = null;
-
-        if (userId) {
-            try {
-                const u = await this.#users.get(userId);
-                userEmail = u?.email || null;
-            } catch  {
-                userEmail = null;
-            }
-        }
+        // E-mail + group memberships of the caller — what shared workspaces
+        // (acl.users / acl.groups) are matched against.
+        const principal = userId ? await this.#principalFor(userId) : null;
 
         // Remote references are listed through their facade so the status
         // mirrors the remote; probes run in parallel after the loop (bounded
@@ -394,8 +388,9 @@ class WorkspaceManager extends EventEmitter {
 
         for (const [, entry] of this.#allEntries()) {
             const isOwner = !userId || entry.owner === userId;
-            const sharedVia = userEmail ? (entry.acl?.users?.[userEmail] || null) : null;
-            const hasSharedAccess = !!sharedVia;
+            const shared = (!isOwner && principal) ? resolveAclAccess(this.#aclFor(entry), principal) : null;
+            const sharedVia = shared ? WorkspaceManager.#sharedVia(shared) : null;
+            const hasSharedAccess = !!shared;
 
             if (userId && !isOwner && !hasSharedAccess) continue;
 
@@ -488,8 +483,230 @@ class WorkspaceManager extends EventEmitter {
         // Check index
         const entry = this.#findInIndex(workspaceId);
         if (!entry) return false;
-        if (userId && entry.owner !== userId) return false;
+        if (userId && entry.owner !== userId) {
+            return !!(await this.resolveWorkspaceAccess(entry.id, userId));
+        }
         return true;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Access resolution — owner + e-mail/group shares (single source of truth
+    // for the ACL middleware, WebDAV, listings and getWorkspace itself)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #principalCache = new Map(); // userId -> { email, groups, at }
+    static #PRINCIPAL_CACHE_TTL_MS = 5_000;
+
+    /**
+     * workspace.json is the source of truth for the ACL — the index copy is a
+     * registration-time snapshot (kept in sync by the member methods below,
+     * but stale for workspaces edited out of band). Prefer the loaded
+     * instance, then the config file, then the index entry.
+     */
+    #aclFor(entry) {
+        if (!entry) return null;
+        const loaded = this.#workspaces.get(entry.id);
+        if (loaded && !loaded.isRemote) {
+            try { return loaded.acl || null; } catch { /* fall through */ }
+        }
+        if (entry.configPath && existsSync(entry.configPath)) {
+            try {
+                return JSON.parse(readFileSync(entry.configPath, 'utf8'))?.acl || null;
+            } catch { /* unreadable config — use the index copy */ }
+        }
+        return entry.acl || null;
+    }
+
+    static #principalFromRecord(record) {
+        if (!record) return null;
+        const groups = Array.isArray(record.groups) ? record.groups
+            : Array.isArray(record.authMetadata?.groups) ? record.authMetadata.groups : [];
+        return { email: record.email || null, groups };
+    }
+
+    /** Synchronous principal lookup: users index (Conf/Jim store or plain object), then the recent-async cache. */
+    #principalSync(userId) {
+        if (!userId) return null;
+        const cached = this.#principalCache.get(userId);
+        if (cached && Date.now() - cached.at < WorkspaceManager.#PRINCIPAL_CACHE_TTL_MS) return cached;
+        const index = this.#users?.indexStore;
+        let record;
+        try {
+            record = typeof index?.get === 'function' ? index.get(userId) : null;
+            if (!record && index?.store) record = index.store[userId] || null;
+        } catch { record = null; }
+        if (!record) return cached || null;
+        const principal = { ...WorkspaceManager.#principalFromRecord(record), at: Date.now() };
+        this.#principalCache.set(userId, principal);
+        return principal;
+    }
+
+    async #principalFor(userId) {
+        if (!userId) return null;
+        const sync = this.#principalSync(userId);
+        if (sync) return sync;
+        try {
+            const user = await this.#users.get(userId);
+            const record = typeof user?.toJSON === 'function' ? user.toJSON() : user;
+            const principal = { ...WorkspaceManager.#principalFromRecord(record), at: Date.now() };
+            if (principal.email) this.#principalCache.set(userId, principal);
+            return principal;
+        } catch {
+            return null;
+        }
+    }
+
+    static #sharedVia(shared) {
+        return {
+            type: shared.via,
+            principal: shared.principal,
+            permissions: shared.permissions,
+            description: shared.grant?.description || '',
+            grantedAt: shared.grant?.grantedAt || null,
+            grantedBy: shared.grant?.grantedBy || null,
+        };
+    }
+
+    /**
+     * What `userId` may do with a workspace: owner, or an e-mail / group
+     * share. Remote references are personal (owner only). Returns null when
+     * the user has no access at all (or the workspace does not exist).
+     * @param {string} workspaceId - Workspace ID (not a name)
+     * @param {string} userId
+     * @returns {Promise<{ isOwner: boolean, owner: string, permissions: string[], via: 'owner'|'user'|'group', principal: string|null, description: string }|null>}
+     */
+    async resolveWorkspaceAccess(workspaceId, userId) {
+        const entry = this.#findInIndex(workspaceId);
+        if (!entry || !userId) return null;
+        if (entry.owner === userId) {
+            return { isOwner: true, owner: entry.owner, permissions: [...OWNER_PERMISSIONS], via: 'owner', principal: null, description: 'Workspace owner' };
+        }
+        if (entry.origin === WORKSPACE_ORIGINS.REMOTE) return null;
+        const principal = await this.#principalFor(userId);
+        const shared = principal ? resolveAclAccess(this.#aclFor(entry), principal) : null;
+        if (!shared) return null;
+        return {
+            isOwner: false,
+            owner: entry.owner,
+            permissions: shared.permissions,
+            via: shared.via,
+            principal: shared.principal,
+            description: shared.grant?.description
+                || (shared.via === 'group' ? `Shared with group ${shared.principal}` : `Shared with ${shared.principal}`),
+        };
+    }
+
+    /** Sync twin of resolveWorkspaceAccess for name resolution (index-backed principal only). */
+    #sharedAccessSync(entry, userId) {
+        if (!entry || !userId || entry.owner === userId || entry.origin === WORKSPACE_ORIGINS.REMOTE) return null;
+        const principal = this.#principalSync(userId);
+        return principal ? resolveAclAccess(this.#aclFor(entry), principal) : null;
+    }
+
+    /**
+     * Members (e-mail / group grants) of a workspace. Owner-scoped: `userId`
+     * must own the workspace (server admins pass the owner's id).
+     */
+    async listWorkspaceMembers(workspaceId, userId) {
+        const ws = await this.getWorkspaceOrThrow(workspaceId, userId);
+        if (ws.owner !== userId) throw accessDenied('Only the workspace owner can list members');
+        return ws.listMembers();
+    }
+
+    /**
+     * Grant or replace a member's access. A user grant is keyed by e-mail and
+     * may precede the teammate's first login (LDAP auto-creates the account);
+     * a group grant matches the members' directory groups (LDAP memberOf) or
+     * admin-assigned groups. The universe workspace is never shareable.
+     * @param {'user'|'group'} type
+     */
+    async grantWorkspaceMember(workspaceId, userId, type, principal, options = {}) {
+        const ws = await this.getWorkspaceOrThrow(workspaceId, userId);
+        if (ws.owner !== userId) throw accessDenied('Only the workspace owner can share a workspace');
+        if (ws.isRemote) throw accessDenied('A remote workspace reference cannot be shared from here — share it on its own server');
+        if (ws.isUniverse) throw accessDenied('The universe workspace cannot be shared');
+        if (type === 'user') {
+            const ownerEmail = (await this.#principalFor(userId))?.email || '';
+            if (String(principal).trim().toLowerCase() === ownerEmail.toLowerCase()) {
+                throw new Error('You already own this workspace');
+            }
+        }
+        const member = ws.grantMember(type, principal, { ...options, grantedBy: userId });
+        this.#syncEntryAcl(ws);
+        this.#principalCache.clear();
+        this.emit('workspace.member.granted', { workspaceId: ws.id, owner: ws.owner, member });
+        return member;
+    }
+
+    async revokeWorkspaceMember(workspaceId, userId, type, principal) {
+        const ws = await this.getWorkspaceOrThrow(workspaceId, userId);
+        if (ws.owner !== userId) throw accessDenied('Only the workspace owner can revoke access');
+        const removed = ws.revokeMember(type, principal);
+        if (removed) {
+            this.#syncEntryAcl(ws);
+            this.emit('workspace.member.revoked', { workspaceId: ws.id, owner: ws.owner, type, principal });
+        }
+        return removed;
+    }
+
+    /** Mirror workspace.json's ACL into the owner's index entry (listings read the entry when the workspace is not loaded). */
+    #syncEntryAcl(ws) {
+        try {
+            const userIndex = this.#getUserIndex(ws.owner);
+            const entry = userIndex.get(ws.id);
+            if (entry) userIndex.set(ws.id, { ...entry, acl: ws.acl, updatedAt: new Date().toISOString() });
+        } catch (err) {
+            this.#logger.warn({ err, workspaceId: ws.id }, 'Failed to mirror workspace ACL into the index');
+        }
+    }
+
+    /**
+     * Hand a workspace to another user (server-admin operation: "the team
+     * admin left"). The on-disk location does not move — only ownership,
+     * the index entry and the name/reference indexes. A running instance is
+     * stopped so the new owner starts it under their own identity.
+     */
+    async transferWorkspaceOwnership(workspaceId, newOwnerId) {
+        if (!this.#initialized) throw new Error('Not initialized');
+        const entry = this.#findInIndex(workspaceId);
+        if (!entry) throw workspaceNotFound(`Workspace not found: ${workspaceId}`);
+        if (!newOwnerId) throw new Error('New owner is required');
+        if (entry.owner === newOwnerId) return entry;
+        if (entry.type === 'universe') throw accessDenied('The universe workspace cannot change owner');
+        if (entry.origin === WORKSPACE_ORIGINS.REMOTE) throw accessDenied('A remote workspace reference cannot be transferred');
+        const host = entry.host || WORKSPACE_DEFAULT_HOST;
+        if (this.#nameIndex.get(WorkspaceManager.#nameKey(newOwnerId, entry.name, host))) {
+            throw new Error(`User ${newOwnerId} already has a workspace named "${entry.name}"`);
+        }
+
+        const loaded = this.#workspaces.get(entry.id);
+        if (loaded) {
+            try { await loaded.stop(); } catch { /* best effort */ }
+            this.#unregisterWorkspaceInstance(entry.id);
+            this.#workspaces.delete(entry.id);
+        }
+
+        const reference = constructWorkspaceReference(newOwnerId, entry.name, host);
+        const updatedAt = new Date().toISOString();
+        if (entry.configPath && existsSync(entry.configPath)) {
+            const conf = new Conf({
+                configName: path.basename(entry.configPath, '.json'),
+                cwd: path.dirname(entry.configPath),
+                accessPropertiesByDotNotation: false
+            });
+            conf.set('owner', newOwnerId);
+            conf.set('reference', reference);
+            conf.set('updatedAt', updatedAt);
+        }
+
+        const newEntry = { ...entry, owner: newOwnerId, reference, updatedAt };
+        this.#getUserIndex(entry.owner).delete(entry.id);
+        this.#removeFromIndexes(entry.owner, entry.id, entry.name, host, entry.reference);
+        this.#getUserIndex(newOwnerId).set(entry.id, newEntry);
+        this.#addToIndexes(newOwnerId, entry.id, entry.name, host, reference);
+        this.#principalCache.clear();
+        this.emit('workspace.owner.changed', { workspaceId: entry.id, from: entry.owner, to: newOwnerId });
+        return newEntry;
     }
 
     /**
@@ -569,9 +786,9 @@ class WorkspaceManager extends EventEmitter {
      * Use {@link getWorkspaceOrThrow} when the caller needs to distinguish
      * *why* a workspace is unavailable (e.g. to return 403 vs 404 vs 503).
      */
-    async getWorkspace(workspaceId, userId) {
+    async getWorkspace(workspaceId, userId, options = {}) {
         try {
-            return await this.getWorkspaceOrThrow(workspaceId, userId);
+            return await this.getWorkspaceOrThrow(workspaceId, userId, options);
         } catch (err) {
             // Coded workspace errors map cleanly back to the null contract;
             // anything unexpected (e.g. "Not initialized") still propagates.
@@ -583,19 +800,36 @@ class WorkspaceManager extends EventEmitter {
     }
 
     /**
+     * Non-owner gate for getWorkspaceOrThrow: an e-mail / group share that
+     * carries `permission` (read by default — callers that mutate pass
+     * `{ permission: 'write' }`; the REST layer clamps unsafe methods via
+     * the workspace routes' preHandler).
+     */
+    async #assertSharedAccess(workspaceId, userId, permission) {
+        const access = await this.resolveWorkspaceAccess(workspaceId, userId);
+        if (!access) throw accessDenied(`Access denied to workspace ${workspaceId}`);
+        if (permission && !access.permissions.includes(permission)) {
+            throw accessDenied(`Access denied to workspace ${workspaceId}: share lacks "${permission}" permission`);
+        }
+    }
+
+    /**
      * Like {@link getWorkspace} but throws a coded workspace error instead of
      * returning null, so callers can distinguish permission failures from a
      * transient "workspace not ready" condition. Mirrors ContextManager.getContext.
+     * Shared (non-owner) access is honoured: see {@link resolveWorkspaceAccess}.
+     * @param {{ permission?: 'read'|'write'|'admin' }} [options] - permission a
+     *   non-owner must hold (default 'read'); owners always pass.
      * @throws accessDenied (403) / workspaceNotFound (404) / workspaceNotReady (503)
      */
-    async getWorkspaceOrThrow(workspaceId, userId) {
+    async getWorkspaceOrThrow(workspaceId, userId, { permission = 'read' } = {}) {
         if (!this.#initialized) throw new Error('Not initialized');
 
         // 1. Check cache
         if (this.#workspaces.has(workspaceId)) {
             const ws = this.#workspaces.get(workspaceId);
             if (userId && ws.owner !== userId) {
-                throw accessDenied(`Access denied to workspace ${workspaceId}`);
+                await this.#assertSharedAccess(workspaceId, userId, permission);
             }
             this.#registerWorkspaceInstance(ws);
             return ws;
@@ -605,7 +839,7 @@ class WorkspaceManager extends EventEmitter {
         const entry = this.#findInIndex(workspaceId);
         if (!entry) throw workspaceNotFound(`Workspace not found: ${workspaceId}`);
         if (userId && entry.owner !== userId) {
-            throw accessDenied(`Access denied to workspace ${workspaceId}`);
+            await this.#assertSharedAccess(workspaceId, userId, permission);
         }
         if (entry.origin === WORKSPACE_ORIGINS.REMOTE) {
             // Credentials live in the per-user remote-workspaces store, keyed
@@ -672,7 +906,9 @@ class WorkspaceManager extends EventEmitter {
         const host = options.host || WORKSPACE_DEFAULT_HOST;
 
         // Check uniqueness
-        if (this.resolveWorkspaceId(userId, sanitizedName, host)) {
+        // Own names only: a workspace merely shared with the user under the
+        // same name must not block creating their own.
+        if (this.resolveOwnWorkspaceId(userId, sanitizedName, host)) {
             throw new Error(`Workspace with name "${sanitizedName}" already exists for user ${userId}`);
         }
 
@@ -792,6 +1028,12 @@ class WorkspaceManager extends EventEmitter {
             ...updates,
             updatedAt: new Date().toISOString()
         };
+        // The ACL lives in workspace.json (tokens/members write there); the
+        // index copy may lag. Never let a config update clobber it.
+        if (updates.acl === undefined && existing.origin !== WORKSPACE_ORIGINS.REMOTE) {
+            const acl = this.#aclFor(existing);
+            if (acl) newEntry.acl = acl;
+        }
 
         // A remote reference has no workspace.json here: label/color/order/
         // description are how THIS user sees the reference (local overrides
@@ -1299,7 +1541,34 @@ class WorkspaceManager extends EventEmitter {
         }
         const sanitizedName = this.#sanitizeWorkspaceName(name);
         const nameKey = `${userId}@${host}:${sanitizedName}`;
-        return this.#nameIndex.get(nameKey) || null;
+        const own = this.#nameIndex.get(nameKey);
+        if (own) return own;
+        // Not one of the user's own: a workspace shared with them by e-mail
+        // or group is addressable by its (owner-side) name too, so clients
+        // that speak names (web routes, CLI, FUSE) reach team workspaces.
+        // Own names win; among shared ones the first match is taken.
+        return this.#resolveSharedWorkspaceId(userId, sanitizedName, host);
+    }
+
+    /** Name → id among the user's OWN workspaces only (no shared fallback). */
+    resolveOwnWorkspaceId(userId, workspaceName, host = WORKSPACE_DEFAULT_HOST) {
+        let name = workspaceName || '';
+        const at = name.lastIndexOf('@');
+        if (at > 0) {
+            host = name.slice(at + 1);
+            name = name.slice(0, at);
+        }
+        return this.#nameIndex.get(`${userId}@${host}:${this.#sanitizeWorkspaceName(name)}`) || null;
+    }
+
+    #resolveSharedWorkspaceId(userId, sanitizedName, host) {
+        if (!userId || !sanitizedName) return null;
+        for (const [, entry] of this.#allEntries()) {
+            if (entry.owner === userId || entry.name !== sanitizedName) continue;
+            if ((entry.host || WORKSPACE_DEFAULT_HOST) !== host) continue;
+            if (this.#sharedAccessSync(entry, userId)) return entry.id;
+        }
+        return null;
     }
 
     resolveWorkspaceIdFromReference(workspaceRef) {

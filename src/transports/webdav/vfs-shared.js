@@ -2,6 +2,7 @@
 
 import path from 'path';
 import { createHash } from 'crypto';
+import { localDocumentIds, subtreeExclusions } from '../lib/placement.js';
 
 // ── Schema ↔ extension mapping (writable abstractions) ──────────────────────
 
@@ -404,15 +405,15 @@ export async function collectDocuments(fetchPage, onTruncated = null) {
  * first match.
  *
  * Names are resolved exactly as readdir resolves them — `reserved` seeds the
- * same collision set (subdirectory names) and docEntries applies the same
- * `_<id>` suffix — because a name the listing showed has to be a name that
- * opens. Matching bare docName() meant every deduplicated file was listed and
- * then 404'd.
+ * same collision set (subdirectory names), `localIds` the same placement order,
+ * and docEntries applies the same `_<id>` suffix — because a name the listing
+ * showed has to be a name that opens. Matching bare docName() meant every
+ * deduplicated file was listed and then 404'd.
  */
-export async function findDocumentByName(fetchPage, filename, reserved = []) {
+export async function findDocumentByName(fetchPage, filename, reserved = [], localIds = null) {
     const used = new Set(reserved);
     for await (const page of documentPages(fetchPage)) {
-        for (const entry of docEntries(page, used)) {
+        for (const entry of docEntries(page, used, localIds)) {
             if (entry.name === filename) { return entry.doc; }
         }
     }
@@ -538,21 +539,44 @@ export function collectionIdentity(children) {
     return { mtime: new Date(newest), etag: `"c-${hash.digest('hex').slice(0, 20)}"` };
 }
 
-// Turn a list of docs into deduplicated file entries (see fileEntry).
-// Name collisions get the doc id appended before the extension.
-export function docEntries(docs, used = new Set()) {
-    const entries = [];
-    for (const doc of docs) {
-        if (!doc) { continue; }
+// Placement arithmetic lives in transports/lib/placement.js — the REST
+// listings need the same answer these views do. Re-exported so a virtual FS
+// has one import site for "documents as files".
+export { localDocumentIds, subtreeExclusions };
+
+/**
+ * Turn a list of docs into deduplicated file entries (see fileEntry). Name
+ * collisions get the doc id appended before the extension.
+ *
+ * `localIds` (see localDocumentIds) decides WHO KEEPS THE PLAIN NAME when a
+ * name collides: the document filed at this path, never whichever one the
+ * listing happened to reach first. Three `CLAUDE.md` filed at /, /dc-migration
+ * and /dc-migration/tasks/foo are all listed at /, and which one was "the"
+ * CLAUDE.md there used to depend on insertion order — so it changed as you
+ * walked the tree, and the id-suffixed copies changed with it.
+ *
+ * Naming order is not display order: entries come back in the order they were
+ * given, so a listing keeps whatever sort the caller asked the db for.
+ */
+export function docEntries(docs, used = new Set(), localIds = null) {
+    const list = (docs || []).filter(Boolean);
+    const isLocal = (doc) => (localIds ? localIds.has(Number(doc.id)) : false);
+    // Stable sort, so documents of equal standing keep the listing's own order.
+    const byPlacement = localIds
+        ? [...list].sort((a, b) => (isLocal(b) ? 1 : 0) - (isLocal(a) ? 1 : 0))
+        : list;
+
+    const names = new Map();
+    for (const doc of byPlacement) {
         let name = docName(doc);
         if (used.has(name)) {
             const e = path.extname(name);
             name = `${path.basename(name, e)}_${doc.id}${e}`;
         }
         used.add(name);
-        entries.push(fileEntry(doc, name));
+        names.set(doc, name);
     }
-    return entries;
+    return list.map((doc) => fileEntry(doc, names.get(doc)));
 }
 
 // Render a non-local doc to a downloadable buffer + content type. Notes/tabs/

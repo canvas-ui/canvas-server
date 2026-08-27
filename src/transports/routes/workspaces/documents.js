@@ -7,6 +7,7 @@ import { parseByteRange } from '../../lib/http-range.js';
 import { resolveContentType } from '../../lib/mime.js';
 import { normalizeSchemaId } from '../../../core/workspace/lib/classifier.js';
 import { PREDICATES } from 'canvas-synapsd/src/indexes/edges/predicates.js';
+import { localDocumentIds, PLACEMENT_BUDGET, stampPlacement, treeOf } from '../../lib/placement.js';
 
 // Human filename for a location URL: basename of the key after scheme://backend/.
 function locationFilename(url) {
@@ -471,7 +472,19 @@ export default async function workspaceDocumentRoutes(fastify, _options) {
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());
       }
 
-      const responseObject = new ResponseObject().found(documents, isSearch ? 'Search results retrieved successfully' : 'Documents retrieved successfully', 200, documents.count, documents.totalCount);
+      // Which of these are FILED at the listed path, as opposed to showing
+      // through from below it (a context path lists its whole subtree). A
+      // client rendering documents as files needs it to decide which of two
+      // same-named documents is "the" one here — see transports/lib/placement.
+      const payload = (isSearch || request.query.idsOnly || !ctxSelector)
+        ? documents
+        : stampPlacement(documents, await localDocumentIds(
+          (not) => workspace.list({ ...spec, paths: { not }, idsOnly: true, limit: PLACEMENT_BUDGET, offset: 0, page: undefined }),
+          treeOf(workspace, ctxSelector),
+          ctxSelector.path,
+        ));
+
+      const responseObject = new ResponseObject().found(payload, isSearch ? 'Search results retrieved successfully' : 'Documents retrieved successfully', 200, documents.count, documents.totalCount);
       // Arrays lose non-index props in JSON — lift the calibration debug across.
       if (documents.debug) { responseObject.debug = documents.debug; }
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());

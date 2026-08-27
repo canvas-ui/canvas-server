@@ -9,23 +9,24 @@ const logger = createLogger('canvas-server:middleware:workspace-acl');
 /**
  * Workspace ACL Validation Middleware
  *
- * This middleware validates workspace access supporting both JWT and API tokens:
- * - JWT tokens (web UI): Only owner access allowed
- * - Canvas API tokens: Owner access + token-based sharing access
+ * This middleware validates workspace access for every principal kind:
+ * - Owner (JWT or canvas-* user/device token): full access
+ * - Members — e-mail (`acl.users`) and group (`acl.groups`, LDAP memberOf or
+ *   admin-assigned) grants, for JWT and canvas-* user tokens alike, so the
+ *   web UI, CLI and FUSE all reach team workspaces. Resolved by
+ *   WorkspaceManager.resolveWorkspaceAccess (single source of truth).
+ * - Workspace share tokens (`acl.tokens`, canvas-workspace-*): bound to one
+ *   workspace, resolved at auth time
+ * - Agent tokens: bound at auth time, clamped here
  *
  * It works in conjunction with the existing Canvas authentication middleware.
  *
- * Token-based ACL format in workspace.json:
+ * ACL format in workspace.json:
  * {
  *   "acl": {
- *     "tokens": {
- *       "sha256:abc123...": {
- *         "permissions": ["read", "write"],
- *         "description": "Jane's laptop",
- *         "createdAt": "2024-01-01T00:00:00Z",
- *         "expiresAt": null
- *       }
- *     }
+ *     "tokens": { "sha256:abc123...": { "permissions": ["read", "write"], "description": "Jane's laptop", "createdAt": "...", "expiresAt": null } },
+ *     "users":  { "jane@corp.tld": { "permissions": ["read", "write"], "description": "", "grantedAt": "...", "grantedBy": "<userId>" } },
+ *     "groups": { "cn=team-a,ou=groups,dc=corp,dc=tld": { "permissions": ["read"], ... } }
  *   }
  * }
  */
@@ -223,21 +224,22 @@ export function createWorkspaceACLMiddleware(requiredPermission = 'read', { allo
         }
       }
 
-      // 6. Try email-based user access (for JWT tokens only)
-      if (isJwtToken && userId) {
-        const userAccess = await tryUserAccess(
+      // 6. Member access — e-mail / group share (JWT and canvas-* user
+      // tokens; share/agent tokens returned above). The manager resolves
+      // groups from the user record (LDAP memberOf / admin-assigned).
+      if (userId) {
+        const memberAccess = await tryMemberAccess(
           request.server.workspaceManager,
-          request.server.users,
           workspaceId,
           userId,
           requiredPermission
         );
 
-        if (userAccess) {
-          logger.debug(`User email access granted for workspace ${workspaceId}: ${userAccess.access.description}`);
-          request.workspace = userAccess.workspace;
+        if (memberAccess) {
+          logger.debug(`Member access granted for workspace ${workspaceId}: ${memberAccess.access.description}`);
+          request.workspace = memberAccess.workspace;
           request.workspaceAccess = {
-            ...userAccess.access,
+            ...memberAccess.access,
             isOwner: false
           };
           return; // Continue to route handler
@@ -248,7 +250,7 @@ export function createWorkspaceACLMiddleware(requiredPermission = 'read', { allo
       logger.debug(`Access denied for workspace ${workspaceId}`);
       if (isJwtToken) {
         const response = new ResponseObject().forbidden(
-          `Access denied to workspace ${workspaceId}. You are not the owner of this workspace.`
+          `Access denied to workspace ${workspaceId}. You are not the owner of this workspace and it is not shared with you (or your share lacks "${requiredPermission}").`
         );
         return reply.code(response.statusCode).send(response.getResponse());
       } else {
@@ -290,6 +292,13 @@ async function tryOwnerAccess(workspaceManager, userId, workspaceIdentifier) {
         return null;
       }
       workspace = await workspaceManager.getWorkspace(resolvedId, userId);
+    }
+
+    // getWorkspace also admits members (e-mail / group shares) — this path
+    // is the OWNER fast path only; members are resolved with their real
+    // permission set in tryMemberAccess.
+    if (workspace && workspace.owner && workspace.owner !== userId) {
+      return null;
     }
 
     return workspace;
@@ -421,123 +430,46 @@ async function loadWorkspaceForTokenAccess(workspaceManager, workspaceEntry) {
 }
 
 /**
- * Try to access workspace via email-based user sharing
- * @param {WorkspaceManager} workspaceManager - Workspace manager instance
- * @param {UserManager} userManager - User manager instance
+ * Try to access a workspace as a member (e-mail or group share). The
+ * workspace is loaded under its owner's identity — the member has already
+ * been authorised for `requiredPermission`.
+ * @param {WorkspaceManager} workspaceManager
  * @param {string} workspaceIdentifier - Workspace ID or name
- * @param {string} userId - User ID
- * @param {string} requiredPermission - Required permission
- * @returns {Promise<Object|null>} Access info if valid, null otherwise
+ * @param {string} userId - Accessing user
+ * @param {string} requiredPermission
+ * @returns {Promise<{ workspace: Object, access: Object }|null>}
  */
-async function tryUserAccess(workspaceManager, userManager, workspaceIdentifier, userId, requiredPermission) {
+async function tryMemberAccess(workspaceManager, workspaceIdentifier, userId, requiredPermission) {
   try {
-    // Get user email to check against workspace ACL
-    const user = await userManager.get(userId);
-    if (!user || !user.email) {
-      logger.debug(`User not found or missing email: ${userId}`);
+    if (typeof workspaceManager.resolveWorkspaceAccess !== 'function') return null;
+    const isWorkspaceId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(workspaceIdentifier);
+    const workspaceId = isWorkspaceId
+      ? workspaceIdentifier
+      : workspaceManager.resolveWorkspaceId(userId, workspaceIdentifier);
+    if (!workspaceId) return null;
+
+    const access = await workspaceManager.resolveWorkspaceAccess(workspaceId, userId);
+    if (!access || access.isOwner) return null;
+    if (!access.permissions.includes(requiredPermission)) {
+      logger.debug(`Member ${userId} lacks required permission on ${workspaceId}. Has: ${access.permissions}, needs: ${requiredPermission}`);
       return null;
     }
 
-    // Find workspace and check user ACL
-    const workspaceEntry = await findWorkspaceByUserEmail(workspaceManager, workspaceIdentifier, user.email);
-    if (!workspaceEntry) {
-      logger.debug(`User ${user.email} not found in any workspace ACL for workspace: ${workspaceIdentifier}`);
-      return null;
-    }
-
-    // Validate user permissions
-    const userData = workspaceEntry.acl.users[user.email];
-    if (!userData.permissions.includes(requiredPermission)) {
-      logger.debug(`User ${user.email} lacks required permission. Has: ${userData.permissions}, needs: ${requiredPermission}`);
-      return null;
-    }
-
-    // Load the actual workspace instance
-    const workspace = await loadWorkspaceForUserAccess(workspaceManager, workspaceEntry, userId);
-    if (!workspace) {
-      logger.debug(`Failed to load workspace for user access: ${workspaceIdentifier}`);
-      return null;
-    }
+    const workspace = await workspaceManager.getWorkspace(workspaceId, access.owner);
+    if (!workspace) return null;
 
     return {
       workspace,
       access: {
-        permissions: userData.permissions,
-        description: userData.description || `Email-based access for ${user.email}`,
-        grantedAt: userData.grantedAt,
-        grantedBy: userData.grantedBy
+        permissions: access.permissions,
+        description: access.description,
+        via: access.via,
+        principal: access.principal,
+        isMember: true,
       }
     };
-
   } catch (error) {
-    logger.debug(`User access validation error: ${error.message}`);
-    return null;
-  }
-}
-
-/**
- * Find workspace by searching for user email in ACLs
- * @param {WorkspaceManager} workspaceManager - Workspace manager instance
- * @param {string} workspaceIdentifier - Workspace ID or name
- * @param {string} userEmail - User email to search for
- * @returns {Promise<Object|null>} Workspace config if found, null otherwise
- */
-async function findWorkspaceByUserEmail(workspaceManager, workspaceIdentifier, userEmail) {
-  try {
-    // Check if workspaceIdentifier is a UUID (workspace ID)
-    const isWorkspaceId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(workspaceIdentifier);
-
-    const allWorkspaces = await workspaceManager.listWorkspaces();
-
-    if (isWorkspaceId) {
-      // Direct lookup by workspace ID
-      for (const workspaceEntry of allWorkspaces) {
-        if (workspaceEntry.id === workspaceIdentifier) {
-          const users = workspaceEntry.acl?.users || {};
-          if (users[userEmail]) {
-            logger.debug(`Found user ${userEmail} in workspace ACL: ${workspaceIdentifier}`);
-            return workspaceEntry;
-          }
-        }
-      }
-    } else {
-      // Search through all workspaces for a matching name and user email
-      for (const workspaceEntry of allWorkspaces) {
-        if (workspaceEntry.name === workspaceIdentifier) {
-          const users = workspaceEntry.acl?.users || {};
-          if (users[userEmail]) {
-            logger.debug(`Found user ${userEmail} in workspace ACL: ${workspaceEntry.id} (name: ${workspaceIdentifier})`);
-            return workspaceEntry;
-          }
-        }
-      }
-    }
-
-    logger.debug(`User ${userEmail} not found in workspace ACL for: ${workspaceIdentifier}`);
-    return null;
-
-  } catch (error) {
-    logger.debug(`Error finding workspace by user email: ${error.message}`);
-    return null;
-  }
-}
-
-/**
- * Load workspace instance for user-based access
- * @param {WorkspaceManager} workspaceManager - Workspace manager instance
- * @param {Object} workspaceEntry - Workspace entry from index
- * @param {string} userId - Accessing user ID
- * @returns {Promise<Workspace|null>} Workspace instance if successful, null otherwise
- */
-async function loadWorkspaceForUserAccess(workspaceManager, workspaceEntry, _userId) {
-  try {
-    // Load the workspace by ID with the owner as the requesting user
-    // This allows the user to access a workspace they have email-based permissions for
-    const workspace = await workspaceManager.getWorkspace(workspaceEntry.id, workspaceEntry.owner);
-    return workspace;
-
-  } catch (error) {
-    logger.debug(`Error loading workspace for user access: ${error.message}`);
+    logger.debug(`Member access validation error: ${error.message}`);
     return null;
   }
 }

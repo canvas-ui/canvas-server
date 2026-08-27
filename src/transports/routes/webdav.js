@@ -9,6 +9,7 @@ import { throttleKey, isThrottled, recordFailure, clearFailures } from '../lib/b
 
 const logger = createLogger('webdav:routes');
 
+const DAV_READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS', 'PROPFIND', 'REPORT']);
 const DAV_METHODS = ['GET', 'HEAD', 'PUT', 'DELETE', 'PROPFIND', 'PROPPATCH', 'MKCOL', 'COPY', 'MOVE', 'LOCK', 'UNLOCK'];
 
 /**
@@ -123,11 +124,15 @@ export default async function webdavRoutes(fastify) {
       return reply.code(403).send(new ResponseObject().forbidden('WebDAV is not enabled for this workspace').getResponse());
     }
 
-    const hasAccess = ws.owner === request.user.id ||
-      !!(request.user.email && ws.acl?.users?.[request.user.email]);
-
-    if (!hasAccess) {
+    // Owner, or an e-mail / group member (resolved by the manager); a
+    // read-only member may PROPFIND/GET but not write.
+    const access = await fastify.workspaceManager.resolveWorkspaceAccess(workspaceId, request.user.id);
+    if (!access) {
       return reply.code(403).send(new ResponseObject().forbidden('Access denied').getResponse());
+    }
+    const required = DAV_READ_METHODS.has(request.method.toUpperCase()) ? 'read' : 'write';
+    if (!access.isOwner && !access.permissions.includes(required)) {
+      return reply.code(403).send(new ResponseObject().forbidden('This workspace is shared with you read-only').getResponse());
     }
   }
 

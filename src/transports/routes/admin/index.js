@@ -146,7 +146,9 @@ export default async function adminRoutes(fastify, _options) {
         name: u.name,
         email: u.email,
         userType: u.userType,
+        authMethod: u.authMethod,
         status: u.status,
+        groups: u.groups || [],
         createdAt: u.createdAt,
         updatedAt: u.updatedAt,
       }));
@@ -252,7 +254,9 @@ export default async function adminRoutes(fastify, _options) {
         name: user.name,
         email: user.email,
         userType: user.userType,
+        authMethod: user.authMethod,
         status: user.status,
+        groups: user.groups || [],
         createdAt: user.createdAt,
         updatedAt: user.updatedAt
       }, 'User retrieved successfully');
@@ -287,7 +291,10 @@ export default async function adminRoutes(fastify, _options) {
           email: { type: 'string', format: 'email' },
           password: { type: 'string', minLength: 8 },
           userType: { type: 'string', enum: ['user', 'admin'] },
-          status: { type: 'string', enum: ['active', 'inactive', 'pending', 'deleted'] }
+          status: { type: 'string', enum: ['active', 'inactive', 'pending', 'deleted'] },
+          // Team groups for workspace sharing (acl.groups). LDAP logins
+          // overwrite this from memberOf; set it by hand for local users.
+          groups: { type: 'array', items: { type: 'string', minLength: 1 }, maxItems: 500 }
         }
       }
     }
@@ -295,6 +302,9 @@ export default async function adminRoutes(fastify, _options) {
     try {
       const { userId } = request.params;
       const { password, ...updates } = request.body || {};
+      if (Array.isArray(updates.groups)) {
+        updates.groups = [...new Set(updates.groups.map((g) => String(g).trim()).filter(Boolean))];
+      }
 
       // Ensure user exists (and avoid persisting password in user index)
       let user = await fastify.users.get(userId);
@@ -313,6 +323,7 @@ export default async function adminRoutes(fastify, _options) {
         email: user.email,
         userType: user.userType,
         status: user.status,
+        groups: user.groups || [],
         createdAt: user.createdAt,
         updatedAt: user.updatedAt
       }, 'User updated successfully');
@@ -761,6 +772,50 @@ export default async function adminRoutes(fastify, _options) {
     } catch (error) {
       fastify.log.error(error);
       const response = new ResponseObject().serverError(error.message || 'Failed to delete workspace');
+      return reply.code(response.statusCode).send(response.getResponse());
+    }
+  });
+
+  // Transfer workspace ownership (admin only) — "the team admin left". The
+  // data stays where it is; ownership, index entry and addressing move.
+  fastify.put('/workspaces/:workspaceId/owner', {
+    onRequest: [fastify.authenticate, requireAdmin],
+    schema: {
+      params: {
+        type: 'object',
+        required: ['workspaceId'],
+        properties: { workspaceId: { type: 'string' } }
+      },
+      body: {
+        type: 'object',
+        required: ['owner'],
+        properties: { owner: { type: 'string', minLength: 1, description: 'User id or e-mail of the new owner' } }
+      }
+    }
+  }, async (request, reply) => {
+    try {
+      const { workspaceId } = request.params;
+      const { owner } = request.body;
+      let newOwner;
+      try {
+        newOwner = owner.includes('@') ? await fastify.users.getByEmail(owner) : await fastify.users.get(owner);
+      } catch { newOwner = null; }
+      if (!newOwner) {
+        const response = new ResponseObject().notFound(`User not found: ${owner}`);
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+      const entry = await fastify.workspaceManager.transferWorkspaceOwnership(workspaceId, newOwner.id);
+      const response = new ResponseObject().success({
+        id: entry.id, name: entry.name, owner: entry.owner, ownerEmail: newOwner.email, reference: entry.reference
+      }, 'Workspace ownership transferred');
+      return reply.code(response.statusCode).send(response.getResponse());
+    } catch (error) {
+      const statusCode = error?.statusCode || 500;
+      if (statusCode >= 500) fastify.log.error(error);
+      const response = statusCode === 404 ? new ResponseObject().notFound(error.message)
+        : statusCode === 403 ? new ResponseObject().forbidden(error.message)
+        : statusCode >= 500 ? new ResponseObject().serverError(error.message || 'Failed to transfer workspace')
+        : new ResponseObject().badRequest(error.message);
       return reply.code(response.statusCode).send(response.getResponse());
     }
   });

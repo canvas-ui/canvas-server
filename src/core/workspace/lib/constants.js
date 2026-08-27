@@ -292,7 +292,9 @@ const WORKSPACE_CONFIG_TEMPLATE = {
     description: '',
     links: {}, // Portable, workspace-scoped linked resources (by type)
     acl: {
-        tokens: {} // Token-based ACL: { "sha256:hash": { permissions: [], description: "", createdAt: "", expiresAt: null } }
+        tokens: {}, // Token-based ACL: { "sha256:hash": { permissions: [], description: "", createdAt: "", expiresAt: null } }
+        users: {},  // E-mail grants: { "a@corp.tld": { permissions: [], description: "", grantedAt: "", grantedBy: "" } }
+        groups: {}, // Group grants (LDAP memberOf DN or CN, or admin-assigned): same shape as users
     },
     roles: [], // Associated role IDs
     internals: { ...WORKSPACE_INTERNALS },

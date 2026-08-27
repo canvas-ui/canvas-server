@@ -187,12 +187,20 @@ class LdapAuthStrategy {
               // Extract user attributes
               const displayName = userEntry.displayName || userEntry.cn || email.split('@')[0];
               const userEmail = userEntry.mail || email;
+              // Group memberships (memberOf by default, configurable) drive
+              // team workspace sharing (workspace acl.groups). AD returns
+              // full DNs; a single group arrives as a string.
+              const groupAttribute = ldapConfig.groupAttribute || 'memberOf';
+              const rawGroups = userEntry[groupAttribute];
+              const groups = (Array.isArray(rawGroups) ? rawGroups : rawGroups ? [rawGroups] : [])
+                .map((g) => String(g).trim()).filter(Boolean);
 
               resolve({
                 success: true,
                 email: userEmail.toLowerCase(),
                 name: displayName,
                 dn: userEntry.dn,
+                groups,
                 attributes: userEntry
               });
             });
@@ -268,6 +276,20 @@ class LdapAuthStrategy {
 
     if (existingUser) {
       console.log(`[LDAP] User ${authResult.email} already exists`);
+      // Refresh directory groups on every login — team membership is
+      // managed in the directory, and revocations must take effect here.
+      const groups = Array.isArray(authResult.groups) ? authResult.groups : [];
+      const current = Array.isArray(existingUser.groups) ? existingUser.groups : [];
+      if (JSON.stringify([...groups].sort()) !== JSON.stringify([...current].sort())) {
+        try {
+          return await userManager.update(existingUser.id, {
+            groups,
+            authMetadata: { ...(existingUser.authMetadata || {}), dn: authResult.dn, authenticatedAt: new Date().toISOString() }
+          });
+        } catch (error) {
+          console.warn(`[LDAP] Could not refresh groups for ${authResult.email}: ${error.message}`);
+        }
+      }
       return existingUser;
     }
 
@@ -282,6 +304,7 @@ class LdapAuthStrategy {
       userType: ldapSettings.defaultUserType || 'user',
       status: ldapSettings.defaultStatus || 'active',
       authMethod: 'ldap',
+      groups: Array.isArray(authResult.groups) ? authResult.groups : [],
       authMetadata: {
         provider: 'ldap',
         dn: authResult.dn,

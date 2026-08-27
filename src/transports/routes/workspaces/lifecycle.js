@@ -204,9 +204,10 @@ export default async function workspaceLifecycleRoutes(fastify, _options) {
     }
   });
 
-  // Start workspace
+  // Start workspace — any member may start it (a stopped team workspace is
+  // unusable otherwise); stopping stays admin-only since it affects everyone.
   fastify.post('/start', {
-    onRequest: [fastify.authenticate, requireWorkspaceAdmin()],
+    onRequest: [fastify.authenticate, requireWorkspaceRead()],
     schema: {
       params: {
         type: 'object',

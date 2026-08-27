@@ -3,8 +3,8 @@
 import schemaRegistry from 'canvas-synapsd/src/schemas/SchemaRegistry.js';
 import {
     applyBodyToDoc, collectDocuments, docEntries, docName, fileDocumentFromBlob, fileEntry,
-    findDocumentByName, httpError, inferDocFromFile, LIST_BUDGET, norm, renamedRecord,
-    resolveDocContent,
+    findDocumentByName, httpError, inferDocFromFile, LIST_BUDGET, localDocumentIds, norm,
+    renamedRecord, resolveDocContent,
 } from './vfs-shared.js';
 import { createLogger } from '../../utils/log.js';
 
@@ -96,7 +96,7 @@ export default class VirtualNamedContextFS {
         const parts = split(vPath);
 
         if (parts.length === 0) {
-            const files = docEntries(await this.#listDocs());
+            const files = docEntries(await this.#listDocs(), new Set(), await this.#localIds());
             // Dotted, so it stays out of `cp -r` and out of a file manager's
             // default view.
             return [{ name: BY_SCHEMA, isDir: true, size: 0 }, ...files];
@@ -113,7 +113,7 @@ export default class VirtualNamedContextFS {
                 return folders;
             }
             if (parts.length === 2 && FOLDER_MAP.has(parts[1])) {
-                return docEntries(await this.#listDocs(FOLDER_MAP.get(parts[1])));
+                return docEntries(await this.#listDocs(FOLDER_MAP.get(parts[1])), new Set(), await this.#localIds());
             }
         }
 
@@ -216,7 +216,25 @@ export default class VirtualNamedContextFS {
     // of its files — so it outgrows a single page sooner than anything else.
     // Both the listing and the lookup page through it; see findDocumentByName.
     async #findDoc(filename, schema = null) {
-        return findDocumentByName(this.#page(schema), filename, [BY_SCHEMA]);
+        return findDocumentByName(this.#page(schema), filename, [BY_SCHEMA], await this.#localIds());
+    }
+
+    // A context URL is a PATH into a tree, and a path lists everything at or
+    // below it — so a context at mbag://dc-migration shows its own documents
+    // and the ones filed deeper. These are the ones filed at the context's own
+    // path: they keep their plain filenames, the deeper ones take the suffix.
+    // Walking from mbag:// to mbag://dc-migration therefore hands the plain
+    // name to a different document at each stop, which is what the path means.
+    async #localIds() {
+        const tree = this.#ctx.workspace?.getTree?.(this.#ctx.treeId);
+        return localDocumentIds(
+            (not) => this.#ctx.list(this.#ctx.userId, {
+                paths: { not },
+                options: { idsOnly: true, limit: LIST_BUDGET },
+            }),
+            tree,
+            this.#ctx.path || '/',
+        );
     }
 
     #page(schema = null) {

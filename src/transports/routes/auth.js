@@ -858,6 +858,10 @@ export default async function authRoutes(fastify, _options) {
         name: userData.name || userData.email,
         email: userData.email,
         userType: userData.userType || 'user',
+        authMethod: userData.authMethod || 'local',
+        // Team groups (LDAP memberOf / admin-assigned) — what workspace
+        // group shares are matched against; shown in the UI for clarity.
+        groups: Array.isArray(userData.groups) ? userData.groups : [],
         status: userData.status || 'active'
       }, 'User profile retrieved successfully');
 

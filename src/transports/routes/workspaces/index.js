@@ -5,6 +5,7 @@ import { requireWorkspaceRead, requireWorkspaceWrite as _requireWorkspaceWrite, 
 import { enforceAgentBinding } from '../../middleware/agent-acl.js';
 import { validateUser } from '../../auth/strategies.js';
 import { resolveWorkspaceAddress } from '../../middleware/address-resolver.js';
+import { permissionForMethod } from '../../../core/workspace/lib/access.js';
 
 /**
  * Main workspace routes handler for the API
@@ -53,6 +54,30 @@ export default async function workspaceRoutes(fastify, _options) {
   // Agent-token binding clamp — applies to every workspace subroute (documents,
   // tree, blobs, ...): workspace lock, method permission, base-path clamp.
   fastify.addHook('preHandler', enforceAgentBinding);
+
+  // Member (e-mail / group share) clamp. Subroutes that resolve the workspace
+  // themselves (documents, tree, blobs, ...) call getWorkspace(id, userId),
+  // which admits any member with read access — so a read-only member must
+  // be stopped here before an unsafe method reaches the handler. Routes
+  // guarded by the ACL middleware already carry request.workspaceAccess with
+  // the permission checked and are skipped. Search-style POSTs are reads.
+  const READ_POSTS = /\/(search(\/image)?|query|resolve|preview|exports\/ticket)(\/|$)/;
+  fastify.addHook('preHandler', async (request, reply) => {
+    if (request.workspaceAccess || request.resourceToken || !request.user?.id || !request.params?.id) return;
+    const url = (request.raw?.url || request.url || '').split('?')[0];
+    const required = request.method === 'POST' && READ_POSTS.test(url) ? 'read' : permissionForMethod(request.method);
+    if (required === 'read') return;
+    const identifier = request.params.id;
+    const workspaceId = isUuid(identifier) ? identifier : fastify.workspaceManager.resolveWorkspaceId(request.user.id, identifier);
+    if (!workspaceId || typeof fastify.workspaceManager.resolveWorkspaceAccess !== 'function') return;
+    const access = await fastify.workspaceManager.resolveWorkspaceAccess(workspaceId, request.user.id);
+    if (!access || access.isOwner) return; // unknown → the handler 404s; owner → full access
+    if (!access.permissions.includes(required)) {
+      const response = new ResponseObject().forbidden(`This workspace is shared with you read-only (needs "${required}")`);
+      return reply.code(response.statusCode).send(response.getResponse());
+    }
+    request.workspaceAccess = { permissions: access.permissions, isOwner: false, isMember: true, description: access.description };
+  });
 
   fastify.addHook('preHandler', async (request) => {
     const client = request.client;
@@ -110,6 +135,9 @@ export default async function workspaceRoutes(fastify, _options) {
   fastify.register(import('./lifecycle.js'), {
     prefix: '/:id',
     onRequest: [resolveWorkspaceAddress]
+  });
+  fastify.register(import('./members.js'), {
+    prefix: '/:id/members',
   });
   fastify.register(import('./tokens.js'), {
     prefix: '/:id/tokens',

@@ -222,7 +222,8 @@ Implementation: `src/transports/auth/ldap-strategy.js` (uses the `ldapjs` packag
 1. Service account (optional) binds to LDAP and searches for the user by email
 2. User is authenticated with a second bind using their DN + password
 3. On success, Canvas creates a local user record if one does not exist (`authMethod: "ldap"`)
-4. Multiple servers (`primary`, `secondary`, …) are tried in order for failover
+4. The user's directory groups (`memberOf` by default) are stored on the record as `groups` and **refreshed on every login** — they drive [team workspace sharing](team-workspaces.md)
+5. Multiple servers (`primary`, `secondary`, …) are tried in order for failover
 
 Login with `"strategy": "ldap"` or `"strategy": "auto"`. When `auto` is used and LDAP is enabled, **new** users (no existing local record) are routed to LDAP before IMAP/local.
 
@@ -262,8 +263,9 @@ Edit `server/config/auth.json` (created automatically on first run if missing):
 | `searchFilter` | string | ✅ | Filter with `{{email}}` placeholder |
 | `bindDN` | string | ❌ | Service account DN for user lookup (recommended for AD) |
 | `bindPassword` | string | ❌ | Service account password |
-| `attributes` | string[] | ❌ | Attributes to fetch (default: `mail`, `cn`, `displayName`) |
-| `tls` | boolean | ❌ | Enable TLS options on the client (use `true` with `ldaps://`) |
+| `attributes` | string[] | ❌ | Attributes to fetch (default: `mail`, `cn`, `displayName`). **Keep `memberOf` (or your `groupAttribute`) in this list** or no groups are read |
+| `groupAttribute` | string | ❌ | Attribute holding the user's group memberships (default `memberOf`) |
+| `tls` | boolean | ❌ | Enable TLS options on the client (use `true` with `ldaps://`). Note: the client currently sets `rejectUnauthorized: false`, i.e. the DC certificate is **not** verified — acceptable on a trusted internal network, otherwise front the DC with a trusted certificate and treat this as a known gap |
 
 Global LDAP settings:
 
@@ -317,6 +319,35 @@ The `(!(userAccountControl:…:=2))` clause excludes disabled AD accounts.
 
 **Service account**: Create a dedicated AD user with read access to the search base. Do not use a domain admin account.
 
+### Groups → team workspaces
+
+Whatever the `groupAttribute` returns is stored verbatim on the user record
+(`user.groups`, visible via `GET /rest/v2/auth/me`). A workspace owner can then
+share a workspace with a group by its **full DN** or just its **CN** — both
+match, case-insensitively:
+
+```
+POST /rest/v2/workspaces/:id/members   { "group": "team-a", "permissions": ["read", "write"] }
+POST /rest/v2/workspaces/:id/members   { "group": "CN=team-a,OU=Groups,DC=corp,DC=example,DC=com", "permissions": ["read"] }
+```
+
+Notes:
+
+- **Active Directory**: `memberOf` lists *direct* memberships only. Nested
+  groups are not expanded — share with the group the users are actually in,
+  or use a flat "team" group per workspace. (Resolving the transitive chain via
+  `LDAP_MATCHING_RULE_IN_CHAIN` is not implemented.)
+- **OpenLDAP**: `memberOf` is not a standard attribute — enable the `memberof`
+  overlay (or `dynlist`), otherwise the attribute is empty and group shares
+  never match. E-mail shares still work.
+- Group changes take effect at the user's **next login** (the record is
+  refreshed then); revoking someone in the directory does not end an active
+  session.
+- Local (non-LDAP) accounts get groups from an admin:
+  `PUT /rest/v2/admin/users/:userId { "groups": ["team-a"] }`.
+
+See [team-workspaces.md](team-workspaces.md) for the sharing model.
+
 ### OpenLDAP example
 
 ```json
@@ -326,10 +357,12 @@ The `(!(userAccountControl:…:=2))` clause excludes disabled AD accounts.
   "bindPassword": "…",
   "searchBase": "ou=users,dc=example,dc=com",
   "searchFilter": "(mail={{email}})",
-  "attributes": ["mail", "cn", "displayName"],
+  "attributes": ["mail", "cn", "displayName", "memberOf"],
   "tls": false
 }
 ```
+
+(`memberOf` requires the `memberof` overlay on the OpenLDAP side — see above.)
 
 ### API
 

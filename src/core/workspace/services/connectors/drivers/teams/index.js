@@ -16,27 +16,35 @@
  * Channel.ReadBasic.All. Plain fetch, no Graph SDK.
  */
 
+import BaseConnector from '../../BaseConnector.js';
+
 const GRAPH = 'https://graph.microsoft.com/v1.0';
 const PAGE_SIZE = 50;
 
-export default class TeamsDriver {
+export default class TeamsConnector extends BaseConnector {
     static driver = 'teams';
+    static label = 'Microsoft Teams';
+    static icon = 'mdi:microsoft-teams';
+    static blurb = 'Channel messages via Microsoft Graph (app-only).';
+    static provenanceScheme = 'msteams';
+    static supports = { prune: false, create: false, update: false, delete: false };
 
-    #address;
-    #config;
-    #logger;
+    static configFields = [
+        { key: 'address', label: 'Tenant label', placeholder: 'acme', required: true },
+        { key: 'tenantId', label: 'Tenant id', required: true },
+        { key: 'clientId', label: 'Application (client) id', required: true },
+        { key: 'clientSecret', label: 'Client secret', secret: true, required: true },
+        { key: 'teams', label: 'Team ids (one per line)', list: true, required: true },
+        { key: 'initialSyncDays', label: 'Initial history (days)', type: 'number', placeholder: '30' },
+    ];
+
     #accessToken = null;
     #tokenExpiresAt = 0;
 
-    constructor(address, config = {}, { logger } = {}) {
-        this.#address = address;
-        this.#config = config;
-        this.#logger = logger || console;
-    }
 
     async #token() {
         if (this.#accessToken && Date.now() < this.#tokenExpiresAt - 60_000) return this.#accessToken;
-        const { tenantId, clientId, clientSecret } = this.#config;
+        const { tenantId, clientId, clientSecret } = this.config;
         if (!tenantId || !clientId || !clientSecret) {
             throw new Error('teams backend requires tenantId, clientId and clientSecret');
         }
@@ -76,7 +84,7 @@ export default class TeamsDriver {
     }
 
     #teams() {
-        return (Array.isArray(this.#config.teams) ? this.#config.teams : [])
+        return (Array.isArray(this.config.teams) ? this.config.teams : [])
             .map((t) => String(t).trim()).filter(Boolean);
     }
 
@@ -103,7 +111,7 @@ export default class TeamsDriver {
 
     async fetchChanges(container, cursor) {
         const { teamId, channelId } = container;
-        const initialDays = Number(this.#config.initialSyncDays) || 30;
+        const initialDays = Number(this.config.initialSyncDays) || 30;
         const floor = cursor || new Date(Date.now() - initialDays * 86_400_000).toISOString();
 
         const url = new URL(`${GRAPH}/teams/${encodeURIComponent(teamId)}/channels/${encodeURIComponent(channelId)}/messages`);
@@ -129,7 +137,7 @@ export default class TeamsDriver {
 
     #toDocument(container, message) {
         const isHtml = message.body?.contentType === 'html';
-        return {
+        return this.document({
             schema: 'data/schema/message',
             data: {
                 text: isHtml ? this.#stripHtml(message.body?.content) : (message.body?.content || ''),
@@ -152,12 +160,10 @@ export default class TeamsDriver {
                 remoteId: message.id,
                 remoteUpdatedAt: message.lastModifiedDateTime,
             },
-            locations: [
-                { url: `msteams://${container.teamId}/${container.channelId}/${message.id}`, metadata: { provenance: true } },
-                ...(message.webUrl ? [{ url: message.webUrl, metadata: {} }] : []),
-            ],
+            provenanceUrl: this.provenance(container.teamId, container.channelId, message.id),
+            links: [message.webUrl],
             containerSegment: `${container.teamName}/${container.channelName}`,
-        };
+        });
     }
 
     // Teams bodies are HTML; the Message schema's text field wants plain text.

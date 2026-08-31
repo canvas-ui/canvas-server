@@ -1,6 +1,38 @@
 # Connectors — GitHub / Slack / Google Calendar / MS Teams
 
-Status: v1 (2026-08-16). Read-only mirrors; write-back verbs are a later phase.
+Status: v2 (2026-08-31). Read-only mirrors by default; write-back is wired
+into the ordinary document lifecycle for backends that opt in.
+
+## Adding a connector
+
+Two steps, and nothing else in the codebase changes:
+
+1. `services/connectors/drivers/<name>/index.js` — a class extending
+   `BaseConnector` that declares its statics and implements the inbound verbs.
+2. add the class to the array in `services/connectors/drivers/index.js`.
+
+```
+services/connectors/
+  BaseConnector.js     the contract + capability/secret/form declarations
+  drivers/index.js     the registration list
+  registry.js          derives driver keys, provenance schemes, secret keys
+                       and the settings form spec from the classes' statics
+  ConnectorIndex.js    driver-agnostic runtime: poll loop, cursors, backoff,
+                       ingest, deletion-sync, write-back dispatch
+  drivers/<name>/      one folder per driver
+```
+
+The registry is the single source of truth: `CONNECTOR_DRIVERS`,
+`CONNECTOR_SCHEMES`, redaction and `GET /workspaces/:id/backends/drivers`
+(the settings-UI catalogue: label, icon, capabilities, config fields) all come
+off the driver class. A new driver reaches the API and the UI without a second
+edit anywhere.
+
+Statics a driver declares: `driver`, `label`, `icon`, `blurb`,
+`provenanceScheme`, `configFields` (with `secret: true` where applicable) and
+`supports = { prune, create, update, delete }`. Every verb a driver does not
+opt into gets BaseConnector's `ConnectorNotSupportedError`, so nothing has to
+duck-type methods.
 
 ## Model
 
@@ -19,12 +51,35 @@ under the anchor-first grammar:
 ```
 
 **Write-back (readOnly: false):** connectors are read-only mirrors by
-default; flipping `readOnly: false` enables managing the remote FROM Canvas
-through three routes on the backends facade — POST (create) / PATCH (update)
-/ DELETE on `/backends/:driver/:address/…/documents`. The remote operation
-always runs FIRST; the driver's returned mirror re-ingests through the
-normal pipeline (same identity checksum → upsert), so Canvas reflects the
-remote's post-operation state. Per driver:
+default; flipping `readOnly: false` enables managing the remote FROM Canvas.
+The remote operation always runs FIRST; the driver's returned mirror
+re-ingests through the normal pipeline (same identity checksum → upsert), so
+Canvas reflects the remote's post-operation state.
+
+Updates need no special route: **an ordinary document update writes through to
+the source.** `Workspace.put`/`putMany` check whether the document being
+updated carries a connector provenance location on a backend that can write,
+and if so send the change to the driver instead of the local mirror (see
+`#connectorWriteThrough`). That is what makes editing a synced task reach
+GitHub from every surface — webui, REST, agent tools, FUSE — rather than only
+from a connector-specific call. Explicit creation and deletion still go
+through the backends facade: POST / DELETE on
+`/backends/:driver/:address/…/documents` (deleting a Canvas document does NOT
+delete the remote; that stays a deliberate act).
+
+Two rules make the fall-through safe:
+
+- A read-only (or unresolvable) backend falls through to a plain local write,
+  exactly as before — but the document keeps its **identity checksum**
+  (sha256 of the provenance URL). Without that re-stamping, a local edit
+  replaces it with a content checksum, the next sync no longer recognises the
+  document, and the mirror **forks into a duplicate**. The local edit then
+  simply loses to the source at the next poll, which is the honest outcome for
+  something the user cannot write to.
+- Once the write-through path is taken, a driver error propagates. An edit
+  that silently landed only locally is worse than a visible failure.
+
+Per driver:
 
 - **github** (needs a PAT with repo scope): create issue from a task payload;
   update maps task status → issue state (completed → closed, cancelled →
@@ -130,9 +185,22 @@ against a non-empty mirror is refused.
   timestamp, threadId/replyCount, reactions/mentions — matching the Message
   schema's checksumFields, but identity still comes from the provenance URL.
 
-## Not in v1 (deliberate)
+## Not covered yet (deliberate)
 
 Write-back for slack/gcal/teams (post message, RSVP), webhook/event push, GH issue
 comments as child docs, Slack threads expansion, deletion-sync for
 slack/gcal/caldav/teams (needs per-driver `listIdentities`; github shipped),
 WhatsApp (device-side concern — canvas-edge, not a server connector).
+
+Also still open on the GitHub driver specifically:
+
+- **Projects v2 status columns.** `status` maps onto open/closed +
+  `state_reason` only; a board column is a Projects v2 field and needs the
+  GraphQL API.
+- **Assignees, milestone and due date are read-in, never written back** — the
+  update patch carries title/description/status/labels.
+- **No conflict detection.** The cursor is the remote `updated_at`, so a
+  remote edit made between two local ones overwrites without a signal. Last
+  write wins, quietly.
+- **caldav has no `updateDocument`** — create and delete only, so editing a
+  synced event falls through to a local write.

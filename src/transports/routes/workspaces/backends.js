@@ -3,6 +3,7 @@
 import ResponseObject from '../../ResponseObject.js';
 import { requireWorkspaceRead, requireWorkspaceWrite } from '../../middleware/workspace-acl.js';
 import { getServerDevice } from '../../../core/device/ServerDevice.js';
+import { describeConnectorDrivers } from '../../../core/workspace/services/connectors/index.js';
 
 // Unified backend/connector API — mirrors the backends tree's
 // /<driver>/<address> nodes. One surface over storage backends
@@ -33,6 +34,19 @@ export default async function workspaceBackendRoutes(fastify) {
         try {
             const backends = await request.workspace.listBackends();
             return ok(reply, backends, backends.length);
+        } catch (error) { return fail(request, reply, error); }
+    });
+
+    // The connector driver catalogue: label, icon, capabilities and the config
+    // field spec, all read off the driver classes. Clients render connector
+    // settings from this instead of hardcoding a form per driver, so a new
+    // driver reaches the UI with no client change.
+    fastify.get('/drivers', {
+        onRequest: [fastify.authenticate, requireWorkspaceRead()],
+    }, async (request, reply) => {
+        try {
+            const drivers = describeConnectorDrivers();
+            return ok(reply, drivers, drivers.length);
         } catch (error) { return fail(request, reply, error); }
     });
 

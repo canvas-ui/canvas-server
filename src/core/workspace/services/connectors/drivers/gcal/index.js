@@ -15,28 +15,36 @@
  * until expiry. Plain fetch, no googleapis dependency.
  */
 
+import BaseConnector from '../../BaseConnector.js';
+
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const API = 'https://www.googleapis.com/calendar/v3';
 const PAGE_SIZE = 250;
 
-export default class GcalDriver {
+export default class GcalConnector extends BaseConnector {
     static driver = 'gcal';
+    static label = 'Google Calendar';
+    static icon = 'mdi:google';
+    static blurb = 'Events from the calendars you list.';
+    static provenanceScheme = 'gcal';
+    static supports = { prune: false, create: false, update: false, delete: false };
 
-    #address;
-    #config;
-    #logger;
+    static configFields = [
+        { key: 'address', label: 'Account label', placeholder: 'work', required: true },
+        { key: 'clientId', label: 'OAuth client id', required: true },
+        { key: 'clientSecret', label: 'OAuth client secret', secret: true, required: true },
+        { key: 'refreshToken', label: 'Refresh token', secret: true, required: true },
+        { key: 'calendars', label: 'Calendar ids (one per line, blank = all)', list: true },
+        { key: 'initialSyncDays', label: 'Initial history (days)', type: 'number', placeholder: '365' },
+    ];
+
     #accessToken = null;
     #tokenExpiresAt = 0;
 
-    constructor(address, config = {}, { logger } = {}) {
-        this.#address = address;
-        this.#config = config;
-        this.#logger = logger || console;
-    }
 
     async #token() {
         if (this.#accessToken && Date.now() < this.#tokenExpiresAt - 60_000) return this.#accessToken;
-        const { clientId, clientSecret, refreshToken } = this.#config;
+        const { clientId, clientSecret, refreshToken } = this.config;
         if (!clientId || !clientSecret || !refreshToken) {
             throw new Error('gcal backend requires clientId, clientSecret and refreshToken');
         }
@@ -79,8 +87,8 @@ export default class GcalDriver {
     }
 
     async listContainers() {
-        const configured = (Array.isArray(this.#config.calendars) && this.#config.calendars.length)
-            ? this.#config.calendars
+        const configured = (Array.isArray(this.config.calendars) && this.config.calendars.length)
+            ? this.config.calendars
             : ['primary'];
         return configured.map((id) => ({ id: String(id), name: String(id) }));
     }
@@ -97,7 +105,7 @@ export default class GcalDriver {
         };
         if (state.syncToken) params.syncToken = state.syncToken;
         else {
-            const initialDays = Number(this.#config.initialSyncDays) || 365;
+            const initialDays = Number(this.config.initialSyncDays) || 365;
             params.timeMin = new Date(Date.now() - initialDays * 86_400_000).toISOString();
         }
         if (state.pageToken) params.pageToken = state.pageToken;
@@ -138,7 +146,7 @@ export default class GcalDriver {
         if (!event.id || !start) return null; // an event without a position is not an event
         const rrule = (event.recurrence || []).find((r) => /^RRULE:/i.test(r));
 
-        return {
+        return this.document({
             schema: 'data/schema/event/calendar',
             data: {
                 title: event.summary || '(untitled)',
@@ -159,12 +167,10 @@ export default class GcalDriver {
                 remoteId: event.iCalUID || event.id,
                 remoteUpdatedAt: event.updated,
             },
-            locations: [
-                { url: `gcal://${container.id}/${event.id}`, metadata: { provenance: true } },
-                ...(event.htmlLink ? [{ url: event.htmlLink, metadata: {} }] : []),
-            ],
+            provenanceUrl: this.provenance(container.id, event.id),
+            links: [event.htmlLink],
             containerSegment: container.id,
-        };
+        });
     }
 
     // Google gives {dateTime} for timed events and {date} for all-day ones;

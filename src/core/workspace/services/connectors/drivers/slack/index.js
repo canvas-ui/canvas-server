@@ -15,25 +15,31 @@
  * (+ groups:* for private channels).
  */
 
+import BaseConnector from '../../BaseConnector.js';
+
 const API = 'https://slack.com/api';
 const PAGE_LIMIT = 200;
 
-export default class SlackDriver {
+export default class SlackConnector extends BaseConnector {
     static driver = 'slack';
+    static label = 'Slack';
+    static icon = 'mdi:slack';
+    static blurb = 'Messages from the channels you list.';
+    static provenanceScheme = 'slack';
+    static supports = { prune: false, create: false, update: false, delete: false };
 
-    #address;
-    #config;
-    #logger;
+    static configFields = [
+        { key: 'address', label: 'Workspace label', placeholder: 'acme', required: true },
+        { key: 'token', label: 'Bot / user token', placeholder: 'xoxb-…', secret: true, required: true },
+        { key: 'channels', label: 'Channels (one per line)', placeholder: 'general', list: true, required: true },
+        { key: 'initialSyncDays', label: 'Initial history (days)', type: 'number', placeholder: '30' },
+    ];
+
     #teamId = null;
 
-    constructor(address, config = {}, { logger } = {}) {
-        this.#address = address;
-        this.#config = config;
-        this.#logger = logger || console;
-    }
 
     async #call(method, params = {}) {
-        if (!this.#config.token) throw new Error('Slack backend requires a token');
+        if (!this.config.token) throw new Error('Slack backend requires a token');
         const body = new URLSearchParams();
         for (const [k, v] of Object.entries(params)) {
             if (v !== undefined && v !== null) body.set(k, String(v));
@@ -41,7 +47,7 @@ export default class SlackDriver {
         const res = await fetch(`${API}/${method}`, {
             method: 'POST',
             headers: {
-                'Authorization': `Bearer ${this.#config.token}`,
+                'Authorization': `Bearer ${this.config.token}`,
                 'Content-Type': 'application/x-www-form-urlencoded',
             },
             body,
@@ -60,11 +66,11 @@ export default class SlackDriver {
 
     async #team() {
         if (!this.#teamId) await this.test();
-        return this.#teamId || this.#address;
+        return this.#teamId || this.address;
     }
 
     async listContainers() {
-        const configured = (Array.isArray(this.#config.channels) ? this.#config.channels : [])
+        const configured = (Array.isArray(this.config.channels) ? this.config.channels : [])
             .map((c) => String(c).trim()).filter(Boolean);
 
         const containers = [];
@@ -88,7 +94,7 @@ export default class SlackDriver {
     }
 
     async fetchChanges(container, cursor) {
-        const initialDays = Number(this.#config.initialSyncDays) || 30;
+        const initialDays = Number(this.config.initialSyncDays) || 30;
         const oldest = cursor || String((Date.now() - initialDays * 86_400_000) / 1000);
 
         const page = await this.#call('conversations.history', {
@@ -113,7 +119,7 @@ export default class SlackDriver {
     }
 
     #toDocument(team, container, message) {
-        return {
+        return this.document({
             schema: 'data/schema/message',
             data: {
                 text: message.text || '',
@@ -130,10 +136,8 @@ export default class SlackDriver {
                     ? new Date(parseFloat(message.edited.ts) * 1000).toISOString()
                     : undefined,
             },
-            locations: [
-                { url: `slack://${team}/${container.id}/${message.ts}`, metadata: { provenance: true } },
-            ],
+            provenanceUrl: this.provenance(team, container.id, message.ts),
             containerSegment: container.name || container.id,
-        };
+        });
     }
 }

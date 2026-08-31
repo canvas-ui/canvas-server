@@ -207,41 +207,13 @@ Phases: 1. in-process entry + forwarder + blob cache (DONE) → 2. write-through
 SyncQueue pattern + offline reads served from cache → 3. canvas-edge process-per-workspace
 runtime for ALL workspaces; "remote" becomes a runtime flag.
 
-## Workspace sync (design notes, non-MVP — parked 2026-08-02)
+## Workspace sync
 
-Use-cases: (a) offline secondary copy / backup to remote, (b) work on the workstation, move to
-the same-network laptop or a cloud instance. Files and db sync **separately**: files via
-stored.syncd (per-backend targets, rsync/S3 semantics fine), the db never file-syncs live.
-
-**Load-bearing data-model facts (why this is tractable):**
-- **Bitmaps and indexes are derived state — never sync them.** Replicate documents + tree ops
-  only; every replica re-derives its own indexes locally. Small sync surface, version-skew
-  tolerant.
-- **Documents are immutable — every edit creates a new document (new checksum).** So document
-  replication is append-only content-addressed transfer: no in-place merge conflicts at the
-  document level; "conflict" reduces to which checksum a tree/head reference points at.
-
-**Three tiers, build in order, each subsumes the previous:**
-1. **Backup (one-way, single-master)** — snapshot shipping, not replication. LMDB hot backup
-   (`mdb_env_copy` — consistent copy while running) + stored file delta + workspace.json, shipped
-   to a dumb receiver that never opens the copy for writes. Export/import is the cold version of
-   this already; backup = "export without stopping, scheduled, incremental files". Declare in
-   `remotes[]`: `{ url, token, role: "backup" }`.
-2. **Handoff (sequential multi-master)** — mastership moves as a lease recorded in the index /
-   workspace.json. Handoff = flush+stop on A → delta-ship (cheap when tier 1 keeps the replica
-   warm) → start on B. Git-like: transfer, not merge; zero conflict logic. NB the same-network
-   "move to laptop" case often needs **no sync at all** — the laptop is a client of the live
-   workspace via the edge tunnel + share tokens (works today).
-3. **Concurrent multi-master** — synapsd oplog: append-only feed of document-insert + tree ops
-   with hybrid clocks, replicated peer-to-peer over the existing edge channel. Thanks to
-   immutable documents this is mostly content-addressed set union + per-reference LWW. Only
-   build on real offline-concurrent demand; design should fall out of the synapsd refactor,
-   not precede it.
-
-**Placement:** workspace-scoped syncd service (self-sufficiency: a `ws` edge binary must sync
-without canvas-server; `remotes[]` travels with the workspace). canvas-server contributes only
-transport (tunnel) + auth (share tokens). Edge-case to fix on the way: anything absolute in the
-db becomes workspace-relative at write time (import/relocation already proves the folder moves).
+Design + build order moved to `TODO.sync.md` (2026-08-31): primary/secondary db replication
+via a synapsd op log with explicit two-phase handoff, blob mirroring as a canvas-stored
+storage policy (`key: same` across gdrive/NAS/remote canvas), derived indexes never shipped.
+NB the 2026-08-02 note's "documents are immutable" premise was wrong — `update()` rewrites
+rows in place.
 
 ## Target runtime shape — control plane + registered runtimes (direction stated 2026-08-23)
 

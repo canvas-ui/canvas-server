@@ -26,25 +26,32 @@
  * from it.
  */
 
+import BaseConnector from '../../BaseConnector.js';
+
 const DAV_NS_HINT = 'xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"';
 
-export default class CaldavDriver {
+export default class CaldavConnector extends BaseConnector {
     static driver = 'caldav';
+    static label = 'CalDAV';
+    static icon = 'mdi:calendar-sync';
+    static blurb = 'Any RFC 4791 calendar server — Nextcloud, Radicale, SOGo, GroupOffice.';
+    static provenanceScheme = 'caldav';
+    static supports = { prune: false, create: true, update: false, delete: true };
 
-    #address;
-    #config;
-    #logger;
+    static configFields = [
+        { key: 'address', label: 'Account label', placeholder: 'nextcloud', required: true },
+        { key: 'url', label: 'CalDAV URL (calendar home or one calendar)', placeholder: 'https://host/caldav/user', required: true },
+        { key: 'username', label: 'Username' },
+        { key: 'password', label: 'Password', secret: true },
+        { key: 'calendars', label: 'Calendar names (one per line, blank = all)', list: true },
+        { key: 'writeBack', label: 'Allow Canvas to create/delete events', type: 'boolean' },
+    ];
 
-    constructor(address, config = {}, { logger } = {}) {
-        this.#address = address;
-        this.#config = config;
-        this.#logger = logger || console;
-    }
 
-    get canWrite() { return this.#config.readOnly === false; }
+
 
     #base() {
-        const url = String(this.#config.url || '').trim();
+        const url = String(this.config.url || '').trim();
         if (!url) throw new Error('caldav backend requires a url');
         return url.replace(/\/+$/, '');
     }
@@ -53,9 +60,9 @@ export default class CaldavDriver {
 
     #headers(extra = {}) {
         const headers = { ...extra };
-        if (this.#config.username) {
+        if (this.config.username) {
             headers['Authorization'] = 'Basic ' +
-                Buffer.from(`${this.#config.username}:${this.#config.password || ''}`).toString('base64');
+                Buffer.from(`${this.config.username}:${this.config.password || ''}`).toString('base64');
         }
         return headers;
     }
@@ -115,7 +122,7 @@ export default class CaldavDriver {
             calendars.push({ id: name, name, href: `${base}/`, writable: this.canWrite });
         }
 
-        const wanted = (Array.isArray(this.#config.calendars) ? this.#config.calendars : [])
+        const wanted = (Array.isArray(this.config.calendars) ? this.config.calendars : [])
             .map((c) => String(c).trim()).filter(Boolean);
         return wanted.length
             ? calendars.filter((c) => wanted.includes(c.id) || wanted.includes(c.name))
@@ -152,7 +159,7 @@ export default class CaldavDriver {
     }
 
     async #fullQuery(container) {
-        const initialDays = Number(this.#config.initialSyncDays) || 365;
+        const initialDays = Number(this.config.initialSyncDays) || 365;
         const start = new Date(Date.now() - initialDays * 86_400_000)
             .toISOString().replace(/[-:]|\.\d{3}/g, '');
         const { status, text } = await this.#dav('REPORT', container.href, {
@@ -210,7 +217,7 @@ export default class CaldavDriver {
      * Returns { uid, href, document } — the caller ingests the mirror.
      */
     async createDocument(container, data = {}) {
-        if (!this.canWrite) throw new Error(`caldav backend ${this.#address} is read-only`);
+        if (!this.canWrite) throw new Error(`caldav backend ${this.address} is read-only`);
         if (!data.title || !data.start) throw new Error('event requires title and start');
 
         const uid = `canvas-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}@canvas`;
@@ -246,7 +253,7 @@ export default class CaldavDriver {
     }
 
     async deleteDocument(container, provenanceUrl) {
-        if (!this.canWrite) throw new Error(`caldav backend ${this.#address} is read-only`);
+        if (!this.canWrite) throw new Error(`caldav backend ${this.address} is read-only`);
         const uid = String(provenanceUrl || '').split('/').filter(Boolean).pop();
         if (!uid) throw new Error(`Cannot resolve event uid from ${provenanceUrl}`);
 
@@ -314,7 +321,7 @@ export default class CaldavDriver {
         const uid = event.UID || href;
         const absHref = new URL(href, this.#origin()).toString();
 
-        return {
+        return this.document({
             schema: 'data/schema/event/calendar',
             data: {
                 title: this.#unescapeIcs(event.SUMMARY) || '(untitled)',
@@ -331,12 +338,10 @@ export default class CaldavDriver {
                 remoteId: uid,
                 remoteUpdatedAt: this.#fromIcsDate(event['LAST-MODIFIED']) || undefined,
             },
-            locations: [
-                { url: `caldav://${this.#address}/${container.id}/${uid}`, metadata: { provenance: true } },
-                { url: absHref, metadata: {} },
-            ],
+            provenanceUrl: this.provenance(this.address, container.id, uid),
+            links: [absHref],
             containerSegment: container.id,
-        };
+        });
     }
 
     // Minimal VEVENT reader: unfold (CRLF + space/tab continuation), take the

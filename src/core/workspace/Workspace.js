@@ -26,7 +26,7 @@ import GdriveBackend from 'canvas-stored/src/backends/gdrive/index.js';
 import { pickGeo } from './lib/geo.js';
 import { WorkspaceStoredIndex } from './lib/WorkspaceStoredIndex.js';
 import { WorkspaceMailIndex } from './services/imap/index.js';
-import { WorkspaceConnectorIndex, isConnectorDriver, CONNECTOR_SCHEMES } from './services/connectors/index.js';
+import { WorkspaceConnectorIndex, isConnectorDriver, CONNECTOR_SCHEMES, connectorDriverForProvenanceUrl } from './services/connectors/index.js';
 import { getServerDevice } from '../device/ServerDevice.js';
 
 // Constants
@@ -989,6 +989,10 @@ class Workspace extends EventEmitter {
 
     async put(record, { context = '/', directory = null, features = [], attributes, emitEvent = true, allowBackendsWrite = false, provenance = null } = {}) {
         this.#assertBackendsWriteAllowed(directory, allowBackendsWrite);
+        const writtenThrough = allowBackendsWrite
+            ? null
+            : await this.#connectorWriteThrough(record, this.#normalizeFeatureInput(features, attributes));
+        if (writtenThrough) return writtenThrough.id;
         const result = await this.#getActiveDb().put(record, {
             ...Workspace.#buildWriteSpec(context, directory),
             features: this.#normalizeFeatureInput(features, attributes),
@@ -1066,10 +1070,111 @@ class Workspace extends EventEmitter {
 
     async putMany(records, { context = '/', directory = null, features = [], attributes, allowBackendsWrite = false } = {}) {
         this.#assertBackendsWriteAllowed(directory, allowBackendsWrite);
-        return await this.#getActiveDb().putMany(records, {
-            ...Workspace.#buildWriteSpec(context, directory),
-            features: this.#normalizeFeatureInput(features, attributes),
+
+        // Documents that mirror a remote object go to their source first (see
+        // #connectorWriteThrough). Everything else keeps the single batched
+        // write it always had — the split only happens when the batch actually
+        // contains a mirrored document, which is the rare case.
+        const list = Array.isArray(records) ? records : [records];
+        const normalizedFeatures = this.#normalizeFeatureInput(features, attributes);
+        const writtenThrough = allowBackendsWrite ? [] : await Promise.all(
+            list.map((record) => this.#connectorWriteThrough(record, normalizedFeatures)),
+        );
+        if (!writtenThrough.some(Boolean)) {
+            return await this.#getActiveDb().putMany(list, {
+                ...Workspace.#buildWriteSpec(context, directory),
+                features: this.#normalizeFeatureInput(features, attributes),
+            });
+        }
+
+        const localIndexes = [];
+        const local = [];
+        list.forEach((record, index) => {
+            if (writtenThrough[index]) return;
+            localIndexes.push(index);
+            local.push(record);
         });
+        const localIds = local.length
+            ? await this.#getActiveDb().putMany(local, {
+                ...Workspace.#buildWriteSpec(context, directory),
+                features: this.#normalizeFeatureInput(features, attributes),
+            })
+            : [];
+
+        // Reassemble in the caller's order — a batch's result array is
+        // positional, and callers match ids back to what they sent.
+        const out = list.map((_, index) => writtenThrough[index]?.id ?? null);
+        localIndexes.forEach((index, i) => { out[index] = Array.isArray(localIds) ? localIds[i] : null; });
+        return out;
+    }
+
+    /**
+     * Write-through to a connector source.
+     *
+     * A document that mirrors a remote object (a synced GitHub issue, a CalDAV
+     * event) must be changed AT THE SOURCE, not in the mirror: the sync cursor
+     * would otherwise overwrite a local-only edit at the next poll and the user
+     * would watch their change silently revert. So an update of such a document
+     * goes to the driver first, and what the source returns is re-ingested —
+     * identity is the provenance URL, so that is a clean upsert of the same
+     * document.
+     *
+     * Returns `{ id }` when it took the write, `null` to fall through to the
+     * ordinary local write. Falls through — rather than failing — whenever the
+     * document is not a live mirror or its backend cannot push updates, so a
+     * read-only connector keeps behaving exactly as before. It does NOT swallow
+     * remote failures: once this path is taken, a driver error propagates,
+     * because an edit that silently landed only locally is worse than an error.
+     */
+    async #connectorWriteThrough(record, features = []) {
+        const id = Number(record?.id);
+        if (!Number.isInteger(id) || id <= 0) return null;
+        const patch = record?.data;
+        if (!patch || typeof patch !== 'object' || Array.isArray(patch)) return null;
+
+        const existing = await this.get(id).catch(() => null);
+        if (!existing) return null;
+
+        const provenanceUrl = (existing.locations || [])
+            .map((location) => (typeof location === 'string' ? location : location?.url))
+            .find((url) => connectorDriverForProvenanceUrl(url));
+        if (!provenanceUrl) return null;
+
+        /*
+         * Falling through with a mirrored document still costs something: a
+         * plain local write recomputes the checksum array from content, which
+         * DESTROYS the identity checksum (sha256 of the provenance URL) the
+         * connector dedups on — so the next sync no longer recognises the
+         * document and forks a duplicate beside it. Re-stamping the identity
+         * keeps the document a mirror: the local edit stands until the source
+         * next contradicts it, which is the honest outcome for something the
+         * user cannot actually write to.
+         */
+        const fallThroughLocally = () => {
+            if (record.checksumArray === undefined) {
+                record.checksumArray = [WorkspaceConnectorIndex.identityChecksum(provenanceUrl)];
+            }
+            return null;
+        };
+
+        // Boot the connector service only now — the provenance URL already
+        // proves this document mirrors a source, so the cost lands on the one
+        // update that needs it rather than on every document write. (The
+        // service does not auto-start unless the home backend is enabled.)
+        const connectors = await this.#connectors().catch(() => null);
+        if (!connectors) return fallThroughLocally();
+
+        const target = await connectors
+            .resolveBackendForProvenance(provenanceUrl, existing.metadata?.connector)
+            .catch(() => null);
+        if (!target) return fallThroughLocally();
+        if (!connectors.supportsWrite(target.driver, target.address, 'update')) return fallThroughLocally();
+
+        const result = await connectors.updateDocument(
+            target.driver, target.address, { provenanceUrl }, patch, { features },
+        );
+        this.#logger.debug({ workspaceId: this.id, docId: id, provenanceUrl }, 'Document update written through to connector source');
+        return { id: result?.docId ?? id };
     }
 
     // ── Embedding (inferd service seam) ───────────────────────────────────────

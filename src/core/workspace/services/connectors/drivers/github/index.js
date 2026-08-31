@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * GitHub issues driver — one backend per account label, `config.repos` is a
+ * GitHub issues connector — one backend per account label, `config.repos` is a
  * list of 'owner/repo' strings. Issues (not PRs) map to data/schema/task.
  *
  * Cursor per repo: the max `updated_at` seen (ISO). Incremental fetch uses
@@ -12,25 +12,30 @@
  * (60 req/h budget — the service polls slowly in that case).
  */
 
+import BaseConnector from '../../BaseConnector.js';
+
 const API = 'https://api.github.com';
 const PER_PAGE = 100;
 
-export default class GithubDriver {
+export default class GithubConnector extends BaseConnector {
     static driver = 'github';
+    static label = 'GitHub';
+    static icon = 'mdi:github';
+    static blurb = 'Issues from the repositories you list, as tasks.';
+    static provenanceScheme = 'gh';
+    static supports = { prune: true, create: true, update: true, delete: true };
 
-    #address;
-    #config;
-    #logger;
-
-    constructor(address, config = {}, { logger } = {}) {
-        this.#address = address;
-        this.#config = config;
-        this.#logger = logger || console;
-    }
+    static configFields = [
+        { key: 'address', label: 'Account label', placeholder: 'my-org', required: true },
+        { key: 'token', label: 'Personal access token', secret: true,
+          hint: 'Optional for public repos (60 req/h); required for write-back.' },
+        { key: 'repos', label: 'Repositories (one per line)', placeholder: 'owner/repo', list: true, required: true },
+        { key: 'writeBack', label: 'Allow Canvas to edit issues', type: 'boolean' },
+    ];
 
     // Write-back needs BOTH the flag and a token (the PAT's scopes decide
     // what GitHub actually permits; errors surface per call).
-    get canWrite() { return this.#config.readOnly === false && Boolean(this.#config.token); }
+    get canWrite() { return this.config.readOnly === false && Boolean(this.config.token); }
 
     #headers() {
         const headers = {
@@ -38,7 +43,7 @@ export default class GithubDriver {
             'X-GitHub-Api-Version': '2022-11-28',
             'User-Agent': 'canvas-server-connector',
         };
-        if (this.#config.token) headers['Authorization'] = `Bearer ${this.#config.token}`;
+        if (this.config.token) headers['Authorization'] = `Bearer ${this.config.token}`;
         return headers;
     }
 
@@ -57,13 +62,13 @@ export default class GithubDriver {
 
     async test() {
         // With a token verify it; without, verify the first repo is reachable.
-        if (this.#config.token) { await this.#get('/user'); return; }
+        if (this.config.token) { await this.#get('/user'); return; }
         const [first] = this.#repos();
         if (first) await this.#get(`/repos/${first}`);
     }
 
     #repos() {
-        return (Array.isArray(this.#config.repos) ? this.#config.repos : [])
+        return (Array.isArray(this.config.repos) ? this.config.repos : [])
             .map((r) => String(r).trim().replace(/^\/+|\/+$/g, ''))
             .filter((r) => /^[^/\s]+\/[^/\s]+$/.test(r));
     }
@@ -112,7 +117,7 @@ export default class GithubDriver {
             });
             for (const issue of issues) {
                 if (issue.pull_request) continue;
-                urls.push(`gh://${container.id}/issues/${issue.number}`);
+                urls.push(this.provenance(container.id, 'issues', issue.number));
             }
             if (issues.length < PER_PAGE) break;
         }
@@ -216,21 +221,16 @@ export default class GithubDriver {
             commentCount: issue.comments ?? undefined,
         };
 
-        return {
+        return this.document({
             schema: 'data/schema/task',
             data,
-            metadata: {
-                remoteId: issue.node_id,
-                remoteUpdatedAt: issue.updated_at,
-            },
-            locations: [
-                { url: `gh://${owner}/${name}/issues/${issue.number}`, metadata: { provenance: true } },
-                { url: issue.html_url, metadata: {} },
-            ],
+            metadata: { remoteId: issue.node_id, remoteUpdatedAt: issue.updated_at },
+            provenanceUrl: this.provenance(owner, name, 'issues', issue.number),
+            links: [issue.html_url],
             // /github/<address>/<owner>/<repo>, but when the address IS the
             // owner (the common case) the owner segment would just repeat —
             // collapse to /github/<owner>/<repo>.
-            containerSegment: owner.toLowerCase() === this.#address.toLowerCase() ? name : repo,
-        };
+            containerSegment: owner.toLowerCase() === this.address.toLowerCase() ? name : repo,
+        });
     }
 }

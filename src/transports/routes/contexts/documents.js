@@ -209,8 +209,14 @@ export default async function documentRoutes(fastify, _options) {
     schema: {
       body: {
         type: 'object',
+        // Update carries document BODIES. Membership is the other axis: POST
+        // with `documentIds` links, DELETE /remove unlinks. See the workspace
+        // route for the same split.
         properties: {
-          documents: { type: 'array', items: { type: 'object', required: ['id'], properties: { id: { anyOf: [{ type: 'string' }, { type: 'number' }] } } } },
+          // No `id` requirement: PUT is an upsert — see the workspace route.
+          documents: { type: 'array', minItems: 1, items: { type: 'object', properties: { id: { anyOf: [{ type: 'string' }, { type: 'number' }] } } } },
+          // Still declared so a caller on the old contract reaches the handler
+          // and gets told where membership moved.
           documentIds: {
             anyOf: [
               { type: 'array', items: { anyOf: [{ type: 'string' }, { type: 'number' }] }, minItems: 1 },
@@ -236,15 +242,13 @@ export default async function documentRoutes(fastify, _options) {
       const { features = [] } = request.body;
       const enforcedFeatures = enforceClientTags(request, features);
 
-      let itemsToUpdate;
-      if (request.body.documents) {
-        itemsToUpdate = Array.isArray(request.body.documents) ? request.body.documents : [request.body.documents];
-      } else if (request.body.documentIds) {
-        itemsToUpdate = Array.isArray(request.body.documentIds) ? request.body.documentIds : [request.body.documentIds];
-      } else {
-        const response = new ResponseObject().badRequest('Body must include either "documents" or "documentIds"');
+      if (request.body.documentIds) {
+        const response = new ResponseObject().badRequest(
+          'PUT updates document content and needs full document bodies in "documents". '
+          + 'To add existing documents to this context use POST with "documentIds"; to remove them use DELETE /documents/remove.');
         return reply.code(response.statusCode).send(response.getResponse());
       }
+      const itemsToUpdate = Array.isArray(request.body.documents) ? request.body.documents : [request.body.documents];
 
       const result = await context.putMany(request.user.id, itemsToUpdate, enforcedFeatures);
 

@@ -784,7 +784,8 @@ export default async function workspaceDocumentRoutes(fastify, _options) {
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
     } catch (error) {
       fastify.log.error(error);
-      const responseObject = new ResponseObject().serverError('Failed to insert documents');
+      // Same mapping as PUT: naming an id that is gone is a 404, not a fault.
+      const responseObject = ResponseObject.fromError(error, 'Failed to insert documents');
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
     }
   });
@@ -892,12 +893,27 @@ export default async function workspaceDocumentRoutes(fastify, _options) {
       params: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } },
       body: {
         type: 'object',
+        // Update carries document BODIES — there is nothing to update about a
+        // bare id. Membership lives on the other axis: POST /documents with
+        // `documentIds` links existing documents into a path, DELETE
+        // /documents/remove unlinks them.
         properties: {
           treeNameOrTreeId: { type: 'string' },
           treeType: { type: 'string', enum: ['context', 'directory'] },
           context: { type: 'string', default: '/' },
           features: { type: 'array', items: { type: 'string' }, default: [] },
-          documents: { type: 'array' },
+          // No `id` requirement: PUT is an upsert. A body carrying an id
+          // updates exactly that document (and 404s if it is gone); a body
+          // without one is content-addressed — synapsd's checksum dedup
+          // resolves it onto the matching document, or inserts.
+          documents: {
+            type: 'array',
+            minItems: 1,
+            items: { type: 'object', properties: { id: { anyOf: [{ type: 'string' }, { type: 'number' }] } } },
+          },
+          // Still declared so a caller on the old contract reaches the handler
+          // and gets told where membership moved, rather than a bare
+          // "must have required property 'documents'" from the schema.
           documentIds: {
             anyOf: [
               { type: 'array', items: { anyOf: [{ type: 'string' }, { type: 'number' }] }, minItems: 1 },
@@ -914,15 +930,16 @@ export default async function workspaceDocumentRoutes(fastify, _options) {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return reply;
 
-      let itemsToUpdate;
-      if (request.body.documents) {
-        itemsToUpdate = Array.isArray(request.body.documents) ? request.body.documents : [request.body.documents];
-      } else if (request.body.documentIds) {
-        itemsToUpdate = Array.isArray(request.body.documentIds) ? request.body.documentIds : [request.body.documentIds];
-      } else {
-        const responseObject = new ResponseObject().badRequest('Body must include either "documents" or "documentIds"');
+      // `documentIds` used to be accepted here and handed straight to putMany,
+      // which needs parsed documents — it could only ever 500. Point callers at
+      // the route that actually does what they meant.
+      if (request.body.documentIds) {
+        const responseObject = new ResponseObject().badRequest(
+          'PUT updates document content and needs full document bodies in "documents". '
+          + 'To add existing documents to this path use POST with "documentIds"; to remove them use DELETE /documents/remove.');
         return reply.code(responseObject.statusCode).send(responseObject.getResponse());
       }
+      const itemsToUpdate = Array.isArray(request.body.documents) ? request.body.documents : [request.body.documents];
 
       const { treeType: updateTreeType, selector: updateSelector } = resolveInsertTarget(workspace, request.body, false);
       if (updateTreeType === 'directory' && rejectBackendsWrite(reply, workspace, updateSelector)) return reply;
@@ -940,7 +957,10 @@ export default async function workspaceDocumentRoutes(fastify, _options) {
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
     } catch (error) {
       fastify.log.error(error);
-      const responseObject = new ResponseObject().serverError('Failed to update documents');
+      // A connector source refusing the write-through is the user's problem to
+      // see, not an internal fault to hide: 502, with the reason the source
+      // gave. Everything else stays a generic 500.
+      const responseObject = ResponseObject.fromError(error, 'Failed to update documents');
       return reply.code(responseObject.statusCode).send(responseObject.getResponse());
     }
   });

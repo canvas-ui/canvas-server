@@ -122,7 +122,7 @@ The API should accept optional `paths[]` and `backends[]` parameters; when omitt
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | POST | `/workspaces/:id/documents` | `authenticateClient` | Index + store + link documents (body may use `documents` or `documentIds` + tree/context) |
-| PUT | `/workspaces/:id/documents` | `authenticateClient` | Update document metadata (`documents` or `documentIds`) |
+| PUT | `/workspaces/:id/documents` | `authenticateClient` | Update document content — requires `documents` (full bodies, each with `id`). Membership is POST (`documentIds` → link) / DELETE `/remove` (unlink) |
 
 **Three-level removal:**
 
@@ -543,7 +543,7 @@ Context document operations are scoped to the context's current URL path in the 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | POST | `/contexts/:id/documents` | `authenticateClient` | Index + store + link (`documents` or `documentIds`) |
-| PUT | `/contexts/:id/documents` | `authenticateClient` | Update (`documents` or `documentIds` + optional `features`) |
+| PUT | `/contexts/:id/documents` | `authenticateClient` | Update — requires `documents` (full bodies, each with `id`) + optional `features`. Membership is POST (`documentIds` → link) / DELETE `/remove` (unlink) |
 
 **Removal:**
 

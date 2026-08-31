@@ -61,6 +61,17 @@ export default class ResponseObject {
      *   anything else → generic 500 with `fallbackMessage`.
      */
     static fromError(error, fallbackMessage = 'Request failed') {
+        // Coded errors from the core carry no statusCode, but they are just as
+        // much the caller's problem as a 404 — surface them rather than hiding
+        // them behind a generic 500. `cause` is checked too because batch paths
+        // (putMany) rewrap per-item failures with index context.
+        const code = error?.code || error?.cause?.code;
+        // The caller named a document id that does not exist.
+        if (code === 'ENODOCUMENT') { return new ResponseObject().notFound(error.message); }
+        // A connector source refused a write-through (revoked token, missing
+        // scope, object deleted upstream): 502, with the reason it gave.
+        if (code === 'ECONNECTORWRITE') { return new ResponseObject().error(error.message, null, 502); }
+
         switch (error?.statusCode) {
             case 403: return new ResponseObject().forbidden(error.message);
             case 404: return new ResponseObject().notFound(error.message);

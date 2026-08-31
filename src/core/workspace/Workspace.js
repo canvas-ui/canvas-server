@@ -1170,9 +1170,21 @@ class Workspace extends EventEmitter {
         if (!target) return fallThroughLocally();
         if (!connectors.supportsWrite(target.driver, target.address, 'update')) return fallThroughLocally();
 
-        const result = await connectors.updateDocument(
-            target.driver, target.address, { provenanceUrl }, patch, { features },
-        );
+        let result;
+        try {
+            result = await connectors.updateDocument(
+                target.driver, target.address, { provenanceUrl }, patch, { features },
+            );
+        } catch (error) {
+            // The source refused (revoked token, missing scope, deleted object).
+            // Retag it so the transport can pass the reason through instead of a
+            // generic 500 — "Failed to update documents" tells the user nothing
+            // about the one thing that actually went wrong.
+            const rejected = new Error(`${target.driver} rejected the change: ${error.message}`);
+            rejected.code = 'ECONNECTORWRITE';
+            rejected.cause = error;
+            throw rejected;
+        }
         this.#logger.debug({ workspaceId: this.id, docId: id, provenanceUrl }, 'Document update written through to connector source');
         return { id: result?.docId ?? id };
     }

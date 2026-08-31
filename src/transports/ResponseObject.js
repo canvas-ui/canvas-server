@@ -71,6 +71,9 @@ export default class ResponseObject {
         // A connector source refused a write-through (revoked token, missing
         // scope, object deleted upstream): 502, with the reason it gave.
         if (code === 'ECONNECTORWRITE') { return new ResponseObject().error(error.message, null, 502); }
+        // The inference daemon is not connected. It is a separate process that
+        // reconnects on its own, so this is 503-retryable, not a server fault.
+        if (code === 'EINFERDDOWN') { return new ResponseObject().error(error.message, { retryable: true }, 503); }
 
         switch (error?.statusCode) {
             case 403: return new ResponseObject().forbidden(error.message);

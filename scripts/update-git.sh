@@ -300,14 +300,13 @@ log_message "Installing dependencies..."
 # synapsd/stored arrive as pinned git deps; the pinned canvas-web tarball is
 # installed here too, but only as the FALLBACK web UI — build_web_ui below
 # replaces it with a fresh source build.
-# ONNXRUNTIME_NODE_*: onnxruntime-node's postinstall fetches the CUDA 12
-# execution-provider binaries from a Microsoft NuGet CDN, and the 1.24.x script
-# (via @huggingface/transformers → canvas-inferd) asks for them on linux/x64
-# unconditionally — so a CPU-only box with blocked or slow egress fails the
-# whole install with ETIMEDOUT. The CPU runtime we use is bundled in the
-# package; only the GPU EP is downloaded. .npmrc sets the same thing for every
-# other install path, but npm warns that unknown-config passthrough goes away
-# in its next major, so the deploy states it outright.
+# ONNXRUNTIME_NODE_*: belt-and-braces. canvas-server no longer depends on any
+# inference package (inferd is its own process), so nothing here should fetch
+# the CUDA execution-provider binaries any more — but a transitive
+# onnxruntime-node survives until synapsd >= 3.18.0 lands, and a blocked egress
+# path turns that postinstall into a failed deploy. .npmrc says the same; the
+# env is stated here because npm warns that unknown-config passthrough goes
+# away in its next major.
 run_as_canvas_user "ONNXRUNTIME_NODE_INSTALL=skip ONNXRUNTIME_NODE_INSTALL_CUDA=skip /usr/bin/npm ci" \
     || { log_message "npm ci failed"; exit 1; }
 
@@ -332,6 +331,20 @@ if [[ -f "$WEB_DIST/.source-build" ]]; then
     log_message "Web UI serving: source build $(cat "$WEB_DIST/.source-build")"
 else
     log_message "Web UI serving: packaged tarball $(node -p "try{require('$CANVAS_ROOT/node_modules/canvas-web/package.json').version}catch{'?'}" 2>/dev/null) (SOURCE BUILD DID NOT RUN — check log above)"
+fi
+
+# canvas-inferd is NOT a dependency of canvas-server any more — it is a separate
+# process with its own dependency tree (that is what keeps the native model
+# runtime, and its CUDA postinstall, out of this install). It has its own unit;
+# restart it so a new build is picked up, but never fail the deploy on it:
+# inference is optional, and the server degrades to keyword search without it
+# rather than refusing to start. The client reconnects and re-registers its
+# workspaces on its own once the daemon is back.
+if systemctl list-unit-files 2>/dev/null | grep -q '^canvas-inferd\.service'; then
+    log_message "Restarting canvas-inferd..."
+    systemctl restart canvas-inferd || log_message "canvas-inferd restart failed — embedding and dense search stay off until it returns"
+else
+    log_message "canvas-inferd unit not installed — embedding and dense search are disabled"
 fi
 
 # Must happen before the real server starts, both want the same port.

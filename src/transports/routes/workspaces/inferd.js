@@ -2,8 +2,6 @@
 
 import ResponseObject from '../../ResponseObject.js';
 import { requireWorkspaceRead, requireWorkspaceWrite } from '../../middleware/workspace-acl.js';
-import { redactConfig } from 'canvas-inferd/src/config.js';
-import { checkConfigEndpoints } from 'canvas-inferd/src/endpoint-guard.js';
 
 /**
  * Workspace inference configuration — `/workspaces/:id/inferd`.
@@ -86,11 +84,11 @@ export default async function workspaceInferdRoutes(fastify, _options) {
             const ctx = await inferd().contextForWorkspace(workspace.id);
             const r = new ResponseObject().found({
                 // This workspace's own overrides (what is written to workspace.json).
-                workspace: redactConfig(workspace.inferdConfig),
+                workspace: await inferd().redactConfig(workspace.inferdConfig),
                 // What it actually embeds with once the layers resolve.
-                effective: redactConfig(ctx.config),
+                effective: await inferd().redactConfig(ctx.config),
                 // What it would fall back to, so the UI can mark fields "inherited".
-                inherited: redactConfig(inferd().serverConfig || {}),
+                inherited: await inferd().redactConfig((await inferd().serverConfig()) || {}),
                 // Where the vectors live now — the table names a revert switches between.
                 spaces: await inferd().spaceConfigsForWorkspace(workspace.id, {
                     userId: workspace.owner, config: workspace.inferdConfig,
@@ -100,7 +98,7 @@ export default async function workspaceInferdRoutes(fastify, _options) {
             return reply.code(r.statusCode).send(r.getResponse());
         } catch (error) {
             request.log.error(error);
-            const r = new ResponseObject().serverError(error.message || 'Failed to read embedding config');
+            const r = ResponseObject.fromError(error, 'Failed to read embedding config');
             return reply.code(r.statusCode).send(r.getResponse());
         }
     });
@@ -113,11 +111,18 @@ export default async function workspaceInferdRoutes(fastify, _options) {
     }, async (request, reply) => {
         const workspace = guard(request, reply);
         if (!workspace) { return reply; }
-        const r = new ResponseObject().found({
-            queue: inferd().workspaceStatus(workspace.id),
-            summarize: workspace.imageSummaryStatus,
-        });
-        return reply.code(r.statusCode).send(r.getResponse());
+        try {
+            const r = new ResponseObject().found({
+                queue: await inferd().workspaceStatus(workspace.id),
+                summarize: await workspace.imageSummaryStatus(),
+            });
+            return reply.code(r.statusCode).send(r.getResponse());
+        } catch (error) {
+            // Reaching the daemon can fail now that it is a separate process;
+            // unguarded, that surfaced as a bare 500 from the global handler.
+            const r = ResponseObject.fromError(error, 'Failed to read embedding status');
+            return reply.code(r.statusCode).send(r.getResponse());
+        }
     });
 
     // Caption images into metadata.summary (BLIP/local ONNX by default). Async;
@@ -171,7 +176,7 @@ export default async function workspaceInferdRoutes(fastify, _options) {
             const r = new ResponseObject().workspaceNotActive();
             return reply.code(r.statusCode).send(r.getResponse());
         }
-        const result = workspace.stopImageSummaries();
+        const result = await workspace.stopImageSummaries();
         if (!result.stopped) {
             const r = new ResponseObject().badRequest(result.error || 'Could not stop image summaries');
             return reply.code(r.statusCode).send(r.getResponse());
@@ -197,12 +202,12 @@ export default async function workspaceInferdRoutes(fastify, _options) {
             // Validate as it will actually be used — layered over the workspace's
             // inherited defaults — before anything is written.
             let resolved;
-            try { resolved = inferd().validate(next); }
+            try { resolved = await inferd().validate(next); }
             catch (e) {
                 const r = new ResponseObject().badRequest(e.message);
                 return reply.code(r.statusCode).send(r.getResponse());
             }
-            const problems = await checkConfigEndpoints(resolved, { allowHosts: inferd().serverConfig?.allowHosts || [] });
+            const problems = await inferd().checkConfigEndpoints(resolved, { allowHosts: (await inferd().serverConfig())?.allowHosts || [] });
             if (problems.length > 0) {
                 const r = new ResponseObject().badRequest(`Rejected embedding endpoint — ${problems.join('; ')}`);
                 return reply.code(r.statusCode).send(r.getResponse());
@@ -212,7 +217,7 @@ export default async function workspaceInferdRoutes(fastify, _options) {
                 userId: workspace.owner, config: workspace.inferdConfig,
             });
             workspace.setInferdConfig(next);
-            inferd().invalidateWorkspace(workspace.id, next);
+            await inferd().invalidateWorkspace(workspace.id, next);
             const after = await inferd().spaceConfigsForWorkspace(workspace.id, {
                 userId: workspace.owner, config: next,
             });
@@ -231,8 +236,8 @@ export default async function workspaceInferdRoutes(fastify, _options) {
             }
 
             const r = new ResponseObject().updated({
-                workspace: redactConfig(next),
-                effective: redactConfig(resolved),
+                workspace: await inferd().redactConfig(next),
+                effective: await inferd().redactConfig(resolved),
                 spaces: after,
                 movedSpaces: moved,
                 // Which Lance table each space now points at.
@@ -244,7 +249,7 @@ export default async function workspaceInferdRoutes(fastify, _options) {
             return reply.code(r.statusCode).send(r.getResponse());
         } catch (error) {
             request.log.error(error);
-            const r = new ResponseObject().serverError(error.message || 'Failed to save embedding config');
+            const r = ResponseObject.fromError(error, 'Failed to save embedding config');
             return reply.code(r.statusCode).send(r.getResponse());
         }
     });
@@ -284,7 +289,7 @@ export default async function workspaceInferdRoutes(fastify, _options) {
             return reply.code(r.statusCode).send(r.getResponse());
         } catch (error) {
             request.log.error(error);
-            const r = new ResponseObject().serverError(error.message || 'Failed to reindex embeddings');
+            const r = ResponseObject.fromError(error, 'Failed to reindex embeddings');
             return reply.code(r.statusCode).send(r.getResponse());
         }
     });
@@ -301,7 +306,7 @@ export default async function workspaceInferdRoutes(fastify, _options) {
             return reply.code(r.statusCode).send(r.getResponse());
         } catch (error) {
             request.log.error(error);
-            const r = new ResponseObject().serverError(error.message || 'Failed to list vector tables');
+            const r = ResponseObject.fromError(error, 'Failed to list vector tables');
             return reply.code(r.statusCode).send(r.getResponse());
         }
     });
@@ -322,7 +327,7 @@ export default async function workspaceInferdRoutes(fastify, _options) {
             return reply.code(r.statusCode).send(r.getResponse());
         } catch (error) {
             request.log.error(error);
-            const r = new ResponseObject().serverError(error.message || 'Failed to drop vector table');
+            const r = ResponseObject.fromError(error, 'Failed to drop vector table');
             return reply.code(r.statusCode).send(r.getResponse());
         }
     });

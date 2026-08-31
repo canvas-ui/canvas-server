@@ -1,6 +1,7 @@
 // Imports
 import fs from 'fs';
 import path from 'path';
+import { defaultSocketPath } from './services/inferd/socket-path.js';
 import { fileURLToPath } from 'url';
 import argv from 'node:process';
 import os from 'os';
@@ -130,6 +131,19 @@ export const env = {
         // Ollama and in-office GPU boxes live. Set it to lock users down to
         // named hosts. Entries may be exact (`gpu.local`) or `*.suffix`.
         allowHosts: (process.env.CANVAS_INFERD_ALLOW_HOSTS || '').split(',').map((h) => h.trim()).filter(Boolean),
+        // inferd is a separate PROCESS reached over this socket — the server
+        // links no inference code at all. The default is resolved by a rule
+        // canvas-inferd implements identically (see socket-path.js in both), so
+        // an unconfigured pair still finds each other; set CANVAS_INFERD_SOCKET
+        // to point at a daemon somewhere else (a container sidecar, another box
+        // via a forwarded socket).
+        socketPath: defaultSocketPath(),
+        // Dev convenience: let the server start the daemon itself so `npm run
+        // dev` is still one command. Off by default — in production the daemon
+        // has its own lifecycle and the server just connects.
+        spawn: process.env.CANVAS_INFERD_SPAWN === 'true',
+        command: process.env.CANVAS_INFERD_COMMAND || 'canvas-inferd',
+        spawnArgs: INFERD_CONFIG_PATH ? ['--config', INFERD_CONFIG_PATH] : [],
         ...readJsonConfig(INFERD_CONFIG_PATH, 'inferd'),
     },
     messaging: {

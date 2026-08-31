@@ -9,10 +9,12 @@ import ResponseObject from '../ResponseObject.js';
 
 // Installed canvas components whose versions the About page reports. Read once
 // at startup — the installed tree cannot change under a running process.
+// canvas-inferd is deliberately absent: it is a separate PROCESS, not an
+// installed dependency, so its version comes from the daemon over the socket
+// (GET /inferd reports it) rather than from this tree.
 const COMPONENT_PACKAGES = [
     'canvas-synapsd',
     'canvas-stored',
-    'canvas-inferd',
     'canvas-agentd',
     'canvas-roles',
     'canvas-web',

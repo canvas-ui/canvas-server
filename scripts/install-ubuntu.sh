@@ -132,12 +132,65 @@ EOF
     fi
 }
 
+# Function to install the inference daemon service
+#
+# canvas-inferd is NOT a dependency of canvas-server — it is a separate process
+# with its own dependency tree, which is what keeps the native model runtime
+# (and its CUDA postinstall) out of the API server's install. It gets its own
+# unit so a model worker crash restarts inference alone, and so inference can be
+# left off entirely on a box that does not want it.
+#
+# RuntimeDirectory=canvas gives /run/canvas (mode 0750, owned by the canvas
+# user) — the default socket location both sides resolve to with nothing
+# configured. Keep it in step with socket-path.js in BOTH packages.
+install_inferd_service() {
+    if ! command -v canvas-inferd >/dev/null 2>&1; then
+        echo "canvas-inferd not installed — skipping (embedding and dense search stay disabled)"
+        echo "  install it with: npm install -g canvas-ui/canvas-inferd"
+        return 0
+    fi
+    if [ ! -f /etc/systemd/system/canvas-inferd.service ]; then
+        echo "Creating systemd service for Canvas Inferd..."
+        cat > /etc/systemd/system/canvas-inferd.service <<EOF
+[Unit]
+Description=Canvas Inference Daemon
+# Ordering only, not a requirement: canvas-server starts and serves without it,
+# degrading to keyword search, and its client reconnects when this comes back.
+Before=canvas-server.service
+
+[Service]
+Type=simple
+User=$CANVAS_USER
+Group=$CANVAS_GROUP
+WorkingDirectory=$CANVAS_ROOT
+RuntimeDirectory=canvas
+RuntimeDirectoryMode=0750
+ExecStart=$(command -v canvas-inferd) --socket /run/canvas/inferd.sock --config $CANVAS_ROOT/server/config/inferd.json
+Restart=always
+RestartSec=10
+# Models are large and loading one is a burst; do not let the supervisor treat
+# a slow first load as a failure.
+TimeoutStartSec=300
+Environment=NODE_ENV=production
+Environment=CANVAS_INFERD_CACHE_DIR=$CANVAS_ROOT/server/inferd/models
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+        systemctl daemon-reload
+        systemctl enable canvas-inferd
+        echo "Canvas Inferd systemd service created and enabled"
+    fi
+}
+
 # Function to update Canvas Server
 update_canvas() {
     echo "Updating Canvas Server in $CANVAS_ROOT..."
     cd $CANVAS_ROOT || handle_error "$?" "Failed to change directory to $CANVAS_ROOT"
 
     install_canvas_service
+    install_inferd_service
 
     if systemctl is-active --quiet canvas-server; then
         echo "Stopping Canvas Server..."

@@ -27,7 +27,7 @@ import DeviceRegistry from './core/device/Registry.js';
 import UserConfigStore from './core/user/ConfigStore.js';
 import Roles from './core/role/index.js';
 import Agents from './core/agent/index.js';
-import Inferd from 'canvas-inferd';
+import InferdClient from './services/inferd/InferdClient.js';
 import Voice from './services/voice/src/index.js';
 import Messaging from './services/messaging/src/index.js';
 import ChatRouter from './services/messaging/src/router.js';
@@ -232,17 +232,24 @@ class Server extends EventEmitter {
         // typo'd provider id would otherwise degrade dense search silently, which
         // is far worse than a loud boot failure. A malformed USER config does not
         // throw — it falls back to these defaults and reports why.
+        //
+        // inferd runs as its OWN PROCESS and is reached over a unix socket.
+        // Everything model-shaped — the ONNX runtime, transformers.js, the model
+        // cache — lives on that side; this package holds none of it, which is
+        // why its dependency tree no longer contains a native inference stack
+        // and why a segfaulting model worker can no longer take the API down.
+        // The socket is symmetric: the daemon calls back here for document
+        // bytes and to store vectors (see InferdClient).
+        //
+        // `spawn` is a dev convenience so one command still brings the stack up.
+        // In production the daemon is its own unit and this is left unset — the
+        // server simply connects to whatever is already listening.
         if (env.inferd.enabled) {
-            this.#inferd = new Inferd({
-                onnxCacheDir: env.inferd.cacheDir,
-                ollamaHost: env.inferd.ollamaHost,
-                vllmBaseUrl: env.inferd.vllmBaseUrl,
-                concurrency: env.inferd.concurrency,
-                providers: env.inferd.providers,
-                spaces: env.inferd.spaces,
-                rules: env.inferd.rules,
-                summarize: env.inferd.summarize,
+            this.#inferd = new InferdClient({
+                socketPath: env.inferd.socketPath,
                 resolveUserConfig: (userId) => this.#userConfig.read(userId, 'inferd'),
+                spawn: env.inferd.spawn ? { command: env.inferd.command, args: env.inferd.spawnArgs } : null,
+                logger: createLogger('inferd-client'),
             });
         }
 
@@ -481,6 +488,19 @@ class Server extends EventEmitter {
     async start() {
         if (!this.#initialized) {
             throw new Error('Server not initialized');
+        }
+
+        // Connect to the inference daemon. Deliberately non-fatal: inference has
+        // always been optional, and a missing daemon should cost dense search
+        // and embedding, not the whole API. The client keeps retrying in the
+        // background and re-registers its workspaces when the daemon returns.
+        if (this.#inferd) {
+            try {
+                await this.#inferd.start();
+            } catch (error) {
+                logger.warn({ err: error, socketPath: env.inferd.socketPath },
+                    'inferd daemon unavailable — embedding and dense search are off until it connects');
+            }
         }
 
         return this;

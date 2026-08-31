@@ -95,13 +95,9 @@ class Workspace extends EventEmitter {
     #sessions = new Set();     // live QuerySessions opened over this workspace's db
 
     // Managers (injected)
-    #inferd = null;            // shared embedding service (optional; server-managed)
+    #inferd = null;            // InferdClient — the inference daemon over its socket (optional)
     #inferdRegistered = false;
     #embedStoreCount = 0;      // storeVectors calls since the last mid-ingest compaction
-    #imageSummaryRun = null;
-    #imageSummaryStatus = { running: false, total: 0, described: 0, skipped: 0, failed: 0 };
-    // Set by stopImageSummaries(); the run checks it between images.
-    #imageSummaryCancel = false;
 
     constructor(options) {
         super({
@@ -228,9 +224,14 @@ class Workspace extends EventEmitter {
         return configured && typeof configured === 'object' ? configured : {};
     }
 
-    get imageSummaryStatus() {
-        const status = this.#imageSummaryStatus;
-        return { ...status, errors: [...(status.errors || [])] };
+    /**
+     * Progress of the captioning run. The run itself lives in the inference
+     * daemon (canvas-inferd/src/summarize-run.js) — driving a vision model is
+     * its job, not this object's — so this is a read across the socket.
+     */
+    async imageSummaryStatus() {
+        if (!this.#inferd) { return { running: false, total: 0, described: 0, skipped: 0, failed: 0 }; }
+        return this.#inferd.imageSummaryStatus(this.id);
     }
 
     /**
@@ -246,60 +247,19 @@ class Workspace extends EventEmitter {
     }
 
     /**
-     * Caption images into `metadata.summary` via inferd.describeImage (BLIP by
-     * default). Scans `data/mime/image`, skips docs that already have a summary
-     * unless `force`, then enqueues embedding so the reserved summary chunk is
-     * filled. Returns immediately; poll `imageSummaryStatus`.
+     * Caption this workspace's images into `metadata.summary`.
+     *
+     * The run is executed by the inference daemon: it owns the vision model, so
+     * it owns the loop, the failure policy and the decision to abort when a
+     * model worker dies. This workspace supplies only what the daemon cannot
+     * know — which documents are images, their bytes, and where a caption is
+     * stored (see the adapter in #registerInferd). Returns immediately; poll
+     * `imageSummaryStatus()`.
      */
     async startImageSummaries({ force = false } = {}) {
         if (!this.isActive) { throw new Error('Workspace is not active'); }
         if (!this.#inferd) { throw new Error('Inference service is not available'); }
-        if (this.#imageSummaryStatus.running) {
-            return { started: false, error: 'Image summary generation is already running', status: this.imageSummaryStatus };
-        }
-
-        const ctx = await this.#inferd.contextForWorkspace(this.id);
-        if (!ctx.config.summarize?.image?.enabled) {
-            throw new Error('image summaries are disabled — enable summarize.image first');
-        }
-
-        // A previous run may have been stopped by a crashed model worker, which
-        // inferd refuses to respawn on its own. Starting a run by hand is the
-        // deliberate retry that re-arms it.
-        try { await this.#inferd.resetDescribeWorkers?.(this.id); } catch (_) { /* best effort */ }
-
-        const bitmap = await this.getBitmap('data/mime/image', { includeData: true });
-        const ids = Array.isArray(bitmap?.ids) ? bitmap.ids : [];
-        this.#imageSummaryStatus = {
-            running: true,
-            total: ids.length,
-            described: 0,
-            skipped: 0,
-            failed: 0,
-            errors: [],
-            // Set when a dead model worker cut the run short — the difference
-            // between "every image failed" and "we stopped after the first".
-            aborted: false,
-            abortedReason: null,
-            // Set when the operator stopped it on purpose.
-            cancelled: false,
-            force: force === true,
-            startedAt: new Date().toISOString(),
-            finishedAt: null,
-        };
-
-        this.#imageSummaryCancel = false;
-        this.#imageSummaryRun = this.#runImageSummaries(ids, { force: force === true })
-            .finally(() => {
-                this.#imageSummaryRun = null;
-                this.#imageSummaryStatus = {
-                    ...this.#imageSummaryStatus,
-                    running: false,
-                    finishedAt: new Date().toISOString(),
-                };
-            });
-
-        return { started: true, status: this.imageSummaryStatus };
+        return this.#inferd.startImageSummaries(this.id, { force: force === true });
     }
 
     /**
@@ -311,74 +271,24 @@ class Workspace extends EventEmitter {
      * boundary. Images not yet attempted stay untouched, so a later run picks
      * them up — nothing is half-written.
      */
-    stopImageSummaries() {
-        if (!this.#imageSummaryStatus.running) {
-            return { stopped: false, error: 'No image summary run is in progress', status: this.imageSummaryStatus };
-        }
-        this.#imageSummaryCancel = true;
-        return { stopped: true, status: this.imageSummaryStatus };
+    async stopImageSummaries() {
+        if (!this.#inferd) { throw new Error('Inference service is not available'); }
+        return this.#inferd.stopImageSummaries(this.id);
     }
 
-    async #runImageSummaries(ids, { force }) {
-        // A misconfiguration fails identically for every image — a model that
-        // cannot load, a family the runner has no path for. Marching through
-        // 1400 images to report the same sentence 1400 times is noise, so a run
-        // that only ever fails gives up early and says why.
-        const CONSECUTIVE_FAILURE_LIMIT = 5;
-        let consecutiveFailures = 0;
+    /** Document ids of every image in this workspace — the caption run's input set. */
+    async imageDocumentIds() {
+        const bitmap = await this.getBitmap('data/mime/image', { includeData: true });
+        return Array.isArray(bitmap?.ids) ? bitmap.ids : [];
+    }
 
-        for (const id of ids) {
-            if (this.#imageSummaryCancel) {
-                this.#imageSummaryStatus.cancelled = true;
-                return;
-            }
-            try {
-                const input = await this.resolveEmbeddingInput(id);
-                if (!input || input.skip || input.modality !== 'image' || !input.bytes) {
-                    this.#imageSummaryStatus.skipped++;
-                    continue;
-                }
-                if (!force && input.summary) {
-                    this.#imageSummaryStatus.skipped++;
-                    continue;
-                }
-                const text = await this.#inferd.describeImage(this.id, input.bytes, {
-                    contentType: input.contentType || null,
-                });
-                await this.#getActiveDb().put({
-                    id,
-                    metadata: { summary: text },
-                    updatedAt: new Date().toISOString(),
-                });
-                this.#imageSummaryStatus.described++;
-                consecutiveFailures = 0;
-            } catch (error) {
-                this.#imageSummaryStatus.failed++;
-                consecutiveFailures++;
-                const errors = this.#imageSummaryStatus.errors || (this.#imageSummaryStatus.errors = []);
-                if (errors.length < 20) {
-                    errors.push({ id, error: error.message || String(error) });
-                }
-                // The model worker died (OOM, native crash) and inferd will not
-                // respawn it. Carrying on would mark every remaining image
-                // failed against a provider that cannot answer — so stop here
-                // and say why, leaving the un-attempted images untouched for a
-                // later run.
-                if (error?.workerDead) {
-                    this.#imageSummaryStatus.aborted = true;
-                    this.#imageSummaryStatus.abortedReason = error.message || 'model worker died';
-                    console.warn(`workspace ${this.id}: image summaries stopped — ${this.#imageSummaryStatus.abortedReason}`);
-                    return;
-                }
-                if (consecutiveFailures >= CONSECUTIVE_FAILURE_LIMIT) {
-                    this.#imageSummaryStatus.aborted = true;
-                    this.#imageSummaryStatus.abortedReason =
-                        `${consecutiveFailures} images in a row failed — ${error.message || String(error)}`;
-                    console.warn(`workspace ${this.id}: image summaries stopped — ${this.#imageSummaryStatus.abortedReason}`);
-                    return;
-                }
-            }
-        }
+    /** Store a caption the daemon produced. */
+    async setDocumentSummary(docId, text) {
+        return this.#getActiveDb().put({
+            id: docId,
+            metadata: { summary: text },
+            updatedAt: new Date().toISOString(),
+        });
     }
 
     get db() {
@@ -427,7 +337,7 @@ class Workspace extends EventEmitter {
                     const rule = router.spaceRule(sp);
                     if (rule) { spaces[sp] = { provider: rule.provider, model: rule.model, dim: rule.dim }; }
                 }
-                stats.inferd = { queue: this.#inferd.workspaceStatus(this.id), routing, spaces };
+                stats.inferd = { queue: await this.#inferd.workspaceStatus(this.id), routing, spaces };
             } catch (_) { /* best effort */ }
         }
         return stats;
@@ -1244,14 +1154,15 @@ class Workspace extends EventEmitter {
         const spaces = await this.#inferd.spaceConfigsForWorkspace(this.id, {
             userId: this.owner, config: this.inferdConfig,
         });
-        this.#inferd.pause(this.id);
+        // Await: the drain below is only meaningful once the pause landed.
+        await this.#inferd.pause(this.id);
         try {
             await this.#inferd.drained(this.id);
             const result = await this.#getActiveDb().setVectorSpaces(spaces);
             this.#logger.info({ workspaceId: this.id, tables: result.tables }, 'Embedding vector spaces swapped');
             return result;
         } finally {
-            this.#inferd.resume(this.id);
+            await this.#inferd.resume(this.id);
         }
     }
 
@@ -1297,6 +1208,8 @@ class Workspace extends EventEmitter {
             getUnembedded: (space, schemas) => this.getUnembeddedDocIds(space, schemas),
             documentIdsUnderScope: (scope) => this.documentIdsUnderScope(scope),
             clearSpace: (space) => this.clearSpace(space),
+            imageDocumentIds: () => this.imageDocumentIds(),
+            setSummary: (docId, text) => this.setDocumentSummary(docId, text),
             onQueueDrained: () => {
                 // The shared queue drains after every trickle (a single note
                 // save); a full compact + HNSW rebuild per save would dwarf the

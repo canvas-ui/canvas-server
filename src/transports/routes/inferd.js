@@ -3,8 +3,6 @@
 import fs from 'fs/promises';
 import path from 'path';
 import ResponseObject from '../ResponseObject.js';
-import { redactConfig } from 'canvas-inferd/src/config.js';
-import { checkConfigEndpoints, checkEndpoint, endpointFor } from 'canvas-inferd/src/endpoint-guard.js';
 import { env } from '../../env.js';
 
 /**
@@ -121,11 +119,11 @@ export default async function inferdRoutes(fastify, _options) {
             const ctx = await inferd().contextFor(request.user.id);
             const r = new ResponseObject().found({
                 // What this user's workspaces actually embed with, after layering.
-                effective: redactConfig(ctx.config),
+                effective: await inferd().redactConfig(ctx.config),
                 // Just their overrides, for round-tripping edits.
-                user: redactConfig(stored),
+                user: await inferd().redactConfig(stored),
                 // What they'd fall back to, so the UI can show "inherited".
-                serverDefaults: redactConfig(inferd().serverConfig || {}),
+                serverDefaults: await inferd().redactConfig((await inferd().serverConfig()) || {}),
                 // Set when their stored config no longer resolves and the server
                 // defaults are standing in.
                 ...(ctx.invalid ? { invalid: ctx.invalid } : {}),
@@ -133,7 +131,7 @@ export default async function inferdRoutes(fastify, _options) {
             return reply.code(r.statusCode).send(r.getResponse());
         } catch (error) {
             request.log.error(error);
-            const r = new ResponseObject().serverError(error.message || 'Failed to read embedding config');
+            const r = ResponseObject.fromError(error, 'Failed to read embedding config');
             return reply.code(r.statusCode).send(r.getResponse());
         }
     });
@@ -151,7 +149,7 @@ export default async function inferdRoutes(fastify, _options) {
 
             // 1) Shape — must resolve when layered over the server defaults.
             let resolved;
-            try { resolved = inferd().validate(next); }
+            try { resolved = await inferd().validate(next); }
             catch (e) {
                 const r = new ResponseObject().badRequest(e.message);
                 return reply.code(r.statusCode).send(r.getResponse());
@@ -159,7 +157,7 @@ export default async function inferdRoutes(fastify, _options) {
 
             // 2) Endpoints — checked on the RESOLVED config, so a provider
             // inherited from the server layer is covered too.
-            const problems = await checkConfigEndpoints(resolved, policy());
+            const problems = await inferd().checkConfigEndpoints(resolved, policy());
             if (problems.length > 0) {
                 const r = new ResponseObject().badRequest(`Rejected embedding endpoint — ${problems.join('; ')}`);
                 return reply.code(r.statusCode).send(r.getResponse());
@@ -173,8 +171,8 @@ export default async function inferdRoutes(fastify, _options) {
             // than letting search quietly go thin.
             const affected = inferd().workspacesOf(request.user.id);
             const r = new ResponseObject().updated({
-                user: redactConfig(next),
-                effective: redactConfig(resolved),
+                user: await inferd().redactConfig(next),
+                effective: await inferd().redactConfig(resolved),
                 workspaces: affected,
                 // Space configs are latched when a workspace starts, so a running
                 // workspace keeps its current tables until restarted.
@@ -183,7 +181,7 @@ export default async function inferdRoutes(fastify, _options) {
             return reply.code(r.statusCode).send(r.getResponse());
         } catch (error) {
             request.log.error(error);
-            const r = new ResponseObject().serverError(error.message || 'Failed to save embedding config');
+            const r = ResponseObject.fromError(error, 'Failed to save embedding config');
             return reply.code(r.statusCode).send(r.getResponse());
         }
     });
@@ -213,9 +211,9 @@ export default async function inferdRoutes(fastify, _options) {
             }
             // Same rule as a config save: guard the field this provider TYPE
             // fetches, not whichever URL-ish key happens to be present.
-            const target = endpointFor(provider);
+            const target = await inferd().endpointFor(provider);
             if (target) {
-                const verdict = await checkEndpoint(target.value, policy());
+                const verdict = await inferd().checkEndpoint(target.value, policy());
                 if (!verdict.ok) {
                     const r = new ResponseObject().badRequest(`Rejected embedding endpoint — ${verdict.reason}`);
                     return reply.code(r.statusCode).send(r.getResponse());
@@ -263,7 +261,7 @@ export default async function inferdRoutes(fastify, _options) {
         if (!requireInferd(reply)) { return; }
         // Readable by any authenticated user: the UI shows what you inherit.
         const r = new ResponseObject().found({
-            serverDefaults: redactConfig(inferd().serverConfig || {}),
+            serverDefaults: await inferd().redactConfig((await inferd().serverConfig()) || {}),
             configPath: env.inferd.configPath,
             allowHosts: policy().allowHosts,
         });
@@ -279,16 +277,16 @@ export default async function inferdRoutes(fastify, _options) {
             return reply.code(r.statusCode).send(r.getResponse());
         }
         try {
-            const current = inferd().serverConfig || {};
+            const current = (await inferd().serverConfig()) || {};
             const next = preserveSecrets(body, current);
 
             let resolved;
-            try { resolved = inferd().validate(next, { asServerDefault: true }); }
+            try { resolved = await inferd().validate(next, { asServerDefault: true }); }
             catch (e) {
                 const r = new ResponseObject().badRequest(e.message);
                 return reply.code(r.statusCode).send(r.getResponse());
             }
-            const problems = await checkConfigEndpoints(resolved, { allowHosts: next.allowHosts || [] });
+            const problems = await inferd().checkConfigEndpoints(resolved, { allowHosts: next.allowHosts || [] });
             if (problems.length > 0) {
                 const r = new ResponseObject().badRequest(`Rejected embedding endpoint — ${problems.join('; ')}`);
                 return reply.code(r.statusCode).send(r.getResponse());
@@ -296,7 +294,7 @@ export default async function inferdRoutes(fastify, _options) {
 
             // Adopt in-process first: if it fails validation there, nothing has
             // been written and the running config is untouched.
-            inferd().setServerConfig(next);
+            await inferd().setServerConfig(next);
 
             const filePath = env.inferd.configPath;
             await fs.mkdir(path.dirname(filePath), { recursive: true });
@@ -305,7 +303,7 @@ export default async function inferdRoutes(fastify, _options) {
             await fs.rename(tmp, filePath);
 
             const r = new ResponseObject().updated({
-                serverDefaults: redactConfig(next),
+                serverDefaults: await inferd().redactConfig(next),
                 configPath: filePath,
                 // Every user sits on top of these, so all of them are affected.
                 restartRequired: true,
@@ -313,7 +311,7 @@ export default async function inferdRoutes(fastify, _options) {
             return reply.code(r.statusCode).send(r.getResponse());
         } catch (error) {
             request.log.error(error);
-            const r = new ResponseObject().serverError(error.message || 'Failed to save server defaults');
+            const r = ResponseObject.fromError(error, 'Failed to save server defaults');
             return reply.code(r.statusCode).send(r.getResponse());
         }
     });

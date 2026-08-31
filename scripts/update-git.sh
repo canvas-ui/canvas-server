@@ -300,7 +300,16 @@ log_message "Installing dependencies..."
 # synapsd/stored arrive as pinned git deps; the pinned canvas-web tarball is
 # installed here too, but only as the FALLBACK web UI — build_web_ui below
 # replaces it with a fresh source build.
-run_as_canvas_user "/usr/bin/npm ci" || { log_message "npm ci failed"; exit 1; }
+# ONNXRUNTIME_NODE_*: onnxruntime-node's postinstall fetches the CUDA 12
+# execution-provider binaries from a Microsoft NuGet CDN, and the 1.24.x script
+# (via @huggingface/transformers → canvas-inferd) asks for them on linux/x64
+# unconditionally — so a CPU-only box with blocked or slow egress fails the
+# whole install with ETIMEDOUT. The CPU runtime we use is bundled in the
+# package; only the GPU EP is downloaded. .npmrc sets the same thing for every
+# other install path, but npm warns that unknown-config passthrough goes away
+# in its next major, so the deploy states it outright.
+run_as_canvas_user "ONNXRUNTIME_NODE_INSTALL=skip ONNXRUNTIME_NODE_INSTALL_CUDA=skip /usr/bin/npm ci" \
+    || { log_message "npm ci failed"; exit 1; }
 
 # Git-dep freshness is handled by scripts/refresh-git-deps.mjs, which ALSO
 # runs as npm postinstall (so the `npm ci` above already refreshed once — a

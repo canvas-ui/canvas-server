@@ -608,6 +608,32 @@ export class WorkspaceStoredIndex {
     }
 
     /**
+     * Look up an already-persisted blob by its sha256 (hex). The resumable-
+     * upload seam: clients hash locally, ask here first, and skip the byte
+     * transfer when the content-addressed store already holds the bytes in
+     * workspace:data. Returns the same shape persistBlob would have returned,
+     * or null when the blob is absent (or lives only on other backends —
+     * a file:// mount hit must not satisfy an upload-into-data check).
+     *
+     * @param {string} sha256 hex digest
+     * @returns {Promise<{ url: string, key: string, checksum: string, size: number, mimeType: string|null, metadata?: object }|null>}
+     */
+    async statBlobByChecksum(sha256) {
+        if (!this.#stored) throw new Error('WorkspaceStoredIndex is not running');
+        const meta = await this.#stored.stat(`sha256:${sha256}`);
+        const location = meta?.locations?.find((l) => l.backend === DATA_BLOB_BACKEND);
+        if (!location) return null;
+        return {
+            url: `stored://${DATA_BLOB_BACKEND}/${location.key}`,
+            key: location.key,
+            checksum: meta.checksums?.sha256 || sha256,
+            size: meta.size,
+            mimeType: meta.mimeType || null,
+            metadata: meta.custom && Object.keys(meta.custom).length ? meta.custom : undefined,
+        };
+    }
+
+    /**
      * Apply a data-backend config change to the running stored runtime. Lets
      * the UI flip `enabled` / `watch` without a workspace restart.
      *   - enabled: register & start (and resync if supported) / unregister

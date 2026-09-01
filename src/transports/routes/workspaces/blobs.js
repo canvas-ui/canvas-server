@@ -67,4 +67,44 @@ export default async function blobRoutes(fastify) {
       return reply.code(r.statusCode).send(r.getResponse());
     }
   });
+
+  // POST /workspaces/:id/blobs/exists  (body: { checksums: ["<sha256 hex>", ...] })
+  // Batch existence check against the content-addressed store, so clients can
+  // hash locally and skip re-sending bytes the workspace already holds
+  // (resumable multi-file uploads). Payload maps each requested checksum to
+  // the persistBlob-shaped result, or null when the bytes are absent.
+  fastify.post('/exists', {
+    onRequest: [fastify.authenticateClient],
+    schema: {
+      params: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } },
+      body: {
+        type: 'object',
+        required: ['checksums'],
+        properties: {
+          checksums: {
+            type: 'array',
+            minItems: 1,
+            maxItems: 1000,
+            items: { type: 'string', pattern: '^[0-9a-f]{64}$' },
+          },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    const workspace = await getWorkspaceInstance(request, reply);
+    if (!workspace) { return reply; }
+
+    try {
+      const result = {};
+      for (const checksum of new Set(request.body.checksums)) {
+        result[checksum] = await workspace.statBlobByChecksum(checksum);
+      }
+      const r = new ResponseObject().found(result, 'Blob existence checked');
+      return reply.code(r.statusCode).send(r.getResponse());
+    } catch (error) {
+      fastify.log.error(error);
+      const r = new ResponseObject().serverError(error.message || 'Failed to check blobs');
+      return reply.code(r.statusCode).send(r.getResponse());
+    }
+  });
 }

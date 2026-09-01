@@ -1574,6 +1574,11 @@ class Workspace extends EventEmitter {
         return await this.#storedIndex.persistBlob(blob);
     }
 
+    async statBlobByChecksum(sha256) {
+        if (!this.#storedIndex?.isRunning) { await this.#startStoredIndex(); }
+        return await this.#storedIndex.statBlobByChecksum(sha256);
+    }
+
     async getByChecksumString(checksumString, options = { parse: true }) {
         return await this.#getActiveDb().getByChecksumString(checksumString, options);
     }

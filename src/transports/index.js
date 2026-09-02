@@ -292,7 +292,7 @@ export async function createServer(options = {}) {
       "style-src 'self' 'unsafe-inline'", // Allow inline styles
       "connect-src 'self' ws: wss: http: https:", // Allow WebSocket and HTTP connections
       "img-src 'self' data: blob: https:", // self + data/blob + remote https (favicons, link cards). Email bodies keep a stricter sandboxed CSP.
-      "font-src 'self' data:", // Allow fonts
+      "font-src 'self' data: https://esm.sh", // self-hosted fonts; esm.sh is Excalidraw's built-in fallback source — allowed so Chrome's CSP pre-validation of the (normally unused) fallback doesn't spam the console
       "frame-src 'self' blob: https://www.youtube-nocookie.com", // PDF/email preview (blob: iframes) + YouTube embeds
       "worker-src 'self' blob:", // Allow web workers
       "object-src 'none'", // Disable object/embed elements

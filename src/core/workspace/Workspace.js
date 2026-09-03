@@ -25,6 +25,7 @@ import { detectMountSync } from 'canvas-stored/src/utils/mount.js';
 import GdriveBackend from 'canvas-stored/src/backends/gdrive/index.js';
 import { pickGeo } from './lib/geo.js';
 import { WorkspaceStoredIndex } from './lib/WorkspaceStoredIndex.js';
+import { joinKey, transferFilename } from './services/hook/key-utils.js';
 import { WorkspaceMailIndex } from './services/imap/index.js';
 import { WorkspaceConnectorIndex, isConnectorDriver, CONNECTOR_SCHEMES, connectorDriverForProvenanceUrl } from './services/connectors/index.js';
 import { getServerDevice } from '../device/ServerDevice.js';
@@ -2711,7 +2712,7 @@ class Workspace extends EventEmitter {
     // onto mutableContainers / deleteObject without new URL shapes.
     #backendCapabilities(driver, config = {}) {
         if (driver === 'imap') {
-            return { sync: true, test: true, containers: true, mutableContainers: false, deleteObject: true };
+            return { sync: true, test: true, containers: true, mutableContainers: false, deleteObject: true, paths: false };
         }
         const supported = config.supported !== false;
         return {
@@ -2720,6 +2721,9 @@ class Workspace extends EventEmitter {
             containers: false,
             mutableContainers: (driver === 'file' || driver === 'gdrive') && config.readOnly !== true && supported,
             deleteObject: config.readOnly !== true && supported,
+            // Objects live under person-chosen paths (folder + filename on
+            // transfer) — false for the content-hash keyed blob store.
+            paths: driver !== 'cacache' && supported,
         };
     }
 
@@ -3127,6 +3131,18 @@ class Workspace extends EventEmitter {
     }
 
     /**
+     * Whether objects on this storage backend are addressed by a path a person
+     * chose (directory share, drive) rather than a content hash (blob store).
+     * Decides if a transfer carries a folder + filename.
+     */
+    backendKeepsPaths(backendName) {
+        const config = this.dataBackends[backendName];
+        if (!config) return false;
+        const driver = config.driver || 'file';
+        return driver !== 'cacache' && driver !== 'imap' && !isConnectorDriver(driver);
+    }
+
+    /**
      * Batch backend op over documents — the surface behind the UI's
      * "Copy to / Move to / Delete from backend" actions.
      *
@@ -3145,10 +3161,23 @@ class Workspace extends EventEmitter {
      * @param {'copy'|'move'|'delete'} [options.mode='copy']
      * @param {boolean} [options.keepDocument=false] delete mode: keep the index
      *   entry when its last location goes (otherwise the doc is cascaded)
+     * @param {string} [options.folder] copy/move: backend-relative folder the
+     *   bytes land in on path-keyed backends (ignored by the blob store)
+     * @param {string} [options.filename] copy/move, single document only: name
+     *   on arrival; defaults to the document's own filename (see transferFilename)
+     * @param {'error'|'rename'|'overwrite'} [options.onConflict='rename'] what
+     *   to do when other content already holds the destination key
      * @returns {Promise<{successful: object[], failed: object[]}>}
      */
-    async transferDocumentsToBackends(documentIds = [], { to = [], mode = 'copy', keepDocument = false } = {}) {
+    async transferDocumentsToBackends(documentIds = [], { to = [], mode = 'copy', keepDocument = false, folder = '', filename = '', onConflict = 'rename' } = {}) {
         if (!['copy', 'move', 'delete'].includes(mode)) throw new Error(`Unknown transfer mode: ${mode}`);
+        if (!['error', 'rename', 'overwrite'].includes(onConflict)) throw new Error(`Unknown conflict policy: ${onConflict}`);
+        // A destination folder is a backend-relative key prefix; `..` and
+        // leading slashes are dropped so it can never escape the backend root.
+        const destFolder = joinKey(folder);
+        const destName = filename ? joinKey(filename) : '';
+        if (destName && destName.includes('/')) throw new Error('filename must be a single path segment — use folder for the directory');
+        if (destName && documentIds.length > 1) throw new Error('filename applies to a single document — a batch keeps each document\'s own name');
         const targets = [...new Set((Array.isArray(to) ? to : [to]).filter(Boolean).map(String))];
         if (targets.length === 0) throw new Error('At least one target backend is required');
         // A move has one destination by definition: with two, "which one may the
@@ -3179,7 +3208,18 @@ class Workspace extends EventEmitter {
 
                 const transfers = [];
                 for (const target of targets) {
-                    const res = await this.#storedIndex.transferDocument(doc, { to: target, mode });
+                    // Path-keyed backends (a directory share, a drive) get a real
+                    // file name under the chosen folder; the blob store keeps its
+                    // content-hash key, where a name would only defeat dedup.
+                    let key;
+                    let from = null;
+                    if (this.backendKeepsPaths(target)) {
+                        const source = this.#storedIndex.locationEndpoints(doc).find((e) => e.backend !== target);
+                        if (!source) throw new Error(`Already on "${target}"`);
+                        from = source;
+                        key = joinKey(destFolder, destName || transferFilename(doc, { sourceKey: source.key, sourceUrl: source.url }));
+                    }
+                    const res = await this.#storedIndex.transferDocument(doc, { to: target, mode, key, onConflict, from });
                     if (!res?.ok) {
                         const detail = res?.detail ? ` (${res.detail})` : '';
                         throw new Error(`${res?.reason || 'unknown error'}${detail}`);

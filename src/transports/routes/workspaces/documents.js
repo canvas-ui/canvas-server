@@ -1177,7 +1177,11 @@ export default async function workspaceDocumentRoutes(fastify, _options) {
   // work without the client knowing the address grammar.
   //
   // Body: { documentIds: number[], to: string[], mode?: 'copy'|'move'|'delete',
-  //         keepDocument?: boolean }
+  //         keepDocument?: boolean, folder?: string, filename?: string,
+  //         onConflict?: 'error'|'rename'|'overwrite' }
+  //   folder/filename → placement on path-keyed backends (directory shares,
+  //   drives); filename is single-document only, the default keeps the
+  //   document's own name + extension. The blob store ignores both.
   //   copy   → each document gains a location on every target backend
   //   move   → exactly one target; source released only once the copy is durable
   //   delete → bytes removed from the target backends only (other copies stay)
@@ -1200,6 +1204,11 @@ export default async function workspaceDocumentRoutes(fastify, _options) {
           to: { type: 'array', items: { type: 'string' }, minItems: 1 },
           mode: { type: 'string', enum: ['copy', 'move', 'delete'], default: 'copy' },
           keepDocument: { type: 'boolean', default: false },
+          // copy/move onto path-keyed backends: where and under what name.
+          // Omitted → backend root, the document's own filename.
+          folder: { type: 'string', maxLength: 1024 },
+          filename: { type: 'string', maxLength: 255 },
+          onConflict: { type: 'string', enum: ['error', 'rename', 'overwrite'], default: 'rename' },
         },
       },
     },
@@ -1208,7 +1217,7 @@ export default async function workspaceDocumentRoutes(fastify, _options) {
       const workspace = await getWorkspaceInstance(request, reply);
       if (!workspace) return reply;
 
-      const { documentIds: rawIds, to, mode = 'copy', keepDocument = false } = request.body;
+      const { documentIds: rawIds, to, mode = 'copy', keepDocument = false, folder = '', filename = '', onConflict = 'rename' } = request.body;
       let documentIds;
       try {
         documentIds = parseDocumentIdArray(rawIds, 'Document ID array');
@@ -1219,7 +1228,7 @@ export default async function workspaceDocumentRoutes(fastify, _options) {
 
       let results;
       try {
-        results = await workspace.transferDocumentsToBackends(documentIds, { to, mode, keepDocument });
+        results = await workspace.transferDocumentsToBackends(documentIds, { to, mode, keepDocument, folder, filename, onConflict });
       } catch (e) {
         // Request-level refusals (unknown/read-only backend, multi-target move)
         // are the caller's mistake, not a server fault.

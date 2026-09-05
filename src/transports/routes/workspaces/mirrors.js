@@ -74,8 +74,11 @@ export default async function workspaceMirrorRoutes(fastify) {
     }, async (request, reply) => {
         try {
             const deviceId = String(request.params.deviceId || '').trim();
+            // A device token is scoped to one device: it never reports for another,
+            // owner or not. Plain user/API tokens (no deviceId) may — an admin
+            // forcing a record.
             const client = request.client;
-            if (client?.deviceId && client.deviceId !== deviceId && !request.workspaceAccess?.isOwner) {
+            if (client?.deviceId && client.deviceId !== deviceId) {
                 return send(reply, new ResponseObject().forbidden('A device may only report its own mirror'), 'DEVICE_MISMATCH');
             }
             const body = request.body || {};

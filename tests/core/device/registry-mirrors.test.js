@@ -40,6 +40,11 @@ describe('device registry mirrors', () => {
         assert.equal((await registry.listMirrorsForWorkspace('u1', 'ws-3')).length, 0);
 
         await assert.rejects(() => registry.updateMirrorStatus('u1', 'ghost', 'ws-1', {}), (e) => e.code === 'DEVICE_NOT_FOUND');
+
+        // The per-request touch rebuilds the record — mirrors must survive it.
+        await registry.touchDevice('u1', 'laptop', {});
+        await registry.updateDevice('u1', 'laptop', { name: 'Laptop 2' });
+        assert.equal((await registry.listMirrorsForWorkspace('u1', 'ws-1')).length, 1, 'mirrors survive touch/update');
     });
 
     test('removeMirror and removeDevice', async () => {

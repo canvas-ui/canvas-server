@@ -33,7 +33,7 @@ describe('workspace mirror routes', () => {
         app.decorate('workspaceManager', { resolveWorkspaceId: () => 'ws-1', getWorkspace: async () => workspace });
         app.addHook('preHandler', async (request) => {
             request.workspace = workspace;
-            request.workspaceAccess = { isOwner: !client, permissions: ['read', 'write', 'admin'] };
+            request.workspaceAccess = { isOwner: true, permissions: ['read', 'write', 'admin'] };
         });
         app.register(workspaceMirrorRoutes, { prefix: '/workspaces/:id/mirrors' });
         await app.ready();
@@ -62,7 +62,7 @@ describe('workspace mirror routes', () => {
         assert.equal((await inject('GET', '/workspaces/universe/mirrors')).json().payload.length, 0);
     });
 
-    test('a device token may only report for itself', async () => {
+    test('a device token may only report for itself (owner or not)', async () => {
         client = { deviceId: 'laptop', authMode: 'device' };
         const other = await inject('POST', '/workspaces/universe/mirrors/desktop/status', { cursor: 1 });
         assert.equal(other.statusCode, 403);

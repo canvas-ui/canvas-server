@@ -261,6 +261,9 @@ class DeviceRegistry {
             createdAt: existing?.createdAt || input.createdAt || now,
             updatedAt: now,
             lastSeen: input.lastSeen || now,
+            // Mirror reports ride on the record; a touch/update must carry
+            // them forward or every device request wipes them.
+            mirrors: input.mirrors ?? existing?.mirrors,
         });
     }
 

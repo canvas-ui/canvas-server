@@ -3704,7 +3704,7 @@ class Workspace extends EventEmitter {
             onResyncStateChange: (state) => this.emit('backend.resync.changed', { ...state, workspaceId: this.id }),
             // Change-log advance (throttled per backend) → the nudge device
             // mirrors subscribe to; `seq` is the log head to poll from.
-            onBackendChanged: ({ backend, seq }) => this.emit('backend.changed', { workspaceId: this.id, backend, seq }),
+            onBackendChanged: ({ backend, seq }) => this.emit('backend.changed', { workspaceId: this.id, workspaceName: this.name, backend, seq }),
             // Quiet config persist (mount fsid snapshot on first successful
             // liveness check) — must NOT re-enter applyBackendConfig.
             persistBackendConfig: (name, patch) => {

@@ -26,6 +26,19 @@ device                                                hub (canvas-server)
   demand, write-back). A full local replica (synapsd + stored) is the later
   database-plane tier.
 
+## Clients
+
+| client | where | what it gives |
+|---|---|---|
+| `canvas-fuse mount -w <ws> <root> --mirror` (0.8.0+) | Linux | a mount at `<root>/<ws>`: everything visible, pinned folders offline, the rest on demand, write-back queue, `Trees/` and `Trash/` |
+| `canvas-edge` (`bin/canvas-edge`, this package) | any OS with Node | a plain folder at `<root>/<ws>` kept fully in sync (state under `<folder>/.workspace/`), built on canvas-stored's `Mirror` engine |
+| `canvas mirror …` (CLI 2.3.0+) | any | picks the client (`--client fuse|daemon`), writes `~/.canvas/config/mirrors.json`, supervises with pm2 |
+
+Both clients read the hub credentials from `~/.canvas/config/remotes.json` (the
+device token's own device id is the identity they report under) and speak the
+protocol in `docs/sync-protocol.md`. canvas-edge exposes a control socket at
+`~/.canvas/run/edge.sock` (`GET /status`, `POST /reload`, `POST /mirrors/:id/resync`).
+
 ## What the hub guarantees
 
 - A pushed file takes the **same path as a file dropped into the folder**:

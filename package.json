@@ -1,7 +1,7 @@
 {
   "name": "canvas-server",
   "productName": "Canvas Server",
-  "version": "2.7.3",
+  "version": "2.8.0",
   "description": "Context layer on top of your unstructured universe",
   "main": "./src/init.js",
   "type": "module",
@@ -143,5 +143,8 @@
       "canvas-stored": "canvas-ui/canvas-stored#main",
       "canvas-web": "canvas-ui/canvas#web-dist"
     }
+  },
+  "bin": {
+    "canvas-edge": "bin/canvas-edge"
   }
 }

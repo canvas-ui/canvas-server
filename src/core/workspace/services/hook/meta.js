@@ -53,6 +53,7 @@ export const HOOK_EVENTS = Object.freeze([
     { name: 'dataBackends.changed', document: false, description: 'Workspace data backends re-configured', payload: '{ workspaceId }' },
     { name: 'services.changed', document: false, description: 'Workspace services toggled', payload: '{ workspaceId }' },
     { name: 'links.changed', document: false, description: 'Workspace public links changed', payload: '{ workspaceId }' },
+    { name: 'backend.changed', document: false, description: "A storage backend's change log advanced (files added/edited/deleted/renamed, from any source). Throttled per backend; `seq` is the log head — device mirrors use it as a nudge to poll `GET /backends/:driver/:address/changes?since=`.", payload: '{ workspaceId, backend, seq }' },
 ]);
 
 // ── Action catalog ───────────────────────────────────────────────────────────

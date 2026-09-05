@@ -11,6 +11,7 @@ import { mimeFromLocations } from './classifier.js';
 import { pickGeo } from './geo.js';
 import { BACKENDS_TREE_NAME, normalizeSegment } from '../../../utils/backend-documents.js';
 import { DEFAULT_SYNC_EXCLUSIONS, WORKSPACE_INTERNAL_EXCLUSIONS } from './constants.js';
+import { internalPathMatcher } from './internal-paths.js';
 
 /*
  * WorkspaceStoredIndex — watches a workspace home directory and syncs file
@@ -50,6 +51,32 @@ const CHECKSUM_PRIORITY = ['sha256', 'sha1', 'md5'];
 // GC or explicit user action. If its bytes reappear anywhere, the checksum index
 // re-binds the new location to the same doc and curation survives the round trip.
 const ORPHANED_FEATURE = 'feature/orphaned';
+
+// `backend.changed` nudges are throttled per backend: a folder drop of a
+// thousand files is one "poll me" to a mirror, not a thousand.
+const NUDGE_THROTTLE_MS = 300;
+// How long writeObject waits for the document behind a landed file before
+// answering without a docId (the doc still lands; the caller re-stats).
+const UPSERT_WAIT_MS = 10000;
+
+/** Error with the HTTP mapping the objects routes need. */
+function objectsError(message, code, statusCode = 400) {
+    return Object.assign(new Error(message), { code, statusCode });
+}
+
+/**
+ * Canonical spelling of a keyed-object path as received over the wire: NFC,
+ * forward slashes, no duplicate/edge slashes. Returns null for anything that
+ * could escape the backend root or that no filesystem accepts.
+ */
+export function normalizeObjectKey(key) {
+    let out = String(key ?? '').replace(/\\/g, '/').replace(/\/{2,}/g, '/').replace(/^\/+|\/+$/g, '');
+    out = out.normalize('NFC');
+    if (!out || out.includes('\0')) return null;
+    if (path.isAbsolute(out) || /^[a-zA-Z]:\//.test(out)) return null;
+    if (!out.split('/').every((seg) => seg.length > 0 && seg !== '.' && seg !== '..')) return null;
+    return out;
+}
 
 export class WorkspaceStoredIndex {
     static HOME_STORED_BACKEND = HOME_STORED_BACKEND;
@@ -103,8 +130,21 @@ export class WorkspaceStoredIndex {
     // Optional: orphan-GC retention in days (-1 = keep forever). Read after
     // each successful resync; also used by explicit gcOrphanedDocuments calls.
     #getOrphanRetentionDays;
+    // Optional: `({ backend, seq }) => void`, fired (throttled) whenever a
+    // backend's change log advances — the Workspace turns it into the
+    // `backend.changed` event device mirrors subscribe to.
+    #onBackendChanged;
+    #changeNudges = new Map();
+    // Keyed-object write serialization: `${backend}:${key}` → promise chain,
+    // so a precondition is checked and the swap done without a second writer
+    // squeezing in between (the objects API's per-key mutex).
+    #keyLocks = new Map();
+    // `${backend}:${key}` → Promise<docId> of the document upsert triggered by
+    // the last object event for that key. writeObject awaits it so the caller
+    // learns the document id behind the bytes it just landed.
+    #inflightUpserts = new Map();
 
-    constructor({ rootPath, cachePath, dataPath, homePath, storedRootPath, internalPaths = [], dataBackends = {}, workspaceId, device = null, logger, put, unlink, getBackendsTreeSelector, getDb, describeImapLocation = null, destroyImapLocation = null, lockBackendNode = null, unlockBackendNode = null, insertBackendPath = null, onResyncStateChange = null, persistBackendConfig = null, getOrphanRetentionDays = null }) {
+    constructor({ rootPath, cachePath, dataPath, homePath, storedRootPath, internalPaths = [], dataBackends = {}, workspaceId, device = null, logger, put, unlink, getBackendsTreeSelector, getDb, describeImapLocation = null, destroyImapLocation = null, lockBackendNode = null, unlockBackendNode = null, insertBackendPath = null, onResyncStateChange = null, persistBackendConfig = null, getOrphanRetentionDays = null, onBackendChanged = null }) {
         if (!dataPath || !homePath) throw new Error('dataPath and homePath are required');
         if (!put || !unlink || !getBackendsTreeSelector || !getDb) throw new Error('put, unlink, getBackendsTreeSelector, getDb are required');
 
@@ -133,6 +173,7 @@ export class WorkspaceStoredIndex {
         this.#onResyncStateChange = onResyncStateChange;
         this.#persistBackendConfig = persistBackendConfig;
         this.#getOrphanRetentionDays = getOrphanRetentionDays;
+        this.#onBackendChanged = typeof onBackendChanged === 'function' ? onBackendChanged : null;
     }
 
     get isRunning() {
@@ -263,6 +304,229 @@ export class WorkspaceStoredIndex {
             throw new Error('Source backend is read-only — copy instead of move');
         }
         return this.#stored.move(idOrKey, { to, key, onConflict, from: url });
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Keyed objects — the hub side of a device mirror
+    //
+    // A mirror addresses bytes by (backend, key) exactly like the filesystem
+    // does, with HTTP-style preconditions. Writes take stored's succession
+    // path, so the document behind an edited file keeps its placements, and
+    // every mutation lands in the change log the mirror tails.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /** Run `fn` while holding this key's write lock (promise chain per key). */
+    withKeyLock(backendName, key, fn) {
+        const lockKey = `${backendName}:${key}`;
+        const prior = this.#keyLocks.get(lockKey) || Promise.resolve();
+        const run = prior.catch(() => {}).then(fn);
+        const chain = run.catch(() => {}).finally(() => {
+            if (this.#keyLocks.get(lockKey) === chain) this.#keyLocks.delete(lockKey);
+        });
+        this.#keyLocks.set(lockKey, chain);
+        return run;
+    }
+
+    // A live, path-addressed local backend or a typed error the route can map.
+    #objectsBackend(backendName, { write = false } = {}) {
+        if (!this.#stored) throw objectsError('Stored index is not running', 'INDEX_NOT_RUNNING', 503);
+        if (typeof this.#stored.writeObject !== 'function') {
+            throw objectsError('The installed canvas-stored has no keyed-object support (needs >= 1.5.0)', 'STORED_TOO_OLD', 501);
+        }
+        const config = this.#dataBackends[backendName];
+        if (!config || config.supported === false) throw objectsError(`Unknown backend: ${backendName}`, 'BACKEND_NOT_FOUND', 404);
+        if (config.driver !== 'file') throw objectsError(`Backend "${backendName}" does not expose keyed objects`, 'UNSUPPORTED_BACKEND', 400);
+        const backend = this.#stored.getBackend(backendName);
+        if (!backend) throw objectsError(`Backend "${backendName}" is not enabled`, 'BACKEND_DISABLED', 409);
+        if (write && config.readOnly === true) throw objectsError(`Backend "${backendName}" is read-only`, 'BACKEND_READ_ONLY', 403);
+        return { config, backend, root: this.#resolveBackendRoot(backendName, config) };
+    }
+
+    // Normalize + validate a wire key against this backend: never the
+    // workspace's own internals, never something the index would ignore (a
+    // dotfile pushed by a device would otherwise land on disk invisibly).
+    #objectKey(backend, root, key) {
+        const normalized = normalizeObjectKey(key);
+        if (!normalized) throw objectsError(`Invalid object key: ${key}`, 'INVALID_KEY', 400);
+        if (root && internalPathMatcher(root, { internalPaths: this.#internalPaths })(path.resolve(root, normalized))) {
+            throw objectsError(`Key addresses the workspace internals: ${normalized}`, 'KEY_INTERNAL', 409);
+        }
+        if (typeof backend.isIgnored === 'function' && backend.isIgnored(normalized)) {
+            throw objectsError(`Key is excluded from indexing on this backend: ${normalized}`, 'KEY_EXCLUDED', 409);
+        }
+        return normalized;
+    }
+
+    #checksumStringFromId(id) {
+        const at = String(id || '').indexOf(':');
+        return at > 0 ? `${id.slice(0, at)}/${id.slice(at + 1)}` : null;
+    }
+
+    async #docIdForStoredId(id) {
+        const checksum = this.#checksumStringFromId(id);
+        if (!checksum) return null;
+        const doc = await this.#getDb().getByChecksumString(checksum).catch(() => null);
+        return doc?.id ?? null;
+    }
+
+    #trackUpsert(pathKey, promise) {
+        if (!pathKey || !promise?.then) return;
+        this.#inflightUpserts.set(pathKey, promise);
+        promise.catch(() => null).finally(() => {
+            if (this.#inflightUpserts.get(pathKey) === promise) this.#inflightUpserts.delete(pathKey);
+        });
+    }
+
+    // Wait (bounded) for the document upsert the last event on this key
+    // started; fall back to a checksum lookup. Never throws.
+    async #awaitDocId(pathKey, storedId) {
+        const inflight = this.#inflightUpserts.get(pathKey);
+        if (inflight) {
+            let timer;
+            const timeout = new Promise((resolve) => { timer = setTimeout(() => resolve(undefined), UPSERT_WAIT_MS); timer.unref?.(); });
+            try {
+                const docId = await Promise.race([inflight, timeout]);
+                if (docId != null) return docId;
+            } catch { /* fall through to the lookup */ } finally { clearTimeout(timer); }
+        }
+        return this.#docIdForStoredId(storedId);
+    }
+
+    #nudge(entry) {
+        if (!this.#onBackendChanged || !entry?.backend) return;
+        const backend = entry.backend;
+        let state = this.#changeNudges.get(backend);
+        if (!state) { state = { timer: null, pending: null }; this.#changeNudges.set(backend, state); }
+        if (state.timer) { state.pending = entry.seq; return; }
+        this.#emitNudge(backend, entry.seq);
+        state.timer = setTimeout(() => {
+            state.timer = null;
+            if (state.pending != null) {
+                const seq = state.pending;
+                state.pending = null;
+                this.#emitNudge(backend, seq);
+            }
+        }, NUDGE_THROTTLE_MS);
+        state.timer.unref?.();
+    }
+
+    #emitNudge(backend, seq) {
+        try { this.#onBackendChanged({ backend, seq }); }
+        catch (error) { this.#logger.warn({ workspaceId: this.#workspaceId, backend, error: error.message }, 'backend.changed listener failed'); }
+    }
+
+    /**
+     * Write bytes at `backend:key` (see Stored.writeObject for the
+     * precondition semantics). Serialized per key; resolves with the document
+     * id the landed bytes belong to.
+     * @returns {Promise<{ok:true, key, id, sha256, size, mtime, seq, docId, previous, unchanged?} | {ok:false, reason, ...}>}
+     */
+    async writeObject(backendName, key, source, options = {}) {
+        const { backend, root } = this.#objectsBackend(backendName, { write: true });
+        const normalized = this.#objectKey(backend, root, key);
+        const pathKey = `${backendName}:${normalized}`;
+        return this.withKeyLock(backendName, normalized, async () => {
+            const result = await this.#stored.writeObject(backendName, normalized, source, options);
+            if (!result?.ok) return result;
+            const docId = await this.#awaitDocId(pathKey, result.id);
+            return { ...result, key: normalized, docId };
+        });
+    }
+
+    /** Delete `backend:key` (precondition-checked); the document is orphaned, never destroyed. */
+    async removeObject(backendName, key, options = {}) {
+        const { backend, root } = this.#objectsBackend(backendName, { write: true });
+        const normalized = this.#objectKey(backend, root, key);
+        return this.withKeyLock(backendName, normalized, async () => {
+            const result = await this.#stored.removeObject(backendName, normalized, options);
+            if (!result?.ok) return result;
+            const docId = await this.#docIdForStoredId(result.id);
+            return { ...result, key: normalized, docId };
+        });
+    }
+
+    /** Rename within one backend: same bytes, same document, new key. */
+    async renameObject(backendName, from, to, options = {}) {
+        const { backend, root } = this.#objectsBackend(backendName, { write: true });
+        const fromKey = this.#objectKey(backend, root, from);
+        const toKey = this.#objectKey(backend, root, to);
+        const [first, second] = [fromKey, toKey].sort();
+        return this.withKeyLock(backendName, first, () => this.withKeyLock(backendName, second, async () => {
+            const result = await this.#stored.renameObject(backendName, fromKey, toKey, options);
+            if (!result?.ok) return result;
+            const docId = await this.#awaitDocId(`${backendName}:${toKey}`, result.id);
+            return { ...result, docId };
+        }));
+    }
+
+    /** `{ key, id, sha256, size, mtime, mimeType, docId }` for an indexed key, or null. */
+    async statObject(backendName, key) {
+        const { backend, root } = this.#objectsBackend(backendName);
+        const normalized = this.#objectKey(backend, root, key);
+        const meta = await this.#stored.stat(`${backendName}:${normalized}`);
+        const location = meta?.locations?.find((l) => l.backend === backendName && l.key === normalized);
+        if (!meta || !location) return null;
+        return {
+            key: normalized,
+            id: meta.id,
+            sha256: meta.checksums?.sha256 ?? null,
+            size: location.size ?? meta.size ?? null,
+            mtime: location.mtime ?? null,
+            mimeType: meta.mimeType || null,
+            docId: await this.#docIdForStoredId(meta.id),
+        };
+    }
+
+    /** Page a backend's indexed keys: `{ objects:[{key, sha256, size, mtime, mimeType}], cursor, head }`. */
+    listObjects(backendName, { prefix = '', after = null, limit = 1000 } = {}) {
+        this.#objectsBackend(backendName);
+        const cleanPrefix = prefix ? String(prefix).replace(/^\/+/, '').normalize('NFC') : '';
+        const page = this.#stored.listObjects(backendName, { prefix: cleanPrefix, after, limit });
+        return {
+            objects: (page.objects || []).map((o) => ({
+                key: o.key,
+                sha256: o.checksums?.sha256 ?? null,
+                size: o.size ?? null,
+                mtime: o.mtime ?? null,
+                mimeType: o.mimeType ?? null,
+            })),
+            cursor: page.cursor ?? null,
+            head: this.#stored.head(),
+        };
+    }
+
+    /**
+     * The change feed for one backend. Entries are dirty-key notifications
+     * with the last known state; a reader re-stats the key rather than
+     * replaying ops. `cursorTooOld` = rebuild from `listObjects`.
+     */
+    changes(backendName, { since = 0, limit = 1000 } = {}) {
+        this.#objectsBackend(backendName);
+        const page = this.#stored.changes({ backend: backendName, since, limit });
+        return {
+            changes: (page.changes || []).map((c) => ({
+                seq: c.seq,
+                ts: c.ts,
+                op: c.op,
+                key: c.key,
+                ...(c.from != null ? { from: c.from } : {}),
+                sha256: typeof c.id === 'string' && c.id.startsWith('sha256:') ? c.id.slice(7) : null,
+                size: c.size ?? null,
+                mtime: c.mtime ?? null,
+                ...(c.origin ? { origin: c.origin } : {}),
+            })),
+            head: page.head,
+            oldest: page.oldest,
+            cursor: page.cursor,
+            cursorTooOld: page.cursorTooOld === true,
+        };
+    }
+
+    /** Bytes for `backend:key` — `{ data, ranged }` as resolve(). */
+    async resolveObject(backendName, key, options = {}) {
+        const { backend, root } = this.#objectsBackend(backendName);
+        const normalized = this.#objectKey(backend, root, key);
+        return this.resolve(`stored://${backendName}/${normalized}`, options);
     }
 
     async start() {
@@ -859,7 +1123,9 @@ export class WorkspaceStoredIndex {
         // consumed by the mail service, which binds its own listeners.
         const dispatch = (payload) => {
             if (payload?.kind === 'message') return; // handled by the mail service
-            return this.#upsertDocument(payload); // kind 'file' (or legacy)
+            const promise = this.#upsertDocument(payload); // kind 'file' (or legacy)
+            if (payload?.backend && payload?.key) this.#trackUpsert(`${payload.backend}:${payload.key}`, promise);
+            return promise;
         };
         const eventMap = {
             'object:add': dispatch,
@@ -869,9 +1135,15 @@ export class WorkspaceStoredIndex {
             // between backends, cache eviction). These MUST be patched in
             // place: routing them through unlink+add would drop the document's
             // curated tree placements and rebuild it under a new id.
-            'object:move': (payload) => this.#applyLocationChange(payload),
+            'object:move': (payload) => {
+                const promise = this.#applyLocationChange(payload);
+                if (payload?.to?.backend && payload?.to?.key) this.#trackUpsert(`${payload.to.backend}:${payload.to.key}`, promise);
+                return promise;
+            },
             'object:location:add': (payload) => this.#applyLocationChange(payload),
             'object:location:remove': (payload) => this.#applyLocationChange(payload),
+            // Change-log advance → throttled `backend.changed` nudge.
+            'change': (entry) => this.#nudge(entry),
         };
 
         this.#listeners = Object.entries(eventMap).map(([eventName, handler]) => {

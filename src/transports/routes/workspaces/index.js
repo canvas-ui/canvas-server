@@ -186,6 +186,12 @@ export default async function workspaceRoutes(fastify, _options) {
     prefix: '/:id/backends',
     onRequest: [resolveWorkspaceAddress]
   });
+  // Keyed objects + change feed on path-addressed storage backends — the
+  // wire protocol device mirrors (canvas-fuse --mirror, canvas-edge) speak.
+  fastify.register(import('./objects.js'), {
+    prefix: '/:id/backends',
+    onRequest: [resolveWorkspaceAddress]
+  });
   fastify.register(import('./services.js'), {
     prefix: '/:id/services',
     onRequest: [resolveWorkspaceAddress]

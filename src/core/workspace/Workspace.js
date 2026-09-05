@@ -3087,6 +3087,64 @@ class Workspace extends EventEmitter {
         return result;
     }
 
+    // ── Keyed objects — the hub side of a device mirror ─────────────────────
+    // (backend, key) addressing with HTTP-style preconditions over a
+    // path-addressed local backend; see WorkspaceStoredIndex.writeObject.
+
+    #assertObjectsDriver(driver, address) {
+        if (isConnectorDriver(driver) || driver === 'imap') {
+            throw Object.assign(new Error(`Backend "${driver}/${address}" does not expose keyed objects`), { code: 'UNSUPPORTED_BACKEND', statusCode: 400 });
+        }
+    }
+
+    async writeBackendObject(driver, address, key, source, options = {}) {
+        this.#assertObjectsDriver(driver, address);
+        if (!this.#storedIndex?.isRunning) await this.#startStoredIndex();
+        return this.#storedIndex.writeObject(address, key, source, options);
+    }
+
+    async removeBackendObject(driver, address, key, options = {}) {
+        this.#assertObjectsDriver(driver, address);
+        if (!this.#storedIndex?.isRunning) await this.#startStoredIndex();
+        return this.#storedIndex.removeObject(address, key, options);
+    }
+
+    async renameBackendObject(driver, address, from, to, options = {}) {
+        this.#assertObjectsDriver(driver, address);
+        if (!this.#storedIndex?.isRunning) await this.#startStoredIndex();
+        return this.#storedIndex.renameObject(address, from, to, options);
+    }
+
+    async statBackendObject(driver, address, key) {
+        this.#assertObjectsDriver(driver, address);
+        if (!this.#storedIndex?.isRunning) await this.#startStoredIndex();
+        return this.#storedIndex.statObject(address, key);
+    }
+
+    async listBackendObjects(driver, address, options = {}) {
+        this.#assertObjectsDriver(driver, address);
+        if (!this.#storedIndex?.isRunning) await this.#startStoredIndex();
+        return this.#storedIndex.listObjects(address, options);
+    }
+
+    async backendChanges(driver, address, options = {}) {
+        this.#assertObjectsDriver(driver, address);
+        if (!this.#storedIndex?.isRunning) await this.#startStoredIndex();
+        return this.#storedIndex.changes(address, options);
+    }
+
+    async resolveBackendObject(driver, address, key, options = {}) {
+        this.#assertObjectsDriver(driver, address);
+        if (!this.#storedIndex?.isRunning) await this.#startStoredIndex();
+        return this.#storedIndex.resolveObject(address, key, options);
+    }
+
+    /** Bytes behind any of this workspace's location URLs (`{ data, ranged }`). */
+    async resolveStoredUrl(url, options = {}) {
+        if (!this.#storedIndex?.isRunning) await this.#startStoredIndex();
+        return this.#storedIndex.resolve(url, options);
+    }
+
     /**
      * Where this document's bytes live, as (backend, key) pairs — both address
      * forms resolved (`stored://` and device-scoped `file://` mounts). Hook
@@ -3618,6 +3676,9 @@ class Workspace extends EventEmitter {
             insertBackendPath: (treePath) => this.getBackendsTree().insertPath(treePath, { ignoreLocks: true }),
             // Resync lifecycle/progress → ws clients (tree spinner, settings).
             onResyncStateChange: (state) => this.emit('backend.resync.changed', { ...state, workspaceId: this.id }),
+            // Change-log advance (throttled per backend) → the nudge device
+            // mirrors subscribe to; `seq` is the log head to poll from.
+            onBackendChanged: ({ backend, seq }) => this.emit('backend.changed', { workspaceId: this.id, backend, seq }),
             // Quiet config persist (mount fsid snapshot on first successful
             // liveness check) — must NOT re-enter applyBackendConfig.
             persistBackendConfig: (name, patch) => {

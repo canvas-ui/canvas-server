@@ -6,6 +6,7 @@ import { readFileSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import ResponseObject from '../ResponseObject.js';
+import { getInstanceId } from '../../utils/instance.js';
 
 // Installed canvas components whose versions the About page reports. Read once
 // at startup — the installed tree cannot change under a running process.
@@ -61,6 +62,9 @@ export default async function pingRoute(fastify, _options) {
       commit: env.app.commit,
       // Versions of the installed canvas-* components (Settings > About)
       components: componentVersions,
+      // Stable install identity — what device mirrors and replication peers
+      // key on (URL/port/tunnel are routing detail). Not a secret.
+      instanceId: getInstanceId(),
       uptime: process.uptime(),
       timestamp: new Date().toISOString(),
       defaults: {

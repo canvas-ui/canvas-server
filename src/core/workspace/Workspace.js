@@ -28,6 +28,7 @@ import { WorkspaceStoredIndex } from './lib/WorkspaceStoredIndex.js';
 import { joinKey, transferFilename } from './services/hook/key-utils.js';
 import { WorkspaceMailIndex } from './services/imap/index.js';
 import { WorkspaceConnectorIndex, isConnectorDriver, CONNECTOR_SCHEMES, connectorDriverForProvenanceUrl } from './services/connectors/index.js';
+import { SyncConflicts } from './lib/SyncConflicts.js';
 import { getServerDevice } from '../device/ServerDevice.js';
 
 // Constants
@@ -3143,6 +3144,31 @@ class Workspace extends EventEmitter {
     async resolveStoredUrl(url, options = {}) {
         if (!this.#storedIndex?.isRunning) await this.#startStoredIndex();
         return this.#storedIndex.resolve(url, options);
+    }
+
+    // ── Sync conflict inbox (see lib/SyncConflicts.js) ──────────────────────
+    #syncConflicts = null;
+
+    #getSyncConflicts() {
+        if (!this.#syncConflicts) {
+            this.#syncConflicts = new SyncConflicts({ workspace: this, getDb: () => this.#getActiveDb(), logger: this.#logger });
+        }
+        return this.#syncConflicts;
+    }
+
+    async createSyncConflict(input = {}) {
+        if (!this.#storedIndex?.isRunning) await this.#startStoredIndex();
+        return this.#getSyncConflicts().create(input);
+    }
+
+    async listSyncConflicts() {
+        if (!this.#storedIndex?.isRunning) await this.#startStoredIndex();
+        return this.#getSyncConflicts().list();
+    }
+
+    async resolveSyncConflict(docId, options = {}) {
+        if (!this.#storedIndex?.isRunning) await this.#startStoredIndex();
+        return this.#getSyncConflicts().resolve(docId, options);
     }
 
     /**

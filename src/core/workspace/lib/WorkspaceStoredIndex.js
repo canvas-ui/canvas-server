@@ -2021,10 +2021,18 @@ export class WorkspaceStoredIndex {
         const geo = pickGeo(metadata.geo, extracted?.geo, { incomingSource: 'exif' });
         if (geo) { metadata.geo = geo; } else { delete metadata.geo; }
 
+        // `data` stays empty for a blob — with ONE exception: asserted
+        // relations are write-through on `data.relations`, and synapsd's
+        // update() replaces `data` wholesale. Re-indexing a file (a new
+        // location, a resync) must never silently drop the relations a user
+        // drew, so the existing row's relations are carried forward.
+        const relations = Array.isArray(existingDocument?.data?.relations) && existingDocument.data.relations.length > 0
+            ? existingDocument.data.relations
+            : null;
         const doc = {
             schema: 'data/schema/file',
             checksumArray: checksumArray.length > 0 ? checksumArray : (existingDocument?.checksumArray || []),
-            data: {},
+            data: relations ? { relations } : {},
             locations,
             metadata,
             // Locations exist by construction here — clear any orphan marker.

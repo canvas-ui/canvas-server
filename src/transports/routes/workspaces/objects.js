@@ -264,7 +264,9 @@ async function byteRoutes(fastify) {
                 }
                 const conflict = await request.workspace.createSyncConflict({
                     backend: address,
-                    key: shortString(headers['x-canvas-conflict-of'], 4096),
+                    key,
+                    conflictOf: shortString(headers['x-canvas-conflict-of'], 4096),
+                    mode: String(headers['x-canvas-conflict-mode'] || 'inbox').toLowerCase() === 'rename' ? 'rename' : 'inbox',
                     source: request.body,
                     sha256: shortString(headers['x-canvas-sha256'] || request.query?.sha256, 64),
                     baseSha256: shortString(headers['x-canvas-base-sha256'], 64),
@@ -273,6 +275,7 @@ async function byteRoutes(fastify) {
                     mtime: parseMtime(headers['x-canvas-mtime']),
                     mimeType: headers['content-type'] && headers['content-type'] !== 'application/octet-stream' ? shortString(headers['content-type'], 128) : undefined,
                 });
+                if (conflict && conflict.ok === false) return sendFailure(reply, conflict);
                 return send(reply, new ResponseObject().created(conflict, 'Conflict recorded'));
             }
 

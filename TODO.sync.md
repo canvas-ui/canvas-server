@@ -1,5 +1,13 @@
 # Workspace sync — design + TODO (2026-08-31)
 
+> **2026-09-05 — file plane v1 shipped as the hub protocol** (`docs/sync.md`,
+> `docs/sync-protocol.md`): objects API + change feed (§5.2 durable log, §8
+> "objects endpoint"), conflict inbox + resolution, device mirror registry.
+> Clients: canvas-fuse `--mirror` (Linux) first, then the canvas-edge daemon.
+> The **DB plane below is unchanged** — the hub stays the single synapsd
+> writer; primary/secondary replication remains this document's subject.
+
+
 Supersedes the parked "Workspace sync (design notes, 2026-08-02)" section of `TODO.md`.
 Facts below were verified against synapsd 3.16.0, canvas-stored 1.4.2, canvas-server 2.5.75.
 

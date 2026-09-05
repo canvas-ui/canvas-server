@@ -192,6 +192,15 @@ export default async function workspaceRoutes(fastify, _options) {
     prefix: '/:id/backends',
     onRequest: [resolveWorkspaceAddress]
   });
+  // Device mirrors (status reports, listing) and the sync conflict inbox.
+  fastify.register(import('./mirrors.js'), {
+    prefix: '/:id/mirrors',
+    onRequest: [resolveWorkspaceAddress]
+  });
+  fastify.register(import('./sync.js'), {
+    prefix: '/:id/sync',
+    onRequest: [resolveWorkspaceAddress]
+  });
   fastify.register(import('./services.js'), {
     prefix: '/:id/services',
     onRequest: [resolveWorkspaceAddress]

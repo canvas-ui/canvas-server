@@ -578,6 +578,34 @@ export default async function authRoutes(fastify, _options) {
     }
   });
 
+  // Forget a device: revoke its tokens and drop its record (mirrors included).
+  // A daemon still holding the old token gets 401 on its next call and stops.
+  fastify.delete('/devices/:deviceId', {
+    onRequest: [fastify.authenticate],
+    schema: { params: { type: 'object', required: ['deviceId'], properties: { deviceId: { type: 'string' } } } },
+  }, async (request, reply) => {
+    try {
+      if (!fastify.deviceRegistry) {
+        throw new Error('Device registry not available');
+      }
+      const deviceId = String(request.params.deviceId || '').trim();
+      await revokeDeviceTokens(request.user.id, deviceId);
+      const removed = typeof fastify.deviceRegistry.removeDevice === 'function'
+        ? await fastify.deviceRegistry.removeDevice(request.user.id, deviceId)
+        : false;
+      if (!removed) {
+        const response = new ResponseObject().notFound('Device not found');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+      const response = new ResponseObject().deleted({ deviceId, removed: true }, 'Device removed');
+      return reply.code(response.statusCode).send(response.getResponse());
+    } catch (error) {
+      fastify.log.error(error);
+      const response = new ResponseObject().serverError('Failed to remove device');
+      return reply.code(response.statusCode).send(response.getResponse());
+    }
+  });
+
   // Update a device
   fastify.patch('/devices/:deviceId', {
     onRequest: [fastify.authenticate],

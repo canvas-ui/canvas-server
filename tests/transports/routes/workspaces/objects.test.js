@@ -230,6 +230,30 @@ describe('workspace keyed object routes', () => {
         assert.equal(res.json().code, 'NOT_IMPLEMENTED');
     });
 
+    test('PUT with X-Canvas-Conflict-Of feeds the conflict inbox with the device metadata', async () => {
+        workspace.createSyncConflict = async (input) => {
+            const body = await drain(input.source);
+            calls.push({ name: 'createSyncConflict', args: [{ ...input, source: body.toString() }] });
+            return { docId: 100009, key: input.conflictOf, mode: input.mode };
+        };
+        const res = await inject('PUT', `${B}/objects/Docs/c%20(conflict).txt`, {
+            payload: 'mine',
+            headers: { 'x-canvas-conflict-of': 'Docs/c.txt', 'x-canvas-conflict-mode': 'rename', 'x-canvas-origin': 'dev-laptop', 'x-canvas-device-name': 'laptop', 'x-canvas-base-sha256': 'ee'.repeat(32), 'x-canvas-mtime': '5' },
+        });
+        assert.equal(res.statusCode, 201, res.body);
+        const [input] = called('createSyncConflict');
+        assert.equal(input.backend, 'workspace:home');
+        assert.equal(input.key, 'Docs/c (conflict).txt');
+        assert.equal(input.conflictOf, 'Docs/c.txt');
+        assert.equal(input.mode, 'rename');
+        assert.equal(input.device, 'dev-laptop');
+        assert.equal(input.deviceName, 'laptop');
+        assert.equal(input.baseSha256, 'ee'.repeat(32));
+        assert.equal(input.mtime, 5);
+        assert.equal(input.source, 'mine');
+        assert.equal(res.json().payload.docId, 100009);
+    });
+
     test('DELETE honours If-Match', async () => {
         const res = await inject('DELETE', `${B}/objects/a.txt`, { headers: { 'if-match': `"${SHA_A}"`, 'x-canvas-origin': 'laptop' } });
         assert.equal(res.statusCode, 200, res.body);

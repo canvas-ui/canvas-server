@@ -84,6 +84,70 @@ class DeviceRegistry {
         return this.updateDevice(userId, deviceId, patch);
     }
 
+    /**
+     * Forget a device entirely (its record and every mirror it reported).
+     * Token revocation is the auth service's job — the route does both.
+     */
+    async removeDevice(userId, deviceId) {
+        const normalizedDeviceId = this.#requireDeviceId(deviceId);
+        const devices = await this.#readDevices(userId);
+        if (!devices[normalizedDeviceId]) { return false; }
+        delete devices[normalizedDeviceId];
+        await this.#writeDevices(userId, devices);
+        return true;
+    }
+
+    /* --------------------
+     * Mirrors — what a device reports about the workspaces it keeps in sync.
+     * Stored on the device record (`mirrors[workspaceId]`), never on the
+     * workspace: the workspace travels between servers, the device pairing
+     * does not.
+     * ------------------*/
+
+    async updateMirrorStatus(userId, deviceId, workspaceId, patch = {}) {
+        const normalizedDeviceId = this.#requireDeviceId(deviceId);
+        const wsId = String(workspaceId || '').trim();
+        if (!wsId) { throw new Error('workspaceId is required'); }
+        const devices = await this.#readDevices(userId);
+        const existing = devices[normalizedDeviceId];
+        if (!existing) { throw Object.assign(new Error(`Device "${normalizedDeviceId}" not found`), { statusCode: 404, code: 'DEVICE_NOT_FOUND' }); }
+        const now = new Date().toISOString();
+        const prior = existing.mirrors?.[wsId] || {};
+        const mirror = pickDefined({
+            ...prior,
+            ...patch,
+            workspaceId: wsId,
+            backend: patch.backend || prior.backend || 'workspace:home',
+            firstSeen: prior.firstSeen || now,
+            lastSeen: now,
+        });
+        devices[normalizedDeviceId] = { ...existing, lastSeen: now, updatedAt: now, mirrors: { ...(existing.mirrors || {}), [wsId]: mirror } };
+        await this.#writeDevices(userId, devices);
+        return mirror;
+    }
+
+    async removeMirror(userId, deviceId, workspaceId) {
+        const normalizedDeviceId = this.#requireDeviceId(deviceId);
+        const wsId = String(workspaceId || '').trim();
+        const devices = await this.#readDevices(userId);
+        const existing = devices[normalizedDeviceId];
+        if (!existing?.mirrors?.[wsId]) { return false; }
+        const mirrors = { ...existing.mirrors };
+        delete mirrors[wsId];
+        devices[normalizedDeviceId] = { ...existing, updatedAt: new Date().toISOString(), mirrors };
+        await this.#writeDevices(userId, devices);
+        return true;
+    }
+
+    /** `[{ deviceId, name, platform, lastSeen, mirror }]` for one workspace. */
+    async listMirrorsForWorkspace(userId, workspaceId) {
+        const wsId = String(workspaceId || '').trim();
+        const devices = await this.#readDevices(userId);
+        return Object.values(devices)
+            .filter((d) => d?.mirrors?.[wsId])
+            .map((d) => ({ deviceId: d.deviceId, name: d.name, platform: d.platform, type: d.type, lastSeen: d.lastSeen, mirror: d.mirrors[wsId] }));
+    }
+
     async ensureWorkspaceBinding(workspace, device = {}) {
         const deviceId = this.#requireDeviceId(device.deviceId);
         const now = new Date().toISOString();

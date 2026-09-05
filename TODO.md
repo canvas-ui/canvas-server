@@ -286,13 +286,55 @@ API cover the file-level needs.
       (documents, bitmaps/indexes, trees/views, timelines, search, lifecycle).
 Do both before the daemon binary, not after — the split is the refactor's forcing function.
 
-## canvas-edge
+## canvas-edge → generic standalone runtime (direction confirmed 2026-09-05)
 
 Transport + registration layer for the shape above: a thin tunnel for containerized roles,
 agents and workspaces behind NAT (announce, req/res/event frames — `src/edge/`), plus the
 local IPC transport. Its "minimal API + autoregistration" is what turns a remote-workspace
 reference into a registered runtime. Design still open: frame-level streaming for uploads,
 multiplexed event subscriptions, instance-token lifecycle.
+
+**What exists (server 2.8.0, sync v1 phase 3):** `bin/canvas-edge` + `src/edge/{env,
+mirror-runtime,control,daemon}.js` is a real daemon today, but it only runs one unit type —
+file mirrors (`~/.canvas/config/mirrors.json` entries with `client:'daemon'`, canvas-stored
+`Mirror` engine, control socket `~/.canvas/run/edge.sock`, hub socket nudges, status reports
+to `/workspaces/:id/mirrors/:deviceId/status`). See `docs/sync.md` › Clients.
+
+**Decision:** do NOT write a separate agentd/workspaced daemon. Generalize canvas-edge into
+the one standalone runtime that hosts canvas **agents** and **workspaces** (and mirrors) as
+units, with a minimal local API and autoregistration to one or more canvas-servers.
+**agentd is the primary target** (its runtime is not written yet); workspaced comes second.
+This is the next body of work, in parallel with the UI revamp.
+
+Shape:
+- [ ] **Unit model** — `daemon.js` runs a list of units behind one interface
+      `{start, stop, status, nudge, reload}`; unit types `mirror` (today's `MirrorRuntime`),
+      `workspace` (today's `Workspace` class run by the daemon, routes mounted via
+      `api-contract.js`), `agent` (canvas-agentd runtime). Config: `~/.canvas/config/edge.json`
+      (`units[]`) with `mirrors.json` folded in as `type:'mirror'` entries.
+- [ ] **Local API** — the control socket (`src/edge/control.js`) grows from
+      status/mirrors/reload/shutdown into the root-relative runtime API (`/health`, `/info`,
+      `/units`, `/units/:id/...`, `/events`); optional TCP listener for LAN/containers.
+      External path prefixing stays with the control plane.
+- [ ] **Autoregistration** — reuse `src/edge/EdgeClient.js` (pair/announce/handleRequest)
+      from the daemon side: announce carries `{instanceId, units:[{type, id, name, owner,
+      url|tunnel}]}`, idempotent full state on every (re)connect, instance token minted by
+      the control plane. Identity = the daemon's stable instance id (same `instance.json`
+      idea as the hub, `src/utils/instance.js`), never the URL.
+- [ ] **Registered runtimes on the server** — a `runtimes` registry next to the device
+      registry (`core/device/Registry.js` mirrors block is the seed): per runtime `{instanceId,
+      deviceId, units, lastSeen, transport}`; UI: Devices page lists runtimes + units.
+- [ ] **agentd unit first** — spawn/supervise a canvas-agentd process per agent unit, route
+      `/agents/:id/*` to it, register it so the control plane's agent routes resolve to the
+      runtime instead of the in-process runner.
+- [ ] Supervision stays pm2 (`canvas mirror service …` becomes `canvas edge service …`);
+      CLI module `canvas edge` supersedes `canvas mirror` (keep `mirror` as an alias).
+
+**Key normalization rule (settled 2026-09-05):** the hub file plane is case-sensitive and
+stays so. Case-insensitive collisions (macOS/Windows folders) and NFD→NFC are the
+consumer's job (daemon, canvas-fuse, PWA): first key by hub sequence wins, the other is
+skipped and reported in the mirror status (`skipped[]`), never silently merged. The Node
+daemon does not implement this yet (Linux-only fleet today) — needed before macOS/Windows.
 
 ## Server
 

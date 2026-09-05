@@ -365,7 +365,11 @@ export class WorkspaceStoredIndex {
     async #docIdForStoredId(id) {
         const checksum = this.#checksumStringFromId(id);
         if (!checksum) return null;
-        const doc = await this.#getDb().getByChecksumString(checksum).catch(() => null);
+        // The stored index can run before the workspace database is active
+        // (a HEAD right after a restart): no db, no doc id — never a 500.
+        const db = this.#getDb();
+        if (!db || typeof db.getByChecksumString !== 'function') return null;
+        const doc = await db.getByChecksumString(checksum).catch(() => null);
         return doc?.id ?? null;
     }
 

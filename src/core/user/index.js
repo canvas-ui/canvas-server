@@ -543,10 +543,12 @@ class Users extends EventEmitter {
         // not assumed to contain them.
         const paths = await this.ensureUserDirectories(userId);
 
-        // Canonical location is <workspacesRoot>/universe (the dir the discovery
-        // scan watches); the legacy lowercase <home>/workspaces/ is still
-        // scanned for existing users.
-        const universeWorkspacePath = path.join(paths.workspaces, 'universe');
+        // Canonical location is <workspacesRoot>/Universe — folder names keep
+        // the case of the workspace label (the lowercase `name` stays the
+        // identity). Existing users keep their lowercase universe/ dir; the
+        // discovery scan finds either, and the legacy <home>/workspaces/ is
+        // still scanned too.
+        const universeWorkspacePath = path.join(paths.workspaces, 'Universe');
         try {
             await this.#workspaceManager.createUniverseWorkspace(userId, userEmail, universeWorkspacePath);
         } catch (error) {

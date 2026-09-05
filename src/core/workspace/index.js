@@ -412,6 +412,7 @@ class WorkspaceManager extends EventEmitter {
             if (this.#workspaces.has(entry.id)) {
                 const ws = this.#workspaces.get(entry.id);
                 const item = {
+                    folderName: WorkspaceManager.#folderNameOf(entry),
                     ...entry,
                     status: ws.status,
                     isActive: ws.isActive,
@@ -434,7 +435,7 @@ class WorkspaceManager extends EventEmitter {
                 }
                 results.push(item);
             } else {
-                const item = { ...entry };
+                const item = { folderName: WorkspaceManager.#folderNameOf(entry), ...entry };
                 if (userId && !isOwner && hasSharedAccess) {
                     item.type = 'shared';
                     item.isShared = true;
@@ -1385,6 +1386,16 @@ class WorkspaceManager extends EventEmitter {
      */
 
     /** Entry as safe to surface: the credentials-free remote descriptor only. */
+    /**
+     * The on-disk folder name — case-preserving where `name` is the lowercase
+     * identity ("Universe" vs "universe"). Clients that materialize a
+     * workspace as a folder (mirrors, FUSE) use this for the local dir name.
+     */
+    static #folderNameOf(entry) {
+        if (entry?.folderName) return entry.folderName;
+        return entry?.rootPath ? path.basename(entry.rootPath) : (entry?.name || null);
+    }
+
     static #publicRemoteEntry(entry) {
         const { remote, ...rest } = entry;
         const { url, workspaceId, workspaceName, permissions = [], addedAt = null } = remote || {};

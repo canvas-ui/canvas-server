@@ -9,6 +9,11 @@ single writer; the primary/secondary design for replicating *that* lives in
 
 Wire contract: `docs/sync-protocol.md`.
 
+Proposed durability and worker architecture for full NAS/laptop replicas,
+GPU caching and recoverable invoice ingestion:
+[Durable workspaces: Augmentd reference design](durable-workspaces.md).
+It identifies additional requirements beyond the current file-sync guarantees.
+
 ## Shape
 
 ```

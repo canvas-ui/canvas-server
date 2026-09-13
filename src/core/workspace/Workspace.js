@@ -3444,6 +3444,63 @@ class Workspace extends EventEmitter {
         return this.#storedIndex.changes(address, options);
     }
 
+    // ── Replicas (docs/durable-workspaces.md) ─────────────────────────────
+    //
+    // workspace.json `replicas: [{ device, role: full|cache, required }]` —
+    // which device mirrors count toward "protected". The per-document evidence
+    // (what each device reports it holds) lives in the stored index.
+
+    get replicas() {
+        const raw = this.#configStore.get('replicas', []);
+        return (Array.isArray(raw) ? raw : [])
+            .filter((r) => r && typeof r.device === 'string' && r.device.trim())
+            .map((r) => ({ device: r.device.trim(), role: r.role === 'cache' ? 'cache' : 'full', required: r.required === true }));
+    }
+
+    get requiredReplicas() { return this.replicas.filter((r) => r.required).map((r) => r.device); }
+
+    setReplica(deviceId, patch = {}) {
+        const device = String(deviceId || '').trim();
+        if (!device) throw Object.assign(new Error('deviceId is required'), { statusCode: 400, code: 'INVALID_DEVICE' });
+        const current = this.replicas;
+        const existing = current.find((r) => r.device === device) || { device, role: 'full', required: false };
+        const next = {
+            device,
+            role: patch.role === 'cache' || patch.role === 'full' ? patch.role : existing.role,
+            required: typeof patch.required === 'boolean' ? patch.required : existing.required,
+        };
+        if (next.role === 'cache') next.required = false;   // a cache never counts
+        const list = [...current.filter((r) => r.device !== device), next];
+        this.#configStore.set('replicas', list);
+        this.emit('replicas.changed', { id: this.id, replicas: list });
+        return next;
+    }
+
+    removeReplica(deviceId) {
+        const device = String(deviceId || '').trim();
+        const current = this.replicas;
+        const list = current.filter((r) => r.device !== device);
+        if (list.length === current.length) return false;
+        this.#configStore.set('replicas', list);
+        this.emit('replicas.changed', { id: this.id, replicas: list });
+        return true;
+    }
+
+    async recordReplicaApplied(deviceId, pairs, options = {}) {
+        if (!this.#storedIndex?.isRunning) await this.#startStoredIndex();
+        return this.#storedIndex.recordReplicaApplied(deviceId, pairs, options);
+    }
+
+    async forgetReplica(deviceId) {
+        if (!this.#storedIndex?.isRunning) await this.#startStoredIndex();
+        return this.#storedIndex.forgetReplica(deviceId);
+    }
+
+    async replicaProtection(address = 'workspace:home', options = {}) {
+        if (!this.#storedIndex?.isRunning) await this.#startStoredIndex();
+        return this.#storedIndex.replicaProtection(address, { required: this.requiredReplicas, ...options });
+    }
+
     async resolveBackendObject(driver, address, key, options = {}) {
         this.#assertObjectsDriver(driver, address);
         if (!this.#storedIndex?.isRunning) await this.#startStoredIndex();

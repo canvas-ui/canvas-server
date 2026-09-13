@@ -51,19 +51,25 @@ digest of the bytes.
 |---|---|---|---|
 | `HEAD` | `objects/<key>` | `If-None-Match` | `200` + headers below, `304`, `404 NOT_FOUND` |
 | `GET` | `objects/<key>` | `Range: bytes=a-b`, `If-None-Match` | `200` bytes, `206` + `Content-Range`, `304`, `416 RANGE_NOT_SATISFIABLE`, `404` |
-| `PUT` | `objects/<key>` | raw body (any `Content-Type`, streamed, ≤ 20 GiB) **or** `?sha256=<hex>` with an empty body to place bytes already uploaded via `POST /blobs` | `201` created / `200` replaced (`payload.previous.sha256`) / `200 payload.unchanged`; `412 PRECONDITION_FAILED` (`payload.current = { sha256, size, mtime }` or `null`), `422 CHECKSUM_MISMATCH`, `404 BLOB_NOT_FOUND`, `503 BACKEND_OFFLINE` |
-| `DELETE` | `objects/<key>` | `If-Match` | `200 { key, sha256, seq, docId }`, `404`, `412` |
-| `POST` | `objects/rename` | `{ from, to, ifMatch?, origin? }` | `200 { from, to, sha256, seq, docId }`, `404`, `409 TARGET_EXISTS`, `412` |
+| `PUT` | `objects/<key>` | raw body (any `Content-Type`, streamed, ≤ 20 GiB) **or** `?sha256=<hex>` with an empty body to place bytes already uploaded via `POST /blobs` | `201` created / `200` replaced (`payload.previous.sha256`) / `200 payload.unchanged`, payload carries `docId` + `version`; `412 PRECONDITION_FAILED` (`payload.current = { sha256, size, mtime, docId?, version? }` or `null`), `422 CHECKSUM_MISMATCH`, `404 BLOB_NOT_FOUND`, `503 BACKEND_OFFLINE` |
+| `DELETE` | `objects/<key>` | `If-Match` | `200 { key, sha256, seq, docId, version }`, `404`, `412` |
+| `POST` | `objects/rename` | `{ from, to, ifMatch?, origin? }` | `200 { from, to, sha256, seq, docId, version }`, `404`, `409 TARGET_EXISTS`, `412` |
 
 Headers on `HEAD`/`GET`: `ETag: "<sha256>"`, `X-Canvas-Sha256`, `X-Canvas-Size`,
-`X-Canvas-Mtime` (ms), `X-Canvas-Doc-Id`, `Last-Modified`, `Accept-Ranges: bytes`,
-`Content-Type` (the indexed mime).
+`X-Canvas-Mtime` (ms), `X-Canvas-Doc-Id`, `X-Canvas-Version`, `Last-Modified`,
+`Accept-Ranges: bytes`, `Content-Type` (the indexed mime).
+
+`version` is the document's **row version** (synapsd 3.20+): `1` on insert, `+1`
+on every row write on the hub, minted by the hub only. It is the field a
+replica records per document to claim "I hold the current version" (see
+`docs/durable-workspaces.md`); `sha256` answers "do I need the bytes".
 
 Request headers on `PUT`/`DELETE`:
 
 | header | meaning |
 |---|---|
 | `If-Match: "<sha256>"` | the bytes the caller believes are at the key (its base); evaluated against the hub index right before the swap |
+| `If-Match: d<docId>.v<n>` | the document **and its version** the caller last saw at the key (`X-Canvas-Doc-Id` / `X-Canvas-Version`); catches same-content re-saves and rename-then-edit that a digest cannot. Both halves must match — a byte edit is a succession, i.e. a new document whose counter restarts at 1. A mismatch is the same `412` with `current.docId` / `current.version`; a match is checked again as the digest right before the swap |
 | `If-None-Match: *` | the key must be free (create) |
 | `X-Canvas-Sha256` | digest of the body; a mismatch is refused (`422`) and nothing is committed |
 | `X-Canvas-Mtime` | ms or ISO; applied to the file so both sides agree on "when" |
@@ -109,10 +115,26 @@ mirror sees the outcome as ordinary changes on the feed.
 
 | verb | path | body / result |
 |---|---|---|
-| `POST` | `/rest/v2/workspaces/:id/mirrors/:deviceId/status` | `{ backend?, client: fuse\|daemon\|other, path?, prefixes?, cursor, pending, failed, conflicts, skipped, state, lastSync, lastError?, version? }` → `{ mirror, head }`. A device token may only report for its own device id |
-| `GET` | `/rest/v2/workspaces/:id/mirrors` | the caller's devices mirroring this workspace, each with `head` and `lag = head − cursor` |
+| `POST` | `/rest/v2/workspaces/:id/mirrors/:deviceId/status` | `{ backend?, client: fuse\|daemon\|other, path?, prefixes?, cursor, pending, failed, conflicts, reverted?, skipped, state, direction?: bi\|pull\|push, lastSync, lastError?, version?, applied?, full? }` → `{ mirror, head, replica }`. A device token may only report for its own device id |
+| `GET` | `/rest/v2/workspaces/:id/mirrors` | the caller's devices mirroring this workspace, each with `head`, `lag = head − cursor`, `replica: { role, required }`, `behind` (documents whose current version the device lacks) |
+| `PATCH` | `/rest/v2/workspaces/:id/mirrors/:deviceId` | `{ required?, role?: full\|cache }` — replica policy (workspace.json `replicas`); a cache never counts |
+| `GET` | `/rest/v2/workspaces/:id/mirrors/protection?sample=20` | the protection walk: `{ required, total, unversioned, protected, unprotected, partial, replicas: { <deviceId>: { behind, held, required } }, oldestUnprotected: [{ key, docId, version, mtime }], policy }` |
 | `DELETE` | `/rest/v2/workspaces/:id/mirrors/:deviceId` | forget the record |
 | `DELETE` | `/rest/v2/auth/devices/:deviceId` | revoke the device (tokens + record); the mirror gets `401` next |
+
+### Protection evidence (`applied`)
+
+`applied` is `[[docId, version], …]`: documents whose bytes the device has
+verified against the digest and fsynced, at the row version the hub reported
+for them (`docId`/`version` on listing entries, feed entries, `HEAD` headers
+and every mutation result). A delta is what changed since the previous report;
+`full: true` means the array is the device's complete ledger and replaces what
+the hub holds for it (sent once after start, so a hub that lost its replica
+table rebuilds). The hub stores the pairs per device (never on the device
+record), keeps the highest version it has seen, and computes *protected* as
+"every replica marked required holds the current version" — see
+`docs/durable-workspaces.md`. The pairs are evidence only; they never influence
+the sync decision itself.
 
 ## Live nudges
 

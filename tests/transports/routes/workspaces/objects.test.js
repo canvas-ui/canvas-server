@@ -41,7 +41,7 @@ describe('workspace keyed object routes', () => {
                 record('statBackendObject', driver, address, key);
                 if (address === 'nope') throw Object.assign(new Error('Unknown backend: nope'), { code: 'BACKEND_NOT_FOUND', statusCode: 404 });
                 const o = objects.get(key);
-                return o ? { key, id: `sha256:${o.sha256}`, sha256: o.sha256, size: o.size, mtime: o.mtime, mimeType: o.mimeType, docId: o.docId } : null;
+                return o ? { key, id: `sha256:${o.sha256}`, sha256: o.sha256, size: o.size, mtime: o.mtime, mimeType: o.mimeType, docId: o.docId, version: 3 } : null;
             },
             async resolveBackendObject(driver, address, key, options) {
                 record('resolveBackendObject', driver, address, key, options);
@@ -126,6 +126,7 @@ describe('workspace keyed object routes', () => {
         assert.equal(res.headers['x-canvas-size'], '3');
         assert.equal(res.headers['x-canvas-mtime'], '1700000000000');
         assert.equal(res.headers['x-canvas-doc-id'], '100001');
+        assert.equal(res.headers['x-canvas-version'], '3');
         assert.equal(res.headers['content-length'], '3');
         assert.equal(res.body, '');
 

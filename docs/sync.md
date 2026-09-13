@@ -82,6 +82,12 @@ A mirror configured with `conflicts: rename` skips the prompt: it writes its
 version straight to the conflict-copy name (Dropbox behaviour) and the hub just
 marks it.
 
+A mirror also has a **direction** (`bi` default, `pull` = backup target where
+the hub is the only writer, `push` = one-shot import); see
+`durable-workspaces.md`. Devices report which `(docId, version)` pairs they
+hold; the Sync tab's protection card says how many documents every *required*
+replica has caught up with.
+
 ## Devices
 
 A mirror reports `{ cursor, pending, failed, conflicts, state, lastSync }` to

@@ -20,12 +20,14 @@ function fakeDb() {
     const db = {
         docs, migrations,
         async getByChecksumString(cs) { const id = byChecksum.get(cs); return id != null ? docs.get(id) : null; },
+        async getDocument(id) { return docs.get(Number(id)) ?? null; },
         async listDocumentTreePaths() { return []; },
         async migrateDocumentMemberships(from, to) { migrations.push([from, to]); },
         put(record) {
             let id = record.id;
             if (id == null) { id = nextId; nextId += 1; }
-            const doc = { ...(docs.get(id) || {}), ...record, id };
+            // Row version is minted by the DB (synapsd 3.20+); this stand-in keeps every row at 1.
+            const doc = { ...(docs.get(id) || {}), ...record, id, version: docs.get(id)?.version ?? 1 };
             docs.set(id, doc);
             for (const cs of doc.checksumArray || []) byChecksum.set(cs, id);
             return id;
@@ -98,12 +100,12 @@ describe('WorkspaceStoredIndex keyed objects', () => {
         assert.equal(stat.sha256, result.sha256);
         assert.equal(stat.mtime, 1700000000000);
 
-        const listing = index.listObjects('workspace:home');
+        const listing = await index.listObjects('workspace:home');
         assert.deepEqual(listing.objects.map((o) => o.key), ['UI/a.txt']);
         assert.equal(listing.objects[0].sha256, result.sha256);
         assert.ok(listing.head >= 1);
 
-        const feed = index.changes('workspace:home', { since: 0 });
+        const feed = await index.changes('workspace:home', { since: 0 });
         assert.equal(feed.changes.length, 1);
         assert.deepEqual([feed.changes[0].op, feed.changes[0].key, feed.changes[0].origin, feed.changes[0].sha256], ['put', 'UI/a.txt', 'dev1', result.sha256]);
         assert.equal(feed.cursorTooOld, false);
@@ -136,7 +138,7 @@ describe('WorkspaceStoredIndex keyed objects', () => {
         assert.equal(renamed.docId, stat.docId);
         assert.equal(await exists(path.join(root, 'UI/b.txt')), true);
         assert.equal(db.docs.get(stat.docId).locations[0].url, 'stored://workspace:home/UI/b.txt');
-        const feed = index.changes('workspace:home', { since: 0 });
+        const feed = await index.changes('workspace:home', { since: 0 });
         const last = feed.changes.at(-1);
         assert.deepEqual([last.op, last.key, last.from], ['rename', 'UI/b.txt', 'UI/a.txt']);
 
@@ -149,6 +151,87 @@ describe('WorkspaceStoredIndex keyed objects', () => {
         assert.deepEqual(doc.locations, []);
         assert.ok(doc.orphanedAt);
         assert.equal(await index.statObject('workspace:home', 'UI/b.txt'), null);
+    });
+
+    test('If-Match: d<docId>.v<n> is resolved against the document at the key', async () => {
+        const home = 'workspace:home';
+        const first = await index.writeObject(home, 'versioned.txt', Buffer.from('one'), {});
+        assert.equal(first.ok, true);
+        assert.equal(first.version, 1, 'mutation results carry the row version');
+        const stat = await index.statObject(home, 'versioned.txt');
+        assert.equal(stat.docId, first.docId);
+        assert.equal(stat.version, 1);
+
+        // Wrong version → typed precondition failure carrying what is there.
+        const stale = await index.writeObject(home, 'versioned.txt', Buffer.from('two'), { ifMatch: `d${first.docId}.v7` });
+        assert.equal(stale.ok, false);
+        assert.equal(stale.reason, 'precondition-failed');
+        assert.equal(stale.current.docId, first.docId);
+        assert.equal(stale.current.version, 1);
+
+        // Right pair → the write goes through (an edit is a succession: new doc).
+        const edited = await index.writeObject(home, 'versioned.txt', Buffer.from('two'), { ifMatch: `d${first.docId}.v1` });
+        assert.equal(edited.ok, true);
+        assert.notEqual(edited.docId, first.docId);
+        assert.equal(edited.version, 1);
+
+        // The old pair no longer matches even though its version number is "current".
+        const crossed = await index.removeObject(home, 'versioned.txt', { ifMatch: `d${first.docId}.v1` });
+        assert.equal(crossed.ok, false);
+        assert.equal(crossed.reason, 'precondition-failed');
+        assert.equal(crossed.current.docId, edited.docId);
+
+        // Digest form is untouched by the resolver.
+        const byDigest = await index.removeObject(home, 'versioned.txt', { ifMatch: edited.sha256 });
+        assert.equal(byDigest.ok, true);
+    });
+
+    test('listing and feed carry docId/version; the replica table drives protection', async () => {
+        const home = 'workspace:home';
+        const a = await index.writeObject(home, 'Rep/a.txt', Buffer.from('alpha'), {});
+        const b = await index.writeObject(home, 'Rep/b.txt', Buffer.from('beta'), {});
+        const page = await index.listObjects(home, { prefix: 'Rep/' });
+        const listed = Object.fromEntries(page.objects.map((o) => [o.key, o]));
+        assert.equal(listed['Rep/a.txt'].docId, a.docId);
+        assert.equal(listed['Rep/a.txt'].version, 1);
+        const feed = await index.changes(home, { since: 0, limit: 1000 });
+        const entry = feed.changes.findLast((c) => c.key === 'Rep/b.txt');
+        assert.equal(entry.docId, b.docId);
+        assert.equal(entry.version, 1);
+
+        // Nothing reported yet: both required devices are behind on both documents.
+        let p = await index.replicaProtection(home, { required: ['nas'], devices: ['nas', 'laptop'] });
+        const only = (x) => ({ behind: x.replicas.nas.behind, held: x.replicas.nas.held, protectedCount: x.protected, unprotected: x.unprotected });
+        assert.ok(p.total >= 2);
+        assert.equal(p.replicas.nas.held, 0);
+        assert.equal(p.replicas.laptop.held, 0);
+        assert.equal(p.protected, 0);
+
+        // The NAS reports a full snapshot holding both at their current version.
+        assert.deepEqual(index.recordReplicaApplied('nas', [[a.docId, 1], [b.docId, 1]], { full: true }), { deviceId: 'nas', written: 2, full: true });
+        assert.equal(index.replicaVersion('nas', a.docId), 1);
+        p = await index.replicaProtection(home, { required: ['nas'], devices: ['nas', 'laptop'] });
+        assert.equal(p.replicas.nas.held, 2);
+        assert.equal(p.unprotected, p.total - p.unversioned - 2 - 0 >= 0 ? p.total - p.unversioned - 2 : 0);
+        assert.ok(p.oldestUnprotected.every((o) => o.key !== 'Rep/a.txt' && o.key !== 'Rep/b.txt'));
+
+        // A delta never lowers a recorded version; a stale pair is ignored.
+        assert.equal(index.recordReplicaApplied('nas', [[a.docId, 0]]).written, 0);
+        assert.equal(index.replicaVersion('nas', a.docId), 1);
+
+        // Editing a.txt is a succession: a new document at version 1 that the NAS does not hold yet.
+        const a2 = await index.writeObject(home, 'Rep/a.txt', Buffer.from('alpha 2'), {});
+        assert.notEqual(a2.docId, a.docId);
+        p = await index.replicaProtection(home, { required: ['nas'], sample: 50 });
+        assert.ok(p.oldestUnprotected.some((o) => o.key === 'Rep/a.txt' && o.docId === a2.docId));
+        index.recordReplicaApplied('nas', [[a2.docId, 1]]);
+        p = await index.replicaProtection(home, { required: ['nas'], sample: 50 });
+        assert.ok(!p.oldestUnprotected.some((o) => o.key === 'Rep/a.txt'));
+
+        // Forgetting drops the evidence.
+        assert.ok(index.forgetReplica('nas') >= 2);
+        assert.equal(index.replicaVersion('nas', a2.docId), null);
+        void only;
     });
 
     test('keys are validated against internals, exclusions and traversal', async () => {
@@ -171,6 +254,6 @@ describe('WorkspaceStoredIndex keyed objects', () => {
         await sleep(450);
         assert.ok(nudges.length >= 1 && nudges.length <= 2, `leading + at most one trailing nudge, got ${nudges.length}`);
         assert.equal(nudges.at(-1).backend, 'workspace:home');
-        assert.equal(nudges.at(-1).seq, index.listObjects('workspace:home').head, 'last nudge carries the log head');
+        assert.equal(nudges.at(-1).seq, (await index.listObjects('workspace:home')).head, 'last nudge carries the log head');
     });
 });

@@ -1,164 +1,222 @@
 # Durable workspaces: Augmentd reference design
 
-Status: proposed architecture, based on the checked-out repositories. This document does not enable replication, deploy a service, or establish a durability guarantee for the current implementation.
+Status: agreed design, 2026-09-13. Supersedes the earlier proposal (fencing
+generations, storage epochs, per-object receipts, NAS-side version retention
+were all dropped as over-specified for a single-owner, few-node deployment).
+Guiding rule: **no more machinery than rclone bisync**. Writes are consistent
+on the primary; everything else is eventually consistent.
 
-## Decision
+## Decisions
 
-Use one authoritative workspace runtime on the remote server, ordinary full file replicas on the NAS and laptop, and an on-demand filesystem on the GPU workstation. Reuse the existing file sync protocol and `canvas-stored` mirror engine. Add explicit durability policy, immutable version retention, replica receipts, and a persistent workspace job subsystem before relying on automated ingestion for irreplaceable records.
+| # | Decision | Why |
+|---|---|---|
+| 1 | One **primary** per workspace: the node that runs the workspace DB. All mutations go through it. | Single writer, no peer arbitration |
+| 2 | Every document carries a monotonic **`version`**, bumped only by the primary. | Precondition, stale-edit detection, replica accounting: one field, three jobs |
+| 3 | Replicas are **canvas-edge `mirror` units** with a per-mirror **direction**: `pull`, `push`, `bi`. | Same code on NAS and laptop; seeding is `bi`, steady state on a backup target is `pull` |
+| 4 | The GPU workstation gets a **canvas-fuse mount supervised by edge** (`fuse` unit), one process per workspace under a common root. | On-demand namespace with LRU bytes; a plain folder cannot show files it does not hold |
+| 5 | Retention: primary keeps displaced blobs for a window; NAS history is **Synology's job** (snapshots, Hyper Backup). | Canvas is not a backup product |
+| 6 | Protection = "every required replica holds the current version". Shown per document and per workspace. | Cursor lag is not durability |
+| 7 | The primary of a workspace can be **any edge `workspace` unit**. Augmentd: server primary. Photos: NAS primary. | Bytes and index live together; inference is already remote |
+| 8 | Invoice pipeline is **out of scope** here. It needs a job store and IMAP MOVE; it consumes `version` but nothing else from this work. | Keep sync and workflow separate |
 
-The NAS should run a small Docker file service built from the existing `canvas-edge` mirror runtime and `canvas-stored`. It needs a local sync ledger, but no synapsd index, inference service, agents, or full canvas-server. A separate storage daemon/product is unnecessary for the first implementation.
+## Topology
 
-## Paths and ownership
+| Node | Unit | Role for Augmentd | Path |
+|---|---|---|---|
+| Remote canvas-server | `workspace` (primary) | index, DB, config, full files | `workspaces/Augmentd` |
+| Synology NAS | edge `mirror`, direction `pull` (`bi` during seed) | full backup replica, counts toward protection | native volume path, exported as `smb://172.16.2.200/work/Augmentd` |
+| Work laptop | edge `mirror`, direction `bi` | full working replica, does not count toward protection | `~/Workspaces/Augmentd` |
+| GPU workstation | edge `fuse` | on-demand cache, never counts | `~/Workspaces/Augmentd` |
 
-| Participant | Role | Data root | State |
-| --- | --- | --- | --- |
-| Remote canvas-server | Authority and full replica | `workspaces/Augmentd` using the home layout | Main index, configuration, job journal and storage metadata under `.workspace/` |
-| Synology | Full durable replica | Native NAS directory exported as `smb://172.16.2.200/work/Augmentd` | Local mirror ledger and retained versions in a persistent private volume |
-| Main laptop | Full writable replica | `~/Workspaces/Augmentd` | Small local sync ledger; no main database |
-| GPU workstation | On-demand writable cache | `~/Workspaces/Augmentd` | Local metadata, bounded content cache and durable pending writes |
-
-`workspace:home` is the canonical **physical file namespace**. Every full replica has the same relative paths and bytes after convergence. A file at:
+`workspace:home` is the physical namespace. After convergence every full replica
+has the same relative paths and bytes:
 
 ```text
-workspace:home/Accounting/2026/09/Expenditures/invoice.pdf
-```
-
-must appear at:
-
-```text
-server:  workspaces/Augmentd/Accounting/2026/09/Expenditures/invoice.pdf
-NAS:     <native Augmentd root>/Accounting/2026/09/Expenditures/invoice.pdf
+primary: workspaces/Augmentd/Accounting/2026/09/Expenditures/invoice.pdf
+NAS:     <volume>/work/Augmentd/Accounting/2026/09/Expenditures/invoice.pdf
 laptop:  ~/Workspaces/Augmentd/Accounting/2026/09/Expenditures/invoice.pdf
-GPU:     ~/Workspaces/Augmentd/Accounting/2026/09/Expenditures/invoice.pdf
+GPU:     ~/Workspaces/Augmentd/Accounting/2026/09/Expenditures/invoice.pdf   (bytes on demand)
 ```
 
-The GPU path is visible without requiring resident bytes. `Accountingh/2026/08` in the original example is treated as a typo; a literal 1:1 replica cannot change either the directory name or month. Accounting period selection is a separate rule, with an explicit timezone and date source; receipt month is not automatically invoice month.
+Scope is "data only": user files in `workspace:home`, no DB, no context trees,
+no derivatives. Device bookkeeping lives outside the replicated tree (see
+*Edge state directory*). Empty directories, symlinks, special files and names
+the index refuses are reported by the mirror as skips, never silently counted
+as replicated.
 
-“Data only” excludes replication of the live server database and generated context trees. It still requires private device bookkeeping. Server-managed originals, email sources and retained versions also need replication as protected objects outside the visible file tree. Otherwise a mirror of `workspace:home` would omit documents stored only in `workspace:data`.
+## Document version
 
-Scope must be explicit: all regular user files, including business dotfiles; no silent default exclusions. Internal state, temporary files and generated derivatives have separate policies. Empty directory replication needs namespace records because the existing object feed describes files. Unsupported names, symlinks, special files and oversized files must be reported during import, never silently counted as replicated. Permissions, owners and extended attributes are outside the initial data-only contract; preserve bytes, names, hierarchy and useful timestamps. Detect case/Unicode collisions before applying anything.
+Every synapsd document gets `version` (integer, starts at 1). The primary
+increments it on **any** mutation: bytes, metadata, tags, placement, rename.
+Replicas, agents, hooks and UIs never write it.
 
-## Existing foundations and gaps
+| Question | Field |
+|---|---|
+| Do I need to transfer bytes? | `checksum` (sha256) differs |
+| Am I allowed to write? | `If-Match: d<docId>.v<version>` still holds on the primary |
+| Is this replica current for this document? | replica ledger `key → (docId, version)` equals the primary's |
 
-| Code | Reuse | Gap for this use case |
-| --- | --- | --- |
-| [Existing sync design](sync.md), [wire protocol](sync-protocol.md) | Hub authority, conditional mutations, change feed, conflict handling | Device lag is not proof of durable storage for a revision; existing exclusions and file-size limits need an import audit |
-| `canvas-stored/src/sync/Mirror.js`, `Ledger.js`, `JobQueue.js` | Three-way reconciliation, persistent jobs, retry/recovery, ordinary directories | Jobs coalesce current intent; this is not an immutable revision journal or a workspace workflow queue |
-| `canvas/runtimes/edge/src/mirror-runtime.js` | NAS/laptop full folder sync | Currently stores state inside `.workspace`; add external persistent state configuration, container packaging and replica receipts |
-| `canvas-fuse/src/mirror/cache.rs` | Disk cache, content hashes, LRU, pins and protected digests | Current downloads use the hub; add verified NAS reads and an exact home-root mount mode (current workspace view adds `Home/`) |
-| `canvas-stored/src/backends/file/index.js` | Local and OS-mounted filesystem access | `commit()` removes the destination before link/copy; hardlinks can share mutable inodes; all replacement paths need crash-safe staging |
-| `canvas-stored/src/index.js` | Content identity, object mutations and change log | `removeObject()` deletes backend bytes; surviving metadata does not retain those bytes. Filesystem placement and index update require recovery across their boundary |
-| `canvas-server/src/core/workspace/lib/WorkspaceStoredIndex.js` | Server mutation locks and indexing bridge | Direct filesystem edits bypass API locks; reconcile conservatively and preserve previous immutable bytes |
-| `canvas-server/src/core/workspace/services/imap/` | Raw message/attachment persistence and batch ingestion | Attachment indexing exceptions are caught and logged; a batch can complete without all attachment links. Current fetch payload identifies folder/UID but omits UIDVALIDITY |
-| `canvas-server/src/core/workspace/services/hook/index.js` | Rules, hooks, provenance, review actions, cascade limits | Event dispatch runs hook promises; critical work needs a durable outbox and replayable jobs |
+`If-Match` on the file-plane API accepts either the sha256 (existing clients)
+or `d<docId>.v<version>`; that form is preferred because it distinguishes
+same-content re-saves and rename-then-edit. The pair is the identity, not the
+version alone: a **byte edit of a file is a succession** on this primary (the
+bytes are content-addressed, so the key gets a new document whose counter
+restarts at 1, with placements migrated), whereas notes and other by-id
+documents are edited in place and their counter climbs. Deletes orphan rather
+than destroy, so a delete-and-recreate at the same key continues the same
+document's counter. That removes the need for any incarnation or epoch concept.
 
-These are source observations, not a completed fault-injection audit. The current README assurances should not be interpreted as a guarantee against document loss.
+What bumps: every **row write** (content, metadata, comment, locations,
+asserted relations). Tree/tag membership is bitmap-only and does not touch
+the row, so it does not bump; a replica does not care about it either.
 
-## NAS service and mounted shares
+Consumers check `version` before doing anything else: the editor refuses to
+overwrite a newer version, a rule retrying after a crash sees the document
+moved on and stops, an agent's proposed move is rejected if the document
+changed under it.
 
-Preferred deployment: bind the actual NAS folder into an unprivileged file-sync container; persist its state on NAS-local storage outside the user file root. Resolve the native Synology volume path at deployment rather than guessing it from the SMB URL. Use a workspace-scoped device credential and outbound authenticated TLS connections to the hub. Restart automatically, expose health and backlog, and keep state through container replacement.
+The change log keeps its cursor for catch-up; the cursor is a transport
+concern only. Protection is computed from versions.
 
-The existing `file` backend can use an OS-mounted SMB directory. Direct `smb://` access is not implemented in the backend registry; represent it as an SMB source requiring an OS mount initially, with a native driver as a later option. Do not interpret an SMB URL as a local path. Keep LMDB and the sync ledger off SMB. Mounted-share mode requires polling/reconciliation, mount identity checks, and bounded I/O retries.
+## Mirror direction
 
-Record a persistent replica/root identity. A disappeared mount, replaced share, permission failure, incomplete listing or unavailable root means **offline**, never “all files deleted.” Do not create an empty fallback root or advance reconciliation after a partial scan. Revalidate root identity before mutation. Freeze destructive operations on unexpected bulk disappearance until a successful scan establishes what happened.
+Per-mirror setting in the edge config (`mirrors.json`), rclone vocabulary:
 
-Run only one sync owner for a given NAS root: either the NAS container or a host using the mounted share. Mounting the same share from the laptop does not make it another independent durable copy. NAS SMB edits are supported as changes to its full replica; preserve divergent bytes as conflicts and periodically reconcile because watchers are hints.
+| direction | primary → replica | replica → primary | use |
+|---|---|---|---|
+| `pull` | yes, including deletes | never; local edits are reported as skips | NAS backup |
+| `push` | no | yes | one-shot import of a local tree |
+| `bi` | yes | yes, with the existing conflict inbox | laptop, NAS during seed |
 
-## Durability contract
+A `pull` replica never sends anything upstream. A local edit of a tracked file
+is **reverted**: the edit is parked in `.workspace/conflicts/` under a
+conflict-copy name, the primary's bytes are put back, and the mirror counts it
+(`reverted`). A local delete of a tracked file pulls the primary's copy back. A
+local-only file is left alone and reported as a skip (`local-only`). A `push`
+replica is the reverse: hub-side additions and edits are reported as skips
+(`remote-only`, `remote-changed`) and never applied. This makes "mass
+disappearance" a non-event for a backup target, so no freeze heuristics are
+needed. Landed: canvas-stored 1.8.0 `Mirror({ direction })`, edge 0.2.0,
+`canvas remote mirror direction <ws> pull` (cli-mirror 0.3.0).
 
-Track both namespace revisions and immutable content. A checksum identifies bytes; it is not a file identity, an occurrence of an email, or an acknowledgement of a path revision. Assign an operation ID and monotonic namespace revision, with the existing SHA-256 as content identity. Use an incarnation/revision precondition in addition to the digest to distinguish delete-and-recreate and same-content edits. Legacy digest-only clients cannot claim the stronger accounting profile.
+## Protection
 
-Expose independent states:
+The replica ledger (canvas-stored `Ledger`) already stores one base row per
+key. Add `docId` and `version` to that row, written only after the bytes are
+verified against the checksum and fsynced. The mirror status report
+(`POST /workspaces/:id/mirrors/:deviceId/status`) gains a compact
+`applied` delta: `[[docId, version], …]` since the last report, plus the
+existing `skipped`.
 
-- **Saved here:** committed to this device's durable write journal and storage.
-- **Saved on server:** hub committed bytes and recoverable namespace intent.
-- **Protected:** the configured independent durable replicas acknowledged the exact content/revision.
-- **Fully synchronized:** every required full replica applied the current namespace, with no unresolved skips or conflicts.
+The primary keeps `replicaVersions[docId][deviceId]`. Workspace config lists
+which replicas are **required**:
 
-For Augmentd, propose server + NAS as the protection requirement, laptop as an eventually complete replica, and GPU as a cache excluded from replica counts. An offline laptop must not block ingestion. An offline NAS permits server ingestion but leaves documents visibly awaiting protection and blocks the invoice's final mailbox action. There is no honest zero-loss guarantee while a new document exists on only one machine; the interface must show that exposure.
-
-Persist per-replica receipts containing workspace ID, replica ID, storage epoch, operation/revision, key or protected-object ID, digest, byte count, durable commit time and verification time. A receipt is issued only after verified bytes and recoverable local state are committed. Ignore duplicate receipts; reject stale epochs and unrelated revisions. A feed cursor or successful HTTP transfer is insufficient. Renew confidence with periodic checksums and report missing/corrupt objects for repair. These receipts assume trusted replicas and correctly functioning storage hardware.
-
-The existing coalesced change feed remains useful for current-state convergence. Add an immutable revision/outbox journal for version retention, critical work and protection accounting. A revision overwritten before the NAS catches up must still be transferable from retained immutable storage. Rebuild current replicas from a consistent listing generation plus its feed watermark; retain the prior merge base and local pending edits across cursor expiry. Absence in a partial or newly initialized scan is not a deletion instruction.
-
-### Commit and recovery
-
-For every write path (API, file watcher, mirror, hook and worker):
-
-1. Stream into a unique temporary file on the destination filesystem and compute/verify its digest. Never expose partially copied bytes at the final name.
-2. Flush the file and durably retain immutable bytes. Do not hardlink an immutable retained version to a user-editable inode; use an independent copy or copy-on-write operation with tested semantics.
-3. Persist a mutation intent referencing those bytes and the expected old revision. Serialize competing namespace mutations, recheck the precondition, and preserve the prior version before replacement/deletion.
-4. Atomically replace the visible file, flush affected directories where supported, and commit namespace/index metadata plus its outbox event. Filesystem and database are not one transaction: replay the intent after crashes, reconciling actual bytes before declaring success.
-5. Acknowledge the committed revision; asynchronous index enrichment and worker dispatch can recover from the outbox. Never infer completion solely from a watcher event.
-
-Test filesystem flush behavior on the actual deployment. Direct edits in ordinary folders cannot have application-level write acknowledgement semantics: ingest a stable verified copy and label protection only afterward. Retaining every intermediate edit before the daemon observes it would require a different write surface; protect previously acknowledged revisions instead.
-
-Replica pull/install, conflict preservation and rename/delete use equivalent durable intents. Pending local edits remain protected even if the visible path is replaced or the client restarts. Admission control must stop new writes with a clear error when there is no safe staging space; never evict unacknowledged bytes to make room.
-
-### Replication and backup
-
-A 1:1 current tree propagates deletions and damaging edits. Retain previous bytes separately on the server and NAS, with tombstones and recoverable path history. Conflict resolution must not immediately purge the losing version. Initial accounting policy: no automatic purging until retention is explicitly configured; monitor capacity and backpressure. The appropriate retention period is a separate business decision, not inferred from “15 years.”
-
-Use an independently administered versioned backup/snapshot destination whose history the normal sync credential cannot erase. Protect server configuration, curated metadata, job state and credentials through a consistent encrypted backup; do not mirror an open database directory. Restore must recover more than searchable files: classifications, provenance, automation state and device identities matter. Search/inference derivatives can be rebuilt where their source data is preserved.
-
-## GPU cache and fast local reads
-
-Extend FUSE's mirror mode to mount the home namespace directly at `~/Workspaces/Augmentd`; keep context views elsewhere. Use a configurable disk budget and optional pins, with LRU eviction only for clean, closed, unpinned content that has a durable remote copy. Dirty writes, in-flight uploads, unresolved conflicts and retained local recovery data are non-evictable. Local `fsync` means durable on this machine, not “uploaded to NAS.” Expose remote protection separately.
-
-Read order: local content cache, authorized NAS service on the LAN, then hub. The hub supplies authoritative path revision and expected digest; the NAS supplies bytes for that digest through a scoped read endpoint. Validate the entire received content before publishing it in cache. A stale NAS or changing SMB file must fail verification and trigger retry/fallback, not satisfy a request for a different version. Initially, a configured read-only mounted-NAS source can provide the same verified fallback; automatic LAN discovery is unnecessary.
-
-Do not introduce peer write arbitration: all clients submit conditional namespace changes to the hub. NAS reads optimize bytes only. With the hub unavailable, use the last known namespace and label it stale; cached/NAS-resident bytes can be read, writes queue locally, and uncached unreachable content returns a clear availability error. A namespace refresh on reconnect resolves pending writes through the existing conflict model.
-
-## Workspace processes and workers
-
-Define the process boundary now, then migrate services incrementally:
-
-```text
-canvas-server supervisor / authentication / transport routing
-  └─ workspace process: Augmentd
-       ├─ sole owner of workspace DB, namespace mutations and job journal
-       ├─ IMAP worker process (long-lived account subscription)
-       ├─ rule/hook worker processes (bounded job execution)
-       └─ agent worker processes → canvas-agentd / canvas-inferd as appropriate
-
-NAS and laptop file-sync services are independent device processes.
+```jsonc
+"replicas": [
+  { "device": "nas-synology",  "role": "full",  "required": true  },
+  { "device": "laptop-x1",     "role": "full",  "required": false },
+  { "device": "gpu-box",       "role": "cache", "required": false }
+]
 ```
 
-Children communicate through versioned RPC and scoped content streams, never through shared open database handles or serialized JavaScript Workspace objects. Workers submit commands; the workspace owner validates authority and commits mutations. Initially the owner can run in-process behind the same RPC-shaped interface; worker execution should use child processes. The supervisor routes by workspace ID, owns lifecycle/restart policy, and ensures one active workspace owner. IMAP-enabled workspaces remain active even without a connected UI.
+`protected(doc)` = every required replica's recorded version is at least
+`doc.version`. Surfaces (landed server 2.9.0 / web 2.11.0):
 
-Separate the long-lived IMAP listener from finite jobs. Persist a connector checkpoint only after raw messages and an ingest job are durably accepted; that checkpoint does not imply the invoice is classified, replicated or archived.
+- workspace Sync tab: protection card (held / not yet, oldest unprotected
+  keys), per replica direction, *required* toggle, versions behind, reverted
+  count, skips
+- `GET /workspaces/:id/mirrors/protection` for agents and the CLI
 
-Job records need `jobId`, workspace, type/version, idempotency key, immutable input refs, causal event, rule/config version, status, attempts, next-run time, lease owner/expiry, fencing generation, step results, error and timestamps. States include queued, running, retry-wait, waiting-for-replica, needs-review, succeeded and failed. Acquire/renew leases transactionally; expired leases requeue work. Workspace commits reject stale fencing generations. External operations still need their own reconciliation because IMAP cannot enforce our fencing token.
+Not in v1: a per-document badge in the file view, a periodic checksum sweep
+(Synology scrubs its own volume), receipts of any other kind.
 
-Deliver at least once, make each step idempotent, and record observable effects. Never promise distributed exactly-once execution. A transactional outbox bridges namespace changes to jobs; dispatch acknowledgement and job deduplication must survive restart. Critical ingest jobs dedupe by source occurrence and workflow version, not the mirror queue's “latest operation for this path” semantics. Retain retries and failures for inspection, with backoff, timeouts, cancellation, per-account concurrency, resource limits and orderly shutdown. One unavailable connector must not block all workspace jobs.
+## Primary storage safety (canvas-stored)
 
-Rules and agents propose classifications and file commands against an expected revision. Deterministic validation enforces destinations and retention. Preserve current review controls and cascade limits; stamp causation so the resulting move does not endlessly retrigger the same rule. Store model/rule output so a retry does not silently recategorize an already committed invoice.
+Two changes, both small:
 
-## Invoice workflow
+1. **Atomic commit.** `file` backend `commit()` is remove-then-hardlink today,
+   leaving a window with no file at the destination and sharing an inode with
+   the staged copy. Change to: write to `.stored-tmp/<uuid>` on the same
+   filesystem, fsync, `rename(2)` over the destination. Same for `put()`.
+2. **Displaced-blob retention window.** When an overwrite or delete displaces
+   a blob, do not garbage-collect it for `retention.window` (default 30 days).
+   Record the previous checksum on the document (`previousChecksums`, bounded).
+   That is the whole versioning story on the primary; anything longer-lived
+   is the backup system's job.
 
-Suggested default: retain the original email and every original attachment, classify the PDFs, materialize them under home, wait for server + NAS protection, then move the source email. This reverses the example's mailbox-first ordering so a failed file operation cannot leave an apparently completed email.
+## Edge: state directory, containers, units
 
-1. The IMAP listener captures account ID, mailbox, UIDVALIDITY and UID. Durably spool raw MIME and create an ingest job before advancing its acquisition checkpoint. Use that tuple as source occurrence identity; retain Message-ID and raw hash as secondary reconciliation evidence. UIDVALIDITY changes require rescan/reconciliation, not reuse of an old UID cursor.
-2. Parse from the spool with bounded memory, assign each attachment a MIME-part identity and digest, retain originals and record email-to-attachment provenance. Content deduplication must not collapse distinct receipt occurrences. All expected attachment indexing/linking steps must complete or remain retryable; logging an error is not success.
-3. Classify and validate. Preserve uncertain or unreadable material in `Accounting/Incoming/NeedsReview` and record why it needs review. Validate expense category and accounting period; do not use an arbitrary date supplied by a model without the configured rule. Never overwrite another invoice based on its original filename.
-4. Persist the chosen plan, including exact names, digests and destination keys. Use a stable invoice/occurrence suffix where names collide, and conditional create. A retry adopts its previously committed matching operation, rather than allocating another filename. Several PDFs in one email have independent child outcomes; the parent cannot succeed until every required attachment is handled.
-5. Publish the PDF as a real file at `workspace:home/Accounting/2026/09/Expenditures/<name>.pdf` through the workspace mutation API. This is a physical placement, not merely a link into a virtual tree. Keep the immutable original even if the visible file later moves.
-6. Wait for verified server + NAS receipts for the filed PDF and retained email/attachment originals. Laptop delivery proceeds independently. NAS downtime leaves the job in `waiting-for-replica`, visible and resumable, without blocking ingestion of later messages.
-7. Move the email to `INBOX.Invoices.2026` using the mailbox's discovered hierarchy delimiter. Persist the mailbox action intent first. Reconcile source and destination after timeout/restart; store destination UID/UIDVALIDITY when available. Prefer a server-supported move; a copy/delete fallback must verify the destination before deleting the specific source and must not expunge unrelated messages. Ambiguity becomes retry/review, never another blind destructive attempt.
-8. Mark the workflow complete with provenance, paths, replica receipts and mailbox result. A mailbox action failure retries only that step. A user moving the email independently must not cause the PDF to be created again.
+- **State directory.** `mirror-runtime.js` hardcodes `<folder>/.workspace`.
+  Add `stateDir` per mirror (default unchanged). The NAS container sets it to
+  a private volume so the exported share contains user files only.
+- **Dockerfile** for `runtimes/edge`, unprivileged, bind-mounts the workspace
+  folder and a state volume, outbound-only to the primary, restarts on
+  failure. `canvas remote mirror` gains `--runtime docker|pm2`; same config,
+  same binary.
+- **`fuse` unit.** Edge supervises `canvas-fuse mount -w <ws> <root>/<ws>
+  --mirror` as a child process, one per workspace, listed in the same
+  `mirrors.json` with `client: fuse`. canvas-fuse stays a plain executable.
+  Context mirroring, if wanted, is a second fuse process on a different
+  mountpoint, not a mode of the same one.
+- **Several workspaces.** All of the above is per entry in `mirrors.json`;
+  Augmentd plus four other workspaces are five entries.
 
-No atomic transaction spans IMAP, filesystem, database and replicas. The durable step log and reconciliation of effects provide recovery between each pair of steps. Raw MIME retention also makes recovery possible if an email disappears externally before classification completes.
+canvas-fuse workspace mode already mounts `<ws>/Home` at the mountpoint, has
+the sha256 disk cache, pins, and LRU eviction that skips dirty, open and pinned
+digests. No changes to canvas-fuse are needed for v1.
 
-## Implementation sequence and acceptance gates
+## NAS deployment and seeding
 
-1. **Storage safety (`canvas-stored`, server bridge):** atomic staged replacements on every path, immutable retention, recovery intents, serialized revision checks, tombstones, explicit namespace scope. Gate: injected crashes/disk-full errors at every commit boundary preserve old or new verified bytes; concurrent writes cannot silently replace unseen revisions.
-2. **Replica policy (`canvas-stored`, `canvas-server`, protocol package):** durable receipts, storage epochs, protected-object replication and protection API/UI. Gate: NAS outage, stale receipts, full disk, checksum mismatch, rapid overwrites and cursor expiry never produce a false protected state. Rescan retains local offline edits and does not manufacture deletions.
-3. **NAS/laptop runtime (`canvas/runtimes/edge`):** external state directory, container packaging, root identity, clean shutdown and full-tree reconciliation. Gate: SMB disconnect/reconnect, container replacement and NAS root substitution cause no mass delete or loss of queued edits. Test both native NAS storage and mounted SMB.
-4. **Workspace jobs (`canvas-server`):** owner/worker RPC contract, durable outbox, leased queue, child-process supervisor and status/retry surface. Gate: killing a worker or workspace at every step yields a recoverable job; stale workers cannot commit. Reuse service interfaces while moving workspaces into separate processes.
-5. **Invoice pipeline (`canvas-server`):** durable MIME capture, reliable attachment outcomes, classification plan, physical placement, protection barrier and reconcilable mailbox move. Gate: duplicate delivery, UIDVALIDITY reset, missing attachment, filename collision, uncertain classification and lost move response preserve originals without duplicate final placements.
-6. **GPU access (`canvas-fuse`, NAS read endpoint):** home-root mount and verified NAS fallback. Gate: stale NAS bytes never pass digest validation, dirty/open/pinned data survives cache pressure and restart, and cold reads work over LAN without fetching file bytes from the remote hub.
-7. **Historical migration and restore:** inventory all 15 years before enabling destructive sync. Import with deletion propagation disabled, manifest every path/hash/size and surface exceptions. Verify server + NAS and the full laptop replica against the import manifest, then test a clean restore of files and server metadata. Keep source archives until verification and restore succeed; enable invoice mailbox actions only after these gates pass.
+1. Deploy the edge container on the Synology with the target folder
+   bind-mounted at its native volume path (resolved at deploy time, never
+   derived from the SMB URL) and a private state volume.
+2. Create the mirror with direction `bi`, let it pull the current Augmentd
+   tree from the primary.
+3. Copy the existing NAS-local files into the folder. The mirror pushes them
+   to the primary with the ordinary conflict rules; the primary indexes them.
+4. When the Sync tab shows zero pending and zero skips, flip direction to
+   `pull`. From now on edits go through the primary.
+5. Configure snapshots and off-site backup on the Synology. Not canvas's job.
 
-Operational status should show per-replica last contact, pending bytes, oldest unprotected document, verification age, conflicts/skips and free space, plus workflow stage and actionable failures. “Connected” and “caught up to cursor” must never substitute for “this document is protected.”
+One sync owner per NAS root: the container. Mounting the same share from a
+laptop over SMB is a read-only convenience, not a second replica.
 
-Deployment inputs still needed later: actual NAS native path/CPU/container support, remote workspace root and identity, GPU OS and cache budget, IMAP credentials and mailbox capabilities, accounting-period rule, and retention capacity/policy. These do not block the architecture; they must be resolved before deployment.
+## Photos: NAS as primary
+
+A 300 GB photo workspace is not pushed over the WAN. It runs as an edge
+`workspace` unit **on the NAS** (own synapsd + stored, bytes local), registered
+on the server as a remote workspace (`photos@nas`, already supported). Its
+inference endpoint points at inferd on the GPU workstation, which reads bytes
+over the LAN. Embeddings and descriptions land in the NAS-side index. If a
+subset should later live on the server, it is the same mirror machinery with
+the roles swapped. Nothing new is introduced; the unit is the same, only the
+configuration differs.
+
+## Out of scope, kept in mind
+
+The invoice pipeline (IMAP listener on `invoice@augmentd.eu`, PDF filed to
+`Accounting/<year>/<month>/Expenditures`, email moved to
+`INBOX.Invoices.<year>`) is a separate body of work. What it will need from
+the workspace, none of which this design blocks:
+
+- a persisted job store in the workspace process and a worker child process
+- IMAP MOVE and UIDVALIDITY in the imap service (today: `lastUid` only,
+  delete = flag + expunge, attachment failures are logged and dropped)
+- the protection state above as a barrier before the mailbox move
+- `version` as the precondition on every file command it issues
+
+Order there: file the PDF first, wait for *protected*, then move the email.
+
+## Implementation sequence
+
+| Step | Repos | Size |
+|---|---|---|
+| 1. `version` on documents, bumped by the primary; `If-Match: d<id>.v<n>`; exposed in REST and the change feed — **DONE** (synapsd 3.20.0, server 2.8.10) | synapsd, server, protocol | small |
+| 2. Mirror `direction`; ledger rows carry `docId`/`version`; `applied` delta in status; `replicas` config; protection state + Sync tab — **DONE** (stored 1.8.0, edge 0.2.0, cli-mirror 0.3.0, server 2.9.0, web 2.11.0) | stored, edge, server, web | medium |
+| 3. Atomic commit + displaced-blob retention window | stored | small |
+| 4. Edge `stateDir`, Dockerfile, `--runtime docker\|pm2` | edge, cli | small |
+| 5. Edge `fuse` unit | edge, cli | small |
+| 6. NAS seed of Augmentd, flip to `pull`, restore drill from the NAS copy | ops | – |
+| 7. Photos workspace on the NAS with remote inferd | ops | – |
+
+Steps 1 and 2 landed 2026-09-13. Step 3 is next.

@@ -16,6 +16,11 @@ import { parseByteRange } from '../../lib/http-range.js';
  *   GET    /:driver/:address/objects/*                     bytes (Range, If-None-Match)
  *   PUT    /:driver/:address/objects/*                     write (If-Match / If-None-Match:* / X-Canvas-Sha256 …)
  *   DELETE /:driver/:address/objects/*                     delete (If-Match)
+ *
+ * `If-Match` takes either the sha256 at the key or `d<docId>.v<n>`, the
+ * document and its row version (X-Canvas-Doc-Id / X-Canvas-Version on
+ * HEAD/GET, `docId` + `version` on every mutation result) — that form also
+ * catches same-content re-saves and rename-then-edit.
  *   POST   /:driver/:address/objects/rename                { from, to, ifMatch }
  *
  * Every mutation goes through the same succession path a local edit takes,
@@ -141,6 +146,7 @@ async function readRoutes(fastify) {
         reply.header('X-Canvas-Mtime', stat.mtime != null ? String(stat.mtime) : '');
         if (stat.mtime != null) reply.header('Last-Modified', new Date(stat.mtime).toUTCString());
         if (stat.docId != null) reply.header('X-Canvas-Doc-Id', String(stat.docId));
+        if (stat.version != null) reply.header('X-Canvas-Version', String(stat.version));
         reply.header('Accept-Ranges', 'bytes');
         reply.header('Cache-Control', 'private, no-cache');
         reply.type(stat.mimeType || 'application/octet-stream');
@@ -206,7 +212,7 @@ async function readRoutes(fastify) {
                 origin: shortString(request.headers['x-canvas-origin'], 128),
             });
             if (!result?.ok) return sendFailure(reply, result);
-            return send(reply, new ResponseObject().deleted({ key: result.key, sha256: result.sha256, seq: result.seq, docId: result.docId ?? null }, 'Object deleted'));
+            return send(reply, new ResponseObject().deleted({ key: result.key, sha256: result.sha256, seq: result.seq, docId: result.docId ?? null, version: result.version ?? null }, 'Object deleted'));
         } catch (error) { return sendError(request, reply, error); }
     });
 
@@ -234,7 +240,7 @@ async function readRoutes(fastify) {
             });
             if (!result?.ok) return sendFailure(reply, result);
             return send(reply, new ResponseObject().updated({
-                from: result.from, to: result.to, sha256: result.sha256, seq: result.seq, docId: result.docId ?? null, state: result.state,
+                from: result.from, to: result.to, sha256: result.sha256, seq: result.seq, docId: result.docId ?? null, version: result.version ?? null, state: result.state,
             }, 'Object renamed'));
         } catch (error) { return sendError(request, reply, error); }
     });
@@ -313,10 +319,12 @@ async function byteRoutes(fastify) {
                 mtime: result.mtime ?? null,
                 seq: result.seq,
                 docId: result.docId ?? null,
+                version: result.version ?? null,
                 previous: result.previous ? { sha256: result.previous.checksums?.sha256 ?? null } : null,
                 unchanged: result.unchanged === true,
             };
             reply.header('ETag', `"${result.sha256}"`);
+            if (result.version != null) reply.header('X-Canvas-Version', String(result.version));
             const created = !result.unchanged && !result.previous;
             return send(reply, created
                 ? new ResponseObject().created(payload, 'Object created')

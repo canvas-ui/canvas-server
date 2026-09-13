@@ -104,6 +104,7 @@ export class WorkspaceStoredIndex {
     #unlink;
     #getBackendsTreeSelector;
     #getDb;
+    #replicas = null;
     // Optional backend-node enable-lock hooks (lock /<driver>/<addr> in the backends tree
     // while the backend is enabled; see Workspace.lockBackendTreeNode).
     #lockBackendNode;
@@ -382,6 +383,163 @@ export class WorkspaceStoredIndex {
         return doc?.id ?? null;
     }
 
+    // Row version of a workspace document (synapsd `version`), or null when
+    // the DB is not up or the document is unknown. Never throws.
+    async #docVersion(docId) {
+        if (docId == null) return null;
+        const db = this.#getDb();
+        if (!db || typeof db.getDocument !== 'function') return null;
+        // Raw row, no schema hydration: this runs once per listing/feed entry.
+        // Rows written before the field existed are version 1 (synapsd 3.20).
+        const row = await db.getDocument(docId, '/', { parse: false }).catch(() => null);
+        if (!row) return null;
+        return Number.isInteger(row.version) && row.version > 0 ? row.version : 1;
+    }
+
+    // ── Replicas: what each device reports it holds ───────────────────────
+    //
+    // `replicas` sub-db in the stored index env: `<deviceId>/<docId>` → version
+    // the device has verified + fsynced (docs/durable-workspaces.md). A
+    // document is *protected* when every required replica holds its current
+    // row version. Written from the mirror status report (`applied` delta or a
+    // `full` snapshot), read by the Sync tab. Never an input to sync itself.
+
+    get #replicaDb() {
+        if (!this.#replicas) this.#replicas = this.#stored.index.openDB('replicas');
+        return this.#replicas;
+    }
+
+    recordReplicaApplied(deviceId, pairs = [], { full = false } = {}) {
+        const dev = String(deviceId || '').trim();
+        if (!dev) throw new Error('deviceId is required');
+        const db = this.#replicaDb;
+        const head = `${dev}/`;
+        let written = 0;
+        db.transactionSync(() => {
+            if (full) {
+                for (const { key } of db.getRange({ start: head, end: `${head}\uffff` })) {
+                    if (typeof key === 'string' && key.startsWith(head)) db.removeSync(key);
+                }
+            }
+            for (const pair of Array.isArray(pairs) ? pairs : []) {
+                const docId = Number(pair?.[0]);
+                const version = Number(pair?.[1]);
+                if (!Number.isInteger(docId) || docId <= 0 || !Number.isInteger(version) || version <= 0) continue;
+                const k = `${head}${docId}`;
+                if (!full && (db.get(k) ?? 0) >= version) continue;
+                db.putSync(k, version);
+                written += 1;
+            }
+            db.putSync(`meta/${dev}`, { updatedAt: Date.now(), full: full || undefined });
+        });
+        return { deviceId: dev, written, full };
+    }
+
+    replicaVersion(deviceId, docId) {
+        const v = this.#replicaDb.get(`${deviceId}/${docId}`);
+        return Number.isInteger(v) ? v : null;
+    }
+
+    forgetReplica(deviceId) {
+        const dev = String(deviceId || '').trim();
+        if (!dev) return 0;
+        const db = this.#replicaDb;
+        const head = `${dev}/`;
+        let removed = 0;
+        db.transactionSync(() => {
+            for (const { key } of db.getRange({ start: head, end: `${head}\uffff` })) {
+                if (typeof key === 'string' && key.startsWith(head)) { db.removeSync(key); removed += 1; }
+            }
+            db.removeSync(`meta/${dev}`);
+        });
+        return removed;
+    }
+
+    /**
+     * Walk one backend's listing and compare every document's current row
+     * version with what each device holds.
+     *   `required` — devices that must hold the version for "protected";
+     *   `devices`  — every device to report `behind` for (superset of required).
+     * Bounded by `limit` objects (`partial: true` when hit); `sample` oldest
+     * unprotected documents (by mtime) are returned for the UI.
+     */
+    async replicaProtection(backendName, { required = [], devices = [], limit = 200000, sample = 20 } = {}) {
+        this.#objectsBackend(backendName);
+        const req = [...new Set(required.map(String))];
+        const all = [...new Set([...req, ...devices.map(String)])];
+        const db = this.#replicaDb;
+        const behind = Object.fromEntries(all.map((d) => [d, 0]));
+        const held = Object.fromEntries(all.map((d) => [d, 0]));
+        let total = 0;
+        let unversioned = 0;
+        let protectedCount = 0;
+        const oldest = [];
+        let after = null;
+        let partial = false;
+        do {
+            const page = this.#stored.listObjects(backendName, { after, limit: 5000 });
+            for (const o of page.objects || []) {
+                if (total >= limit) { partial = true; break; }
+                total += 1;
+                const docId = await this.#docIdForStoredId(o.id);
+                const version = await this.#docVersion(docId);
+                if (!docId || !version) { unversioned += 1; continue; }
+                let ok = req.length > 0;
+                for (const d of all) {
+                    const have = db.get(`${d}/${docId}`);
+                    const current = Number.isInteger(have) && have >= version;
+                    if (current) held[d] += 1; else behind[d] += 1;
+                    if (!current && req.includes(d)) ok = false;
+                }
+                if (ok) { protectedCount += 1; continue; }
+                if (req.length === 0) continue;
+                const entry = { key: o.key, docId, version, mtime: o.mtime ?? null, size: o.size ?? null };
+                if (oldest.length < sample) oldest.push(entry);
+                else {
+                    const worst = oldest.reduce((m, e, i) => ((e.mtime ?? 0) > (oldest[m].mtime ?? 0) ? i : m), 0);
+                    if ((entry.mtime ?? 0) < (oldest[worst].mtime ?? 0)) oldest[worst] = entry;
+                }
+            }
+            after = partial ? null : page.cursor;
+        } while (after);
+        oldest.sort((a, b) => (a.mtime ?? 0) - (b.mtime ?? 0));
+        const meta = Object.fromEntries(all.map((d) => [d, db.get(`meta/${d}`) || null]));
+        return {
+            backend: backendName,
+            required: req,
+            total,
+            unversioned,
+            protected: req.length ? protectedCount : null,
+            unprotected: req.length ? total - unversioned - protectedCount : null,
+            partial,
+            replicas: Object.fromEntries(all.map((d) => [d, { behind: behind[d], held: held[d], required: req.includes(d), reportedAt: meta[d]?.updatedAt ?? null }])),
+            oldestUnprotected: oldest,
+        };
+    }
+
+    // `If-Match: d<docId>.v<n>` names the document (and its ROW version) the
+    // caller last saw at the key (docs/durable-workspaces.md). Both halves are
+    // compared: a byte edit is a succession (new document at the key, counter
+    // restarts at 1), so a bare version would match across it. canvas-stored
+    // only understands digests, so the check happens here under the key lock:
+    // a mismatch is the same typed `precondition-failed` the digest form
+    // yields (with `current` carrying docId/version so the client can rebase);
+    // a match is rewritten to the digest actually at the key, which the stored
+    // index re-checks right before the swap. Any other value passes through.
+    async #resolveVersionPrecondition(backendName, normalized, options = {}) {
+        const m = /^\s*(?:W\/)?"?d(\d+)\.v(\d+)"?\s*$/i.exec(String(options?.ifMatch ?? ''));
+        if (!m) return { options };
+        const wantDoc = Number.parseInt(m[1], 10);
+        const wantVersion = Number.parseInt(m[2], 10);
+        const stat = await this.statObject(backendName, normalized);
+        const fail = () => ({
+            ok: false, reason: 'precondition-failed', code: 'PRECONDITION_FAILED',
+            current: stat ? { id: stat.id, sha256: stat.sha256, size: stat.size, mtime: stat.mtime, docId: stat.docId, version: stat.version } : null,
+        });
+        if (!stat || stat.docId !== wantDoc || stat.version == null || stat.version !== wantVersion) return { failure: fail() };
+        return { options: { ...options, ifMatch: stat.sha256 } };
+    }
+
     #trackUpsert(pathKey, promise) {
         if (!pathKey || !promise?.then) return;
         this.#inflightUpserts.set(pathKey, promise);
@@ -439,10 +597,12 @@ export class WorkspaceStoredIndex {
         const normalized = this.#objectKey(backend, root, key);
         const pathKey = `${backendName}:${normalized}`;
         return this.withKeyLock(backendName, normalized, async () => {
-            const result = await this.#stored.writeObject(backendName, normalized, source, options);
+            const pre = await this.#resolveVersionPrecondition(backendName, normalized, options);
+            if (pre.failure) return pre.failure;
+            const result = await this.#stored.writeObject(backendName, normalized, source, pre.options);
             if (!result?.ok) return result;
             const docId = await this.#awaitDocId(pathKey, result.id);
-            return { ...result, key: normalized, docId };
+            return { ...result, key: normalized, docId, version: await this.#docVersion(docId) };
         });
     }
 
@@ -451,10 +611,12 @@ export class WorkspaceStoredIndex {
         const { backend, root } = this.#objectsBackend(backendName, { write: true });
         const normalized = this.#objectKey(backend, root, key);
         return this.withKeyLock(backendName, normalized, async () => {
-            const result = await this.#stored.removeObject(backendName, normalized, options);
+            const pre = await this.#resolveVersionPrecondition(backendName, normalized, options);
+            if (pre.failure) return pre.failure;
+            const result = await this.#stored.removeObject(backendName, normalized, pre.options);
             if (!result?.ok) return result;
             const docId = await this.#docIdForStoredId(result.id);
-            return { ...result, key: normalized, docId };
+            return { ...result, key: normalized, docId, version: await this.#docVersion(docId) };
         });
     }
 
@@ -465,20 +627,23 @@ export class WorkspaceStoredIndex {
         const toKey = this.#objectKey(backend, root, to);
         const [first, second] = [fromKey, toKey].sort();
         return this.withKeyLock(backendName, first, () => this.withKeyLock(backendName, second, async () => {
-            const result = await this.#stored.renameObject(backendName, fromKey, toKey, options);
+            const pre = await this.#resolveVersionPrecondition(backendName, fromKey, options);
+            if (pre.failure) return pre.failure;
+            const result = await this.#stored.renameObject(backendName, fromKey, toKey, pre.options);
             if (!result?.ok) return result;
             const docId = await this.#awaitDocId(`${backendName}:${toKey}`, result.id);
-            return { ...result, docId };
+            return { ...result, docId, version: await this.#docVersion(docId) };
         }));
     }
 
-    /** `{ key, id, sha256, size, mtime, mimeType, docId }` for an indexed key, or null. */
+    /** `{ key, id, sha256, size, mtime, mimeType, docId, version }` for an indexed key, or null. */
     async statObject(backendName, key) {
         const { backend, root } = this.#objectsBackend(backendName);
         const normalized = this.#objectKey(backend, root, key);
         const meta = await this.#stored.stat(`${backendName}:${normalized}`);
         const location = meta?.locations?.find((l) => l.backend === backendName && l.key === normalized);
         if (!meta || !location) return null;
+        const docId = await this.#docIdForStoredId(meta.id);
         return {
             key: normalized,
             id: meta.id,
@@ -486,26 +651,30 @@ export class WorkspaceStoredIndex {
             size: location.size ?? meta.size ?? null,
             mtime: location.mtime ?? null,
             mimeType: meta.mimeType || null,
-            docId: await this.#docIdForStoredId(meta.id),
+            docId,
+            version: await this.#docVersion(docId),
         };
     }
 
-    /** Page a backend's indexed keys: `{ objects:[{key, sha256, size, mtime, mimeType}], cursor, head }`. */
-    listObjects(backendName, { prefix = '', after = null, limit = 1000 } = {}) {
+    /** Page a backend's indexed keys: `{ objects:[{key, sha256, size, mtime, mimeType, docId, version}], cursor, head }`. */
+    async listObjects(backendName, { prefix = '', after = null, limit = 1000 } = {}) {
         this.#objectsBackend(backendName);
         const cleanPrefix = prefix ? String(prefix).replace(/^\/+/, '').normalize('NFC') : '';
         const page = this.#stored.listObjects(backendName, { prefix: cleanPrefix, after, limit });
-        return {
-            objects: (page.objects || []).map((o) => ({
+        const objects = [];
+        for (const o of page.objects || []) {
+            const docId = await this.#docIdForStoredId(o.id);
+            objects.push({
                 key: o.key,
                 sha256: o.checksums?.sha256 ?? null,
                 size: o.size ?? null,
                 mtime: o.mtime ?? null,
                 mimeType: o.mimeType ?? null,
-            })),
-            cursor: page.cursor ?? null,
-            head: this.#stored.head(),
-        };
+                docId,
+                version: await this.#docVersion(docId),
+            });
+        }
+        return { objects, cursor: page.cursor ?? null, head: this.#stored.head() };
     }
 
     /**
@@ -513,11 +682,16 @@ export class WorkspaceStoredIndex {
      * with the last known state; a reader re-stats the key rather than
      * replaying ops. `cursorTooOld` = rebuild from `listObjects`.
      */
-    changes(backendName, { since = 0, limit = 1000 } = {}) {
+    async changes(backendName, { since = 0, limit = 1000 } = {}) {
         this.#objectsBackend(backendName);
         const page = this.#stored.changes({ backend: backendName, since, limit });
-        return {
-            changes: (page.changes || []).map((c) => ({
+        const changes = [];
+        for (const c of page.changes || []) {
+            // docId/version describe the document at the key NOW (the feed is
+            // coalesced per key; a reader re-stats anyway) — for a delete the
+            // orphaned document is still resolvable by its digest.
+            const docId = c.op === 'delete' ? null : await this.#docIdForStoredId(c.id);
+            changes.push({
                 seq: c.seq,
                 ts: c.ts,
                 op: c.op,
@@ -527,7 +701,12 @@ export class WorkspaceStoredIndex {
                 size: c.size ?? null,
                 mtime: c.mtime ?? null,
                 ...(c.origin ? { origin: c.origin } : {}),
-            })),
+                docId,
+                version: docId ? await this.#docVersion(docId) : null,
+            });
+        }
+        return {
+            changes,
             head: page.head,
             oldest: page.oldest,
             cursor: page.cursor,

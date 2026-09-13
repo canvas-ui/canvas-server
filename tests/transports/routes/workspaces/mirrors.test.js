@@ -26,6 +26,42 @@ describe('workspace mirror routes', () => {
         const workspace = {
             id: 'ws-1', name: 'universe',
             async backendChanges() { return { changes: [], head: 42 }; },
+            // Replica policy + evidence (docs/durable-workspaces.md), in memory.
+            replicas: [],
+            applied: {},
+            setReplica(deviceId, patch) {
+                const existing = this.replicas.find((r) => r.device === deviceId) || { device: deviceId, role: 'full', required: false };
+                const next = { ...existing, ...patch };
+                if (next.role === 'cache') next.required = false;
+                this.replicas = [...this.replicas.filter((r) => r.device !== deviceId), next];
+                return next;
+            },
+            removeReplica(deviceId) { this.replicas = this.replicas.filter((r) => r.device !== deviceId); return true; },
+            async recordReplicaApplied(deviceId, pairs, { full = false } = {}) {
+                if (full) this.applied[deviceId] = {};
+                this.applied[deviceId] = this.applied[deviceId] || {};
+                for (const [docId, version] of pairs) this.applied[deviceId][docId] = Math.max(this.applied[deviceId][docId] || 0, version);
+                return { deviceId, written: pairs.length, full };
+            },
+            async forgetReplica(deviceId) { delete this.applied[deviceId]; return 0; },
+            docs: { 1: 3, 2: 1 },   // docId → current version
+            async replicaProtection(backend, { devices = [], sample = 20 } = {}) {
+                const required = this.replicas.filter((r) => r.required).map((r) => r.device);
+                const all = [...new Set([...required, ...devices])];
+                const replicas = Object.fromEntries(all.map((d) => [d, { behind: 0, held: 0, required: required.includes(d) }]));
+                let prot = 0; const oldest = [];
+                for (const [docId, version] of Object.entries(this.docs)) {
+                    let ok = required.length > 0;
+                    for (const d of all) {
+                        const cur = (this.applied[d]?.[docId] || 0) >= version;
+                        if (cur) replicas[d].held += 1; else replicas[d].behind += 1;
+                        if (!cur && required.includes(d)) ok = false;
+                    }
+                    if (ok) prot += 1; else if (required.length && oldest.length < sample) oldest.push({ key: `doc${docId}.txt`, docId: Number(docId), version });
+                }
+                const total = Object.keys(this.docs).length;
+                return { backend, required, total, unversioned: 0, protected: required.length ? prot : null, unprotected: required.length ? total - prot : null, partial: false, replicas, oldestUnprotected: oldest };
+            },
         };
         app = Fastify();
         app.decorate('authenticate', async (request) => { request.user = { id: 'user-id' }; if (client) request.client = client; });
@@ -60,6 +96,53 @@ describe('workspace mirror routes', () => {
         assert.equal(gone.statusCode, 200);
         assert.equal(gone.json().payload.removed, true);
         assert.equal((await inject('GET', '/workspaces/universe/mirrors')).json().payload.length, 0);
+    });
+
+    test('applied pairs feed the replica table, policy is PATCHed, protection walks the versions', async () => {
+        // The NAS reports what it holds; the pairs must not land on the device record.
+        const rep = await inject('POST', '/workspaces/universe/mirrors/nas/status', { client: 'daemon', direction: 'pull', cursor: 42, applied: [[1, 3], [2, 1]], full: true });
+        assert.equal(rep.statusCode, 200, rep.body);
+        assert.equal(rep.json().payload.replica.written, 2);
+        assert.equal(rep.json().payload.mirror.applied, undefined);
+        assert.equal(rep.json().payload.mirror.direction, 'pull');
+
+        // The laptop is behind on doc 1.
+        await inject('POST', '/workspaces/universe/mirrors/laptop/status', { client: 'daemon', direction: 'bi', cursor: 40, applied: [[1, 2], [2, 1]] });
+
+        // Nothing is required yet → protection is not computed, but behind/held are.
+        let list = await inject('GET', '/workspaces/universe/mirrors');
+        const byId = Object.fromEntries(list.json().payload.map((m) => [m.deviceId, m]));
+        assert.deepEqual(byId.nas.replica, { role: 'full', required: false });
+        assert.equal(byId.nas.behind, 0);
+        assert.equal(byId.laptop.behind, 1);
+        let prot = await inject('GET', '/workspaces/universe/mirrors/protection');
+        assert.equal(prot.json().payload.protected, null);
+
+        // Require the NAS: everything it holds current is protected.
+        const patched = await inject('PATCH', '/workspaces/universe/mirrors/nas', { required: true });
+        assert.equal(patched.statusCode, 200, patched.body);
+        assert.equal(patched.json().payload.replica.required, true);
+        prot = await inject('GET', '/workspaces/universe/mirrors/protection');
+        assert.deepEqual(prot.json().payload.required, ['nas']);
+        assert.equal(prot.json().payload.protected, 2);
+        assert.equal(prot.json().payload.unprotected, 0);
+
+        // Require the laptop too: doc 1 is now exposed and shows up as oldest unprotected.
+        await inject('PATCH', '/workspaces/universe/mirrors/laptop', { required: true });
+        prot = await inject('GET', '/workspaces/universe/mirrors/protection');
+        assert.equal(prot.json().payload.unprotected, 1);
+        assert.deepEqual(prot.json().payload.oldestUnprotected.map((o) => o.docId), [1]);
+
+        // A cache never counts, whatever the flag says.
+        const cache = await inject('PATCH', '/workspaces/universe/mirrors/gpu', { role: 'cache', required: true });
+        assert.deepEqual(cache.json().payload.replica, { device: 'gpu', role: 'cache', required: false });
+
+        // Forgetting the mirror drops its policy entry.
+        await inject('DELETE', '/workspaces/universe/mirrors/laptop');
+        list = await inject('GET', '/workspaces/universe/mirrors');
+        assert.equal(list.json().payload.some((m) => m.deviceId === 'laptop'), false);
+        prot = await inject('GET', '/workspaces/universe/mirrors/protection');
+        assert.deepEqual(prot.json().payload.required, ['nas']);
     });
 
     test('a device token may only report for itself (owner or not)', async () => {

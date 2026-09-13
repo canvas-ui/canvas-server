@@ -22,6 +22,8 @@ import { parseByteRange } from '../../lib/http-range.js';
  * HEAD/GET, `docId` + `version` on every mutation result) — that form also
  * catches same-content re-saves and rename-then-edit.
  *   POST   /:driver/:address/objects/rename                { from, to, ifMatch }
+ *   GET    /:driver/:address/retained?key&limit             displaced versions kept for the retention window
+ *   POST   /:driver/:address/retained/:sha256/restore      { key, ifMatch? } put a retained version back
  *
  * Every mutation goes through the same succession path a local edit takes,
  * so the document behind an edited file keeps its placements, and lands in
@@ -213,6 +215,54 @@ async function readRoutes(fastify) {
             });
             if (!result?.ok) return sendFailure(reply, result);
             return send(reply, new ResponseObject().deleted({ key: result.key, sha256: result.sha256, seq: result.seq, docId: result.docId ?? null, version: result.version ?? null }, 'Object deleted'));
+        } catch (error) { return sendError(request, reply, error); }
+    });
+
+    // Displaced versions (docs/durable-workspaces.md): what an overwrite or
+    // delete replaced, kept for the retention window, addressed by digest.
+    fastify.get('/:driver/:address/retained', {
+        onRequest: [fastify.authenticate, requireWorkspaceRead()],
+    }, async (request, reply) => {
+        try {
+            if (typeof request.workspace.listBackendRetained !== 'function') {
+                return send(reply, new ResponseObject().error('Retention is not available on this workspace', null, 501), 'NOT_IMPLEMENTED');
+            }
+            const page = await request.workspace.listBackendRetained(drv(request.params.driver), arg(request.params.address), {
+                key: shortString(request.query?.key, 4096) || null,
+                limit: clampLimit(request.query?.limit, 500, 5000),
+            });
+            return send(reply, new ResponseObject().found(page, 'OK', 200, page.retained.length));
+        } catch (error) { return sendError(request, reply, error); }
+    });
+
+    fastify.post('/:driver/:address/retained/:sha256/restore', {
+        onRequest: [fastify.authenticate, requireWorkspaceWrite()],
+        schema: {
+            params: { type: 'object', properties: { sha256: { type: 'string', pattern: '^[0-9a-fA-F]{64}$' } } },
+            body: {
+                type: 'object',
+                required: ['key'],
+                properties: {
+                    key: { type: 'string', minLength: 1 },
+                    ifMatch: { type: 'string' },
+                    origin: { type: 'string', maxLength: 128 },
+                },
+            },
+        },
+    }, async (request, reply) => {
+        try {
+            if (typeof request.workspace.restoreBackendRetained !== 'function') {
+                return send(reply, new ResponseObject().error('Retention is not available on this workspace', null, 501), 'NOT_IMPLEMENTED');
+            }
+            const { key, ifMatch, origin } = request.body;
+            const result = await request.workspace.restoreBackendRetained(drv(request.params.driver), arg(request.params.address), String(request.params.sha256).toLowerCase(), {
+                key, ifMatch: shortString(ifMatch), origin: shortString(origin, 128) ?? shortString(request.headers['x-canvas-origin'], 128),
+            });
+            if (!result?.ok) return sendFailure(reply, result);
+            return send(reply, new ResponseObject().updated({
+                key: result.key, sha256: result.sha256, size: result.size, seq: result.seq, docId: result.docId ?? null, version: result.version ?? null,
+                previous: result.previous ? { sha256: result.previous.checksums?.sha256 ?? null } : null,
+            }, 'Retained version restored'));
         } catch (error) { return sendError(request, reply, error); }
     });
 

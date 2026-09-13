@@ -3426,6 +3426,18 @@ class Workspace extends EventEmitter {
         return this.#storedIndex.renameObject(address, from, to, options);
     }
 
+    async listBackendRetained(driver, address, options = {}) {
+        this.#assertObjectsDriver(driver, address);
+        if (!this.#storedIndex?.isRunning) await this.#startStoredIndex();
+        return { retention: this.#storedIndex.retention, retained: this.#storedIndex.listRetained(address, options) };
+    }
+
+    async restoreBackendRetained(driver, address, sha256, options = {}) {
+        this.#assertObjectsDriver(driver, address);
+        if (!this.#storedIndex?.isRunning) await this.#startStoredIndex();
+        return this.#storedIndex.restoreRetained(address, sha256, options);
+    }
+
     async statBackendObject(driver, address, key) {
         this.#assertObjectsDriver(driver, address);
         if (!this.#storedIndex?.isRunning) await this.#startStoredIndex();

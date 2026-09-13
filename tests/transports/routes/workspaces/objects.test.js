@@ -70,6 +70,15 @@ describe('workspace keyed object routes', () => {
                 if (to === 'taken.txt') return { ok: false, reason: 'target-exists', key: to };
                 return { ok: true, from, to, sha256: SHA_A, seq: 13, docId: 100001, state: 'complete' };
             },
+            async listBackendRetained(driver, address, options) {
+                record('listBackendRetained', driver, address, options);
+                return { retention: { days: 30, sweepEveryMs: 3600000 }, retained: [{ sha256: 'ee'.repeat(32), size: 5, mimeType: 'text/plain', keys: ['a.txt'], firstAt: 1, lastAt: 2 }] };
+            },
+            async restoreBackendRetained(driver, address, sha256, options) {
+                record('restoreBackendRetained', driver, address, sha256, options);
+                if (options.key === 'a.txt' && !options.ifMatch) return { ok: false, reason: 'precondition-failed', current: { sha256: SHA_A, docId: 100001, version: 3 } };
+                return { ok: true, key: options.key, id: `sha256:${sha256}`, sha256, size: 5, seq: 14, docId: 100009, version: 1, previous: null };
+            },
             async statBlobByChecksum(sha) {
                 record('statBlobByChecksum', sha);
                 return sha === SHA_BLOB ? { url: 'stored://workspace:data/x', key: 'x', checksum: sha, mimeType: 'image/png' } : null;
@@ -253,6 +262,26 @@ describe('workspace keyed object routes', () => {
         assert.equal(input.mtime, 5);
         assert.equal(input.source, 'mine');
         assert.equal(res.json().payload.docId, 100009);
+    });
+
+    test('retained versions: listing and restore (occupied key needs ifMatch)', async () => {
+        const list = await inject('GET', `${B}/retained?key=a.txt`);
+        assert.equal(list.statusCode, 200, list.body);
+        assert.equal(list.json().payload.retention.days, 30);
+        assert.equal(list.json().payload.retained[0].sha256, 'ee'.repeat(32));
+        assert.deepEqual(calls.at(-1).args[2], { key: 'a.txt', limit: 500 });
+
+        const busy = await inject('POST', `${B}/retained/${'ee'.repeat(32)}/restore`, { payload: { key: 'a.txt' } });
+        assert.equal(busy.statusCode, 412);
+        assert.equal(busy.json().payload.current.version, 3);
+
+        const ok = await inject('POST', `${B}/retained/${'ee'.repeat(32)}/restore`, { payload: { key: 'a (restored).txt', origin: 'ui' } });
+        assert.equal(ok.statusCode, 200, ok.body);
+        assert.equal(ok.json().payload.docId, 100009);
+        assert.equal(calls.at(-1).args[3].origin, 'ui');
+
+        const bad = await inject('POST', `${B}/retained/nothex/restore`, { payload: { key: 'x' } });
+        assert.equal(bad.statusCode, 400);
     });
 
     test('DELETE honours If-Match', async () => {

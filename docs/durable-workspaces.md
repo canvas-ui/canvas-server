@@ -139,10 +139,14 @@ Two changes, both small:
    the staged copy. Change to: write to `.stored-tmp/<uuid>` on the same
    filesystem, fsync, `rename(2)` over the destination. Same for `put()`.
 2. **Displaced-blob retention window.** When an overwrite or delete displaces
-   a blob, do not garbage-collect it for `retention.window` (default 30 days).
-   Record the previous checksum on the document (`previousChecksums`, bounded).
-   That is the whole versioning story on the primary; anything longer-lived
-   is the backup system's job.
+   a blob (keyed write, remove, overwrite transfer), the file backend hardlinks
+   it under `.stored-tmp/retained/<sha256>` first; a `retained` sub-db records
+   when and from which keys. Swept after `CANVAS_RETENTION_DAYS` (default 30).
+   `GET …/retained?key=` lists what a path used to be, `POST …/retained/<sha>/restore`
+   puts it back through the ordinary keyed write. Digest-addressed, so the
+   same bytes displaced from ten keys are kept once. That is the whole
+   versioning story on the primary; anything longer-lived is the backup
+   system's job.
 
 ## Edge: state directory, containers, units
 
@@ -213,10 +217,10 @@ Order there: file the PDF first, wait for *protected*, then move the email.
 |---|---|---|
 | 1. `version` on documents, bumped by the primary; `If-Match: d<id>.v<n>`; exposed in REST and the change feed — **DONE** (synapsd 3.20.0, server 2.8.10) | synapsd, server, protocol | small |
 | 2. Mirror `direction`; ledger rows carry `docId`/`version`; `applied` delta in status; `replicas` config; protection state + Sync tab — **DONE** (stored 1.8.0, edge 0.2.0, cli-mirror 0.3.0, server 2.9.0, web 2.11.0) | stored, edge, server, web | medium |
-| 3. Atomic commit + displaced-blob retention window | stored | small |
+| 3. Atomic commit + displaced-blob retention window — **DONE** (stored 1.9.0, server 2.10.0: `CANVAS_RETENTION_DAYS`, `GET/POST …/retained`) | stored | small |
 | 4. Edge `stateDir`, Dockerfile, `--runtime docker\|pm2` | edge, cli | small |
 | 5. Edge `fuse` unit | edge, cli | small |
 | 6. NAS seed of Augmentd, flip to `pull`, restore drill from the NAS copy | ops | – |
 | 7. Photos workspace on the NAS with remote inferd | ops | – |
 
-Steps 1 and 2 landed 2026-09-13. Step 3 is next.
+Steps 1–3 landed 2026-09-13. Step 4 is next.

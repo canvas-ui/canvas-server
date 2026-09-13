@@ -57,6 +57,7 @@ const ORPHANED_FEATURE = 'feature/orphaned';
 const NUDGE_THROTTLE_MS = 300;
 // How long writeObject waits for the document behind a landed file before
 // answering without a docId (the doc still lands; the caller re-stats).
+const RETENTION_DAYS = Number.parseInt(process.env.CANVAS_RETENTION_DAYS ?? '30', 10) || 0;
 const UPSERT_WAIT_MS = 10000;
 
 /** Error with the HTTP mapping the objects routes need. */
@@ -620,6 +621,42 @@ export class WorkspaceStoredIndex {
         });
     }
 
+    /** Retained (displaced) versions on a backend, newest first; `key` narrows to one path. */
+    listRetained(backendName, { key = null, limit = 500 } = {}) {
+        this.#objectsBackend(backendName);
+        const root = this.#objectsBackend(backendName).root;
+        const normalizedKey = key ? this.#objectKey(this.#objectsBackend(backendName).backend, root, key) : null;
+        return this.#stored.listRetained({ backend: backendName, key: normalizedKey, limit }).map((e) => ({
+            sha256: e.sha256, size: e.size ?? null, mimeType: e.mimeType ?? null,
+            keys: (e.keys || []).filter((k) => k.startsWith(`${backendName}:`)).map((k) => k.slice(backendName.length + 1)),
+            firstAt: e.firstAt ?? null, lastAt: e.lastAt ?? null,
+        }));
+    }
+
+    /**
+     * Put a retained version back at `key` (the ordinary keyed write: a
+     * succession, change-log entry, hooks). Refuses an occupied key unless
+     * `ifMatch` names what is there (`sha256` or `d<docId>.v<n>`).
+     */
+    async restoreRetained(backendName, sha256, { key, ifMatch = null, origin = null } = {}) {
+        const { backend, root } = this.#objectsBackend(backendName, { write: true });
+        const normalized = this.#objectKey(backend, root, key);
+        const pathKey = `${backendName}:${normalized}`;
+        return this.withKeyLock(backendName, normalized, async () => {
+            const pre = await this.#resolveVersionPrecondition(backendName, normalized, { ifMatch });
+            if (pre.failure) return pre.failure;
+            const result = await this.#stored.restoreRetained(sha256, {
+                backend: backendName, key: normalized, origin,
+                ...(pre.options.ifMatch != null ? { ifMatch: pre.options.ifMatch } : { ifNoneMatch: '*' }),
+            });
+            if (!result?.ok) return result;
+            const docId = await this.#awaitDocId(pathKey, result.id);
+            return { ...result, key: normalized, docId, version: await this.#docVersion(docId) };
+        });
+    }
+
+    get retention() { return this.#stored?.retention ?? null; }
+
     /** Rename within one backend: same bytes, same document, new key. */
     async renameObject(backendName, from, to, options = {}) {
         const { backend, root } = this.#objectsBackend(backendName, { write: true });
@@ -737,6 +774,11 @@ export class WorkspaceStoredIndex {
                 // Graceful + optional: no-ops if parser deps are absent. Disable
                 // with CANVAS_EXTRACT_DISABLED=true.
                 extract: process.env.CANVAS_EXTRACT_DISABLED === 'true' ? null : extractBlobMetadata,
+                // Displaced-blob retention (docs/durable-workspaces.md): bytes an
+                // overwrite/delete replaces on a path backend stay recoverable
+                // for this many days (0 = off). The primary's only versioning;
+                // longer history is the backup system's job.
+                retention: RETENTION_DAYS > 0 ? { days: RETENTION_DAYS } : null,
             });
 
             await this.#registerConfiguredBackends();

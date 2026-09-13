@@ -122,6 +122,18 @@ mirror sees the outcome as ordinary changes on the feed.
 | `DELETE` | `/rest/v2/workspaces/:id/mirrors/:deviceId` | forget the record |
 | `DELETE` | `/rest/v2/auth/devices/:deviceId` | revoke the device (tokens + record); the mirror gets `401` next |
 
+## Retained versions
+
+Bytes an overwrite or delete displaces on a path backend are kept for the
+retention window (`CANVAS_RETENTION_DAYS`, default 30; 0 = off), addressed by
+digest. The bytes live under the backend's staging dir (`.stored-tmp/retained/`),
+outside the indexed tree.
+
+| verb | path | body / result |
+|---|---|---|
+| `GET` | `backends/<driver>/<address>/retained?key=&limit=` | `{ retention: { days } \| null, retained: [{ sha256, size, mimeType, keys, firstAt, lastAt }] }` newest first |
+| `POST` | `backends/<driver>/<address>/retained/<sha256>/restore` | `{ key, ifMatch?, origin? }` → the ordinary keyed write (succession, change-log entry); `412` when the key is occupied and `ifMatch` (digest or `d<docId>.v<n>`) does not name it |
+
 ### Protection evidence (`applied`)
 
 `applied` is `[[docId, version], …]`: documents whose bytes the device has

@@ -211,6 +211,16 @@ the workspace, none of which this design blocks:
 
 Order there: file the PDF first, wait for *protected*, then move the email.
 
+## Deferred (noted 2026-09-14)
+
+- **Storage backends UI rework.** How storage backends are managed in the
+  web UI needs a rework (adding/editing path backends, their roles and
+  policies in one place) before the items below get a home.
+- **Retention as a workspace setting.** `CANVAS_RETENTION_DAYS` is an env var
+  today; it should be a per-workspace UI option (days, off) stored in
+  workspace config, with the retained-versions list and restore surfaced in
+  the file view. Server routes already exist.
+
 ## Implementation sequence
 
 | Step | Repos | Size |

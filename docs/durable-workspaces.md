@@ -150,13 +150,22 @@ Two changes, both small:
 
 ## Edge: state directory, containers, units
 
-- **State directory.** `mirror-runtime.js` hardcodes `<folder>/.workspace`.
-  Add `stateDir` per mirror (default unchanged). The NAS container sets it to
-  a private volume so the exported share contains user files only.
-- **Dockerfile** for `runtimes/edge`, unprivileged, bind-mounts the workspace
-  folder and a state volume, outbound-only to the primary, restarts on
-  failure. `canvas remote mirror` gains `--runtime docker|pm2`; same config,
-  same binary.
+- **State directory** — DONE (edge 0.3.0, cli-mirror 0.4.0). `stateDir` per
+  mirror (`--state-dir` on `add`/`publish`), or `CANVAS_EDGE_STATE_ROOT`
+  giving every mirror `<root>/<id>`; the folder then holds user files only.
+  Staging stays on the folder's filesystem (`.stored-tmp`) when the state dir
+  is on another device, so placement stays atomic.
+- **Container** — DONE. `runtimes/edge/Dockerfile` (unprivileged
+  `node:22-bookworm-slim`, installs the `edge-dist` tarball, healthcheck via
+  the control socket, volumes `/config` `/state` `/data`). One container = one
+  mirror, configured from the environment (`CANVAS_HUB_URL`, `CANVAS_HUB_TOKEN`,
+  `CANVAS_WORKSPACE`, `CANVAS_DIRECTION`, `CANVAS_DEVICE_ID`, …): the daemon
+  seeds its own remotes/mirrors config on start (`ensureEnvConfig`). No CLI on
+  the NAS. `docker/docker-compose.example.yml` is the Synology Container
+  Manager project; `canvas remote mirror docker <ws> [--run]` prints one from
+  a remote you are logged in to. pm2 stays the non-container supervisor
+  (`--service`); there is no `--runtime` flag — the container is configured
+  where it runs, not from here.
 - **`fuse` unit.** Edge supervises `canvas-fuse mount -w <ws> <root>/<ws>
   --mirror` as a child process, one per workspace, listed in the same
   `mirrors.json` with `client: fuse`. canvas-fuse stays a plain executable.
@@ -173,13 +182,15 @@ digests. No changes to canvas-fuse are needed for v1.
 
 1. Deploy the edge container on the Synology with the target folder
    bind-mounted at its native volume path (resolved at deploy time, never
-   derived from the SMB URL) and a private state volume.
-2. Create the mirror with direction `bi`, let it pull the current Augmentd
-   tree from the primary.
+   derived from the SMB URL) and a private state volume: paste
+   `canvas remote mirror docker augmentd --direction bi --folder /volume1/work/Augmentd`
+   into Container Manager (mint a token for the container first).
+2. The container pulls the current Augmentd tree from the primary.
 3. Copy the existing NAS-local files into the folder. The mirror pushes them
    to the primary with the ordinary conflict rules; the primary indexes them.
-4. When the Sync tab shows zero pending and zero skips, flip direction to
-   `pull`. From now on edits go through the primary.
+4. When the Sync tab shows zero pending and zero skips, set
+   `CANVAS_DIRECTION=pull` and recreate the container. From now on edits go
+   through the primary.
 5. Configure snapshots and off-site backup on the Synology. Not canvas's job.
 
 One sync owner per NAS root: the container. Mounting the same share from a
@@ -228,9 +239,9 @@ Order there: file the PDF first, wait for *protected*, then move the email.
 | 1. `version` on documents, bumped by the primary; `If-Match: d<id>.v<n>`; exposed in REST and the change feed — **DONE** (synapsd 3.20.0, server 2.8.10) | synapsd, server, protocol | small |
 | 2. Mirror `direction`; ledger rows carry `docId`/`version`; `applied` delta in status; `replicas` config; protection state + Sync tab — **DONE** (stored 1.8.0, edge 0.2.0, cli-mirror 0.3.0, server 2.9.0, web 2.11.0) | stored, edge, server, web | medium |
 | 3. Atomic commit + displaced-blob retention window — **DONE** (stored 1.9.0, server 2.10.0: `CANVAS_RETENTION_DAYS`, `GET/POST …/retained`) | stored | small |
-| 4. Edge `stateDir`, Dockerfile, `--runtime docker\|pm2` | edge, cli | small |
+| 4. Edge `stateDir`, Dockerfile, env-driven container config, `canvas remote mirror docker` — **DONE** (edge 0.3.0, cli-mirror 0.4.0) | edge, cli | small |
 | 5. Edge `fuse` unit | edge, cli | small |
 | 6. NAS seed of Augmentd, flip to `pull`, restore drill from the NAS copy | ops | – |
 | 7. Photos workspace on the NAS with remote inferd | ops | – |
 
-Steps 1–3 landed 2026-09-13. Step 4 is next.
+Steps 1–3 landed 2026-09-13, step 4 on 2026-09-14. Step 5 (edge `fuse` unit) is next.

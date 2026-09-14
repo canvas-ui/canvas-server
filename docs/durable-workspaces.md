@@ -166,11 +166,15 @@ Two changes, both small:
   a remote you are logged in to. pm2 stays the non-container supervisor
   (`--service`); there is no `--runtime` flag — the container is configured
   where it runs, not from here.
-- **`fuse` unit.** Edge supervises `canvas-fuse mount -w <ws> <root>/<ws>
-  --mirror` as a child process, one per workspace, listed in the same
-  `mirrors.json` with `client: fuse`. canvas-fuse stays a plain executable.
-  Context mirroring, if wanted, is a second fuse process on a different
-  mountpoint, not a mode of the same one.
+- **`fuse` unit** — DONE (edge 0.4.0, cli-mirror 0.5.0). Edge supervises
+  `canvas-fuse mount -w <ws> <root> --remote <id> --mirror …` as an attached
+  child process, one per workspace under one root, restarts it with backoff,
+  merges `canvas-fuse status --json` into its status and unmounts on stop.
+  Configured as `client: fuse, managed: edge` in `mirrors.json`
+  (`canvas remote mirror add <ws> --edge`, or `… supervisor <ws> edge` to hand
+  an existing mount over from pm2/manual). canvas-fuse stays a plain
+  executable. Context mirroring, if wanted, is a second fuse process on a
+  different mountpoint, not a mode of the same one.
 - **Several workspaces.** All of the above is per entry in `mirrors.json`;
   Augmentd plus four other workspaces are five entries.
 
@@ -240,8 +244,9 @@ Order there: file the PDF first, wait for *protected*, then move the email.
 | 2. Mirror `direction`; ledger rows carry `docId`/`version`; `applied` delta in status; `replicas` config; protection state + Sync tab — **DONE** (stored 1.8.0, edge 0.2.0, cli-mirror 0.3.0, server 2.9.0, web 2.11.0) | stored, edge, server, web | medium |
 | 3. Atomic commit + displaced-blob retention window — **DONE** (stored 1.9.0, server 2.10.0: `CANVAS_RETENTION_DAYS`, `GET/POST …/retained`) | stored | small |
 | 4. Edge `stateDir`, Dockerfile, env-driven container config, `canvas remote mirror docker` — **DONE** (edge 0.3.0, cli-mirror 0.4.0) | edge, cli | small |
-| 5. Edge `fuse` unit | edge, cli | small |
+| 5. Edge `fuse` unit — **DONE** (edge 0.4.0, cli-mirror 0.5.0) | edge, cli | small |
 | 6. NAS seed of Augmentd, flip to `pull`, restore drill from the NAS copy | ops | – |
 | 7. Photos workspace on the NAS with remote inferd | ops | – |
 
-Steps 1–3 landed 2026-09-13, step 4 on 2026-09-14. Step 5 (edge `fuse` unit) is next.
+Steps 1–3 landed 2026-09-13, steps 4–5 on 2026-09-14. What remains is
+operations: the NAS seed (6) and the Photos workspace (7).

@@ -1651,6 +1651,29 @@ export default async function workspaceDocumentRoutes(fastify, _options) {
     return resolved;
   }
 
+  // The predicate registry on its own — the add forms need it before a
+  // document exists (relations are picked at creation and written once the
+  // new id is known), so the per-document read above is not usable there.
+  // Registered before '/:docId/relations' so 'relations' is never parsed as
+  // a document id.
+  fastify.get('/relations/predicates', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      params: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } },
+    },
+  }, async (request, reply) => {
+    try {
+      const workspace = await getWorkspaceInstance(request, reply);
+      if (!workspace) return reply;
+      const r = new ResponseObject().found({ predicates: RELATION_PREDICATES }, 'Relation predicates retrieved');
+      return reply.code(r.statusCode).send(r.getResponse());
+    } catch (error) {
+      fastify.log.error(error);
+      const r = new ResponseObject().serverError('Failed to list relation predicates');
+      return reply.code(r.statusCode).send(r.getResponse());
+    }
+  });
+
   fastify.get('/:docId/relations', {
     onRequest: [fastify.authenticate],
     schema: {

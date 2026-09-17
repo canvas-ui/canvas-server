@@ -23,7 +23,6 @@ import { discoverWorkspaceCandidates, validateWorkspaceConfig, findWorkspaceConf
 import DotfileManager from './services/dotfile/index.js';
 import { USER_MODULE_DIRS } from '../user/lib/paths.js';
 import HookService from './services/hook/index.js';
-import GraphService from './services/graph/index.js';
 import ChatService from './services/chat/index.js';
 
 // Constants
@@ -156,7 +155,6 @@ class WorkspaceManager extends EventEmitter {
     // Services
     dotfileService = null;
     hookService = null;
-    graphService = null;
     chatService = null;
 
     constructor(options = {}) {
@@ -204,13 +202,6 @@ class WorkspaceManager extends EventEmitter {
 
         // IMAP ingest is owned by the stored layer (WorkspaceStoredIndex + the
         // stored imap backend); no standalone service to initialize.
-
-        // Initialize Graph Service
-        this.graphService = new GraphService({
-            workspaceManager: this,
-            hookService: this.hookService
-        });
-        await this.graphService.initialize();
 
         // Initialize Chat Service
         this.chatService = new ChatService({
@@ -272,9 +263,6 @@ class WorkspaceManager extends EventEmitter {
             case 'imap':
             case 'imapSync':
                 result = await workspace.enableImap();
-                break;
-            case 'graph':
-                result = await this.graphService.enable(workspace);
                 break;
             case 'chat':
                 result = await this.chatService.enable(workspace);

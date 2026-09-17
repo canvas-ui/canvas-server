@@ -18,7 +18,7 @@ import {
  *
  * Per-workspace connector service for poll-based external sources — GitHub
  * issues, Slack channels, Google Calendar, MS Teams. Sibling of the mail
- * service (services/imap): config lives in config/stored.json (backends map,
+ * service (services/mail): config lives in config/stored.json (backends map,
  * keyed `<driver>:<address>`), synced documents are filed ONLY into the
  * backends tree (/github/<address>/<owner>/<repo>, /slack/<address>/<channel>,
  * …), and the uniform workspace-service event contract is emitted for the

@@ -28,7 +28,7 @@ import GdriveBackend from 'canvas-stored/src/backends/gdrive/index.js';
 import { pickGeo } from './lib/geo.js';
 import { WorkspaceStoredIndex } from './lib/WorkspaceStoredIndex.js';
 import { joinKey, transferFilename } from './services/hook/key-utils.js';
-import { WorkspaceMailIndex } from './services/imap/index.js';
+import { WorkspaceMailIndex } from './services/mail/index.js';
 import { WorkspaceConnectorIndex, isConnectorDriver, CONNECTOR_SCHEMES, connectorDriverForProvenanceUrl } from './services/connectors/index.js';
 import { SyncConflicts } from './lib/SyncConflicts.js';
 import { getServerDevice } from '../device/ServerDevice.js';

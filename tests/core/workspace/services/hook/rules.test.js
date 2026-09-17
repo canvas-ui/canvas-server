@@ -5,7 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { resolveRuleFiles, loadRuleFile, matchRule, explainRule, executeRuleActions, interpolate, expandKeyTemplate, joinKey } from '../../../../../src/core/workspace/services/hook/rules.js';
 import { classifyDocument } from '../../../../../src/core/workspace/lib/classifier.js';
-import { download, resolveKind, arxivPdfUrl } from '../../../../../src/core/workspace/services/hook/download.js';
+import { download } from '../../../../../src/core/workspace/services/hook/download.js';
+import { resolveKind, arxivPdfUrl } from '../../../../../src/core/workspace/services/fetchers/index.js';
 import { interpolate as interp, expandKeyTemplate as expandKey } from '../../../../../src/core/workspace/services/hook/rules.js';
 
 const noopLogger = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} };
@@ -706,7 +707,7 @@ describe('download action', () => {
             return path.join(workDir, 'example.com/docs/index.html');
         };
         const res = await download({ action: 'download', folder: 'Sites', kind: 'website' },
-            { workspace, doc, context, scope, logger: noopLogger, provenance: {}, helpers, fetchers: { site: fakeSite } });
+            { workspace, doc, context, scope, logger: noopLogger, provenance: {}, helpers, fetchers: { website: fakeSite } });
         assert.equal(res.file, 'Sites/example.com/docs/index.html');
         assert.ok(fs.existsSync(path.join(root, 'home/Sites/example.com/docs/a.css')));
         assert.equal(calls.insert[0].d.metadata.contentType, 'text/html');

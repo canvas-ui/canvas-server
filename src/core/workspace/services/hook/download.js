@@ -3,11 +3,10 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
-import { spawn } from 'child_process';
-import { pipeline } from 'stream/promises';
-import { Readable } from 'stream';
 import { WORKSPACE_DIRECTORIES } from '../../lib/constants.js';
-import { sanitizeSegment, joinKey, MIME_EXTENSIONS, mimeForFilename } from './key-utils.js';
+import { sanitizeSegment, joinKey, mimeForFilename } from './key-utils.js';
+import { resolveKind, getFetcher } from '../fetchers/index.js';
+import { listFiles } from '../fetchers/lib.js';
 
 /**
  * The `download` rule action: fetch what a link (tab / bookmark / any document
@@ -16,12 +15,15 @@ import { sanitizeSegment, joinKey, MIME_EXTENSIONS, mimeForFilename } from './ke
  *   { "action": "download", "to": "workspace:home", "folder": "Downloads",
  *     "kind": "auto", "recursive": true, "insert": "/media/saved", "tags": [] }
  *
- * `kind`:
+ * `kind` selects a fetcher driver (services/fetchers/drivers/*): 'auto'
+ * classifies by URL shape, then by content type, then falls back to `page`.
+ * The drivers own the how (yt-dlp, wget, plain HTTP); this action owns the
+ * where: placement under a backend, the file document, and idempotency.
+ *
  *   auto     — arXiv → PDF; YouTube & co. → video; image/video/PDF URLs → the
  *              file itself; anything else → the page.
- *   image    — the URL's bytes as-is (works for any direct file link).
+ *   file     — the URL's bytes as-is (aliases: image, arxiv).
  *   video    — yt-dlp (best video+audio, merged). `format` overrides.
- *   arxiv    — the paper PDF (abs/ and pdf/ URLs both work).
  *   page     — the page with its images/CSS/JS (wget --page-requisites).
  *   website  — recursive mirror, `depth` levels deep (default 2, max 5).
  *
@@ -37,169 +39,10 @@ import { sanitizeSegment, joinKey, MIME_EXTENSIONS, mimeForFilename } from './ke
  * log carries the outcome; a timeout kills the whole process group.
  */
 
-const VIDEO_HOSTS = ['youtube.com', 'youtu.be', 'vimeo.com', 'tiktok.com', 'twitch.tv', 'dailymotion.com', 'rumble.com', 'odysee.com'];
-const FILE_MIME_PREFIXES = ['image/', 'video/', 'audio/', 'application/pdf', 'application/zip', 'application/octet-stream'];
 const DEFAULT_TIMEOUT_S = 600;
 const MAX_TIMEOUT_S = 3600;
 const DEFAULT_MAX_BYTES = 2 * 1024 * 1024 * 1024; // 2 GiB
 const LEDGER_FILE = 'download-ledger.json';
-
-// ── URL classification ───────────────────────────────────────────────────────
-
-export function arxivPdfUrl(url) {
-    const match = String(url || '').match(/arxiv\.org\/(?:abs|pdf)\/([\w.-]+?)(?:\.pdf)?(?:[?#].*)?$/i);
-    return match ? `https://arxiv.org/pdf/${match[1]}.pdf` : null;
-}
-
-function hostOf(url) {
-    try { return new URL(url).hostname.toLowerCase().replace(/^www\./, ''); } catch { return null; }
-}
-
-function hostMatches(host, suffix) {
-    return Boolean(host) && (host === suffix || host.endsWith(`.${suffix}`));
-}
-
-export function isVideoUrl(url) {
-    const host = hostOf(url);
-    return VIDEO_HOSTS.some((h) => hostMatches(host, h));
-}
-
-const IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp|svg|avif|bmp|heic|tiff?)(?:[?#].*)?$/i;
-const FILE_EXT_RE = /\.(pdf|zip|mp4|mkv|webm|mov|mp3|m4a|flac|wav|ogg)(?:[?#].*)?$/i;
-
-/**
- * Decide how to fetch a URL. `explicit` is the rule's `kind`; 'auto' (or
- * absent) classifies by URL shape first and, for ambiguous links, by a HEAD
- * request's content type (`probe`, injectable for tests).
- * @returns {Promise<'file'|'video'|'page'|'website'>}
- */
-export async function resolveKind(url, explicit = 'auto', probe = headContentType) {
-    const kind = String(explicit || 'auto').toLowerCase();
-    if (kind === 'image' || kind === 'file' || kind === 'arxiv') { return 'file'; }
-    if (kind === 'video' || kind === 'page' || kind === 'website') { return kind; }
-    if (arxivPdfUrl(url)) { return 'file'; }
-    if (isVideoUrl(url)) { return 'video'; }
-    if (IMAGE_EXT_RE.test(url) || FILE_EXT_RE.test(url)) { return 'file'; }
-    const contentType = await probe(url).catch(() => null);
-    if (contentType && FILE_MIME_PREFIXES.some((p) => contentType.startsWith(p))) { return 'file'; }
-    return 'page';
-}
-
-async function headContentType(url) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 10_000);
-    try {
-        const res = await fetch(url, { method: 'HEAD', redirect: 'follow', signal: controller.signal });
-        return String(res.headers.get('content-type') || '').split(';')[0].trim().toLowerCase() || null;
-    } finally {
-        clearTimeout(timer);
-    }
-}
-
-// ── Fetchers (all produce files inside workDir, return the entry file) ───────
-
-function filenameFromResponse(res, url, fallbackBase) {
-    const disposition = res.headers.get('content-disposition') || '';
-    const star = disposition.match(/filename\*=(?:UTF-8'')?([^;]+)/i);
-    const plain = disposition.match(/filename="?([^";]+)"?/i);
-    let name = star ? decodeURIComponent(star[1].trim()) : plain ? plain[1].trim() : '';
-    if (!name) {
-        try { name = decodeURIComponent(path.posix.basename(new URL(url).pathname)); } catch { name = ''; }
-    }
-    const contentType = String(res.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
-    const hasExt = /\.[a-z0-9]{1,5}$/i.test(name);
-    if (!hasExt) {
-        name = `${sanitizeSegment(name || fallbackBase, fallbackBase)}${MIME_EXTENSIONS[contentType] || ''}`;
-    }
-    return sanitizeSegment(name, `${fallbackBase}${MIME_EXTENSIONS[contentType] || ''}`);
-}
-
-async function fetchFile(url, { workDir, fallbackBase, maxBytes, signal }) {
-    const res = await fetch(url, { redirect: 'follow', signal, headers: { 'user-agent': 'canvas-server download rule' } });
-    if (!res.ok || !res.body) { throw new Error(`HTTP ${res.status} for ${url}`); }
-    const filename = filenameFromResponse(res, url, fallbackBase);
-    const target = path.join(workDir, filename);
-    let size = 0;
-    const cap = async function* (source) {
-        for await (const chunk of source) {
-            size += chunk.length;
-            if (size > maxBytes) { throw new Error(`download exceeds ${maxBytes} bytes`); }
-            yield chunk;
-        }
-    };
-    await pipeline(Readable.fromWeb(res.body), cap, fs.createWriteStream(target));
-    return target;
-}
-
-function runTool(cmd, args, { cwd, timeoutMs, logger, label }) {
-    return new Promise((resolve, reject) => {
-        const child = spawn(cmd, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
-        let stderr = '';
-        child.stderr.on('data', (chunk) => { if (stderr.length < 8192) { stderr += chunk.toString(); } });
-        child.stdout.on('data', () => {});
-        const timer = setTimeout(() => {
-            logger?.warn(`rule download: ${label} timed out after ${timeoutMs}ms, killing`);
-            try { process.kill(-child.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); }
-        }, timeoutMs);
-        child.on('error', (err) => { clearTimeout(timer); reject(new Error(`${cmd} failed to start: ${err.message}`)); });
-        child.on('close', (code) => {
-            clearTimeout(timer);
-            if (code === 0) { resolve(); }
-            else { reject(new Error(`${cmd} exited with ${code}${stderr ? `: ${stderr.trim().split('\n').pop()}` : ''}`)); }
-        });
-    });
-}
-
-function listFiles(dir) {
-    const out = [];
-    const walk = (d) => {
-        for (const entry of fs.readdirSync(d, { withFileTypes: true })) {
-            const full = path.join(d, entry.name);
-            if (entry.isDirectory()) { walk(full); }
-            else if (entry.isFile()) { out.push(full); }
-        }
-    };
-    walk(dir);
-    return out;
-}
-
-async function fetchVideo(url, { workDir, timeoutMs, format, logger }) {
-    const args = [
-        '--no-playlist', '--no-progress', '--restrict-filenames', '--no-part', '--no-mtime',
-        '-o', '%(title).120B [%(id)s].%(ext)s',
-        ...(format ? ['-f', String(format)] : []),
-        url,
-    ];
-    await runTool('yt-dlp', args, { cwd: workDir, timeoutMs, logger, label: 'yt-dlp' });
-    const files = listFiles(workDir).filter((f) => !/\.(part|ytdl)$/i.test(f));
-    if (!files.length) { throw new Error('yt-dlp produced no file'); }
-    // The merged output is the largest file (fragments, if any, are smaller).
-    return files.sort((a, b) => fs.statSync(b).size - fs.statSync(a).size)[0];
-}
-
-async function fetchSite(url, { workDir, timeoutMs, depth, mirror, logger }) {
-    const args = [
-        '--quiet', '--no-verbose', '--adjust-extension', '--convert-links', '--page-requisites', '--no-parent',
-        '--timeout=30', '--tries=2', '--user-agent=canvas-server download rule',
-        '-e', 'robots=off',
-        ...(mirror ? ['--recursive', `--level=${depth}`] : []),
-        '-P', workDir,
-        url,
-    ];
-    // wget exits 8 on any 4xx/5xx among requisites even when the page itself
-    // downloaded — judge by what landed on disk instead.
-    await runTool('wget', args, { cwd: workDir, timeoutMs, logger, label: 'wget' }).catch((err) => {
-        logger?.debug(`rule download: wget finished with ${err.message}`);
-    });
-    const html = listFiles(workDir).filter((f) => /\.html?$/i.test(f));
-    if (!html.length) { throw new Error('wget produced no HTML page'); }
-    const depthOf = (f) => f.split(path.sep).length;
-    const wanted = (() => { try { return path.posix.basename(new URL(url).pathname); } catch { return ''; } })();
-    return html.sort((a, b) => {
-        const score = (f) => (path.basename(f).startsWith(wanted && wanted !== '/' ? wanted : 'index.html') ? 0 : 1);
-        return score(a) - score(b) || depthOf(a) - depthOf(b);
-    })[0];
-}
 
 // ── Placement ────────────────────────────────────────────────────────────────
 
@@ -272,10 +115,10 @@ export async function download(action, { workspace, doc, context, scope, logger,
     }
 
     const kind = await resolveKind(url, action.kind, fetchers.probe);
-    const fetchUrl = kind === 'file' ? (arxivPdfUrl(url) || url) : url;
+    const fetcher = getFetcher(kind);
+    const fetchUrl = fetcher.resolveUrl(url);
     const timeoutMs = Math.min(Math.max(5, Number(action.timeout) || DEFAULT_TIMEOUT_S), MAX_TIMEOUT_S) * 1000;
     const maxBytes = Math.max(1024, Number(action.maxBytes) || DEFAULT_MAX_BYTES);
-    const depth = Math.min(Math.max(1, Number(action.depth) || 2), 5);
 
     const eventId = scope.payload?.eventId || crypto.randomUUID();
     const handlerId = String(scope.rule?.id || 'rule').replace(/[^a-zA-Z0-9._-]+/g, '-');
@@ -287,16 +130,12 @@ export async function download(action, { workspace, doc, context, scope, logger,
     const controller = new AbortController();
     const abortTimer = setTimeout(() => controller.abort(), timeoutMs);
 
+    // `fetchers[kind]` lets tests swap a driver's fetch() for a fake.
+    const run = fetchers[kind] || ((u, ctx) => fetcher.fetch(u, ctx));
     let entry;
     try {
         logger.debug(`rule download: ${doc.id} ${kind} ${fetchUrl} → home/${destRel || '.'}`);
-        if (kind === 'file') {
-            entry = await (fetchers.file || fetchFile)(fetchUrl, { workDir, fallbackBase, maxBytes, signal: controller.signal });
-        } else if (kind === 'video') {
-            entry = await (fetchers.video || fetchVideo)(fetchUrl, { workDir, timeoutMs, format: action.format, logger });
-        } else {
-            entry = await (fetchers.site || fetchSite)(fetchUrl, { workDir, timeoutMs, depth, mirror: kind === 'website', logger });
-        }
+        entry = await run(fetchUrl, { workDir, timeoutMs, signal: controller.signal, maxBytes, fallbackBase, logger, action });
     } catch (err) {
         fs.rmSync(workDir, { recursive: true, force: true });
         throw new Error(`download of ${fetchUrl} failed: ${err.message}`, { cause: err });
@@ -304,12 +143,12 @@ export async function download(action, { workspace, doc, context, scope, logger,
         clearTimeout(abortTimer);
     }
 
-    // Move what was fetched into place. A page/website mirror keeps its
-    // host/path tree (wget's layout) below the destination folder; a single
-    // file lands directly in it under a collision-free name.
+    // Move what was fetched into place. A 'tree' layout (page/website mirror)
+    // keeps its host/path tree below the destination folder; a single file
+    // lands directly in it under a collision-free name.
     fs.mkdirSync(destDir, { recursive: true });
     let entryFinal;
-    if (kind === 'page' || kind === 'website') {
+    if (fetcher.layout === 'tree') {
         const topLevel = fs.readdirSync(workDir);
         for (const name of topLevel) {
             const src = path.join(workDir, name);

@@ -9,7 +9,7 @@ import { describeConnectorDrivers } from '../../../core/workspace/services/conne
 // /<driver>/<address> nodes. One surface over storage backends
 // (file/cacache/s3) and message connectors (imap accounts). Driver dispatch +
 // capabilities live on the Workspace facade (see Workspace.listBackends /
-// syncBackend / …). Retires the data-backends vs services/imap split and the
+// syncBackend / …). Retires the data-backends vs services/mail split and the
 // resync-node band-aid.
 export default async function workspaceBackendRoutes(fastify) {
     const ok = (reply, payload, count) => {

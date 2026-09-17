@@ -22,7 +22,7 @@ import { internalPathMatcher } from './internal-paths.js';
  * instantiated standalone in any bun/node runtime.
  *
  * Blob/file indexing only. IMAP/email ingestion + mailbox management live in
- * the per-workspace mail service (services/imap). This index owns the shared
+ * the per-workspace mail service (services/mail). This index owns the shared
  * Stored instance and orchestrates the cross-scheme resolve/destroy/describe
  * paths; imap:// byte-ops are delegated to the mail service via the injected
  * describeImapLocation/destroyImapLocation callbacks.

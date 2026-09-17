@@ -99,7 +99,7 @@ download sits next to the bookmark in every folder and view.
 
 | Field | Meaning |
 |-------|---------|
-| `kind` | `auto` (default): arXiv → PDF, YouTube/Vimeo/TikTok/… → video, image/video/PDF links → the file, everything else → the page. Or force `image`, `video`, `arxiv`, `page`, `website` |
+| `kind` | `auto` (default): arXiv → PDF, YouTube/Vimeo/TikTok/… → video, image/video/PDF links → the file, everything else → the page. Or force `file` (aliases `image`, `arxiv`), `video`, `page`, `website`. Each kind is a driver in `services/fetchers/drivers/`; add a folder there + one line in `drivers/index.js` to teach the action a new source |
 | `to` | Backend the bytes end up on (default `workspace:home`; anything else is downloaded into home first, then moved on) |
 | `folder` / `recursive` | As for `store`: destination directory (+ the sub-path below the matched `when.path`) |
 | `key` | File name for single files (tokens as for `store`; default: the server's / yt-dlp's name) |

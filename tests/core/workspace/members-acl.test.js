@@ -204,3 +204,18 @@ test('transferWorkspaceOwnership moves the entry, addressing and access; univers
   const universe = await manager.createUniverseWorkspace(owner.id, owner.email, path.join(owner.homePath, 'Workspaces', 'universe'));
   await assert.rejects(manager.transferWorkspaceOwnership(universe.id, mate.id), /universe/i);
 });
+
+test('same-name email share remains addressable by UUID without changing ownership or permissions', async (t) => {
+  const { tmp, owner, mate, manager } = await makeEnv();
+  t.after(() => rmSync(tmp, { recursive: true, force: true }));
+  const shared = await manager.createWorkspace('default', owner.id, { userEmail: owner.email });
+  const own = await manager.createWorkspace('default', mate.id, { userEmail: mate.email });
+  await manager.grantWorkspaceMember(shared.id, owner.id, 'user', mate.email, { permissions: ['read'] });
+  assert.equal(manager.resolveWorkspaceId(mate.id, 'default'), own.id);
+  const entry = (await manager.listWorkspaces(mate.id)).find((ws) => ws.isShared);
+  assert.equal(entry.id, shared.id);
+  const opened = await manager.getWorkspace(entry.id, mate.id);
+  assert.equal(opened.id, shared.id);
+  assert.equal(opened.owner, owner.id);
+  assert.equal(await manager.getWorkspace(entry.id, mate.id, { permission: 'write' }), null);
+});

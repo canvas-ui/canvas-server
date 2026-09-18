@@ -112,3 +112,35 @@ describe('workspace ACL middleware — member principals', () => {
         assert.equal(reply.statusCode, 403);
     });
 });
+
+for (const token of ['jwt.token.value', 'canvas-1234567890abcdef']) {
+    test(`read-only email member wakes a stopped workspace with ${token}`, async () => {
+        const workspace = { ...WS, isActive: false, async start() { this.isActive = true; } };
+        const manager = makeManager();
+        manager.getWorkspace = async () => workspace;
+        manager.resolveWorkspaceAccess = async () => ({
+            isOwner: false, owner: WS.owner, permissions: ['read'], via: 'user', principal: 'mate@example.com',
+        });
+        const starts = [];
+        manager.startWorkspace = async (id, userId) => {
+            starts.push({ id, userId });
+            await workspace.start();
+            return workspace;
+        };
+        const request = makeRequest({ userId: 'mate-1', token, manager });
+        const reply = makeReply();
+        await createWorkspaceACLMiddleware('read')(request, reply);
+        assert.equal(reply.statusCode, null);
+        assert.equal(request.workspace.isActive, true, 'shared contents must be available after opening');
+        assert.deepEqual(starts, [{ id: WS.id, userId: 'mate-1' }]);
+        assert.deepEqual(request.workspaceAccess.permissions, ['read']);
+        assert.equal(request.workspaceAccess.isOwner, false);
+
+        workspace.isActive = false;
+        starts.length = 0;
+        const denied = makeReply();
+        await createWorkspaceACLMiddleware('write')(makeRequest({ userId: 'mate-1', token, manager }), denied);
+        assert.equal(denied.statusCode, 403);
+        assert.equal(starts.length, 0, 'denied writes must not start the workspace');
+    });
+}

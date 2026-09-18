@@ -256,7 +256,7 @@ export function createWorkspaceACLMiddleware(requiredPermission = 'read', { allo
 
         if (memberAccess) {
           logger.debug(`Member access granted for workspace ${workspaceId}: ${memberAccess.access.description}`);
-          request.workspace = memberAccess.workspace;
+          request.workspace = await ensureStarted(request, memberAccess.workspace);
           request.workspaceAccess = {
             ...memberAccess.access,
             isOwner: false

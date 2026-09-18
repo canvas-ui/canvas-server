@@ -4,6 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import createError from '@fastify/error';
+import { env } from '../../env.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -44,7 +45,7 @@ class LdapAuthStrategy {
       }
 
       // Load auth configuration (created by AuthService if needed)
-      const configPath = path.join(process.cwd(), 'server/config/auth.json');
+      const configPath = path.join(env.server.home, 'config', 'auth.json');
       if (!fs.existsSync(configPath)) {
         throw new LdapConfigError('Auth configuration file not found - AuthService should have created it');
       }

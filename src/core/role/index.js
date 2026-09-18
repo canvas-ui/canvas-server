@@ -4,6 +4,7 @@
 import path from 'path';
 import * as fsPromises from 'fs/promises';
 import { existsSync } from 'fs';
+import { env } from '../../env.js';
 import EventEmitter from 'eventemitter2';
 import Conf from 'conf';
 import Docker from 'dockerode';
@@ -431,7 +432,7 @@ class Roles extends EventEmitter {
      * @private
      */
     async #loadRoleTemplate(templateName) {
-        const templatePath = path.join(process.cwd(), 'extensions', 'roles', templateName, 'role.json');
+        const templatePath = path.join(env.server.root, 'extensions', 'roles', templateName, 'role.json');
 
         if (!existsSync(templatePath)) {
             throw new Error(`Role template not found: ${templateName}`);

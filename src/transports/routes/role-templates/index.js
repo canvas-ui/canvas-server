@@ -4,6 +4,7 @@ import ResponseObject from '../../ResponseObject.js';
 import path from 'path';
 import { promises as fs } from 'fs';
 import { existsSync } from 'fs';
+import { env } from '../../../env.js';
 
 /**
  * Role Template Routes
@@ -11,7 +12,7 @@ import { existsSync } from 'fs';
  */
 export default async function roleTemplateRoutes(fastify, _options) {
 
-  const templatesPath = path.join(process.cwd(), 'extensions', 'roles');
+  const templatesPath = path.join(env.server.root, 'extensions', 'roles');
 
   /**
    * List available role templates

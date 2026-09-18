@@ -84,8 +84,11 @@ npm start                      # or: npm run dev  (debug logging, NODE_ENV=devel
 
 A `.env` in the repo root is read on start (either script): its keys fill in
 whatever the environment does not already set, and empty values are skipped.
-The `CANVAS_HOST_*` keys are for docker compose and `install-local.sh` only —
-the server itself uses `CANVAS_SERVER_HOME`, `CANVAS_USER_HOME` and so on.
+`CANVAS_HOST_SERVER_HOME` and `CANVAS_HOST_USER_HOME` are mapped the same way
+docker compose and `install-local.sh` do it (the user home is linked in as the
+admin's home, or is the users root when `CANVAS_USER_MOUNT` is set), so all
+three run on the same data; `CANVAS_HOST_PORT` is not — set `CANVAS_API_PORT`
+and `CANVAS_WEB_PORT` for that.
 
 Guided instead, if you would rather be asked than set variables:
 

@@ -14,16 +14,22 @@ const SERVER_MODE = argv.argv.slice(2).includes('--user') ? 'user' : 'standalone
 // Root paths
 const SERVER_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
-// <repo>/.env, if present. Plain dotenv semantics, nothing mapped: variables
-// already in the environment (the shell, the npm script's cross-env,
-// install-local.sh, the container) win, and empty values are skipped — the
-// template leaves optional keys blank, and "" would otherwise pin e.g.
-// CANVAS_USER_WORKSPACES to an empty path. CANVAS_HOST_* only mean something
-// to docker compose and install-local.sh. Runs before anything below reads
-// process.env, and every module reading it at import time imports this first.
+// <repo>/.env, if present. Plain dotenv semantics: variables already in the
+// environment (the shell, the npm script's cross-env, install-local.sh, the
+// container) win, and empty values are skipped — the template leaves optional
+// keys blank, and "" would otherwise pin e.g. CANVAS_USER_WORKSPACES to an
+// empty path. Runs before anything below reads process.env, and every module
+// reading it at import time imports this first.
 loadDotEnv(path.join(SERVER_ROOT, '.env'));
-const SERVER_HOME = process.env.CANVAS_SERVER_HOME || getServerHome();
-const USER_HOME = process.env.CANVAS_USER_HOME || getUserHome();
+
+// The .env speaks in host paths (CANVAS_HOST_*), the keys docker compose binds
+// and install-local.sh maps; the same mapping here makes `npm start` run on the
+// same data as either of them. The server's own variables still win — the
+// container sets both, so this never applies inside it.
+const HOST_SERVER_HOME = resolveHostPath(process.env.CANVAS_HOST_SERVER_HOME);
+const HOST_USER_HOME = resolveHostPath(process.env.CANVAS_HOST_USER_HOME);
+const SERVER_HOME = process.env.CANVAS_SERVER_HOME || HOST_SERVER_HOME || getServerHome();
+const USER_HOME = process.env.CANVAS_USER_HOME || hostUserHome() || getUserHome();
 const INFERD_CONFIG_PATH = process.env.CANVAS_INFERD_CONFIG || path.join(SERVER_HOME, 'config', 'inferd.json');
 
 // Read once at import. `process.env.npm_package_*` is only populated when the
@@ -305,6 +311,52 @@ function getServerHome() {
  */
 function getUserHome() {
     return path.join(SERVER_HOME, 'users');
+}
+
+/** A CANVAS_HOST_* path: absolute, `~`-prefixed, or relative to the repo (the template's ./data/...). */
+function resolveHostPath(value) {
+    if (!value) { return null; }
+    if (value === '~' || value.startsWith('~/')) { return path.join(os.homedir(), value.slice(1)); }
+    return path.resolve(SERVER_ROOT, value);
+}
+
+/**
+ * Where CANVAS_HOST_USER_HOME puts the users root, the same two shapes as
+ * docker-compose.yml and install-local.sh:
+ *
+ *   CANVAS_USER_MOUNT set    the path IS the users root, one <email>/ per user
+ *   personal (the default)   the path is the admin's own home, linked in as
+ *                            <serverHome>/users/<admin email>
+ *
+ * The link is only created or repointed, never over a real directory — that
+ * is someone's existing data; the server then keeps using it and says so.
+ */
+function hostUserHome() {
+    if (!HOST_USER_HOME) { return null; }
+    if (process.env.CANVAS_USER_MOUNT) { return HOST_USER_HOME; }
+
+    const usersRoot = path.join(SERVER_HOME, 'users');
+    const email = (process.env.CANVAS_ADMIN_EMAIL || 'admin@canvas.local').toLowerCase();
+    const link = path.join(usersRoot, email);
+    try {
+        fs.mkdirSync(HOST_USER_HOME, { recursive: true });
+        fs.mkdirSync(usersRoot, { recursive: true });
+        let current = null;
+        try { current = fs.lstatSync(link); } catch (err) { if (err.code !== 'ENOENT') { throw err; } }
+        if (!current) {
+            fs.symlinkSync(HOST_USER_HOME, link);
+        } else if (current.isSymbolicLink()) {
+            if (fs.readlinkSync(link) !== HOST_USER_HOME) {
+                fs.unlinkSync(link);
+                fs.symlinkSync(HOST_USER_HOME, link);
+            }
+        } else {
+            console.warn(`[env] ${link} is a real directory; CANVAS_HOST_USER_HOME (${HOST_USER_HOME}) is NOT being used — move it aside or set CANVAS_USER_MOUNT`);
+        }
+    } catch (err) {
+        console.warn(`[env] could not link ${link} → ${HOST_USER_HOME}: ${err.message}`);
+    }
+    return usersRoot;
 }
 
 function loadDotEnv(file) {

@@ -234,7 +234,7 @@ echo
 if ! $DO_START; then
     bold "Not starting (--no-start)"
     info "Start it with: ./scripts/install-local.sh --no-install --env-file $ENV_FILE"
-    info "(plain \`npm start\` reads the .env too, paths included, but not the port or JWT secret file)"
+    info "(plain \`npm start\` reads the .env too, paths and port included, but not the JWT secret file)"
     exit 0
 fi
 

@@ -26,6 +26,9 @@ loadDotEnv(path.join(SERVER_ROOT, '.env'));
 // and install-local.sh maps; the same mapping here makes `npm start` run on the
 // same data as either of them. The server's own variables still win — the
 // container sets both, so this never applies inside it.
+// install-local.sh listens on CANVAS_HOST_PORT; in the container it is only
+// the host side of the 8001 mapping, and the container never sees the .env.
+const HOST_PORT = process.env.CANVAS_HOST_PORT || 8001;
 const HOST_SERVER_HOME = resolveHostPath(process.env.CANVAS_HOST_SERVER_HOME);
 const HOST_USER_HOME = resolveHostPath(process.env.CANVAS_HOST_USER_HOME);
 const SERVER_HOME = process.env.CANVAS_SERVER_HOME || HOST_SERVER_HOME || getServerHome();
@@ -71,13 +74,13 @@ export const env = {
             // "disable" flags exist so Electron can run an embedded instance in minimal mode
             enabled: process.env.CANVAS_DISABLE_API !== 'true',
             protocol: process.env.CANVAS_API_PROTOCOL || 'http',
-            port: process.env.CANVAS_API_PORT || 8001,
+            port: process.env.CANVAS_API_PORT || HOST_PORT,
             host: process.env.CANVAS_API_HOST || '0.0.0.0'
         },
         web: {
             enabled: process.env.CANVAS_DISABLE_WEB !== 'true',
             protocol: process.env.CANVAS_WEB_PROTOCOL || 'http',
-            port: process.env.CANVAS_WEB_PORT || 8001,
+            port: process.env.CANVAS_WEB_PORT || HOST_PORT,
             host: process.env.CANVAS_WEB_HOST || '0.0.0.0'
         },
     },

@@ -87,8 +87,8 @@ whatever the environment does not already set, and empty values are skipped.
 `CANVAS_HOST_SERVER_HOME` and `CANVAS_HOST_USER_HOME` are mapped the same way
 docker compose and `install-local.sh` do it (the user home is linked in as the
 admin's home, or is the users root when `CANVAS_USER_MOUNT` is set), so all
-three run on the same data; `CANVAS_HOST_PORT` is not — set `CANVAS_API_PORT`
-and `CANVAS_WEB_PORT` for that.
+three run on the same data. `CANVAS_HOST_PORT` becomes the listening port
+(`CANVAS_API_PORT` / `CANVAS_WEB_PORT` still override it).
 
 Guided instead, if you would rather be asked than set variables:
 

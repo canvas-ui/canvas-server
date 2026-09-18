@@ -6,12 +6,22 @@ import { fileURLToPath } from 'url';
 import argv from 'node:process';
 import os from 'os';
 import _crypto from 'crypto';
+import dotenv from 'dotenv';
 
 // Runtime
 const SERVER_MODE = argv.argv.slice(2).includes('--user') ? 'user' : 'standalone';
 
 // Root paths
 const SERVER_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+
+// <repo>/.env, if present. Plain dotenv semantics, nothing mapped: variables
+// already in the environment (the shell, the npm script's cross-env,
+// install-local.sh, the container) win, and empty values are skipped — the
+// template leaves optional keys blank, and "" would otherwise pin e.g.
+// CANVAS_USER_WORKSPACES to an empty path. CANVAS_HOST_* only mean something
+// to docker compose and install-local.sh. Runs before anything below reads
+// process.env, and every module reading it at import time imports this first.
+loadDotEnv(path.join(SERVER_ROOT, '.env'));
 const SERVER_HOME = process.env.CANVAS_SERVER_HOME || getServerHome();
 const USER_HOME = process.env.CANVAS_USER_HOME || getUserHome();
 const INFERD_CONFIG_PATH = process.env.CANVAS_INFERD_CONFIG || path.join(SERVER_HOME, 'config', 'inferd.json');
@@ -295,4 +305,17 @@ function getServerHome() {
  */
 function getUserHome() {
     return path.join(SERVER_HOME, 'users');
+}
+
+function loadDotEnv(file) {
+    let parsed;
+    try {
+        parsed = dotenv.parse(fs.readFileSync(file));
+    } catch (err) {
+        if (err.code !== 'ENOENT') { console.warn(`[env] could not read ${file}: ${err.message}`); }
+        return;
+    }
+    for (const [key, value] of Object.entries(parsed)) {
+        if (value !== '' && process.env[key] === undefined) { process.env[key] = value; }
+    }
 }

@@ -82,6 +82,11 @@ npm install                    # synapsd/stored arrive as pinned git deps, the w
 npm start                      # or: npm run dev  (debug logging, NODE_ENV=development)
 ```
 
+A `.env` in the repo root is read on start (either script): its keys fill in
+whatever the environment does not already set, and empty values are skipped.
+The `CANVAS_HOST_*` keys are for docker compose and `install-local.sh` only —
+the server itself uses `CANVAS_SERVER_HOME`, `CANVAS_USER_HOME` and so on.
+
 Guided instead, if you would rather be asked than set variables:
 
 ```bash

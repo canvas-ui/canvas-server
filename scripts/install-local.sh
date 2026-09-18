@@ -234,7 +234,7 @@ echo
 if ! $DO_START; then
     bold "Not starting (--no-start)"
     info "Start it with: ./scripts/install-local.sh --no-install --env-file $ENV_FILE"
-    info "which is what applies the .env — plain \`npm start\` does not read it."
+    info "(plain \`npm start\` reads the .env too, but not the CANVAS_HOST_* path/port mapping)"
     exit 0
 fi
 

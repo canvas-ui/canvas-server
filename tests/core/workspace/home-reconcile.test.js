@@ -35,6 +35,13 @@ describe('home backend reconcile', () => {
     let ws;
 
     const homeFile = (rel) => path.join(ws.homePath, rel);
+    const waitForScan = async () => {
+        for (let attempt = 0; attempt < 500; attempt += 1) {
+            if (!(await ws.listBackends()).some((backend) => backend.resyncing)) return;
+            await new Promise(resolve => setTimeout(resolve, 20));
+        }
+        assert.fail('startup storage scan did not finish');
+    };
     // Awaited, not background: the test acts on the result of the reconcile.
     const resync = async () => { await ws.syncBackend('file', HOME_BACKEND, { background: false }); };
 
@@ -69,6 +76,7 @@ describe('home backend reconcile', () => {
             logger: { info() {}, warn() {}, debug() {}, error() {} },
         });
         await ws.start();
+        await waitForScan();
         // Index the home drive, but without chokidar: the tests drive resyncs.
         await ws.updateBackend('file', HOME_BACKEND, { enabled: true, watch: false });
     });
@@ -76,6 +84,31 @@ describe('home backend reconcile', () => {
     after(async () => {
         await ws?.stop().catch(() => {});
         if (root) { await fs.remove(root); }
+    });
+
+    test('startup reconciles offline additions, edits and removals with progress events', async () => {
+        await fs.outputFile(homeFile('offline-edit.txt'), 'before restart');
+        await fs.outputFile(homeFile('offline-remove.txt'), 'removed during downtime');
+        await resync();
+        const before = await docForFile('offline-edit.txt');
+        await ws.stop();
+        await fs.outputFile(homeFile('offline-add.txt'), 'added during downtime');
+        await fs.outputFile(homeFile('offline-edit.txt'), 'after restart with new contents');
+        await fs.remove(homeFile('offline-remove.txt'));
+        const events = [];
+        const onProgress = state => events.push(state);
+        ws.on('backend.resync.changed', onProgress);
+        try {
+            await ws.start();
+            await waitForScan();
+            assert.ok(await docForFile('offline-add.txt'));
+            assert.notEqual((await docForFile('offline-edit.txt')).id, before.id);
+            assert.equal(await docForFile('offline-remove.txt'), null);
+            assert.ok(events.some(event => event.backend === HOME_BACKEND && event.resyncing));
+            assert.ok(events.some(event => event.backend === HOME_BACKEND && !event.resyncing && event.progress.scanned >= 2));
+        } finally {
+            ws.off('backend.resync.changed', onProgress);
+        }
     });
 
     test('a file dropped into Home becomes a document', async () => {

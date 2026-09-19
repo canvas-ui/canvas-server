@@ -911,13 +911,10 @@ class Workspace extends EventEmitter {
                 await this.#startStoredIndex();
                 for (const [name, cfg] of Object.entries(this.dataBackends)) {
                     if (!cfg?.enabled || !cfg.resync || cfg.supported === false || cfg.driver !== 'file') continue;
-                    // Catch up external (device-scoped) mounts on start — a
-                    // restart may have killed their initial scan mid-flight, and
-                    // without a watcher nothing else would ever finish it. Cheap
-                    // when already indexed: the checksum cache skips re-hashing
-                    // unchanged files.
-                    const isExternalMount = !!cfg.device?.id && !!cfg.root && !cfg.root.includes('{WORKSPACE_ROOT}');
-                    if (!isExternalMount) continue;
+                    // Reconcile files changed while the workspace was stopped.
+                    // Keep startup responsive; cached checksums make unchanged
+                    // files cheap, and resync state drives the UI progress indicator.
+                    // Remote mounts retain their existing catch-up behavior.
                     try { this.#storedIndex.resyncInBackground(name); } catch (err) {
                         this.#logger.warn({ workspaceId: this.id, backend: name, error: err.message }, 'Start-time resync failed to start');
                     }

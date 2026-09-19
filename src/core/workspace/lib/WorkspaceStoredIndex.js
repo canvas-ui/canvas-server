@@ -120,6 +120,7 @@ export class WorkspaceStoredIndex {
     #backendStatus = new Map();
     #resyncing = new Set();
     #resyncCancels = new Set();
+    #backgroundResyncs = new Set();
 
     // Optional hooks: mirror a bare directory path into the backends tree
     // (skeleton mirroring — docs create their paths themselves), and observe
@@ -784,12 +785,9 @@ export class WorkspaceStoredIndex {
             await this.#registerConfiguredBackends();
 
             this.#bindEvents();
-            // No full resync on start: the synapsd document index is durable
-            // across restarts and the file watcher (ignoreInitial) picks up live
-            // changes. Reconciling drift (files changed while the server was
-            // down, or a remote/large backend) is an explicit, user-triggered
-            // operation via the backend sync API — a potentially slow scan that
-            // must not block workspace/server startup.
+            // Workspace launches background catch-up after becoming active.
+            // Keep chokidar's ignoreInitial watcher running: scans reconcile the
+            // snapshot while the watcher continues to capture live edits.
         } catch (error) {
             this.#logger.warn({ workspaceId: this.#workspaceId, error: error.message }, 'Stored home indexing unavailable');
             await this.stop();
@@ -798,6 +796,8 @@ export class WorkspaceStoredIndex {
 
 
     async stop() {
+        for (const name of this.#resyncing) this.#resyncCancels.add(name);
+        await Promise.allSettled([...this.#backgroundResyncs]);
         for (const timer of this.#prunePending.values()) clearTimeout(timer);
         this.#prunePending.clear();
         this.#unbindEvents();
@@ -861,10 +861,12 @@ export class WorkspaceStoredIndex {
         if (this.#resyncing.has(backendName)) {
             return { backend: backendName, started: false, alreadyRunning: true };
         }
-        this.resync(backendName).catch((error) => {
+        const task = this.resync(backendName).catch((error) => {
             this.#setBackendError(backendName, error);
             this.#logger.warn({ workspaceId: this.#workspaceId, backend: backendName, error: error.message }, 'Background resync failed');
         });
+        this.#backgroundResyncs.add(task);
+        void task.finally(() => this.#backgroundResyncs.delete(task));
         return { backend: backendName, started: true, resyncing: true };
     }
 

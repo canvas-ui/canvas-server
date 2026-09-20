@@ -535,6 +535,9 @@ class Workspace extends EventEmitter {
                 throw new Error(`Data backend "${backendName}" is a managed store — read-only does not apply`);
             }
         }
+        if (patch && 'scanOnStart' in patch && typeof patch.scanOnStart !== 'boolean') {
+            throw new Error('scanOnStart must be a boolean');
+        }
         const dataBackends = this.dataBackends;
         const next = { ...dataBackends[backendName], ...patch };
         dataBackends[backendName] = next;
@@ -907,10 +910,10 @@ class Workspace extends EventEmitter {
             // (IMAP scan → ingestMessage → #put → #getActiveDb) needs isActive,
             // otherwise every fetched message rejects with "Workspace not active".
             this.#setStatus(WORKSPACE_STATUS_CODES.ACTIVE);
-            if (this.isServiceEnabled('home') || this.isDataBackendEnabled(WorkspaceStoredIndex.HOME_STORED_BACKEND)) {
+            if (this.isServiceEnabled('home') || Object.values(this.dataBackends).some(cfg => cfg?.enabled && cfg.supported !== false)) {
                 await this.#startStoredIndex();
                 for (const [name, cfg] of Object.entries(this.dataBackends)) {
-                    if (!cfg?.enabled || !cfg.resync || cfg.supported === false || cfg.driver !== 'file') continue;
+                    if (!cfg?.enabled || !cfg.resync || cfg.supported === false || !(cfg.scanOnStart ?? (cfg.driver === 'file'))) continue;
                     // Reconcile files changed while the workspace was stopped.
                     // Keep startup responsive; cached checksums make unchanged
                     // files cheap, and resync state drives the UI progress indicator.
@@ -2966,6 +2969,7 @@ class Workspace extends EventEmitter {
                 watching: runtime.watching || false,
                 resyncing: runtime.resyncing === true,
                 resyncProgress: runtime.progress || null,
+                resyncStartedAt: runtime.resyncStartedAt || null,
                 lastScanAt: runtime.lastScanAt || null,
                 lastError: runtime.lastError || null,
                 cacheStats: runtime.cacheStats || null,
@@ -3050,6 +3054,7 @@ class Workspace extends EventEmitter {
             // a progress readout ({scanned, total}) without polling deep status.
             resyncing: status.resyncing === true,
             progress: status.resyncProgress || null,
+            resyncStartedAt: status.resyncStartedAt || null,
             // Mirror node in the backends tree (/device/<device>/<mount> for
             // device-scoped mounts) so clients never re-derive path grammar.
             treePath: this.#storedIndex?.getBackendTreeRoot(name) || null,
@@ -3070,6 +3075,7 @@ class Workspace extends EventEmitter {
                 managed: status.managed === true,
                 supported: status.supported !== false,
                 watch: status.watch === true,
+                scanOnStart: status.scanOnStart ?? (driver === 'file'),
                 // Network mount (cifs/nfs/sshfs/…). Detected from the kernel
                 // mount table by the file driver unless declared in config. The
                 // UI badges these and warns before a full resync; watching them
@@ -3278,6 +3284,7 @@ class Workspace extends EventEmitter {
                 ? { usePolling: true, pollInterval: Number(config.pollInterval) || 30000 }
                 : {}),
             resync: true,
+            scanOnStart: config.scanOnStart ?? true,
             exclude,
             readOnly: config.readOnly === true,
             // Authoring device snapshot: id is the file:// URL authority for
@@ -3300,6 +3307,10 @@ class Workspace extends EventEmitter {
         for (const key of Workspace.#GDRIVE_SECRETS) {
             if (!(key in input) || input[key] === true || input[key] === '' || input[key] == null) continue;
             patch[key] = String(input[key]).trim();
+        }
+        if ('scanOnStart' in input) {
+            if (typeof input.scanOnStart !== 'boolean') throw new Error('scanOnStart must be a boolean');
+            patch.scanOnStart = input.scanOnStart;
         }
         if ('watch' in input) patch.watch = input.watch === true;
         if ('readOnly' in input) patch.readOnly = input.readOnly === true;

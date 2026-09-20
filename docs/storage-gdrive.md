@@ -11,6 +11,19 @@ blobs, so identity (checksum), locations, cache, copy/move and Destroy all come
 from `canvas-stored`. Connectors (github/slack/gcal/…) stay services because
 their remote objects are mutable structured records, not bytes.
 
+## Startup scans
+
+Workspace Settings → storage backend cards expose **Scan on start** independently
+of **Watch for changes**. The boolean `scanOnStart` is persisted per backend in
+`services.stored.backends` and accepted by the backend update API. File backends
+(including filesystem mounts) default to on; remote drivers such as Google Drive
+default to off and can opt in. Disabled, unsupported and non-resyncable backends
+are never scanned on startup. Turning this off leaves manual Re-sync available.
+
+Startup scans run in the background. Progress shows the workspace name and the
+backend; dismissing it hides that scan's indicator without stopping the scan.
+Use **Stop sync** in settings to cancel instead.
+
 ## Credentials
 
 OAuth 2.0 refresh-token grant — the same flow as the Google Calendar connector,
@@ -31,7 +44,7 @@ next to the connector credentials, and reads return only `credentialsConfigured`
 
 ```
 POST   /rest/v2/workspaces/:id/backends/gdrive
-       { name, clientId, clientSecret, refreshToken, folderId?: 'root', watch?, readOnly?, pollInterval?, permanentDelete? }
+       { name, clientId, clientSecret, refreshToken, folderId?: 'root', watch?, scanOnStart?, readOnly?, pollInterval?, permanentDelete? }
 GET    /rest/v2/workspaces/:id/backends/gdrive
 PATCH  /rest/v2/workspaces/:id/backends/gdrive/:address   (same fields; `enabled`, `watch`; secrets: omit/true = keep)
 POST   /rest/v2/workspaces/:id/backends/gdrive/:address/test

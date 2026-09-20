@@ -28,6 +28,7 @@ describe('WorkspaceStoredIndex', () => {
     let documentPaths;
     let lockCalls;
     let migrations;
+    let putCount;
 
     beforeEach(async () => {
         rootPath = await fs.mkdtemp(path.join(os.tmpdir(), 'workspace-index-'));
@@ -37,6 +38,7 @@ describe('WorkspaceStoredIndex', () => {
         documentPaths = new Map();
         lockCalls = [];
         migrations = [];
+        putCount = 0;
     });
 
     afterEach(async () => {
@@ -102,6 +104,7 @@ describe('WorkspaceStoredIndex', () => {
                 documentPaths.set(id, (documentPaths.get(id) || []).filter((p) => p !== directory));
             },
             put: async (record, { directory } = {}) => {
+                putCount += 1;
                 // Mirror synapsd: a put carrying an id merges onto the stored doc
                 // (updateOne semantics — metadata is a shallow merge), a new doc
                 // is keyed by its primary checksum.
@@ -139,6 +142,22 @@ describe('WorkspaceStoredIndex', () => {
         assert.ok(index.getBackendStatus('workspace:home').lastScanAt);
         // Enable-lock applied to the backend mirror node on start
         assert.ok(lockCalls.some((c) => c.locked && c.nodePath === '/workspace/home' && c.holder === 'workspace:home'));
+    });
+
+    test('warm rescan avoids document writes but repairs missing documents and paths', async () => {
+        index = createIndex();
+        await index.start();
+        await index.resync('workspace:home');
+        const coldWrites = putCount;
+        await index.resync('workspace:home');
+        assert.equal(putCount, coldWrites, 'unchanged scan must not rewrite documents');
+        const [doc] = documents.values();
+        documentPaths.set(doc.id, []);
+        await index.resync('workspace:home');
+        assert.equal(putCount, coldWrites + 1, 'missing tree membership must be repaired');
+        documents.clear();
+        await index.resync('workspace:home');
+        assert.equal(documents.size, 1, 'storage checksum cache must not prevent document repair');
     });
 
     test('resync orphans (never deletes) docs whose only location vanished', async () => {

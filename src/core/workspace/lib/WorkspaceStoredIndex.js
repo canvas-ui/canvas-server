@@ -1,6 +1,7 @@
 'use strict';
 
 import path from 'path';
+import { isDeepStrictEqual } from 'node:util';
 import fs from 'fs/promises';
 import { createReadStream } from 'fs';
 import getFolderSize from 'get-folder-size';
@@ -1620,6 +1621,16 @@ export class WorkspaceStoredIndex {
         const currentBackendPaths = existingDocument?.id
             ? await db.listDocumentTreePaths(existingDocument.id, BACKENDS_TREE_NAME).catch(() => [])
             : [];
+
+        // A warm rescan still validates each file and repairs missing documents
+        // and tree paths, but must not re-write identical docs (and re-trigger
+        // hooks, embeddings and socket updates) for an unchanged library.
+        if (!storedFile.previous && existingDocument?.id
+            && Object.entries(documentData).every(([key, value]) =>
+                isDeepStrictEqual(key === 'orphanedAt' ? existingDocument[key] ?? null : existingDocument[key], value))
+            && isDeepStrictEqual([...currentBackendPaths].sort(), [...backendPaths].sort())) {
+            return existingDocument.id;
+        }
 
         const docId = await this.#put(
             existingDocument?.id ? { ...documentData, id: existingDocument.id } : documentData,

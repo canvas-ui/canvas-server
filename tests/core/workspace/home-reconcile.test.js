@@ -111,6 +111,66 @@ describe('home backend reconcile', () => {
         }
     });
 
+    test('unchanged rescan does not write documents in the real database', async () => {
+        await resync();
+        const put = ws.put;
+        let writes = 0;
+        ws.put = function (...args) { writes += 1; return put.apply(this, args); };
+        try {
+            await resync();
+            assert.equal(writes, 0);
+        } finally {
+            ws.put = put;
+        }
+    });
+
+    test('scan-on-start setting persists and leaves manual scans available', async () => {
+        const updated = await ws.updateBackend('file', HOME_BACKEND, { scanOnStart: false });
+        assert.equal(updated.config.scanOnStart, false);
+        await assert.rejects(ws.updateBackend('file', HOME_BACKEND, { scanOnStart: 'false' }), /boolean/);
+        await ws.stop();
+        await fs.outputFile(homeFile('manual-only.txt'), 'manual scan required');
+        const events = [];
+        const onProgress = state => events.push(state);
+        ws.on('backend.resync.changed', onProgress);
+        try {
+            await ws.start();
+            assert.equal((await ws.getBackend('file', HOME_BACKEND)).config.scanOnStart, false);
+            assert.equal(events.filter(event => event.backend === HOME_BACKEND).length, 0);
+            assert.equal(await docForFile('manual-only.txt'), null);
+            await resync();
+            assert.ok(await docForFile('manual-only.txt'));
+        } finally {
+            ws.off('backend.resync.changed', onProgress);
+            await ws.updateBackend('file', HOME_BACKEND, { scanOnStart: true });
+        }
+    });
+
+    test('supported remote storage can opt into startup scanning with home disabled', async (t) => {
+        await ws.stop();
+        await ws.setDataBackendConfig(HOME_BACKEND, { enabled: false });
+        const remote = { driver: 'gdrive', enabled: true, supported: true, resync: true, watch: false,
+            clientId: 'test', clientSecret: 'test', refreshToken: 'test', folderId: 'root' };
+        await ws.setDataBackendConfig('remote-opt-in', { ...remote, scanOnStart: true });
+        await ws.setDataBackendConfig('remote-default', remote);
+        const scans = [];
+        const spy = t.mock.method(WorkspaceStoredIndex.prototype, 'resyncInBackground', name => scans.push(name));
+        try {
+            await ws.start();
+            assert.deepEqual(scans, ['remote-opt-in']);
+            const updated = await ws.updateBackend('gdrive', 'remote-opt-in', { scanOnStart: false });
+            assert.equal(updated.config.scanOnStart, false);
+        } finally {
+            await ws.stop();
+            spy.mock.restore();
+            await ws.setDataBackendConfig('remote-opt-in', { enabled: false });
+            await ws.setDataBackendConfig('remote-default', { enabled: false });
+            await ws.setDataBackendConfig(HOME_BACKEND, { enabled: true });
+            await ws.start();
+            await waitForScan();
+        }
+    });
+
     test('a file dropped into Home becomes a document', async () => {
         await fs.outputFile(homeFile('notes/plan.txt'), 'plan contents');
         await resync();

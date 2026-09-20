@@ -171,6 +171,30 @@ describe('home backend reconcile', () => {
         }
     });
 
+    test('backend folder uploads write bytes and index immediately without a watcher', async () => {
+        const backend = await ws.getBackend('file', HOME_BACKEND);
+        assert.equal(backend.capabilities.upload, true);
+        await ws.updateBackend('file', HOME_BACKEND, { watch: false });
+        const key = 'Uploaded/été/photo #1.txt';
+        const result = await ws.writeBackendObject('file', HOME_BACKEND, key, Buffer.from('uploaded bytes'), { ifNoneMatch: '*' });
+        assert.equal(result.ok, true);
+        assert.ok(result.docId);
+        assert.equal(await fs.readFile(homeFile(key), 'utf8'), 'uploaded bytes');
+        assert.ok(await docForFile('photo #1.txt'));
+        const paths = await ws.listDocumentTreeMemberships(result.docId, Workspace.BACKENDS_TREE_NAME);
+        assert.ok(paths.length > 0);
+        const collision = await ws.writeBackendObject('file', HOME_BACKEND, key, Buffer.from('replacement'), { ifNoneMatch: '*' });
+        assert.equal(collision.ok, false);
+        assert.equal(await fs.readFile(homeFile(key), 'utf8'), 'uploaded bytes');
+        await ws.updateBackend('file', HOME_BACKEND, { readOnly: true });
+        try {
+            assert.equal((await ws.getBackend('file', HOME_BACKEND)).capabilities.upload, false);
+            await assert.rejects(ws.writeBackendObject('file', HOME_BACKEND, 'blocked.txt', Buffer.from('no'), { ifNoneMatch: '*' }), /read-only/);
+        } finally {
+            await ws.updateBackend('file', HOME_BACKEND, { readOnly: false });
+        }
+    });
+
     test('a file dropped into Home becomes a document', async () => {
         await fs.outputFile(homeFile('notes/plan.txt'), 'plan contents');
         await resync();

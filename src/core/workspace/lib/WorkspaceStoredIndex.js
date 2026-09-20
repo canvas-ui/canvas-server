@@ -597,6 +597,9 @@ export class WorkspaceStoredIndex {
      */
     async writeObject(backendName, key, source, options = {}) {
         const { backend, root } = this.#objectsBackend(backendName, { write: true });
+        if (String(options.ifNoneMatch || '').trim() === '*' && typeof backend.createFrom !== 'function') {
+            throw objectsError('Create-only uploads require an updated canvas-stored with createFrom support', 'STORED_TOO_OLD', 501);
+        }
         const normalized = this.#objectKey(backend, root, key);
         const pathKey = `${backendName}:${normalized}`;
         return this.withKeyLock(backendName, normalized, async () => {

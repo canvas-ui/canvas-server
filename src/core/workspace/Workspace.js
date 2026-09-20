@@ -3032,6 +3032,9 @@ class Workspace extends EventEmitter {
             test: driver === 'gdrive' && supported,
             containers: false,
             mutableContainers: (driver === 'file' || driver === 'gdrive') && config.readOnly !== true && supported,
+            // Direct, create-only uploads use the keyed-object API. Remote
+            // drivers can opt in once they implement the same write contract.
+            upload: driver === 'file' && config.enabled !== false && config.readOnly !== true && supported,
             deleteObject: config.readOnly !== true && supported,
             // Objects live under person-chosen paths (folder + filename on
             // transfer) — false for the content-hash keyed blob store.

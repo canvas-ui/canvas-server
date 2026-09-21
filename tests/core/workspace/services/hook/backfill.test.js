@@ -35,3 +35,14 @@ test('alternative source paths are unioned before paging, without skipping dupli
 test('a discovery error is not reported as an empty successful folder', async () => {
     await assert.rejects(discoverBackfillDocuments({ list: async () => Object.assign([], { error: 'offline' }) }), /offline/);
 });
+
+
+test('non-recursive backfill asks for direct backend membership only', async () => {
+    const workspace = { list: async (spec) => {
+        assert.deepEqual(spec.directory, { tree: 'backends', path: '/workspace/home/foo/bar', recursive: false });
+        return [{ id: 1 }];
+    } };
+    const result = await discoverBackfillDocuments(workspace, { paths: ['backends:/workspace/home/foo/bar'], recursive: false });
+    assert.deepEqual(result.docs, [{ id: 1 }]);
+    assert.equal(result.nextOffset, null);
+});

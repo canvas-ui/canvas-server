@@ -73,6 +73,22 @@ describe('rule matching', () => {
         assert.equal(matchRule(rule({ mime: 'image/*' }), 'document.inserted', c), false);
     });
 
+    test('exact folder rules exclude descendants and siblings while prefix rules retain recursive matching', () => {
+        const source = 'backends:/workspace/home/foo/bar';
+        const exact = { when: { event: 'document.inserted', pathExact: source }, then: [] };
+        const recursive = { when: { event: 'document.inserted', path: source }, then: [] };
+        for (const [folder, direct, nested] of [
+            ['/workspace/home/foo/bar', true, true],
+            ['/workspace/home/foo/bar/baz', false, true],
+            ['/workspace/home/foo/bar-other', false, false],
+        ]) {
+            const c = classifyDocument({ id: 1 }, { treePaths: { backends: [folder] } });
+            assert.equal(matchRule(exact, 'document.inserted', c), direct);
+            assert.equal(explainRule(exact, 'document.inserted', c).matched, direct);
+            assert.equal(matchRule(recursive, 'document.inserted', c), nested);
+        }
+    });
+
     test('disabled rule never matches', () => {
         const c = classify(tabPayload('https://example.com'));
         assert.equal(matchRule({ enabled: false, when: { event: 'document.inserted' }, then: [] }, 'document.inserted', c), false);
@@ -245,6 +261,17 @@ describe('rule actions', () => {
             { action: 'link', paths: ['dir:/Accounting'], recursive: true },
         ] }, context, noopLogger);
         assert.deepEqual(calls.link.map(call => call.opts.directory ?? call.opts.context.path), ['/Work/Accounting', '/Accounting', '/Accounting/2026']);
+    });
+
+    test('recursive Auto-Link creates the relative structure in context and directory destinations', async () => {
+        const payload = { document: { id: 56 }, treePaths: { backends: ['/workspace/home/foo/bar/baz'] } };
+        const { context, calls } = stubContext(payload);
+        context.classify = () => classify(payload);
+        await executeRuleActions({ id: 'autolink', when: { path: 'backends:/workspace/home/foo/bar' }, then: [
+            { action: 'link', paths: ['ctx:/work/foo/bar', 'dir:/work/foo/bar'], recursive: true },
+        ] }, context, noopLogger);
+        assert.deepEqual(calls.link[0].opts.context, { type: 'context', path: '/work/foo/bar/baz' });
+        assert.equal(calls.link[1].opts.directory, '/work/foo/bar/baz');
     });
 
     test('tag action re-links on the payload context paths', async () => {

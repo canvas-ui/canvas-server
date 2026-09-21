@@ -1,12 +1,12 @@
 // Discover the same subtree a rule's segment-bounded path matcher accepts.
 // Directory membership is node-exact unless recursive is explicitly requested.
-export async function discoverBackfillDocuments(workspace, { paths = [], schemas = [], limit = 100, offset = 0 } = {}) {
+export async function discoverBackfillDocuments(workspace, { paths = [], recursive = true, schemas = [], limit = 100, offset = 0 } = {}) {
     const selectors = paths.length ? paths.map((raw) => {
         const value = String(raw || '');
         const qualifier = value.match(/^([A-Za-z][\w-]*):(?=\/|$)/);
         const tree = qualifier ? (({ ctx: 'context', dir: 'directory' })[qualifier[1]] || qualifier[1]) : 'context';
         const path = (qualifier ? value.slice(qualifier[0].length) : value) || '/';
-        return tree === 'context' ? { context: path } : { directory: { tree, path, recursive: true } };
+        return tree === 'context' ? { context: path } : { directory: { tree, path, recursive } };
     }) : [{}];
     const featureSets = schemas.length ? schemas.map((key) => [key]) : [null];
     const single = selectors.length * featureSets.length === 1;

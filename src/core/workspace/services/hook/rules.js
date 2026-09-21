@@ -27,6 +27,9 @@ import { download } from './download.js';
  * queue — see pending-actions.js. `editable` lists JSON paths the reviewer
  * may amend; `ttl` expires undecided proposals.
  *
+ * `when.path` includes descendants; `when.pathExact` matches direct folder
+ * membership only. Existing prefix rules retain their recursive scope.
+ *
  * `when` keys AND together; a key's value may be an array (any-of / OR).
  * Every matching rule fires — there is no first-match-wins, which keeps the
  * format trivially composable for a UI rule builder.
@@ -152,6 +155,7 @@ const WHEN_CHECKS = {
     reason: (c, matcher) => Boolean(matcher) && asArray(matcher).includes(c.reason),
     schema: (c, matcher) => asArray(matcher).some((s) => c.isSchema(s)),
     path: (c, matcher) => asArray(matcher).some((p) => c.inPath(p)),
+    pathExact: (c, matcher) => asArray(matcher).some((p) => c.pathMatches(p).some((match) => match.rel === '')),
     url: (c, matcher) => asArray(matcher).some((u) => matchUrl(c, u)),
     from: (c, matcher) => asArray(matcher).some((f) => matchText(c.from, f)),
     // Any To/Cc recipient matches (substring or {equals|contains|startsWith|regex}).
@@ -211,7 +215,7 @@ export function matchRule(rule, eventName, c) {
     if (!when || typeof when !== 'object') { return false; }
 
     if (!WHEN_CHECKS.event(c, when.event, eventName)) { return false; }
-    for (const key of ['reason', 'schema', 'path', 'url', 'from', 'to', 'subject', 'mime', 'attachment']) {
+    for (const key of ['reason', 'schema', 'path', 'pathExact', 'url', 'from', 'to', 'subject', 'mime', 'attachment']) {
         if (when[key] !== undefined && !WHEN_CHECKS[key](c, when[key])) { return false; }
     }
 
@@ -792,13 +796,13 @@ const ACTIONS = {
 // {{match.rel}} / {{match.path}} / {{match.prefix}} and consumed by
 // `recursive: true` on link/unlink.
 function matchedPath(rule, context) {
-    const prefixes = asArray(rule?.when?.path || []).filter(Boolean);
+    const prefixes = asArray(rule?.when?.pathExact || rule?.when?.path || []).filter(Boolean);
     if (!prefixes.length || typeof context?.classify !== 'function') { return null; }
     let c;
     try { c = context.classify(); } catch { return null; }
     if (!c || typeof c.pathMatches !== 'function') { return null; }
     for (const prefix of prefixes) {
-        const all = c.pathMatches(prefix);
+        const all = c.pathMatches(prefix).filter((match) => rule?.when?.pathExact === undefined || match.rel === '');
         if (all.length) {
             return { prefix: String(prefix), tree: all[0].tree, path: all[0].path, rel: all[0].rel, all };
         }

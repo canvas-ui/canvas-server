@@ -597,11 +597,12 @@ export default async function workspaceHooksRoutes(fastify) {
       // its own folder ("matches 0 of 2000"). Same qualifier grammar as the
       // matcher: bare / ctx: = context tree, dir: = directory tree, any other
       // `name:` = that tree.
-      const rulePaths = rule?.when?.path ? (Array.isArray(rule.when.path) ? rule.when.path : [rule.when.path]) : [];
+      const sourcePaths = rule?.when?.pathExact ?? rule?.when?.path;
+      const rulePaths = sourcePaths ? (Array.isArray(sourcePaths) ? sourcePaths : [sourcePaths]) : [];
       let docs;
       let nextOffset;
       try {
-        ({ docs, nextOffset } = await discoverBackfillDocuments(request.workspace, { paths: rulePaths, schemas, limit, offset }));
+        ({ docs, nextOffset } = await discoverBackfillDocuments(request.workspace, { paths: rulePaths, recursive: rule?.when?.pathExact === undefined, schemas, limit, offset }));
       } catch (error) {
         const response = new ResponseObject().serverError(`Document discovery failed (workspace active?): ${error.message}`);
         return reply.code(response.statusCode).send(response.getResponse());

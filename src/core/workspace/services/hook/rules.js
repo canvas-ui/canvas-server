@@ -422,12 +422,12 @@ export function expandKeyTemplate(template, { doc, sourceKey } = {}) {
 function resolveTargetPaths(action, scope) {
     const raw = asArray(action.paths || action.path || []).filter(Boolean).map((p) => interpolate(String(p), scope));
     if (action.recursive !== true) { return raw; }
-    const rels = [...new Set((scope.match?.all || []).map((m) => m.rel).filter(Boolean))];
+    const rels = [...new Set((scope.match?.all || []).map((m) => m.rel).filter((rel) => typeof rel === 'string'))];
     if (!rels.length) { return raw; }
     const out = [];
     for (const base of raw) {
         const trimmed = String(base).replace(/\/+$/, '');
-        for (const rel of rels) { out.push(`${trimmed}/${rel}`); }
+        for (const rel of rels) { out.push(rel ? `${trimmed}/${rel}` : base); }
     }
     return [...new Set(out)];
 }

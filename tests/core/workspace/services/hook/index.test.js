@@ -119,6 +119,24 @@ describe('HookService declarative rules', () => {
         assert.equal(linkCalls[0].opts.emitEvent, false);
     });
 
+    test('Auto-Link loads the document on a placement-only event and links both virtual trees', async () => {
+        const source = '/workspace/home/Work/Acme org/Accounting';
+        writeRules('rules.json', [{
+            id: 'autolink-accounting', enabled: true, cascade: true,
+            when: { event: ['document.inserted', 'document.updated', 'document.linked'], path: `backends:${source}` },
+            then: [{ action: 'link', paths: ['ctx:/Work/Acme/Accounting'] }, { action: 'link', paths: ['dir:/Accounting'], recursive: true }],
+        }]);
+        workspace.get = async (id) => ({ id, schema: 'data/schema/file' });
+        workspace.listTrees = async () => [{ id: 'backend-tree', name: 'backends' }];
+        workspace.listDocumentTreeMemberships = async () => [`${source}/2026`];
+        workspace.emit('document.updated', { id: 42, reason: 'membership', origin: 'rule', source: 'db' });
+        await new Promise(resolve => setTimeout(resolve, 60));
+        assert.equal(linkCalls.length, 2);
+        assert.deepEqual(linkCalls[0].opts.context, { type: 'context', path: '/Work/Acme/Accounting' });
+        assert.equal(linkCalls[1].opts.directory, '/Accounting/2026');
+        assert.ok(linkCalls.every(call => call.id === 42 && call.opts.emitEvent === false));
+    });
+
     test('non-matching event/schema leaves rules idle', async () => {
         writeRules('rules.json', [youtubeRule]);
         workspace.emit('document.inserted', {

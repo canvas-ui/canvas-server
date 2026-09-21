@@ -235,6 +235,18 @@ describe('rule actions', () => {
         assert.equal(calls.link[0].opts.emitEvent, false);
     });
 
+    test('recursive Auto-Link retains both root and child placements of the same document', async () => {
+        const source = '/workspace/home/Accounting';
+        const payload = { document: { id: 55, schema: 'data/schema/file' }, treePaths: { backends: [source, `${source}/2026`] } };
+        const { context, calls } = stubContext(payload);
+        context.classify = () => classify(payload);
+        await executeRuleActions({ id: 'autolink', when: { path: `backends:${source}` }, then: [
+            { action: 'link', paths: ['ctx:/Work/Accounting'] },
+            { action: 'link', paths: ['dir:/Accounting'], recursive: true },
+        ] }, context, noopLogger);
+        assert.deepEqual(calls.link.map(call => call.opts.directory ?? call.opts.context.path), ['/Work/Accounting', '/Accounting', '/Accounting/2026']);
+    });
+
     test('tag action re-links on the payload context paths', async () => {
         const payload = tabPayload('https://x.com', ['/inbox', '/work']);
         const { context, calls } = stubContext(payload);

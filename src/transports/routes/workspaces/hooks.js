@@ -1,5 +1,7 @@
 'use strict';
 
+import { discoverBackfillDocuments } from '../../../core/workspace/services/hook/backfill.js';
+
 import path from 'path';
 import crypto from 'crypto';
 import { promises as fs } from 'fs';
@@ -537,13 +539,14 @@ export default async function workspaceHooksRoutes(fastify) {
           // Batch size. 100 keeps an accidental click cheap; the webui exposes
           // the knob (Batch size) for deliberate bulk runs over a big index.
           limit: { type: 'integer', minimum: 1, maximum: BACKFILL_MAX_LIMIT, default: 100 },
+          offset: { type: 'integer', minimum: 0, default: 0 },
           dryRun: { type: 'boolean', default: false },
         },
       },
     },
   }, async (request, reply) => {
     try {
-      const { ruleId, hookFile, event = 'document.inserted', schema, limit = 100, dryRun = false } = request.body || {};
+      const { ruleId, hookFile, event = 'document.inserted', schema, limit = 100, offset = 0, dryRun = false } = request.body || {};
       if ((ruleId ? 1 : 0) + (hookFile ? 1 : 0) !== 1) {
         const response = new ResponseObject().badRequest('Pass exactly one of ruleId or hookFile');
         return reply.code(response.statusCode).send(response.getResponse());
@@ -595,48 +598,10 @@ export default async function workspaceHooksRoutes(fastify) {
       // matcher: bare / ctx: = context tree, dir: = directory tree, any other
       // `name:` = that tree.
       const rulePaths = rule?.when?.path ? (Array.isArray(rule.when.path) ? rule.when.path : [rule.when.path]) : [];
-      const pathSelectors = rulePaths.map((raw) => {
-        const value = String(raw || '');
-        const qualifier = value.match(/^([A-Za-z][\w-]*):(?=\/|$)/);
-        const tree = qualifier ? (({ ctx: 'context', dir: 'directory' })[qualifier[1]] || qualifier[1]) : 'context';
-        const path = (qualifier ? value.slice(qualifier[0].length) : value) || '/';
-        if (tree === 'context') return { context: path };
-        if (tree === 'directory') return { directory: path };
-        return { directory: { tree, path } };
-      });
-
-      // One query per expanded schema, unioned by id — alternative schemas are
-      // OR in the rule engine, and a single features array would intersect.
       let docs;
+      let nextOffset;
       try {
-        if (pathSelectors.length) {
-          const seen = new Map();
-          const featureSets = schemas.length ? schemas.map((key) => [key]) : [null];
-          for (const selector of pathSelectors) {
-            for (const features of featureSets) {
-              const batch = await request.workspace.list({ ...selector, ...(features ? { features } : {}), limit });
-              for (const doc of (Array.isArray(batch) ? batch : batch?.data || [])) {
-                if (doc?.id != null && !seen.has(doc.id)) seen.set(doc.id, doc);
-              }
-              if (seen.size >= limit) break;
-            }
-            if (seen.size >= limit) break;
-          }
-          docs = [...seen.values()].slice(0, limit);
-        } else if (schemas.length) {
-          const seen = new Map();
-          for (const key of schemas) {
-            const batch = await request.workspace.list({ features: [key], limit });
-            for (const doc of (Array.isArray(batch) ? batch : batch?.data || [])) {
-              if (doc?.id != null && !seen.has(doc.id)) seen.set(doc.id, doc);
-            }
-            if (seen.size >= limit) break;
-          }
-          docs = [...seen.values()].slice(0, limit);
-        } else {
-          const documents = await request.workspace.list({ limit });
-          docs = (Array.isArray(documents) ? documents : documents?.data || []).slice(0, limit);
-        }
+        ({ docs, nextOffset } = await discoverBackfillDocuments(request.workspace, { paths: rulePaths, schemas, limit, offset }));
       } catch (error) {
         const response = new ResponseObject().serverError(`Document discovery failed (workspace active?): ${error.message}`);
         return reply.code(response.statusCode).send(response.getResponse());
@@ -694,6 +659,7 @@ export default async function workspaceHooksRoutes(fastify) {
         event,
         dryRun,
         processed: docs.length,
+        nextOffset,
         matched,
         failed,
         results,

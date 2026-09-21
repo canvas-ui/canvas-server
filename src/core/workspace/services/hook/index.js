@@ -608,7 +608,7 @@ class HookService extends EventEmitter {
         // `reason:'membership'` is the emitter saying outright that no document
         // is coming (synapsd ≥ 2.4.x); the absence check keeps older emitters
         // and non-synapsd events working the same way.
-        const needsDocument = !payload.document && whens.some((w) => DOC_KEYS.some((k) => w[k] !== undefined));
+        const needsDocument = !payload.document && whens.some((w) => w.path !== undefined || DOC_KEYS.some((k) => w[k] !== undefined));
         const hasPaths = (spec) => (Array.isArray(spec?.paths) ? spec.paths.length > 0 : Boolean(spec?.path));
         const needsPaths = whens.some((w) => w.path !== undefined)
             && !hasPaths(payload.context) && !hasPaths(payload.directory) && !payload.treePaths;

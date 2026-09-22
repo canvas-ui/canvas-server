@@ -32,14 +32,6 @@ import { env } from '../../env.js';
 
 const CONFIG_NAME = 'inferd';
 
-// 1×1 PNG — the smallest real image every provider path can decode. Used by
-// POST /test with modality:'image' so "Test connection" exercises the image
-// pipeline instead of only round-tripping a text embed.
-const TEST_PNG = Buffer.from(
-    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
-    'base64',
-);
-
 export default async function inferdRoutes(fastify, _options) {
 
     // Rate limits. The plugin is registered once at the server root
@@ -79,7 +71,7 @@ export default async function inferdRoutes(fastify, _options) {
     };
 
     /** Admin-set host allowlist (empty = only the always-blocked ranges apply). */
-    const policy = () => ({ allowHosts: inferd()?.serverConfig?.allowHosts || env.inferd.allowHosts || [] });
+    const policy = async () => ({ allowHosts: (await inferd().serverConfig())?.allowHosts || env.inferd.allowHosts || [] });
 
     /**
      * A provider error may quote the remote's response body. That is exactly
@@ -157,19 +149,19 @@ export default async function inferdRoutes(fastify, _options) {
 
             // 2) Endpoints — checked on the RESOLVED config, so a provider
             // inherited from the server layer is covered too.
-            const problems = await inferd().checkConfigEndpoints(resolved, policy());
+            const problems = await inferd().checkConfigEndpoints(resolved, await policy());
             if (problems.length > 0) {
                 const r = new ResponseObject().badRequest(`Rejected embedding endpoint — ${problems.join('; ')}`);
                 return reply.code(r.statusCode).send(r.getResponse());
             }
 
             await fastify.userConfig.write(request.user.id, CONFIG_NAME, next);
-            inferd().invalidateUser(request.user.id);
+            await inferd().invalidateUser(request.user.id);
 
             // Changing a model means the new one embeds into its OWN table, so
             // existing docs are absent from it until re-embedded. Say so rather
             // than letting search quietly go thin.
-            const affected = inferd().workspacesOf(request.user.id);
+            const affected = await inferd().workspacesOf(request.user.id);
             const r = new ResponseObject().updated({
                 user: await inferd().redactConfig(next),
                 effective: await inferd().redactConfig(resolved),
@@ -204,43 +196,22 @@ export default async function inferdRoutes(fastify, _options) {
             // outbound request, no model load. `cached: null` = not knowable
             // (remote providers download nothing; local ones without a cacheDir).
             if (probe) {
-                const instance = inferd().providerFor(provider);
-                const cached = typeof instance.modelCached === 'function' ? instance.modelCached(model) : null;
-                const r = new ResponseObject().success({ cached, modality }, 'Cache probed');
+                const result = await inferd().testProvider(provider, { model, modality, probe: true });
+                const r = new ResponseObject().success(result, 'Cache probed');
                 return reply.code(r.statusCode).send(r.getResponse());
             }
             // Same rule as a config save: guard the field this provider TYPE
             // fetches, not whichever URL-ish key happens to be present.
             const target = await inferd().endpointFor(provider);
             if (target) {
-                const verdict = await inferd().checkEndpoint(target.value, policy());
+                const verdict = await inferd().checkEndpoint(target.value, await policy());
                 if (!verdict.ok) {
                     const r = new ResponseObject().badRequest(`Rejected embedding endpoint — ${verdict.reason}`);
                     return reply.code(r.statusCode).send(r.getResponse());
                 }
             }
-            const instance = inferd().providerFor(provider);
-            const started = Date.now();
-            // Exercise the modality actually being configured: an image space
-            // tested with embedQuery would pass on a text-only backend and then
-            // fail on first real ingest.
-            let vector; let dim;
-            if (modality === 'image') {
-                if (typeof instance.embedImage !== 'function') {
-                    throw new Error('provider type does not support image embedding');
-                }
-                const res = await instance.embedImage([TEST_PNG], { model }, { contentTypes: ['image/png'] });
-                vector = res.vectors?.[0];
-                dim = res.dim;
-            } else {
-                ({ vector, dim } = await instance.embedQuery('canvas embedding connectivity check', { model }));
-            }
-            const r = new ResponseObject().success({
-                ok: Array.isArray(vector),
-                dim: dim || vector?.length || 0,
-                latencyMs: Date.now() - started,
-                modality,
-            }, 'Backend answered');
+            const result = await inferd().testProvider(provider, { model, modality });
+            const r = new ResponseObject().success(result, 'Backend answered');
             return reply.code(r.statusCode).send(r.getResponse());
         } catch (error) {
             const r = new ResponseObject().badRequest(await safeError(request, error));
@@ -263,7 +234,7 @@ export default async function inferdRoutes(fastify, _options) {
         const r = new ResponseObject().found({
             serverDefaults: await inferd().redactConfig((await inferd().serverConfig()) || {}),
             configPath: env.inferd.configPath,
-            allowHosts: policy().allowHosts,
+            allowHosts: (await policy()).allowHosts,
         });
         return reply.code(r.statusCode).send(r.getResponse());
     });

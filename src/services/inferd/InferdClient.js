@@ -222,6 +222,9 @@ export class InferdClient extends EventEmitter {
     imageSummaryStatus(wsId) { return this.#call('inferd.imageSummaryStatus', [wsId]); }
     resetDescribeWorkers(wsId) { return this.#call('inferd.resetDescribeWorkers', [wsId]); }
 
+    contextFor(userId) { return this.#call('inferd.contextFor', [userId]); }
+    workspacesOf(userId) { return this.#call('inferd.workspacesOf', [userId]); }
+    testProvider(provider, opts = {}) { return this.#call('inferd.testProvider', [provider, opts]); }
     contextForWorkspace(wsId) { return this.#call('inferd.contextForWorkspace', [wsId]); }
     spaceConfigsForWorkspace(wsId, opts = {}) { return this.#call('inferd.spaceConfigsForWorkspace', [wsId, opts]); }
     invalidateWorkspace(wsId, config) { return this.#tell('inferd.invalidateWorkspace', [wsId, config]); }
@@ -236,7 +239,7 @@ export class InferdClient extends EventEmitter {
     // of canvas-inferd; routing them over the socket is what lets canvas-server
     // drop the dependency (and its native tree) altogether.
     redactConfig(config) { return this.#call('inferd.redactConfig', [config]); }
-    checkConfigEndpoints(config) { return this.#call('inferd.checkConfigEndpoints', [config]); }
+    checkConfigEndpoints(config, opts = {}) { return this.#call('inferd.checkConfigEndpoints', [config, opts]); }
     checkEndpoint(url, opts = {}) { return this.#call('inferd.checkEndpoint', [url, opts]); }
     endpointFor(spec) { return this.#call('inferd.endpointFor', [spec]); }
 

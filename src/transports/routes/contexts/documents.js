@@ -57,12 +57,13 @@ export default async function documentRoutes(fastify, _options) {
           // Return document ids instead of documents — the cheap read a client
           // uses to check whether a cached result set is still current.
           idsOnly: { type: 'boolean', default: false },
+          ids: { type: 'array', items: { type: 'integer', minimum: 1 } },
           // Document lists default to newest first; search results stay ranked.
           order: { type: 'string', enum: ['asc', 'desc'], default: 'desc' },
           // Sort a listing by a named timeline (e.g. 'content' = EXIF capture
           // date, 'crud:created'); order applies to the timeline value.
           sortBy: { type: 'string' },
-          q: { type: 'string' },
+          q: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }] },
           search: { type: 'string' },
           mode: { type: 'string', enum: ['fts', 'vector', 'hybrid'] },
           // When false, don't fold the context's STORED binding — the caller is
@@ -93,6 +94,7 @@ export default async function documentRoutes(fastify, _options) {
         order: request.query.order,
         sortBy: request.query.sortBy,
         idsOnly: request.query.idsOnly,
+        ...(request.query.ids ? { ids: request.query.ids } : {}),
       };
 
       const searchQuery = request.query.q || request.query.search;

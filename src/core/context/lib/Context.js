@@ -733,7 +733,7 @@ class Context extends EventEmitter {
         await this.#contextManager.saveContext(this.#userId, this);
     }
 
-    async setUrl(url) {
+    async setUrl(url, { treeName } = {}) {
         if (this.#isLocked) {
             throw new Error('Context is locked');
         }
@@ -752,6 +752,23 @@ class Context extends EventEmitter {
             if (!parsed.path.startsWith(base.path)) {
                 throw new Error(`Cannot set URL "${url}" outside the context base URL "${this.#baseUrl}"`);
             }
+        }
+
+        // A picked destination binds both the tree and path. Resolve and
+        // prepare it before releasing the old path or changing the binding.
+        let destinationTree = null;
+        if (treeName !== undefined) {
+            if (parsed.workspaceId && parsed.workspaceId !== this.#workspace.name) {
+                throw new Error('Tree selection must belong to the current workspace');
+            }
+            const raw = this.#workspace.getTree(treeName);
+            if (!raw || !['context', 'directory'].includes(raw.type)) {
+                throw new Error(`Unsupported destination tree: ${treeName}`);
+            }
+            destinationTree = raw.type === 'directory'
+                ? this.#workspace.getDirectoryTree(raw.id)
+                : this.#workspace.getContextTree(raw.id);
+            await destinationTree.insertPath(parsed.path);
         }
 
         // Capture old state before any changes so we can unlock the previous path
@@ -775,7 +792,7 @@ class Context extends EventEmitter {
                 }
             }
             await this.#switchWorkspace(targetWorkspaceName);
-        } else if (previousPath && previousPath !== '/' && previousPath !== parsed.path) {
+        } else if (previousPath && previousPath !== '/' && (previousPath !== parsed.path || (destinationTree && destinationTree.id !== this.#treeId))) {
             // Same workspace, moving to a different path — unlock the old one
             try {
                 await previousTree.unlockPath(previousPath, this.#id);
@@ -784,8 +801,13 @@ class Context extends EventEmitter {
             }
         }
 
+        if (destinationTree) {
+            this.#tree = destinationTree;
+            this.#treeId = destinationTree.id;
+        }
+
         // Create the URL path in the current workspace
-        const contextLayers = await this.#tree.insertPath(parsed.path);
+        const contextLayers = destinationTree ? [] : await this.#tree.insertPath(parsed.path);
         this.#contextBitmapArray = parsed.pathArray;
         logger.debug(`ContextPath: ${parsed.path}, contextLayer IDs: ${JSON.stringify(contextLayers)}`);
 
@@ -1320,7 +1342,7 @@ class Context extends EventEmitter {
         const { attributes, features = null, filters, options = {}, applyContextSpec, ...rest } = spec;
         const contextSelector = this.#buildContextSelector(this.#buildMergedContextArray(options));
         const bound = this.#bindQuery(features ?? attributes, filters, applyContextSpec);
-        const composed = this.#composeWithCanvasSpec(bound);
+        const composed = applyContextSpec === false ? bound : this.#composeWithCanvasSpec(bound);
         return await workspace.list({
             context: contextSelector,
             features: composed.features,
@@ -1342,8 +1364,8 @@ class Context extends EventEmitter {
         const { query, attributes, features = null, filters, options = {}, applyContextSpec, ...rest } = spec;
         const contextSelector = this.#buildContextSelector(this.#buildMergedContextArray(options));
         const bound = this.#bindQuery(features ?? attributes, filters, applyContextSpec);
-        const composed = this.#composeWithCanvasSpec(bound);
-        return await workspace.search({
+        const composed = applyContextSpec === false ? bound : this.#composeWithCanvasSpec(bound);
+        const querySpec = {
             query,
             context: contextSelector,
             features: composed.features,
@@ -1351,7 +1373,12 @@ class Context extends EventEmitter {
             ...options,
             ...rest,
             applyCanvasQuerySpec: applyContextSpec,
-        });
+        };
+        if (Array.isArray(query)) {
+            const queries = query.map(q => String(q).trim()).filter(Boolean);
+            return await workspace.searchRefined(queries, querySpec, { ...options, mode: rest.mode });
+        }
+        return await workspace.search(querySpec);
     }
 
 

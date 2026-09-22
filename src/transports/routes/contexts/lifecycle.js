@@ -191,7 +191,8 @@ export default async function lifecycleRoutes(fastify, _options) {
         type: 'object',
         required: ['url'],
         properties: {
-          url: { type: 'string' }
+          url: { type: 'string' },
+          treeName: { type: 'string', minLength: 1 }
         }
       }
     }
@@ -204,8 +205,8 @@ export default async function lifecycleRoutes(fastify, _options) {
         return reply.code(response.statusCode).send(response.getResponse());
       }
 
-      await context.setUrl(request.body.url);
-      const response = new ResponseObject().success({ url: context.url }, 'Context URL updated successfully');
+      await context.setUrl(request.body.url, { treeName: request.body.treeName });
+      const response = new ResponseObject().success({ url: context.url, treeId: context.treeId }, 'Context URL updated successfully');
         return reply.code(response.statusCode).send(response.getResponse());
     } catch (error) {
       fastify.log.error(error);

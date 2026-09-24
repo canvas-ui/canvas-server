@@ -148,55 +148,22 @@ done
 # The unit outranks .env deliberately: .env is what someone declared, the unit
 # is what is running, and this script's job is to update the running thing.
 
-# systemd property of the canvas-server unit, empty when there is no unit.
-unit_prop() {
-    systemctl show canvas-server.service -p "$1" --value 2>/dev/null
-}
-
-# One key out of the unit's Environment= (space-separated K=V pairs).
-unit_env() {
-    local key=$1 pairs
-    pairs=$(unit_prop Environment)
-    [[ -n "$pairs" ]] || return 0
-    tr ' ' '\n' <<<"$pairs" | sed -n "s/^${key}=//p" | tail -n 1
-}
-
-# A canvas-server checkout, not just any directory: this script does a hard
-# `git reset` inside whatever it picks, so a wrong guess must fail the test
-# rather than wipe someone's files.
-is_canvas_root() {
-    local dir=${1%/}
-    [[ -n "$dir" && -d "$dir/.git" && -f "$dir/package.json" ]] || return 1
-    grep -q '"name": *"canvas-server"' "$dir/package.json" 2>/dev/null
-}
-
-# Sets CANVAS_ROOT + CANVAS_ROOT_SOURCE. Candidates, best evidence first.
-detect_canvas_root() {
-    local candidate
-
-    # 1. The checkout this very script was run from — right by construction for
-    #    the normal "$CANVAS_ROOT/scripts/update-git.sh" invocation, including
-    #    from cron, and it needs no unit and no config to be true.
-    candidate=$(cd "$(dirname "$(readlink -f "$0")")/.." 2>/dev/null && pwd)
-    if is_canvas_root "$candidate"; then
-        CANVAS_ROOT="$candidate"; CANVAS_ROOT_SOURCE="this checkout"; return 0
-    fi
-
-    # 2. What the installed service is running out of.
-    candidate=$UNIT_ROOT
-    if is_canvas_root "$candidate"; then
-        CANVAS_ROOT="${candidate%/}"; CANVAS_ROOT_SOURCE="canvas-server.service"; return 0
-    fi
-
-    # 3. The service user's home — installs commonly make the checkout the
-    #    canvas user's home directory (note passwd entries often end in "/").
-    candidate=$(getent passwd "${CANVAS_USER:-${UNIT_USER:-canvas}}" 2>/dev/null | cut -d: -f6)
-    if is_canvas_root "$candidate"; then
-        CANVAS_ROOT="${candidate%/}"; CANVAS_ROOT_SOURCE="${CANVAS_USER:-${UNIT_USER:-canvas}} home"; return 0
-    fi
-
-    CANVAS_ROOT="/opt/canvas-server"; CANVAS_ROOT_SOURCE="default"
-}
+# unit_prop/unit_env/is_canvas_root/discover_deployment live in the shared lib so
+# this script and install-inferd-ubuntu.sh cannot drift: a root that two scripts
+# resolve differently is how a systemd unit ends up pointing at a directory that
+# does not exist on this box.
+DISCOVER_LIB="$(dirname "$(readlink -f "$0")")/lib/discover-deployment.sh"
+if [[ -f "$DISCOVER_LIB" ]]; then
+    DEPLOY_SELF="$0"
+    # shellcheck source=lib/discover-deployment.sh
+    . "$DISCOVER_LIB"
+    discover_deployment
+else
+    # Standalone copy: no discovery, just the historical defaults.
+    CANVAS_ROOT="${CANVAS_ROOT:-/opt/canvas-server}"
+    CANVAS_ROOT_SOURCE="default (discover-deployment.sh missing)"
+    is_canvas_root() { return 1; }
+fi
 
 # Read the deployment's .env — the same file install-docker.sh / install-local.sh
 # write, through the same helper (scripts/lib/install-common.sh), which treats it
@@ -231,18 +198,6 @@ load_env_file() {
     [[ -n "$server_home" ]] && set_if_unset CANVAS_SERVER_HOME "$server_home"
     return 0
 }
-
-UNIT_ROOT=$(unit_prop WorkingDirectory)
-UNIT_USER=$(unit_prop User)
-UNIT_GROUP=$(unit_prop Group)
-UNIT_SERVER_HOME=$(unit_env CANVAS_SERVER_HOME)
-
-if [[ -n "$CANVAS_ROOT" ]]; then
-    CANVAS_ROOT="${CANVAS_ROOT%/}"
-    CANVAS_ROOT_SOURCE="environment"
-else
-    detect_canvas_root
-fi
 
 # update.json is looked for under the server home the unit names, then under the
 # conventional one — resolved before the config can say where the server home

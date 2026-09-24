@@ -164,16 +164,36 @@ pick() {
     printf '%s' "$(env_get "$key" "$default")"
 }
 
-CANVAS_ROOT="$(pick "$FLAG_ROOT" "$ENV_CANVAS_ROOT" CANVAS_ROOT /opt/canvas-server)"
-CANVAS_USER="$(pick "$FLAG_USER" "$ENV_CANVAS_USER" CANVAS_USER canvas)"
-CANVAS_GROUP="$(pick "$FLAG_GROUP" "$ENV_CANVAS_GROUP" CANVAS_GROUP www-data)"
+# Find the deployment before anything is resolved against it. The unit written
+# below carries WorkingDirectory=$CANVAS_ROOT, so a root that is merely the
+# /opt default on a box that lives elsewhere does not produce a wrong log line —
+# it produces a unit that dies at CHDIR before canvas-inferd ever starts.
+# Shared with update-git.sh so the two cannot disagree about one box.
+DISCOVER_LIB="$SCRIPT_DIR/lib/discover-deployment.sh"
+UNIT_ROOT=""; UNIT_USER=""; UNIT_GROUP=""; UNIT_SERVER_HOME=""; CANVAS_ROOT_SOURCE="default"
+if [ -f "$DISCOVER_LIB" ]; then
+    CANVAS_ROOT="$FLAG_ROOT"                      # flag wins, else discovery
+    [ -z "$CANVAS_ROOT" ] && CANVAS_ROOT="$ENV_CANVAS_ROOT"
+    DEPLOY_SELF="${BASH_SOURCE[0]}"
+    # shellcheck source=lib/discover-deployment.sh
+    . "$DISCOVER_LIB"
+    discover_deployment
+    [ -n "$FLAG_ROOT" ] && CANVAS_ROOT_SOURCE="--root"
+else
+    CANVAS_ROOT="$(pick "$FLAG_ROOT" "$ENV_CANVAS_ROOT" CANVAS_ROOT /opt/canvas-server)"
+fi
+
+# The service user is the canvas-server unit's, not a guess: a daemon running as
+# canvas:www-data cannot read a socket directory owned by canvas:canvas.
+CANVAS_USER="$(pick "$FLAG_USER" "$ENV_CANVAS_USER" CANVAS_USER "${UNIT_USER:-canvas}")"
+CANVAS_GROUP="$(pick "$FLAG_GROUP" "$ENV_CANVAS_GROUP" CANVAS_GROUP "${UNIT_GROUP:-www-data}")"
 INFERD_REPO_TARGET_BRANCH="$(pick "$FLAG_BRANCH" "$ENV_BRANCH" CANVAS_INFERD_BRANCH main)"
 
 # Where server state lives. CANVAS_HOST_SERVER_HOME is the .env key every other
 # installer already uses for exactly this, so an existing deployment's config/
 # and cache/ are found instead of a second set being created under $CANVAS_ROOT.
 # A relative value is resolved against the repo, the way compose reads it.
-SERVER_HOME="$(pick "" "$ENV_SERVER_HOME" CANVAS_HOST_SERVER_HOME "$CANVAS_ROOT/server")"
+SERVER_HOME="$(pick "" "$ENV_SERVER_HOME" CANVAS_HOST_SERVER_HOME "${UNIT_SERVER_HOME:-$CANVAS_ROOT/server}")"
 case "$SERVER_HOME" in
     /*) ;;
     *) SERVER_HOME="$(cd "$REPO_ROOT" && mkdir -p "$SERVER_HOME" && cd "$SERVER_HOME" && pwd)" ;;
@@ -203,7 +223,7 @@ if [ "$INFERD_ENABLED" != "true" ] && [ "$FORCE_ENABLE" = false ]; then
     exit 0
 fi
 
-log "Settings: root=$CANVAS_ROOT user=$CANVAS_USER:$CANVAS_GROUP serverHome=$SERVER_HOME"
+log "Settings: root=$CANVAS_ROOT [$CANVAS_ROOT_SOURCE] user=$CANVAS_USER:$CANVAS_GROUP serverHome=$SERVER_HOME"
 log "          socket=$INFERD_SOCKET config=$INFERD_CONFIG cache=$INFERD_CACHE_DIR"
 
 # --- node ---------------------------------------------------------------
@@ -254,7 +274,11 @@ log "Binary: $INFERD_BIN ($(canvas-inferd --help >/dev/null 2>&1 && echo ok || e
 # root means they survive a reinstall of the package and are backed up with the
 # rest of the deployment.
 mkdir -p "$INFERD_CACHE_DIR" || fail "failed to create $INFERD_CACHE_DIR"
-chown -R "$CANVAS_USER:$CANVAS_GROUP" "$INFERD_CACHE_DIR"
+# The daemon writes downloaded models here as $CANVAS_USER, so a failed chown is
+# fatal — and it has to SAY so: under `set -e` an unexplained non-zero exit here
+# looks like the script simply stopped for no reason.
+chown -R "$CANVAS_USER:$CANVAS_GROUP" "$INFERD_CACHE_DIR" \
+    || fail "cannot chown $INFERD_CACHE_DIR to $CANVAS_USER:$CANVAS_GROUP (run as root?)"
 log "Model cache: $INFERD_CACHE_DIR"
 
 # --- config -------------------------------------------------------------
@@ -292,7 +316,8 @@ if [ ! -f "$INFERD_CONFIG" ]; then
 else
     log "Keeping existing config: $INFERD_CONFIG (not touched)"
 fi
-chown "$CANVAS_USER:$CANVAS_GROUP" "$INFERD_CONFIG"
+chown "$CANVAS_USER:$CANVAS_GROUP" "$INFERD_CONFIG" \
+    || fail "cannot chown $INFERD_CONFIG to $CANVAS_USER:$CANVAS_GROUP (run as root?)"
 
 # --- socket directory ---------------------------------------------------
 # /run/canvas is what RuntimeDirectory=canvas gives us (mode 0750, canvas-owned)
@@ -305,12 +330,43 @@ if [ "$SOCKET_DIR" = "/run/canvas" ]; then
     RUNTIME_DIRECTIVES=$'RuntimeDirectory=canvas\nRuntimeDirectoryMode=0750'
 else
     mkdir -p "$SOCKET_DIR" || fail "failed to create $SOCKET_DIR"
-    chown "$CANVAS_USER:$CANVAS_GROUP" "$SOCKET_DIR"
-    chmod 0750 "$SOCKET_DIR"
+    chown "$CANVAS_USER:$CANVAS_GROUP" "$SOCKET_DIR" || fail "cannot chown $SOCKET_DIR"
+    chmod 0750 "$SOCKET_DIR" || fail "cannot chmod $SOCKET_DIR"
     log "Non-default socket path — set CANVAS_INFERD_SOCKET=$INFERD_SOCKET for canvas-server too"
 fi
 
 # --- unit ---------------------------------------------------------------
+# WorkingDirectory is emitted only for a directory that exists: systemd fails
+# the unit at CHDIR before ExecStart runs, so a stale or guessed path there
+# turns into a daemon that never starts, reported as a missing file rather than
+# as a wrong setting. The daemon does not need a particular cwd — it is given
+# absolute paths for its socket, config and cache — so leaving the directive out
+# (systemd then uses /) is strictly better than naming somewhere that is gone.
+UNIT_WORKDIR=""
+if [ -d "$CANVAS_ROOT" ]; then
+    UNIT_WORKDIR="WorkingDirectory=$CANVAS_ROOT"
+else
+    log "WARNING: $CANVAS_ROOT does not exist — writing the unit without WorkingDirectory"
+fi
+
+# An existing unit is normally left alone, but not when it is one that cannot
+# start: keeping a broken unit "because it exists" is how a re-run that was
+# meant to repair the install leaves it exactly as broken as it found it.
+unit_is_broken() {
+    [ -f "$UNIT_FILE" ] || return 1
+    local workdir exec_bin
+    workdir=$(sed -n 's/^WorkingDirectory=//p' "$UNIT_FILE" | tail -n 1)
+    [ -n "$workdir" ] && [ ! -d "$workdir" ] && return 0
+    exec_bin=$(sed -n 's/^ExecStart=//p' "$UNIT_FILE" | tail -n 1 | awk '{print $1}')
+    [ -n "$exec_bin" ] && [ ! -x "$exec_bin" ] && return 0
+    return 1
+}
+
+if [ -f "$UNIT_FILE" ] && [ "$FORCE_UNIT" = false ] && unit_is_broken; then
+    log "Existing unit cannot start (its WorkingDirectory or ExecStart is missing) — rewriting it"
+    FORCE_UNIT=true
+fi
+
 if [ -f "$UNIT_FILE" ] && [ "$FORCE_UNIT" = false ]; then
     log "Keeping existing unit: $UNIT_FILE (re-run with --force-unit to rewrite)"
 else
@@ -326,7 +382,7 @@ After=network.target
 Type=simple
 User=$CANVAS_USER
 Group=$CANVAS_GROUP
-WorkingDirectory=$CANVAS_ROOT
+$UNIT_WORKDIR
 $RUNTIME_DIRECTIVES
 ExecStart=$INFERD_BIN --socket $INFERD_SOCKET --config $INFERD_CONFIG
 Restart=always
@@ -335,7 +391,7 @@ RestartSec=10
 # a slow first load as a failure.
 TimeoutStartSec=300
 Environment=NODE_ENV=production
-Environment=HOME=$CANVAS_ROOT
+Environment=HOME=$([ -d "$CANVAS_ROOT" ] && echo "$CANVAS_ROOT" || dirname "$INFERD_CACHE_DIR")
 Environment=CANVAS_INFERD_CACHE_DIR=$INFERD_CACHE_DIR
 
 [Install]

@@ -21,7 +21,7 @@ function setup(options = {}) {
   };
   const context = new Context('work://old', { id: 'focus', userId: 'user', workspace, workspaceManager: {},
     contextManager: { async saveContext(_user, ctx) { calls.push(['save', ctx.treeId, ctx.url]); } }, ...options });
-  return { context, calls, directory };
+  return { context, calls, directory, workspace };
 }
 
 test('switching trees prepares destination, releases old lock, locks and persists selected tree', async () => {
@@ -63,4 +63,18 @@ test('plain URL edits keep the existing tree binding', async () => {
   const { context } = setup({ treeId: 'dir' });
   await context.setUrl('work://next');
   assert.equal(context.treeId, 'dir');
+});
+
+
+test('context color override survives serialization and resetting restores inherited color', () => {
+  const { context } = setup({ metadata: { ui: { color: '#123456' }, toolbox: { keep: true } } });
+  assert.equal(context.color, '#123456');
+  const saved = context.toJSON();
+  const reloaded = setup({ metadata: saved.metadata });
+  const restored = reloaded.context;
+  reloaded.workspace.color = '#abcdef';
+  assert.equal(restored.color, '#123456');
+  restored.metadata = { ...restored.metadata, ui: { color: null } };
+  assert.equal(restored.color, '#abcdef');
+  assert.deepEqual(restored.metadata.toolbox, { keep: true });
 });

@@ -286,6 +286,9 @@ class Context extends EventEmitter {
                 }
             }
         } catch (_) { /* tree not ready / layer gone — keep workspace style */ }
+        // A context may override its color without changing the shared tree.
+        const override = this.#metadata?.ui?.color;
+        if (typeof override === 'string' && override.trim()) color = override;
         return { color, icon };
     }
 

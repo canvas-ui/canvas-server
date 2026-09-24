@@ -2,7 +2,11 @@
 
 # Git pull + rebuild for canvas-server. Config: $CANVAS_SERVER_HOME/config/update.json
 # Cron example (daily 3am, dev channel):
-#   0 3 * * * CANVAS_SERVER_HOME=/opt/canvas-server/server /opt/canvas-server/scripts/update-git.sh
+#   0 3 * * * /opt/canvas-server/scripts/update-git.sh
+#
+# Nothing has to be passed for a normal deployment: the script finds its own
+# checkout, then asks the running systemd unit and the deployment's .env for the
+# rest. See "Where a deployment lives" below.
 
 TARGET_BRANCH_CLI=
 CANVAS_ROOT="${CANVAS_ROOT:-}"
@@ -18,6 +22,13 @@ MAINTENANCE_PAGE="${MAINTENANCE_PAGE:-}"
 MAINTENANCE_PORT="${MAINTENANCE_PORT:-}"
 MAINTENANCE_HOST="${MAINTENANCE_HOST:-}"
 MAINTENANCE_PID=
+CANVAS_ROOT_SOURCE=
+UNIT_ROOT=
+UNIT_MISMATCH=
+CONFIG_CANVAS_ROOT=
+ROOT_MISMATCH=
+ENV_FILE=
+ENV_LOADED=false
 
 usage() {
     cat <<EOF
@@ -28,9 +39,17 @@ Usage: $0 [-b branch] [-c config.json] [-m] [-h]
   -h  This help
 
 Config file: copy server/config/update.example.json to config/update.json
-Env overrides: TARGET_BRANCH, CANVAS_ROOT, CANVAS_SERVER_HOME, HTTP_PROXY, HTTPS_PROXY, NO_PROXY,
+Env overrides: TARGET_BRANCH, CANVAS_ROOT, CANVAS_SERVER_HOME, CANVAS_USER, CANVAS_GROUP,
+               CANVAS_ENV_FILE, HTTP_PROXY, HTTPS_PROXY, NO_PROXY,
                WEB_BUILD, WEB_SRC_REPO, WEB_SRC_BRANCH, WEB_SRC_DIR
 Channel in JSON: "dev" -> branch dev, "prod" -> branch main (unless "branch" is set)
+
+Nothing needs to be set for a normal deployment. Unset values resolve as:
+  env var > update.json > the running canvas-server.service > .env > default.
+CANVAS_ROOT is the checkout this script lives in, else the unit's
+WorkingDirectory, else the service user's home, else /opt/canvas-server — each
+candidate verified to be a canvas-server git checkout before it is used. The
+resolved values are printed at the top of every run.
 
 Web UI: built fresh from the monorepo source on every update (config "web" block),
 so a push to the web repo is enough — no release tarball required. The pinned
@@ -58,9 +77,18 @@ const line = (k, v) => {
   if (v == null || v === '') return;
   process.stdout.write('set_if_unset ' + k + ' ' + JSON.stringify(String(v)) + '\n');
 };
+// canvasRoot cannot go through set_if_unset: the root is necessarily already
+// resolved by the time this file is read (the file lives inside a deployment,
+// so it has to be found before it can be obeyed). It lands in its own variable
+// and is reconciled against the resolved root below — silently dropping it is
+// how a box ends up updating one tree while using another tree's paths.
+const raw = (k, v) => {
+  if (v == null || v === '') return;
+  process.stdout.write(k + '=' + JSON.stringify(String(v)) + '\n');
+};
 const channel = c.channel === 'prod' ? 'main' : 'dev';
 line('TARGET_BRANCH', c.branch || channel);
-line('CANVAS_ROOT', c.canvasRoot);
+raw('CONFIG_CANVAS_ROOT', c.canvasRoot);
 line('CANVAS_SERVER_HOME', c.canvasServerHome);
 const w = c.web || {};
 if (w.build === false) line('WEB_BUILD', 'false');
@@ -101,12 +129,167 @@ while getopts "b:c:mh" opt; do
     esac
 done
 
-CANVAS_ROOT="${CANVAS_ROOT:-/opt/canvas-server}"
-CANVAS_SERVER_HOME="${CANVAS_SERVER_HOME:-$CANVAS_ROOT/server}"
-UPDATE_CONFIG="${UPDATE_CONFIG:-$CANVAS_SERVER_HOME/config/update.json}"
+# ── Where a deployment lives ────────────────────────────────────────────────
+#
+# /opt/canvas-server is a default, not a fact: a deployment lands wherever its
+# storage is (a ZFS dataset, /srv, a user's home), and its service user is
+# whatever the install chose — so hardcoded defaults meant every non-/opt box
+# had to restate all of it on the cron line, and silently updated the WRONG
+# tree if it forgot.
+#
+# Each setting resolves in this order, first hit wins:
+#
+#   1. environment variable         explicit, always wins
+#   2. update.json                  this script's own config
+#   3. the running systemd unit     what canvas-server ACTUALLY uses right now
+#   4. the deployment's .env        the file the other installers write
+#   5. built-in default
+#
+# The unit outranks .env deliberately: .env is what someone declared, the unit
+# is what is running, and this script's job is to update the running thing.
+
+# systemd property of the canvas-server unit, empty when there is no unit.
+unit_prop() {
+    systemctl show canvas-server.service -p "$1" --value 2>/dev/null
+}
+
+# One key out of the unit's Environment= (space-separated K=V pairs).
+unit_env() {
+    local key=$1 pairs
+    pairs=$(unit_prop Environment)
+    [[ -n "$pairs" ]] || return 0
+    tr ' ' '\n' <<<"$pairs" | sed -n "s/^${key}=//p" | tail -n 1
+}
+
+# A canvas-server checkout, not just any directory: this script does a hard
+# `git reset` inside whatever it picks, so a wrong guess must fail the test
+# rather than wipe someone's files.
+is_canvas_root() {
+    local dir=${1%/}
+    [[ -n "$dir" && -d "$dir/.git" && -f "$dir/package.json" ]] || return 1
+    grep -q '"name": *"canvas-server"' "$dir/package.json" 2>/dev/null
+}
+
+# Sets CANVAS_ROOT + CANVAS_ROOT_SOURCE. Candidates, best evidence first.
+detect_canvas_root() {
+    local candidate
+
+    # 1. The checkout this very script was run from — right by construction for
+    #    the normal "$CANVAS_ROOT/scripts/update-git.sh" invocation, including
+    #    from cron, and it needs no unit and no config to be true.
+    candidate=$(cd "$(dirname "$(readlink -f "$0")")/.." 2>/dev/null && pwd)
+    if is_canvas_root "$candidate"; then
+        CANVAS_ROOT="$candidate"; CANVAS_ROOT_SOURCE="this checkout"; return 0
+    fi
+
+    # 2. What the installed service is running out of.
+    candidate=$UNIT_ROOT
+    if is_canvas_root "$candidate"; then
+        CANVAS_ROOT="${candidate%/}"; CANVAS_ROOT_SOURCE="canvas-server.service"; return 0
+    fi
+
+    # 3. The service user's home — installs commonly make the checkout the
+    #    canvas user's home directory (note passwd entries often end in "/").
+    candidate=$(getent passwd "${CANVAS_USER:-${UNIT_USER:-canvas}}" 2>/dev/null | cut -d: -f6)
+    if is_canvas_root "$candidate"; then
+        CANVAS_ROOT="${candidate%/}"; CANVAS_ROOT_SOURCE="${CANVAS_USER:-${UNIT_USER:-canvas}} home"; return 0
+    fi
+
+    CANVAS_ROOT="/opt/canvas-server"; CANVAS_ROOT_SOURCE="default"
+}
+
+# Read the deployment's .env — the same file install-docker.sh / install-local.sh
+# write, through the same helper (scripts/lib/install-common.sh), which treats it
+# as DATA and never sources it. Absent lib or absent file: skipped, every key it
+# would supply has an environment variable.
+load_env_file() {
+    ENV_FILE="${CANVAS_ENV_FILE:-$CANVAS_ROOT/.env}"
+    [[ -f "$ENV_FILE" ]] || { ENV_FILE=; return 0; }
+
+    # Next to this script normally; inside the resolved deployment when the
+    # script was copied somewhere else (a cron wrapper, /usr/local/bin).
+    local lib
+    for lib in "$(dirname "$(readlink -f "$0")")/lib/install-common.sh" \
+               "$CANVAS_ROOT/scripts/lib/install-common.sh"; do
+        [[ -f "$lib" ]] && break
+        lib=
+    done
+    [[ -n "$lib" ]] || { ENV_FILE=; return 0; }
+
+    ENV_EXAMPLE="$CANVAS_ROOT/.env.example"
+    # shellcheck source=lib/install-common.sh
+    . "$lib"
+    ENV_LOADED=true
+
+    local server_home
+    server_home=$(env_get CANVAS_HOST_SERVER_HOME)
+    # A relative value is relative to the checkout, the way compose reads it.
+    case "$server_home" in
+        ''|/*) ;;
+        *) server_home="$CANVAS_ROOT/${server_home#./}" ;;
+    esac
+    [[ -n "$server_home" ]] && set_if_unset CANVAS_SERVER_HOME "$server_home"
+    return 0
+}
+
+UNIT_ROOT=$(unit_prop WorkingDirectory)
+UNIT_USER=$(unit_prop User)
+UNIT_GROUP=$(unit_prop Group)
+UNIT_SERVER_HOME=$(unit_env CANVAS_SERVER_HOME)
+
+if [[ -n "$CANVAS_ROOT" ]]; then
+    CANVAS_ROOT="${CANVAS_ROOT%/}"
+    CANVAS_ROOT_SOURCE="environment"
+else
+    detect_canvas_root
+fi
+
+# update.json is looked for under the server home the unit names, then under the
+# conventional one — resolved before the config can say where the server home
+# is, which is why both are tried rather than one being assumed.
+if [[ -z "$UPDATE_CONFIG" ]]; then
+    for candidate in "${CANVAS_SERVER_HOME:-$UNIT_SERVER_HOME}" "$CANVAS_ROOT/server"; do
+        [[ -n "$candidate" && -f "$candidate/config/update.json" ]] || continue
+        UPDATE_CONFIG="$candidate/config/update.json"
+        break
+    done
+    UPDATE_CONFIG="${UPDATE_CONFIG:-${CANVAS_SERVER_HOME:-${UNIT_SERVER_HOME:-$CANVAS_ROOT/server}}/config/update.json}"
+fi
 
 load_update_config
 
+# update.json ranks above detection, so a canvasRoot it names wins — but only if
+# it really is a checkout. The mismatch itself is always reported: it means the
+# config was read out of one deployment and describes another, which is exactly
+# the situation where a silent choice does damage.
+if [[ -n "$CONFIG_CANVAS_ROOT" && "${CONFIG_CANVAS_ROOT%/}" != "$CANVAS_ROOT" ]]; then
+    if [[ "$CANVAS_ROOT_SOURCE" == "environment" ]]; then
+        ROOT_MISMATCH="CANVAS_ROOT=$CANVAS_ROOT (environment) overrides canvasRoot=$CONFIG_CANVAS_ROOT in $UPDATE_CONFIG"
+    elif is_canvas_root "$CONFIG_CANVAS_ROOT"; then
+        ROOT_MISMATCH="using canvasRoot=$CONFIG_CANVAS_ROOT from $UPDATE_CONFIG (detected $CANVAS_ROOT via $CANVAS_ROOT_SOURCE)"
+        CANVAS_ROOT="${CONFIG_CANVAS_ROOT%/}"
+        CANVAS_ROOT_SOURCE="update.json"
+    else
+        ROOT_MISMATCH="canvasRoot=$CONFIG_CANVAS_ROOT in $UPDATE_CONFIG is not a canvas-server checkout — staying on $CANVAS_ROOT ($CANVAS_ROOT_SOURCE)"
+    fi
+fi
+
+# The installed service runs out of one tree; this update must not quietly
+# rebuild a different one (running the script from a dev checkout on a box whose
+# unit points elsewhere is the easy way into that).
+if [[ -n "$UNIT_ROOT" && "${UNIT_ROOT%/}" != "$CANVAS_ROOT" ]]; then
+    UNIT_MISMATCH="canvas-server.service runs from ${UNIT_ROOT%/} — updating $CANVAS_ROOT ($CANVAS_ROOT_SOURCE) instead"
+fi
+
+# Unit values rank above .env (see the ordering note above), so they are applied
+# first — set_if_unset is first-write-wins.
+[[ -n "$UNIT_USER" ]] && set_if_unset CANVAS_USER "$UNIT_USER"
+[[ -n "$UNIT_GROUP" ]] && set_if_unset CANVAS_GROUP "$UNIT_GROUP"
+[[ -n "$UNIT_SERVER_HOME" ]] && set_if_unset CANVAS_SERVER_HOME "$UNIT_SERVER_HOME"
+
+load_env_file
+
+CANVAS_SERVER_HOME="${CANVAS_SERVER_HOME:-$CANVAS_ROOT/server}"
 CANVAS_USER="${CANVAS_USER:-canvas}"
 CANVAS_GROUP="${CANVAS_GROUP:-www-data}"
 TARGET_BRANCH="${TARGET_BRANCH:-dev}"
@@ -275,7 +458,11 @@ fi
 trap 'stop_maintenance_page; rm -f "$LOCKFILE"' EXIT
 touch "$LOCKFILE"
 
-log_message "Starting canvas-server update (branch=$TARGET_BRANCH, root=$CANVAS_ROOT)..."
+log_message "Starting canvas-server update (branch=$TARGET_BRANCH, root=$CANVAS_ROOT [$CANVAS_ROOT_SOURCE])..."
+log_message "  user=$CANVAS_USER:$CANVAS_GROUP serverHome=$CANVAS_SERVER_HOME"
+log_message "  config=${UPDATE_CONFIG}$([[ -f "$UPDATE_CONFIG" ]] || echo ' (absent)') env=${ENV_FILE:-none}"
+[[ -n "$ROOT_MISMATCH" ]] && log_message "  NOTE: $ROOT_MISMATCH"
+[[ -n "$UNIT_MISMATCH" ]] && log_message "  NOTE: $UNIT_MISMATCH"
 
 [[ -d "$CANVAS_ROOT" ]] || { log_message "Missing $CANVAS_ROOT — install first."; exit 1; }
 

@@ -1,25 +1,37 @@
 {
+  "_readme": [
+    "Copy to config/update.json. EVERY key is optional.",
+    "Paths are discovered when omitted: scripts/update-git.sh resolves each",
+    "setting as env var > this file > the running canvas-server.service >",
+    "the deployment's .env > a built-in default, and finds its own checkout",
+    "(or the unit's WorkingDirectory, or the service user's home) as the root.",
+    "State a path here only to override that — a stale canvasRoot/canvasUser",
+    "is how a box updates one tree while using another tree's paths.",
+    "channel: dev -> branch dev, prod -> branch main (unless branch is set)."
+  ],
   "channel": "dev",
-  "branch": "dev",
-  "canvasRoot": "/opt/canvas-server",
-  "canvasServerHome": "/opt/canvas-server/server",
-  "canvasUser": "canvas",
-  "canvasGroup": "www-data",
-  "logFile": "/var/log/canvas-deploy.log",
-  "lockFile": "/var/run/canvas-update.lock",
-  "requiredNodeVersion": 20,
-  "maintenancePage": true,
-  "maintenancePort": 8001,
-  "maintenanceHost": "0.0.0.0",
   "web": {
     "build": true,
     "repo": "https://github.com/canvas-ui/canvas.git",
-    "branch": "main",
-    "srcDir": "/opt/canvas-server/web-src"
+    "branch": "main"
   },
   "proxy": {
     "http": "",
     "https": "",
     "noProxy": "localhost,127.0.0.1,.local"
+  },
+  "_overrides": {
+    "branch": "dev",
+    "canvasRoot": "/opt/canvas-server",
+    "canvasServerHome": "/opt/canvas-server/server",
+    "canvasUser": "canvas",
+    "canvasGroup": "www-data",
+    "logFile": "/var/log/canvas-deploy.log",
+    "lockFile": "/var/run/canvas-update.lock",
+    "requiredNodeVersion": 20,
+    "maintenancePage": true,
+    "maintenancePort": 8001,
+    "maintenanceHost": "0.0.0.0",
+    "web": { "srcDir": "/opt/canvas-server/web-src" }
   }
 }

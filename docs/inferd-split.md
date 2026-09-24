@@ -51,13 +51,38 @@ canvas-server does **not** pull canvas-inferd. That is the point — a dependenc
 would put the native model tree back. It is installed and supervised separately:
 
 ```
-npm install -g canvas-ui/canvas-inferd     # provides the `canvas-inferd` binary
+sudo ./scripts/install-inferd-ubuntu.sh        # binary + cache + config + unit
+sudo ./scripts/install-ubuntu.sh -i            # ...or as part of a server install
 ```
 
-`scripts/install-ubuntu.sh` then writes a `canvas-inferd.service` unit if the
-binary is on PATH, and skips with a note if it is not. `scripts/update-git.sh`
-restarts the unit when present. Neither step can fail the deploy: a box without
-inference is a supported configuration.
+That script owns the whole inference side of a deployment: it installs the
+binary globally (`github:canvas-ui/canvas-inferd#main`), creates the model cache
+under `<root>/server/inferd/models`, writes a starter
+`<root>/server/config/inferd.json` if there is none, and writes, enables and
+starts `canvas-inferd.service`. Re-running it is safe; `--unit-only` refreshes
+just the unit, `--force-unit` rewrites an existing one, and `--cuda` opts back
+into onnxruntime-node's CUDA download (skipped by default, because on a CPU box
+it is a slow download of something never loaded and on a box with blocked egress
+it fails the install outright).
+
+The config file is not optional even when empty: the unit passes `--config`, and
+the daemon exits if that path is unreadable.
+
+Settings resolve **flag > environment variable > `.env` > default**. The `.env`
+is the same file `install-docker.sh` / `install-local.sh` write, read with the
+same helper (`scripts/lib/install-common.sh`, which treats it as data and never
+sources it), so an existing deployment is picked up instead of a second one
+being invented beside it: `CANVAS_HOST_SERVER_HOME` decides where the config and
+model cache land, `OLLAMA_HOST` seeds the starter config, `CANVAS_INFERD_ENABLED=false`
+makes the script do nothing (`--enable` overrides it and writes the key back as
+true), and `CANVAS_INFERD_SOCKET` / `_CACHE_DIR` / `_CONFIG` / `CANVAS_INFERD_BRANCH`
+are honoured if present. `--env-file` points at another one, `--no-env` ignores it.
+
+`scripts/install-ubuntu.sh` delegates to it — with `-i` for a full install,
+otherwise only to refresh the unit when the binary is already on PATH, and it
+skips with a note when it is not. `scripts/update-git.sh` restarts the unit when
+present. None of those steps can fail the deploy: a box without inference is a
+supported configuration.
 
 pm2 or any other supervisor works equally well — the daemon is a plain process
 with a socket, no orchestration assumptions.

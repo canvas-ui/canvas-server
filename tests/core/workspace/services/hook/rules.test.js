@@ -760,3 +760,77 @@ describe('download action', () => {
         assert.ok(!fs.existsSync(path.join(root, 'var/download-ledger.json')));
     });
 });
+
+
+describe('reverse Auto-Link storage', () => {
+    function setup({ paths = ['/virtual/sub'], endpoints = [{ backend: 'workspace:home', key: 'elsewhere/photo.JPG' }], changed = { context: ['/virtual/sub'] }, backfill = false } = {}) {
+        const doc = { id: 501, schema: 'data/schema/file', metadata: { filename: 'photo.JPG' } };
+        const payload = { document: doc, treePaths: { context: paths }, changed, backfill };
+        const transfers = [];
+        const workspace = {
+            id: 'test', backendKeepsPaths: () => true, get: async () => doc,
+            documentByteEndpoints: async () => endpoints,
+            transferDocumentBytes: async (_doc, options) => { transfers.push(options); endpoints.push({ backend: options.to, key: options.key }); return { ok: true }; },
+        };
+        const context = { workspace, payload, eventName: 'document.linked', classify: () => classify(payload) };
+        const rule = { id: 'reverse', when: { path: 'context:/virtual' }, then: [{ action: 'store', autoLink: true, to: 'workspace:home', folder: 'Accounting', recursive: true, mode: 'copy', onConflict: 'error' }] };
+        return { context, rule, transfers };
+    }
+    test('copies within a backend, preserves filename case and subfolders, and is repeat-safe', async () => {
+        const { context, rule, transfers } = setup();
+        await executeRuleActions(rule, context, noopLogger);
+        await executeRuleActions(rule, context, noopLogger);
+        assert.equal(transfers.length, 1);
+        assert.equal(transfers[0].key, 'Accounting/sub/photo.JPG');
+        assert.equal(transfers[0].mode, 'copy');
+        assert.equal(transfers[0].onConflict, 'error');
+    });
+    test('backend-only links cannot echo existing virtual memberships', async () => {
+        const { context, rule, transfers } = setup({ changed: { directory: ['/workspace/home/Accounting'] } });
+        context.payload.directory = { treeName: 'backends' };
+        await executeRuleActions(rule, context, noopLogger);
+        assert.equal(transfers.length, 0);
+    });
+    test('backfill processes all explicit placements and deduplicates equal relative paths', async () => {
+        const { context, rule, transfers } = setup({ paths: ['/virtual/a', '/virtual/b'], changed: {}, backfill: true });
+        await executeRuleActions(rule, context, noopLogger);
+        assert.deepEqual(transfers.map(t => t.key), ['Accounting/a/photo.JPG', 'Accounting/b/photo.JPG']);
+    });
+    test('move with multiple placements copies first and releases only the original source last', async () => {
+        const { context, rule, transfers } = setup({ paths: ['/virtual/a', '/virtual/b'], changed: {}, backfill: true });
+        rule.then[0].mode = 'move';
+        await executeRuleActions(rule, context, noopLogger);
+        assert.deepEqual(transfers.map(t => t.mode), ['copy', 'move']);
+        assert.deepEqual(transfers.map(t => t.from.key), ['elsewhere/photo.JPG', 'elsewhere/photo.JPG']);
+    });
+    test('equal relative paths across trees only transfer once; filenames remain literal', async () => {
+        const { context, rule, transfers } = setup({ backfill: true });
+        context.payload.treePaths.directory = ['/files/sub'];
+        context.payload.document.metadata.filename = '{{doc.id}}.PDF';
+        rule.when.path = ['context:/virtual', 'directory:/files'];
+        await executeRuleActions(rule, context, noopLogger);
+        assert.deepEqual(transfers.map(t => t.key), ['Accounting/sub/{{doc.id}}.PDF']);
+    });
+    test('insertions are processed without a changed-path envelope', async () => {
+        const { context, rule, transfers } = setup({ changed: {} });
+        context.eventName = 'document.inserted';
+        await executeRuleActions(rule, context, noopLogger);
+        assert.equal(transfers.length, 1);
+    });
+    test('direct-only rules exclude subfolders and documents without transferable bytes', async () => {
+        const { context, rule, transfers } = setup();
+        rule.when = { pathExact: 'context:/virtual' };
+        await executeRuleActions(rule, context, noopLogger);
+        assert.equal(transfers.length, 0);
+        const empty = setup({ endpoints: [] });
+        await executeRuleActions(empty.rule, empty.context, noopLogger);
+        assert.equal(empty.transfers.length, 0);
+    });
+    test('conflicts surface as errors and do not request overwrite', async () => {
+        const { context, rule } = setup();
+        context.workspace.transferDocumentBytes = async (_doc, options) => { assert.equal(options.onConflict, 'error'); throw new Error('target-exists'); };
+        const result = await executeRuleActions(rule, context, noopLogger);
+        assert.equal(result[0].status, 'error');
+        assert.equal(result[0].error, 'target-exists');
+    });
+});

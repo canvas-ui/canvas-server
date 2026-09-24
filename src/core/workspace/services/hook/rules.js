@@ -8,6 +8,7 @@ import { isDisabledFile } from './naming.js';
 import { WORKSPACE_DIRECTORIES } from '../../lib/constants.js';
 import { sanitizeSegment, joinKey, MIME_EXTENSIONS } from './key-utils.js';
 import { download } from './download.js';
+import { classifyDocument } from '../../lib/classifier.js';
 
 /**
  * Declarative hook rules (canvas.hook-rules/v1).
@@ -486,11 +487,27 @@ const ACTIONS = {
      * once the bytes have moved, no source matches and re-runs are no-ops, so
      * the rule can safely fire on both document.inserted and document.linked.
      */
-    async store(action, { workspace, doc, scope, logger }) {
-        if (!doc?.id) { logger.debug('rule store: event carries no document, skipping'); return; }
+    async store(action, { workspace, doc, scope, logger, placement = false, sourceOverride = null }) {
+        if (!doc?.id) return { status: 'skipped', error: 'No document' };
+        if (action.autoLink === true && !placement) {
+            if (!scope.match) return { status: 'skipped', error: 'No explicit virtual placement' };
+            if (!workspace.backendKeepsPaths(action.to)) throw new Error('Auto-Link requires a backend that preserves folder paths');
+            const initial = await workspace.get(doc.id);
+            const endpoints = await workspace.documentByteEndpoints(initial);
+            const original = endpoints.find(endpoint => endpoint.backend !== action.to) || endpoints[0];
+            if (!original) return { status: 'skipped', error: 'No transferable file content' };
+            for (const [index, match] of scope.match.all.entries()) {
+                // Re-read locations between placements and queued events.
+                const current = await workspace.get(doc.id);
+                // Copy every placement before releasing the original on the last.
+                const mode = index === scope.match.all.length - 1 ? action.mode : 'copy';
+                await ACTIONS.store({ ...action, mode }, { workspace, doc: current, scope: { ...scope, match }, logger, placement: true, sourceOverride: original });
+            }
+            return;
+        }
         const to = String(action.to || '').trim();
         if (!to) { logger.warn('rule store: "to" (target backend) is required'); return; }
-        const mode = action.mode === 'copy' ? 'copy' : 'move';
+        const mode = action.mode === 'copy' || (action.autoLink === true && action.mode !== 'move') ? 'copy' : 'move';
 
         const endpoints = await workspace.documentByteEndpoints(doc);
         if (!endpoints.length) {
@@ -499,9 +516,9 @@ const ACTIONS = {
         }
 
         const sources = asArray(action.from || []).filter(Boolean).map(String);
-        const source = sources.length
+        const source = sourceOverride || (sources.length
             ? endpoints.find((e) => sources.includes(e.backend))
-            : endpoints.find((e) => e.backend !== to);
+            : endpoints.find((e) => e.backend !== to) || (action.autoLink === true ? endpoints[0] : null));
         if (!source) {
             // Already where the rule wants it (or never on the source backend).
             logger.debug(`rule store: ${doc.id} has nothing on ${sources.join(', ') || `a backend other than ${to}`}, skipping`);
@@ -513,11 +530,13 @@ const ACTIONS = {
         // — running it first would silently eat {{YYYY}} and file everything
         // under `Fotky///`.
         const render = (template) => interpolate(expandKeyTemplate(String(template), { doc, sourceKey: source.key }), scope);
-        const folder = action.folder != null && String(action.folder).trim() !== '' ? render(action.folder) : '';
+        const folder = action.autoLink === true ? String(action.folder || '') : action.folder != null && String(action.folder).trim() !== '' ? render(action.folder) : '';
         const recursive = action.recursive === true;
         let key;
-        if (action.key || folder || recursive) {
-            const name = action.key ? render(action.key) : render('{{basename}}{{ext}}');
+        if (action.key || folder || recursive || action.autoLink === true) {
+            const name = action.autoLink === true
+                ? path.posix.basename(filenameOf(doc, source.key).replaceAll('\\', '/')) || String(doc.id)
+                : action.key ? render(action.key) : render('{{basename}}{{ext}}');
             const rel = recursive ? String(scope.match?.rel || '') : '';
             key = joinKey(folder, rel, name);
             if (!key) {
@@ -525,6 +544,8 @@ const ACTIONS = {
                 return;
             }
         }
+
+        if (action.autoLink === true && endpoints.some(endpoint => endpoint.backend === to && endpoint.key === key)) return;
 
         const res = await workspace.transferDocumentBytes(doc, {
             to,
@@ -801,11 +822,26 @@ function matchedPath(rule, context) {
     let c;
     try { c = context.classify(); } catch { return null; }
     if (!c || typeof c.pathMatches !== 'function') { return null; }
-    for (const prefix of prefixes) {
+    const autoLink = rule.then?.some(action => action.autoLink === true);
+    if (autoLink && context.eventName === 'document.linked' && !context.payload?.backfill) {
+        // A backend event must not reactivate unrelated existing virtual links.
+        c = classifyDocument(context.payload?.document, { changed: context.payload?.changed, directory: { treeName: context.payload?.directory?.treeName || context.payload?.directory?.tree } });
+    }
+    const placements = new Map();
+    for (const prefix of autoLink ? [...prefixes].sort((a, b) => String(b).length - String(a).length) : prefixes) {
         const all = c.pathMatches(prefix).filter((match) => rule?.when?.pathExact === undefined || match.rel === '');
-        if (all.length) {
+        if (autoLink) {
+            for (const match of all) {
+                const key = `${match.tree}:${match.path}`;
+                if (!placements.has(key)) placements.set(key, match);
+            }
+        } else if (all.length) {
             return { prefix: String(prefix), tree: all[0].tree, path: all[0].path, rel: all[0].rel, all };
         }
+    }
+    if (placements.size) {
+        const all = [...new Map([...placements.values()].map(match => [match.rel, match])).values()];
+        return { ...all[0], all };
     }
     return null;
 }

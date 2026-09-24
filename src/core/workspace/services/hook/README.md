@@ -160,3 +160,26 @@ same through `ctx.logger`. Traces are capped (300 lines, 2 KiB per line).
 
 Agent/notify failures are errors in the run log, never silent: a rule whose
 agent is missing or stopped shows `agent: … not found or not startable`.
+
+
+### Auto-Link folder directions
+
+The web UI creates standard independently enabled rules with a shared ID prefix:
+backend → virtual tree uses `link`; virtual tree → backend uses `store` with
+`autoLink: true`, `mode: "copy"` by default, and `onConflict: "error"`. Both creates
+one rule for each direction. Existing documents runs a backfill for each rule.
+
+Reverse Auto-Link reacts to document insertion and explicit virtual placement,
+not context query results, edits, renames, or deletions. `pathExact` selects direct
+contents; `path` plus `recursive` preserves relative folders. Overlapping virtual
+roots use the most specific root for each placement. Equal relative placements
+are deduplicated. The destination must support path-based storage and be writable.
+
+`autoLink` treats the folder and original filename literally, supports copying
+within a backend, refreshes document locations before each transfer, and skips
+an existing destination location. Backend membership events cannot echo through
+existing virtual memberships. Transfers preserve document identity and refuse
+filename collisions rather than overwrite. Advanced move copies additional
+placements first and releases the original only through the storage layer's
+verified/durable move operation. Disabling or removing rules leaves files and
+links intact. These rules intentionally do not synchronize renames or deletions.

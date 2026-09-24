@@ -12,10 +12,11 @@ CANVAS_REPO_TARGET_BRANCH="${CANVAS_REPO_TARGET_BRANCH:-dev}"
 NODEJS_VERSION="${NODEJS_VERSION:-22}"
 WEB_ADMIN_EMAIL="${WEB_ADMIN_EMAIL:-$(hostname)@cnvs.ai}"
 WEB_FQDN="${WEB_FQDN:-my.cnvs.ai}"
+INSTALL_INFERD="${INSTALL_INFERD:-false}"
 
 # Function to display usage information
 usage() {
-    echo "Usage: $0 [-r canvas_root] [-u canvas_user] [-g canvas_group] [-b canvas_repo_branch] [-n nodejs_version] [-e web_admin_email] [-f web_fqdn]"
+    echo "Usage: $0 [-r canvas_root] [-u canvas_user] [-g canvas_group] [-b canvas_repo_branch] [-n nodejs_version] [-e web_admin_email] [-f web_fqdn] [-i]"
     echo "  -r: Canvas root directory (default: /opt/canvas-server)"
     echo "  -u: Canvas user (default: canvas)"
     echo "  -g: Canvas group (default: www-data)"
@@ -23,11 +24,12 @@ usage() {
     echo "  -n: Node.js version (default: 22)"
     echo "  -e: Web admin email (default: $(hostname)@cnvs.ai)"
     echo "  -f: Web FQDN (default: my.cnvs.ai)"
+    echo "  -i: Also install canvas-inferd (inference daemon; optional, pulls a native model runtime)"
     exit 1
 }
 
 # Parse command line options
-while getopts "r:u:g:b:n:e:f:h" opt; do
+while getopts "r:u:g:b:n:e:f:ih" opt; do
     case $opt in
         r) CANVAS_ROOT="$OPTARG" ;;
         u) CANVAS_USER="$OPTARG" ;;
@@ -36,6 +38,7 @@ while getopts "r:u:g:b:n:e:f:h" opt; do
         n) NODEJS_VERSION="$OPTARG" ;;
         e) WEB_ADMIN_EMAIL="$OPTARG" ;;
         f) WEB_FQDN="$OPTARG" ;;
+        i) INSTALL_INFERD="true" ;;
         h) usage ;;
         \?) echo "Invalid option -$OPTARG" >&2; usage ;;
     esac
@@ -140,48 +143,40 @@ EOF
 # unit so a model worker crash restarts inference alone, and so inference can be
 # left off entirely on a box that does not want it.
 #
-# RuntimeDirectory=canvas gives /run/canvas (mode 0750, owned by the canvas
-# user) — the default socket location both sides resolve to with nothing
-# configured. Keep it in step with socket-path.js in BOTH packages.
+# Everything about that side lives in scripts/install-inferd-ubuntu.sh — binary,
+# model cache, config, unit — so the unit is written in exactly one place. This
+# function only decides whether to call it:
+#   -i given            -> full install (fetches the package, ~native deps)
+#   binary already there -> unit refresh only
+#   neither              -> skip with a note; inference is optional
 install_inferd_service() {
-    if ! command -v canvas-inferd >/dev/null 2>&1; then
-        echo "canvas-inferd not installed — skipping (embedding and dense search stay disabled)"
-        echo "  install it with: npm install -g canvas-ui/canvas-inferd"
+    local inferd_script="$(dirname "$0")/install-inferd-ubuntu.sh"
+    local inferd_args="--root $CANVAS_ROOT --user $CANVAS_USER --group $CANVAS_GROUP"
+
+    if [ ! -f "$inferd_script" ]; then
+        echo "scripts/install-inferd-ubuntu.sh not found — skipping inference setup"
         return 0
     fi
-    if [ ! -f /etc/systemd/system/canvas-inferd.service ]; then
-        echo "Creating systemd service for Canvas Inferd..."
-        cat > /etc/systemd/system/canvas-inferd.service <<EOF
-[Unit]
-Description=Canvas Inference Daemon
-# Ordering only, not a requirement: canvas-server starts and serves without it,
-# degrading to keyword search, and its client reconnects when this comes back.
-Before=canvas-server.service
 
-[Service]
-Type=simple
-User=$CANVAS_USER
-Group=$CANVAS_GROUP
-WorkingDirectory=$CANVAS_ROOT
-RuntimeDirectory=canvas
-RuntimeDirectoryMode=0750
-ExecStart=$(command -v canvas-inferd) --socket /run/canvas/inferd.sock --config $CANVAS_ROOT/server/config/inferd.json
-Restart=always
-RestartSec=10
-# Models are large and loading one is a burst; do not let the supervisor treat
-# a slow first load as a failure.
-TimeoutStartSec=300
-Environment=NODE_ENV=production
-Environment=CANVAS_INFERD_CACHE_DIR=$CANVAS_ROOT/server/inferd/models
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-        systemctl daemon-reload
-        systemctl enable canvas-inferd
-        echo "Canvas Inferd systemd service created and enabled"
+    if [ "$INSTALL_INFERD" = "true" ]; then
+        echo "Installing canvas-inferd..."
+        # Never fatal: the API server runs fine without inference, and a failed
+        # model-runtime install must not fail a canvas-server deployment.
+        bash "$inferd_script" $inferd_args \
+            || echo "canvas-inferd install failed — embedding and dense search stay disabled"
+        return 0
     fi
+
+    if command -v canvas-inferd >/dev/null 2>&1; then
+        echo "canvas-inferd found — refreshing its service unit..."
+        bash "$inferd_script" $inferd_args --unit-only \
+            || echo "canvas-inferd unit setup failed — embedding and dense search stay disabled"
+        return 0
+    fi
+
+    echo "canvas-inferd not installed — skipping (embedding and dense search stay disabled)"
+    echo "  install it with: $inferd_script"
+    echo "  or re-run this script with -i"
 }
 
 # Function to update Canvas Server
@@ -253,6 +248,7 @@ install_canvas() {
 
 
     install_canvas_service
+    install_inferd_service
 
     echo "Starting Canvas Server..."
     if ! systemctl start canvas-server; then

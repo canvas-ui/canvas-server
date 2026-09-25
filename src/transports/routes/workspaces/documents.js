@@ -1,6 +1,7 @@
 'use strict';
 
 import ResponseObject from '../../ResponseObject.js';
+import { copyDocumentOnce } from '../../../core/workspace/lib/copy-document.js';
 import { parseDocumentId, parseDocumentIdArray } from '../../../utils/documentId.js';
 import { stripDeviceFeatureTags } from '../../../utils/device-features.js';
 import { parseByteRange } from '../../lib/http-range.js';
@@ -707,6 +708,48 @@ export default async function workspaceDocumentRoutes(fastify, _options) {
   });
 
   // ── Insert documents ────────────────────────────────────────────────────
+
+  // Cross-workspace copy is a source READ and destination WRITE. Resource-bound
+  // tokens cannot authorize a second workspace with their owner's identity.
+  fastify.post('/copy-to-workspace', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      params: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } },
+      body: { type: 'object', required: ['documentId', 'destination', 'context', 'operationId'], properties: {
+        documentId: { type: 'integer', minimum: 1 }, destination: { type: 'string', minLength: 1 },
+        context: { type: 'array', minItems: 1, maxItems: 50, items: { type: 'string', pattern: '^/' } },
+        treeType: { type: 'string', enum: ['context', 'directory'], default: 'context' },
+        treeNameOrTreeId: { type: 'string' }, operationId: { type: 'string', minLength: 1, maxLength: 100 },
+      } },
+    },
+  }, async (request, reply) => {
+    try {
+      if (request.resourceToken) {
+        const response = new ResponseObject().forbidden('Workspace copies require a user account with access to both workspaces');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+      const source = await getWorkspaceInstance(request, reply);
+      if (!source) return reply;
+      const destination = await getWorkspaceInstance({ ...request, params: { id: request.body.destination }, user: request.user }, reply);
+      if (!destination) return reply;
+      const access = await fastify.workspaceManager.resolveWorkspaceAccess(destination.id, request.user.id);
+      if (!access || (!access.isOwner && !access.permissions.includes('write'))) {
+        const response = new ResponseObject().forbidden('Write access to the destination workspace is required');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+      if (source.id === destination.id) {
+        const response = new ResponseObject().badRequest('Choose a different workspace; use Link to for paths in this workspace');
+        return reply.code(response.statusCode).send(response.getResponse());
+      }
+      const spec = resolveScopeSelectors(destination, request.body);
+      if (spec.directory && rejectBackendsWrite(reply, destination, spec.directory)) return reply;
+      const result = await copyDocumentOnce({ source, destination, documentId: request.body.documentId, spec, operationId: request.body.operationId, userId: request.user.id });
+      return new ResponseObject().created(result, 'Document copied').getResponse();
+    } catch (error) {
+      const response = ResponseObject.fromError(error, 'Workspace copy failed');
+      return reply.code(response.statusCode).send(response.getResponse());
+    }
+  });
 
   fastify.post('/', {
     onRequest: [fastify.authenticateClient],

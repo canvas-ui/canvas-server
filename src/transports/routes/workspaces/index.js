@@ -68,7 +68,7 @@ export default async function workspaceRoutes(fastify, _options) {
   // be stopped here before an unsafe method reaches the handler. Routes
   // guarded by the ACL middleware already carry request.workspaceAccess with
   // the permission checked and are skipped. Search-style POSTs are reads.
-  const READ_POSTS = /\/(search(\/image)?|query|resolve|preview|exports\/ticket)(\/|$)/;
+  const READ_POSTS = /\/(search(\/image)?|query|resolve|preview|exports\/ticket|copy-to-workspace)(\/|$)/;
   fastify.addHook('preHandler', async (request, reply) => {
     if (request.workspaceAccess || request.resourceToken || !request.user?.id || !request.params?.id) return;
     const url = (request.raw?.url || request.url || '').split('?')[0];

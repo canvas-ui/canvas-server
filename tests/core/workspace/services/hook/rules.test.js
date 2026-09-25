@@ -834,3 +834,18 @@ describe('reverse Auto-Link storage', () => {
         assert.equal(result[0].error, 'target-exists');
     });
 });
+
+
+test('regex matchers preserve alternation, escapes and repeated URL alternatives', () => {
+    const matches = (when, payload) => matchRule({ when: { event: 'document.inserted', ...when } }, 'document.inserted', classify(payload));
+    const mail = emailPayload('BILLING@acme.com', 'Invoice 123');
+    mail.document.data.to = ['accounts@example.com'];
+    assert.equal(matches({ from: { regex: '@(acme|example)\\.com$' }, subject: { regex: '^invoice\\s+\\d+$' }, to: { regex: '^(accounts|billing)@' } }, mail), true);
+    assert.equal(matches({ subject: 'invoice|receipt' }, mail), false);
+    assert.equal(matches({ subject: [{ regex: '^receipt' }, { regex: '^invoice' }] }, mail), true);
+    assert.equal(matches({ subject: { regex: '[' } }, mail), false);
+    const tab = tabPayload('https://example.com/receipt/123');
+    assert.equal(matches({ url: { regex: ['/(invoice)/\\1$', '/receipt/\\d+$'] } }, tab), true);
+    assert.equal(matches({ url: { regex: ['[', '^no-match$'] } }, tab), false);
+    assert.equal(matches({ url: { host: 'other.com', regex: '/receipt/' } }, tab), false);
+});

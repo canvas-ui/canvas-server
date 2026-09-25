@@ -183,3 +183,17 @@ filename collisions rather than overwrite. Advanced move copies additional
 placements first and releases the original only through the storage layer's
 verified/durable move operation. Disabling or removing rules leaves files and
 links intact. These rules intentionally do not synchronize renames or deletions.
+
+
+### Literal text and regular expressions
+
+In the web rule builder, **contains** matches literal text. Choose **matches
+regex** for sender, recipient (To/Cc), subject, or URL to use a case-insensitive
+JavaScript regular expression. Enter the pattern without `/…/` delimiters or
+flags, for example `^invoice\s+\d+` or `@(acme|example)\.com$`. The builder
+validates patterns before saving and preserves `|` as regex alternation.
+
+Text-field regex conditions serialize as `{ "regex": "pattern" }`. Repeated
+conditions for the same text field are OR alternatives, including mixed literal
+and regex conditions. URL `regex` accepts a string or an array of patterns (OR);
+URL host, contains, and regex constraints together are AND conditions.

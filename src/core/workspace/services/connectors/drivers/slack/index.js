@@ -23,6 +23,7 @@
  * (+ groups:* for private channels).
  */
 
+import crypto from 'node:crypto';
 import BaseConnector from '../../BaseConnector.js';
 
 const API = 'https://slack.com/api';
@@ -59,12 +60,45 @@ export default class SlackConnector extends BaseConnector {
                 'Content-Type': 'application/x-www-form-urlencoded',
             },
             body,
+            signal: AbortSignal.timeout(20000),
         });
         const json = await res.json().catch(() => null);
         if (!res.ok || !json?.ok) {
             throw new Error(`Slack ${method}: ${json?.error || `HTTP ${res.status}`}`);
         }
         return json;
+    }
+
+    async prepareMessage(input, parent) {
+        if (this.config.sendEnabled !== true || !this.canWrite) throw new Error('Sending is disabled for this Slack account');
+        const target = parent?.data?.channel?.id || input.target;
+        const containers = await this.listContainers();
+        const container = containers.find((c) => c.id === target || c.name === target);
+        if (!container) throw new Error('Select a configured Slack conversation');
+        const team = await this.#team();
+        const thread = parent ? (parent.data.threadId || parent.metadata?.remoteId) : undefined;
+        if (parent && !thread) throw new Error('Reply target has no Slack thread identifier');
+        return { container, team, thread, text: input.text };
+    }
+
+    async sendMessage(prepared, requestId) {
+        const { container, team, thread, text } = prepared;
+        const hex = crypto.createHash('sha256').update(requestId).digest('hex');
+        const clientId = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+        const response = await this.#call('chat.postMessage', {
+            channel: container.id, text, thread_ts: thread, client_msg_id: clientId,
+            unfurl_links: false, unfurl_media: false,
+        });
+        const message = { ...response.message, text, ts: response.ts, thread_ts: thread };
+        return {
+            status: 'accepted', providerMessageId: response.ts,
+            document: this.#toDocument(team, container, message), container,
+        };
+    }
+
+    containerIdFromProvenance(url) {
+        const match = String(url).match(/^slack:\/\/[^/]+\/([^/]+)\//);
+        return match?.[1] || null;
     }
 
     async test() {
@@ -85,14 +119,14 @@ export default class SlackConnector extends BaseConnector {
         let cursor;
         do {
             const page = await this.#call('conversations.list', {
-                types: 'public_channel,private_channel',
+                types: this.config.directMessages === true ? 'public_channel,private_channel,im,mpim' : 'public_channel,private_channel',
                 exclude_archived: true,
                 limit: PAGE_LIMIT,
                 cursor,
             });
             for (const channel of page.channels || []) {
                 const wanted = configured.length === 0
-                    ? channel.is_member
+                    ? (channel.is_member || (this.config.directMessages === true && (channel.is_im || channel.is_mpim)))
                     : (configured.includes(channel.name) || configured.includes(channel.id));
                 if (wanted) containers.push({ id: channel.id, name: channel.name || channel.id });
             }

@@ -6,6 +6,7 @@ import fs from 'fs/promises';
 import crypto from 'crypto';
 import { simpleParser } from 'mailparser';
 import ImapBackend from './ImapBackend.js';
+import { normalizeSmtp } from '../messages/email.js';
 import Email from 'canvas-synapsd/src/schemas/core/Email.js';
 import { parseLocationUrl } from 'canvas-synapsd/src/utils/path-helpers.js';
 import { getBackendEmailContext, normalizeSegment } from '../../../../utils/backend-documents.js';
@@ -247,6 +248,24 @@ export class WorkspaceMailIndex extends EventEmitter {
             folderName: folder,
             folderPath: folder,
         });
+
+        // SMTP providers may add Received/DKIM headers to our Sent copy. Keep
+        // the local document ID when the indexed outgoing message and content
+        // match; Message-ID alone is not enough to trust an incoming message.
+        const messageKey = WorkspaceMailIndex.messageIdKey(emailDoc.data.messageId);
+        const existing = messageKey && this.#getDb
+            ? await this.#getDb().getByChecksumString(messageKey).catch(() => null) : null;
+        if (existing?.metadata?.outgoing && existing.metadata.mailAccount === account
+            && existing.data?.subject === emailDoc.data.subject
+            && existing.data?.body === emailDoc.data.body
+            && existing.data?.bodyHtml === emailDoc.data.bodyHtml
+            && JSON.stringify(existing.data?.from) === JSON.stringify(emailDoc.data.from)
+            && JSON.stringify(existing.data?.to) === JSON.stringify(emailDoc.data.to)) {
+            emailDoc.id = existing.id;
+            emailDoc.metadata = { ...existing.metadata, ...emailDoc.metadata };
+            emailDoc.locations = [...new Map([...(existing.locations || []), ...emailDoc.locations].map((l) => [l.url, l])).values()];
+            emailDoc.checksumArray = [...new Set([...emailDoc.checksumArray, ...(existing.checksumArray || [])])];
+        }
 
         const features = Email.getFeatureBitmapArray(emailDoc, { mailboxPath: folder });
         // Canonical source-backend tag (observability/selection, not a purge driver).
@@ -794,6 +813,7 @@ export class WorkspaceMailIndex extends EventEmitter {
             // readOnly: never delete on the server (Destroy degrades to a
             // reference drop) even though the imap driver supports EXPUNGE.
             readOnly: input.readOnly === true,
+            smtp: normalizeSmtp(input.smtp),
             pollInterval, initialSyncDays,
             lastUid: Math.max(0, Number(input.lastUid || 0)),
             lastSyncAt: input.lastSyncAt || null,
@@ -814,6 +834,7 @@ export class WorkspaceMailIndex extends EventEmitter {
             pollInterval: config.pollInterval, initialSyncDays: config.initialSyncDays,
             lastUid: config.lastUid || 0, lastSyncAt: config.lastSyncAt || null, lastError: config.lastError || null,
             passwordConfigured: Boolean(config.password),
+            smtp: { ...config.smtp, password: undefined, passwordConfigured: Boolean(config.smtp?.password) },
             runtime: {
                 active: !!backend,
                 watching: backend?.watching === true,
@@ -830,6 +851,35 @@ export class WorkspaceMailIndex extends EventEmitter {
             .map(([name, c]) => ({ id: this.#mailboxIdFromName(name), name, config: c }));
     }
 
+    async senderConfig(account) {
+        const entries = await this.#imapEntries();
+        const candidates = entries.filter(({ config }) => config.enabled !== false
+            && normalizeSegment(config.account || config.user) === normalizeSegment(account));
+        const config = candidates.find(({ config }) => config.smtp?.enabled && !config.readOnly)?.config;
+        if (!config) throw new Error('Email account is missing or SMTP sending is disabled');
+        return config;
+    }
+
+    async storeSentMessage(config, raw) {
+        let uid = null;
+        const warnings = [];
+        const folder = config.smtp.sentFolder || 'Sent';
+        if (config.smtp.appendSent) {
+            try { uid = await new ImapBackend('sent-copy', config).appendSent(raw, folder); }
+            catch { warnings.push('Message accepted, but saving a copy to the IMAP Sent folder failed.'); }
+        }
+        const item = await this.#prepareMessage({ raw, account: config.account || config.user, folder, uid });
+        if (!uid) item.emailDoc.locations = item.emailDoc.locations.filter((l) => !l.url.startsWith('imap://'));
+        item.emailDoc.metadata.outgoing = true;
+        item.emailDoc.metadata.mailAccount = config.account || config.user;
+        const docId = await this.#put(item.emailDoc, {
+            context: null, directory: this.#directoryFor(config.account || config.user, folder),
+            features: item.features, emitEvent: true,
+        });
+        await this.#linkThread(docId, item.emailDoc.data);
+        return { docId, warnings };
+    }
+
     async listMailboxes() {
         const entries = await this.#imapEntries();
         return entries.map(({ id, config }) => this.#serializeMailbox(id, config));
@@ -841,6 +891,7 @@ export class WorkspaceMailIndex extends EventEmitter {
         const name = this.#mailboxName(id);
         const current = stored.backends[name] || null;
         const merged = { ...(current || {}), ...input, id };
+        merged.smtp = normalizeSmtp(input.smtp, current?.smtp);
         if (current && typeof input.password === 'string' && input.password.length === 0) merged.password = current.password;
         // initialSyncDays only governs the first sync (lastUid==0); see
         // ImapBackend#searchCriteria. Reset the cursor only when the window

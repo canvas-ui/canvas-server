@@ -12,6 +12,7 @@
 
 import GithubConnector from './github/index.js';
 import SlackConnector from './slack/index.js';
+import WhatsAppConnector from './whatsapp/index.js';
 import GcalConnector from './gcal/index.js';
 import CaldavConnector from './caldav/index.js';
 import TeamsConnector from './teams/index.js';
@@ -19,6 +20,7 @@ import TeamsConnector from './teams/index.js';
 export const CONNECTOR_CLASSES = [
     GithubConnector,
     SlackConnector,
+    WhatsAppConnector,
     GcalConnector,
     CaldavConnector,
     TeamsConnector,

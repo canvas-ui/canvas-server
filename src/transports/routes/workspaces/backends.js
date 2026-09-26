@@ -1,7 +1,7 @@
 'use strict';
 
 import ResponseObject from '../../ResponseObject.js';
-import { requireWorkspaceRead, requireWorkspaceWrite } from '../../middleware/workspace-acl.js';
+import { requireWorkspaceRead, requireWorkspaceWrite, requireWorkspaceAdmin } from '../../middleware/workspace-acl.js';
 import { getServerDevice } from '../../../core/device/ServerDevice.js';
 import { describeConnectorDrivers } from '../../../core/workspace/services/connectors/index.js';
 
@@ -26,6 +26,12 @@ export default async function workspaceBackendRoutes(fastify) {
     const arg = (v) => decodeURIComponent(String(v || ''));
     // 'fs' is a UX alias for the local-folder driver; canonical name is 'file'.
     const drv = (v) => { const d = arg(v); return d === 'fs' ? 'file' : d; };
+
+    const manageMessaging = async (request, reply) => {
+        if (!['imap', 'slack', 'whatsapp'].includes(drv(request.params.driver))) return;
+        if (request.resourceToken) return reply.code(403).send({ status: 'error', message: 'Messaging account settings require a user administrator' });
+        return requireWorkspaceAdmin()(request, reply);
+    };
 
     // List every backend across all drivers.
     fastify.get('/', {
@@ -62,7 +68,7 @@ export default async function workspaceBackendRoutes(fastify) {
 
     // Add a backend instance (imap account / s3 bucket / …).
     fastify.post('/:driver', {
-        onRequest: [fastify.authenticate, requireWorkspaceWrite()],
+        onRequest: [fastify.authenticate, requireWorkspaceWrite(), manageMessaging],
     }, async (request, reply) => {
         try {
             const driver = drv(request.params.driver);
@@ -121,7 +127,7 @@ export default async function workspaceBackendRoutes(fastify) {
     });
 
     fastify.patch('/:driver/:address', {
-        onRequest: [fastify.authenticate, requireWorkspaceWrite()],
+        onRequest: [fastify.authenticate, requireWorkspaceWrite(), manageMessaging],
     }, async (request, reply) => {
         try {
             const backend = await request.workspace.updateBackend(drv(request.params.driver), arg(request.params.address), request.body || {});
@@ -130,7 +136,7 @@ export default async function workspaceBackendRoutes(fastify) {
     });
 
     fastify.delete('/:driver/:address', {
-        onRequest: [fastify.authenticate, requireWorkspaceWrite()],
+        onRequest: [fastify.authenticate, requireWorkspaceWrite(), manageMessaging],
     }, async (request, reply) => {
         try {
             const removed = await request.workspace.removeBackend(drv(request.params.driver), arg(request.params.address));
@@ -223,7 +229,7 @@ export default async function workspaceBackendRoutes(fastify) {
 
     // Subscribe folders/channels (creates containers).
     fastify.post('/:driver/:address/containers', {
-        onRequest: [fastify.authenticate, requireWorkspaceWrite()],
+        onRequest: [fastify.authenticate, requireWorkspaceWrite(), manageMessaging],
     }, async (request, reply) => {
         try {
             const folders = request.body?.folders || request.body?.names || [];
@@ -235,7 +241,7 @@ export default async function workspaceBackendRoutes(fastify) {
 
     // Rename/move a container (file-backend folders). Body: { name: newName }.
     fastify.patch('/:driver/:address/containers/:name', {
-        onRequest: [fastify.authenticate, requireWorkspaceWrite()],
+        onRequest: [fastify.authenticate, requireWorkspaceWrite(), manageMessaging],
     }, async (request, reply) => {
         try {
             const result = await request.workspace.renameBackendFolder(
@@ -246,7 +252,7 @@ export default async function workspaceBackendRoutes(fastify) {
     });
 
     fastify.delete('/:driver/:address/containers/:name', {
-        onRequest: [fastify.authenticate, requireWorkspaceWrite()],
+        onRequest: [fastify.authenticate, requireWorkspaceWrite(), manageMessaging],
     }, async (request, reply) => {
         try {
             const removed = await request.workspace.removeBackendContainer(drv(request.params.driver), arg(request.params.address), arg(request.params.name));

@@ -104,7 +104,7 @@ export class WorkspaceConnectorIndex extends EventEmitter {
     async stop() {
         for (const timer of this.#timers.values()) clearTimeout(timer);
         this.#timers.clear();
-        for (const name of [...this.#backends.keys()]) this.#unregister(name);
+        for (const name of [...this.#backends.keys()]) await this.#unregister(name);
         this.#backends.clear();
         this.#status.clear();
         this.#started = false;
@@ -122,7 +122,9 @@ export class WorkspaceConnectorIndex extends EventEmitter {
             driver: config.driver,
             address,
             config,
-            instance: new Driver(address, config, { logger: this.#logger }),
+            instance: new Driver(address, config, { logger: this.#logger, rootPath: this.#rootPath,
+                onDocument: (container, document) => this.#ingest(name, this.#backends.get(name), container, document),
+            }),
         };
         this.#backends.set(name, entry);
         this.#status.set(name, { syncing: false, lastSyncAt: config.lastSyncAt || null, lastError: null, backoff: 0 });
@@ -130,11 +132,12 @@ export class WorkspaceConnectorIndex extends EventEmitter {
         return entry;
     }
 
-    #unregister(name) {
+    async #unregister(name) {
         const entry = this.#backends.get(name);
         if (!entry) return;
         const timer = this.#timers.get(name);
         if (timer) { clearTimeout(timer); this.#timers.delete(name); }
+        await entry.instance.stop?.();
         this.#applyNodeLock(entry, false, name);
         this.#backends.delete(name);
         this.#status.delete(name);
@@ -245,7 +248,7 @@ export class WorkspaceConnectorIndex extends EventEmitter {
         await this.patchStoredBackend(name, merged);
 
         // Hot-swap the live instance and kick a sync when enabled.
-        this.#unregister(name);
+        await this.#unregister(name);
         if (merged.enabled !== false) {
             this.#register(name, merged);
             this.#kickSync(name);
@@ -255,12 +258,29 @@ export class WorkspaceConnectorIndex extends EventEmitter {
 
     async removeBackend(driver, address) {
         const name = `${driver}:${normalizeSegment(address)}`;
-        this.#unregister(name);
+        await this.#unregister(name);
         const config = await this.readStoredConfig();
         if (!config.backends[name]) return false;
         delete config.backends[name];
         await this.writeStoredConfig(config);
         return true;
+    }
+
+    messageAccount(driver, address) {
+        const entry = this.#backends.get(`${driver}:${normalizeSegment(address)}`);
+        if (!entry?.instance?.prepareMessage || entry.config.enabled === false) throw new Error('Messaging account is unavailable');
+        return entry;
+    }
+
+    async storeSentMessage(driver, address, sent) {
+        const entry = this.messageAccount(driver, address);
+        return this.#ingest(`${driver}:${entry.address}`, entry, sent.container, sent.document);
+    }
+
+    async messageConnection(driver, address, reset = false) {
+        const entry = this.messageAccount(driver, address);
+        if (!entry.instance.connectionStatus) throw new Error('This account does not use device pairing');
+        return reset ? entry.instance.resetSession() : entry.instance.connectionStatus();
     }
 
     async testBackend(driver, address) {

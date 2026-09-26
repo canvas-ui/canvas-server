@@ -102,6 +102,21 @@ describe('WorkspaceMailIndex', () => {
         return Buffer.from(lines.join('\r\n'), 'utf8');
     }
 
+    test('provider-added headers reconcile a sent copy without duplicating or merging changed content', async () => {
+        mail = createMail();
+        const config = { account: 'alice@example.com', smtp: { sentFolder: 'Sent', appendSent: false } };
+        const sent = await mail.storeSentMessage(config, RAW_EMAIL);
+        const original = puts[0].record;
+        for (const checksum of original.checksumArray) docsByChecksum.set(checksum, original);
+        const fetched = Buffer.concat([Buffer.from('Received: by smtp.example.com\r\n'), RAW_EMAIL]);
+        const id = await mail.ingestMessage({ raw: fetched, account: config.account, folder: 'Sent', uid: 17 });
+        assert.equal(id, sent.docId);
+        assert.equal(puts[1].record.locations.some((l) => l.url.startsWith('imap://')), true);
+        assert.equal(puts[1].record.checksumArray.includes(original.checksumArray[0]), true);
+        const changed = Buffer.from(fetched.toString().replace('body text', 'different body'));
+        assert.notEqual(await mail.ingestMessage({ raw: changed, account: config.account, folder: 'Sent', uid: 18 }), sent.docId);
+    });
+
     test('ingestMessage builds one Email doc with workspace:data + imap:// locations', async () => {
         mail = createMail();
         await mail.start();

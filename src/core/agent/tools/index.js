@@ -340,6 +340,46 @@ export function createCanvasTools(env) {
         },
     });
 
+    const canvasMessageAccounts = defineTool({
+        name: 'canvas_message_accounts', label: 'Canvas Message Accounts',
+        description: 'List email, Slack and WhatsApp accounts and whether sending is enabled for agents. Sending communicates externally as that account.',
+        parameters: Type.Object({ ...workspaceParams }),
+        async execute(_id, params, signal) {
+            try { return toolResult((await client.get(`/workspaces/${resolveWorkspace(params)}/messages/accounts`, { signal })).payload); }
+            catch (error) { return toolError(error); }
+        },
+    });
+    const canvasMessageStatus = defineTool({
+        name: 'canvas_message_status', label: 'Canvas Message Status',
+        description: 'Check your previously attempted send by requestId, without delivering another message. An unknown result must be checked in the provider conversation before starting another send.',
+        parameters: Type.Object({ ...workspaceParams, requestId: Type.String() }),
+        async execute(_id, params, signal) {
+            try { return toolResult((await client.get(`/workspaces/${resolveWorkspace(params)}/messages/outbox/${encodeURIComponent(params.requestId)}`, { signal })).payload); }
+            catch (error) { return toolError(error); }
+        },
+    });
+    const canvasSendMessage = defineTool({
+        name: 'canvas_send_message', label: 'Canvas Send Message',
+        description: 'Send an external message through a configured account, or reply to a message document. Use only when the user has authorized communicating with these recipients. Supply a stable UUID requestId and reuse it unchanged after a timeout; never create another ID to retry an unknown result. accepted means provider acceptance, not recipient delivery. Reply resolves its account and thread automatically. Path-bound agents may reply only to in-scope messages.',
+        parameters: Type.Object({
+            ...workspaceParams,
+            requestId: Type.String({ description: 'Unique request UUID; reuse for retries of this exact message' }),
+            text: Type.String({ maxLength: 32000 }),
+            replyToDocumentId: Type.Optional(Type.Integer({ minimum: 1 })),
+            driver: Type.Optional(Type.Union([Type.Literal('imap'), Type.Literal('slack'), Type.Literal('whatsapp')])),
+            address: Type.Optional(Type.String({ description: 'Account label from canvas_message_accounts; omitted for replies' })),
+            target: Type.Optional(Type.String({ description: 'Configured Slack channel name/ID or WhatsApp conversation ID; omitted for replies' })),
+            to: Type.Optional(Type.Array(Type.String())), cc: Type.Optional(Type.Array(Type.String())), bcc: Type.Optional(Type.Array(Type.String())),
+            subject: Type.Optional(Type.String()), replyAll: Type.Optional(Type.Boolean()),
+        }),
+        async execute(_id, params, signal) {
+            try {
+                const { workspace: _workspace, ...body } = params;
+                return toolResult((await client.post(`/workspaces/${resolveWorkspace(params)}/messages/send`, { body, signal })).payload);
+            } catch (error) { return toolError(error); }
+        },
+    });
+
     const canvasWorkspaces = defineTool({
         name: 'canvas_workspaces',
         label: 'Canvas Workspaces',
@@ -368,6 +408,9 @@ export function createCanvasTools(env) {
         canvasGet,
         canvasInsert,
         canvasNotify,
+        canvasMessageAccounts,
+        canvasMessageStatus,
+        canvasSendMessage,
         ...(isGlobal ? [canvasWorkspaces] : []),
     ];
 }

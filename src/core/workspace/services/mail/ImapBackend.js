@@ -131,6 +131,12 @@ export default class ImapBackend extends StorageBackend {
         }));
     }
 
+    async appendSent(raw, folder) {
+        return this.#withConnection((imap) => new Promise((resolve, reject) => {
+            imap.append(raw, { mailbox: folder, flags: ['\\Seen'] }, (error, uid) => error ? reject(error) : resolve(uid || null));
+        }));
+    }
+
     async delete(key) {
         const { folder, uid } = this.#parseKey(key);
         return this.#withConnection((imap) => new Promise((resolve, reject) => {

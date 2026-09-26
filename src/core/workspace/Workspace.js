@@ -1,5 +1,9 @@
 'use strict';
 
+import { readSendReceipt } from './services/messages/outbox.js';
+
+import { emailRecipients } from './services/messages/email.js';
+import { sendWorkspaceMessage, sourceAccount } from './services/messages/index.js';
 import { randomUUID } from 'node:crypto';
 
 // Utils
@@ -3135,6 +3139,8 @@ class Workspace extends EventEmitter {
                 pollInterval: primary.pollInterval ?? 60000,
                 initialSyncDays: primary.initialSyncDays ?? 180,
                 passwordConfigured: mailboxes.some((m) => m.passwordConfigured),
+                smtp: (mailboxes.find((m) => m.enabled !== false && m.smtp?.enabled && !m.readOnly) || primary).smtp || {},
+                readOnly: mailboxes.every((m) => m.readOnly),
             },
             containers: mailboxes.map((m) => ({
                 name: m.folder || 'INBOX',
@@ -3159,6 +3165,39 @@ class Workspace extends EventEmitter {
             byAccount.get(address).push(mb);
         }
         return [...byAccount.entries()].map(([address, mbs]) => this.#imapBackendDescriptor(address, mbs));
+    }
+
+    async messagingAccounts() {
+        return (await this.listBackends()).filter((b) => ['imap', 'slack', 'whatsapp'].includes(b.driver)).map((b) => {
+            const c = b.driver === 'imap' ? b.config.smtp || {} : b.config;
+            return { driver: b.driver, address: b.address, enabled: b.enabled !== false,
+                canSend: b.enabled !== false && (b.driver === 'imap' ? c.enabled === true && !b.config.readOnly : c.sendEnabled === true && c.readOnly === false),
+                allowAgentSend: c.allowAgentSend === true, from: c.from || null };
+        });
+    }
+
+    async messageSendStatus(requestId, principal) {
+        return readSendReceipt(path.join(this.varPath, 'message-outbox'), requestId, principal);
+    }
+
+    async messageReplyTarget(id) {
+        const doc = await this.get(id);
+        if (!doc) throw Object.assign(new Error('Document not found'), { statusCode: 404 });
+        const source = sourceAccount(doc);
+        if (source?.driver === 'imap') {
+            const config = await this.#mailReadonly().senderConfig(source.address).catch(() => null);
+            if (config) return { ...source, recipients: emailRecipients(config.smtp.from, {}, doc),
+                allRecipients: emailRecipients(config.smtp.from, { replyAll: true }, doc) };
+        }
+        return source;
+    }
+
+    async sendMessage(input, principal = {}) {
+        return sendWorkspaceMessage(this, this.#mailReadonly(), await this.#connectors(), input, principal);
+    }
+
+    async messageConnection(driver, address, reset = false) {
+        return (await this.#connectors()).messageConnection(driver, address, reset);
     }
 
     async listBackends() {

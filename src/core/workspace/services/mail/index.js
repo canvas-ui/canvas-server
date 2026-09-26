@@ -476,18 +476,25 @@ export class WorkspaceMailIndex extends EventEmitter {
             // the blob, not about the blob (the same signature logo is an inline
             // part in one mail and a plain attachment in another), so they have
             // no home on the shared File document or on its edge.
+            const isInline = attachment.contentDisposition === 'inline'
+                || (attachment.contentDisposition !== 'attachment' && attachment.related === true);
             attachments.push({
                 filename,
                 contentType: attachment.contentType,
                 size,
                 contentId: attachment.contentId,
-                isInline: attachment.contentDisposition === 'inline',
+                isInline,
                 checksum: `sha256/${checksum}`,
                 url: blob.url,
             });
-            attachmentDocs.push(this.#buildAttachmentDocument({
-                filename, contentType: attachment.contentType, size, checksum, url: blob.url,
-            }));
+            // Keep inline resources available for rendering the email without
+            // promoting signature logos/tracking pixels into standalone files.
+            // An explicit attachment remains a file even when it has a CID.
+            if (!isInline) {
+                attachmentDocs.push(this.#buildAttachmentDocument({
+                    filename, contentType: attachment.contentType, size, checksum, url: blob.url,
+                }));
+            }
         }
 
         const emailDoc = Email.fromIMAP(parsed, imapMetadata);

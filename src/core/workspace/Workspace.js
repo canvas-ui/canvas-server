@@ -292,7 +292,7 @@ class Workspace extends EventEmitter {
             id: docId,
             metadata: { summary: text },
             updatedAt: new Date().toISOString(),
-        });
+        }, { context: null });
     }
 
     get db() {
@@ -1625,7 +1625,8 @@ class Workspace extends EventEmitter {
         // emitEvent:false — this runs inside the embed pipeline; a
         // document.updated event here would re-enqueue the doc and CLIP-embed
         // every photo a second time.
-        await this.#getActiveDb().put(update, { emitEvent: false });
+        // Enrichment changes content indexes, never virtual-tree placement.
+        await this.#getActiveDb().put(update, { context: null, emitEvent: false });
         return update.updatedAt;
     }
 
@@ -1651,7 +1652,8 @@ class Workspace extends EventEmitter {
         // document.updated event here would re-enqueue the doc and embed it a
         // second time.
         const update = { id: doc.id, metadata: { text: extracted.text }, updatedAt: new Date().toISOString() };
-        await this.#getActiveDb().put(update, { emitEvent: false });
+        // Enrichment changes content indexes, never virtual-tree placement.
+        await this.#getActiveDb().put(update, { context: null, emitEvent: false });
         return update.updatedAt;
     }
 

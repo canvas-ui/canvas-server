@@ -1,7 +1,7 @@
 {
   "name": "canvas-server",
   "productName": "Canvas Server",
-  "version": "2.10.16",
+  "version": "2.10.18",
   "description": "Context layer on top of your unstructured universe",
   "main": "./src/init.js",
   "type": "module",
@@ -64,6 +64,7 @@
   "dependencies": {
     "@azure/identity": "^4.13.0",
     "@fastify/auth": "^4.6.1",
+    "@fastify/compress": "^7.0.3",
     "@fastify/cors": "^8.5.0",
     "@fastify/error": "^3.4.1",
     "@fastify/jwt": "^7.2.4",

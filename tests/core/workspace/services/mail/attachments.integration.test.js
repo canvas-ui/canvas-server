@@ -19,7 +19,7 @@ import {
  * reads it (`listDocumentRelations`).
  */
 
-const rawEmail = ({ id = 'm1', attachments = [] } = {}) => {
+const rawEmail = ({ id = 'm1', attachments = [], multipart = 'mixed' } = {}) => {
     const lines = [
         'From: alice@example.com',
         'To: bob@example.com',
@@ -27,15 +27,16 @@ const rawEmail = ({ id = 'm1', attachments = [] } = {}) => {
         `Message-ID: <${id}@example.com>`,
         'Date: Mon, 16 Jun 2025 10:00:00 +0000',
         'MIME-Version: 1.0',
-        'Content-Type: multipart/mixed; boundary="B"',
+        `Content-Type: multipart/${multipart}; boundary="B"`,
         '', '--B',
         'Content-Type: text/plain', '', 'body text', '',
     ];
-    for (const { filename, payload, mime = 'application/octet-stream' } of attachments) {
+    for (const { filename, payload, mime = 'application/octet-stream', disposition = 'attachment', contentId } of attachments) {
         lines.push(
             '--B',
             `Content-Type: ${mime}; name="${filename}"`,
-            `Content-Disposition: attachment; filename="${filename}"`,
+            ...(disposition ? [`Content-Disposition: ${disposition}; filename="${filename}"`] : []),
+            ...(contentId ? [`Content-ID: <${contentId}>`] : []),
             'Content-Transfer-Encoding: base64', '',
             Buffer.from(payload).toString('base64'),
         );
@@ -102,6 +103,8 @@ describe('email attachments as File docs + includes edges', () => {
 
         // filed under the mailbox folder's attachments node
         for (const doc of files) {
+            const contextPaths = await ws.listDocumentTreeMemberships(doc.id, ws.getDefaultContextTree().id);
+            assert.deepEqual(contextPaths, [], 'extracted files must not be filed in the context tree');
             const paths = await ws.listDocumentPlacements(doc.id).catch(() => []);
             const flat = JSON.stringify(paths);
             assert.ok(flat.includes('/imap/alice@example.com/inbox/attachments'), `expected attachments placement, got ${flat}`);
@@ -110,6 +113,84 @@ describe('email attachments as File docs + includes edges', () => {
         // and the reverse axis answers "which messages carried this blob"
         const { incoming } = ws.listDocumentRelations(files[0].id);
         assert.ok(incoming.some((edge) => edge.p === 'includes' && edge.from === emailId));
+    });
+
+    test('background text enrichment and captions preserve attachment placement', async () => {
+        const emailId = await ws.ingestEmailMessage({
+            kind: 'message',
+            raw: rawEmail({ id: 'enrichment', attachments: [
+                { filename: 'notes.txt', payload: 'Attachment text to index', mime: 'text/plain' },
+            ] }),
+            account: 'alice@example.com', folder: 'INBOX', uid: 20,
+        });
+        const fileId = ws.listDocumentRelations(emailId).outgoing.find((e) => e.p === 'includes').to;
+        const before = await ws.listDocumentPlacements(fileId);
+        const input = await ws.resolveEmbeddingInput(fileId);
+        assert.equal(input.modality, 'text');
+        assert.ok((await ws.get(fileId)).metadata.text.content.includes('Attachment text'));
+        assert.deepEqual(await ws.listDocumentPlacements(fileId), before, 'text enrichment must not file the attachment');
+        await ws.setDocumentSummary(fileId, 'Generated description');
+        assert.equal((await ws.get(fileId)).metadata.summary, 'Generated description');
+        assert.deepEqual(await ws.listDocumentPlacements(fileId), before, 'captions must not file the attachment');
+    });
+
+    test('image metadata enrichment preserves attachment placement', async () => {
+        const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a9xkAAAAASUVORK5CYII=', 'base64');
+        const emailId = await ws.ingestEmailMessage({
+            kind: 'message',
+            raw: rawEmail({ id: 'image-enrichment', attachments: [
+                { filename: 'photo.png', payload: png, mime: 'image/png' },
+            ] }),
+            account: 'alice@example.com', folder: 'INBOX', uid: 23,
+        });
+        const fileId = ws.listDocumentRelations(emailId).outgoing.find((e) => e.p === 'includes').to;
+        const before = await ws.listDocumentPlacements(fileId);
+        assert.equal((await ws.resolveEmbeddingInput(fileId)).modality, 'image');
+        assert.equal((await ws.get(fileId)).metadata.dimensions.width, 1);
+        assert.deepEqual(await ws.listDocumentPlacements(fileId), before);
+    });
+
+    test('inline resources stay on the email; the same bytes explicitly attached become a file', async () => {
+        const logo = { filename: 'signature.png', payload: 'shared-signature', mime: 'image/png', contentId: 'signature' };
+        const emailId = await ws.ingestEmailMessage({
+            kind: 'message',
+            raw: rawEmail({ id: 'inline', attachments: [{ ...logo, disposition: 'inline' }] }),
+            account: 'alice@example.com', folder: 'INBOX', uid: 21,
+        });
+        assert.equal(ws.listDocumentRelations(emailId).outgoing.filter((e) => e.p === 'includes').length, 0);
+        const resource = (await ws.get(emailId)).data.attachments[0];
+        assert.equal(resource.isInline, true);
+        assert.ok(resource.url.startsWith('stored://workspace:data/'));
+        assert.equal(await ws.getByChecksumString(resource.checksum), null);
+
+        const secondId = await ws.ingestEmailMessage({
+            kind: 'message', raw: rawEmail({ id: 'explicit', attachments: [logo] }),
+            account: 'alice@example.com', folder: 'INBOX', uid: 22,
+        });
+        const fileId = ws.listDocumentRelations(secondId).outgoing.find((e) => e.p === 'includes').to;
+        assert.equal((await ws.get(secondId)).data.attachments[0].isInline, false);
+        assert.deepEqual(await ws.listDocumentTreeMemberships(fileId, ws.getDefaultContextTree().id), []);
+        await ws.link(fileId, { context: '/Saved' });
+        const placements = await ws.listDocumentPlacements(fileId);
+        await ws.setDocumentSummary(fileId, 'User-filed image');
+        assert.deepEqual(await ws.listDocumentPlacements(fileId), placements, 'explicit filing survives enrichment');
+    });
+
+    test('related CID resources without a disposition stay on the email', async () => {
+        const emailId = await ws.ingestEmailMessage({
+            kind: 'message',
+            raw: rawEmail({ id: 'related', multipart: 'related', attachments: [
+                { filename: 'pixel.png', payload: 'related-pixel', mime: 'image/png', disposition: null, contentId: 'pixel' },
+                { filename: 'attached.png', payload: 'related-attachment', mime: 'image/png', contentId: 'attached' },
+            ] }),
+            account: 'alice@example.com', folder: 'INBOX', uid: 24,
+        });
+        const resources = (await ws.get(emailId)).data.attachments;
+        assert.equal(resources.find((a) => a.filename === 'pixel.png').isInline, true);
+        assert.equal(resources.find((a) => a.filename === 'attached.png').isInline, false);
+        const edges = ws.listDocumentRelations(emailId).outgoing.filter((e) => e.p === 'includes');
+        assert.equal(edges.length, 1);
+        assert.equal((await ws.get(edges[0].to)).locations[0].metadata.filename, 'attached.png');
     });
 
     test('the same blob in a second message dedupes to one File doc with two incoming edges', async () => {

@@ -7,6 +7,7 @@ import fastifySocketIO from 'fastify-socket.io';
 import fastifyStatic from '@fastify/static';
 import fastifyMultipart from '@fastify/multipart';
 import fastifyCors from '@fastify/cors';
+import fastifyCompress from '@fastify/compress';
 import fastifyRateLimit from '@fastify/rate-limit';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -89,6 +90,11 @@ export async function createServer(options = {}) {
     ignoreTrailingSlash: true,
     bodyLimit: 1073741824, // 1 GiB
   });
+
+  // Opt-in response compression: document lists retain full bodies for
+  // offline use, without sending megabytes of repetitive email HTML verbatim.
+  // Other routes (especially byte ranges and event streams) stay untouched.
+  await server.register(fastifyCompress, { global: false });
 
   // Register fastify-jwt FIRST - needed for request.jwtVerify
   await server.register(fastifyJwt, {
